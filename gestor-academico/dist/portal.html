@@ -2856,8 +2856,8 @@ function renderGestorLanding(){
         <a href="https://wa.me/57${w2}" target="_blank" class="gestor-wsp">${_WSP_SVG} ${w2}</a>
       </div>
       <div style="margin-top:10px">
-        <a href="https://gestoracademicoyc.com/" target="_blank" style="display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:8px;padding:7px 18px;color:#cce4ff;text-decoration:none;font-size:0.83rem;font-weight:500;transition:background .2s" onmouseover="this.style.background='rgba(255,255,255,0.14)'" onmouseout="this.style.background='rgba(255,255,255,0.07)'">
-          🌐 <span><span style="color:#b0c4de;font-size:0.75rem">Link de acceso al GESTOR ACADÉMICO YC: </span>gestoracademicoyc.com</span>
+        <a href="https://gestoracademicoyc.onrender.com" target="_blank" style="display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:8px;padding:7px 18px;color:#cce4ff;text-decoration:none;font-size:0.83rem;font-weight:500;transition:background .2s" onmouseover="this.style.background='rgba(255,255,255,0.14)'" onmouseout="this.style.background='rgba(255,255,255,0.07)'">
+          🌐 <span><span style="color:#b0c4de;font-size:0.75rem">Link de acceso al GESTOR ACADÉMICO YC: </span>gestoracademicoyc.onrender.com</span>
         </a>
       </div>
     </div>
@@ -17523,6 +17523,102 @@ async function registrarHuella(){
     else alert('❌ Error al registrar biométrico: '+e.message);
   }
 }
+// ── Calcula la página destino según el rol del usuario ──
+function _pagPorRol(rol){
+  if(rol==='estudiante') return 'est-home';
+  if(rol==='padre')      return 'padre-home';
+  if(rol==='elecciones') return 'elecciones';
+  return 'planilla'; // admin, rector, docente y cualquier otro
+}
+
+// ── Login biométrico DIRECTO para una plataforma específica (sin pedir usuario) ──
+// Recopila todos los webAuthnId registrados en esa institución,
+// invoca navigator.credentials.get con la lista completa,
+// identifica al usuario por el rawId devuelto y lo redirige a su panel.
+async function loginBiometricoPortal(platId){
+  if(!window.navigator.credentials||!window.PublicKeyCredential){
+    alert('⚠️ Autenticación biométrica no soportada en este navegador.\nUse Chrome, Edge o Safari en un dispositivo con lector de huellas o Face ID.');return;
+  }
+  const plat=gestorDB.platforms.find(x=>x.id===platId);
+  if(!plat){alert('Institución no encontrada.');return;}
+  let platDB;
+  try{platDB=await _fetchPlatDB(plat.sk);}catch(e){alert('❌ Error cargando datos de la institución.');return;}
+
+  // Recopilar todas las credenciales biométricas registradas en esta plataforma
+  const credMap={}; // base64CredId -> user
+  for(const u of (platDB.users||[])){
+    if(u.webAuthnId) credMap[u.webAuthnId]=u;
+  }
+  if(!Object.keys(credMap).length){
+    alert('⚠️ No hay huellas / Face ID registrados en esta institución.\n\nInicie sesión con usuario y contraseña, luego vaya a Mi Perfil → Registrar Huella.');return;
+  }
+
+  try{
+    const challenge=new Uint8Array(32);crypto.getRandomValues(challenge);
+    const allowCredentials=Object.keys(credMap).map(cid=>({
+      type:'public-key',
+      id:Uint8Array.from(atob(cid),c=>c.charCodeAt(0))
+    }));
+    const credential=await navigator.credentials.get({
+      publicKey:{challenge,allowCredentials,userVerification:'required',timeout:60000}
+    });
+    // Identificar usuario por rawId devuelto
+    const usedId=btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+    const user=credMap[usedId];
+    if(!user){alert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
+    const pagTarget=_pagPorRol(user.r);
+    window._pendingLogin={sesionData:user,platDB,plat,pag:pagTarget};
+    entrarPlataforma(platId);
+  }catch(e){
+    if(e.name==='NotAllowedError') alert('❌ Autenticación biométrica cancelada por el usuario.');
+    else alert('❌ Error en autenticación biométrica: '+e.message);
+  }
+}
+
+// ── Login biométrico DIRECTO desde el gestor (todas las plataformas activas) ──
+// Sin pedir usuario ni contraseña: identifica al usuario por su credencial
+// biométrica registrada y lo lleva directo a su panel según su rol.
+async function loginBiometrico(){
+  if(!window.navigator.credentials||!window.PublicKeyCredential){
+    alert('⚠️ Autenticación biométrica no soportada en este navegador.');return;
+  }
+  // Recopilar credenciales de TODAS las plataformas activas
+  const credMap={}; // base64CredId -> {user, plat, platDB}
+  for(const plat of gestorDB.platforms){
+    if(!plat.activa) continue;
+    try{
+      const platDB=await _fetchPlatDB(plat.sk);
+      for(const u of (platDB.users||[])){
+        if(u.webAuthnId) credMap[u.webAuthnId]={user:u,plat,platDB};
+      }
+    }catch(e){}
+  }
+  if(!Object.keys(credMap).length){
+    alert('⚠️ No hay huellas / Face ID registrados en el sistema.\n\nInicie sesión con usuario y contraseña, luego vaya a Mi Perfil → Registrar Huella.');return;
+  }
+  try{
+    const challenge=new Uint8Array(32);crypto.getRandomValues(challenge);
+    const allowCredentials=Object.keys(credMap).map(cid=>({
+      type:'public-key',
+      id:Uint8Array.from(atob(cid),c=>c.charCodeAt(0))
+    }));
+    const credential=await navigator.credentials.get({
+      publicKey:{challenge,allowCredentials,userVerification:'required',timeout:60000}
+    });
+    const usedId=btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+    const found=credMap[usedId];
+    if(!found){alert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
+    const {user,plat,platDB}=found;
+    const pagTarget=_pagPorRol(user.r);
+    window._pendingLogin={sesionData:user,platDB,plat,pag:pagTarget};
+    renderBienvenidaInstitucion(plat.id);
+  }catch(e){
+    if(e.name==='NotAllowedError') alert('❌ Autenticación biométrica cancelada por el usuario.');
+    else alert('❌ Error en autenticación biométrica: '+e.message);
+  }
+}
+
+// ── Login biométrico con usuario conocido (uso interno, desde dentro de la cuenta) ──
 async function _loginBiometricoConDB(platDB,plat){
   const uInput=document.getElementById('iUser')||document.getElementById('pUser');
   const u=uInput?.value.trim()||'';
@@ -17535,29 +17631,6 @@ async function _loginBiometricoConDB(platDB,plat){
     await navigator.credentials.get({publicKey:{challenge,allowCredentials:[{type:'public-key',id:rawId}],userVerification:'required',timeout:60000}});
     return user;
   }catch(e){alert('❌ Autenticación biométrica fallida: '+e.message);return null;}
-}
-async function loginBiometrico(){
-  if(!window.navigator.credentials||!window.PublicKeyCredential){alert('⚠️ Biométrico no soportado en este navegador.');return;}
-  for(const plat of gestorDB.platforms){
-    if(!plat.activa) continue;
-    const platDB=await _fetchPlatDB(plat.sk);
-    const user=await _loginBiometricoConDB(platDB,plat);
-    if(user){
-      const pagTarget=user.r==='admin'?'planilla':user.r==='docente'?'planilla':'planilla';
-      window._pendingLogin={sesionData:user,platDB,plat,pag:pagTarget};
-      renderBienvenidaInstitucion(plat.id);return;
-    }
-  }
-}
-async function loginBiometricoPortal(platId){
-  if(!window.navigator.credentials||!window.PublicKeyCredential){alert('⚠️ Biométrico no soportado en este navegador.');return;}
-  const plat=gestorDB.platforms.find(x=>x.id===platId);if(!plat) return;
-  const platDB=await _fetchPlatDB(plat.sk);
-  const user=await _loginBiometricoConDB(platDB,plat);
-  if(user){
-    window._pendingLogin={sesionData:user,platDB,plat,pag:'planilla'};
-    entrarPlataforma(platId);
-  }
 }
 
 // ── MÓDULO: RECUPERACIÓN DE CONTRASEÑA GESTOR ──
