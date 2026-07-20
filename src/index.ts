@@ -496,22 +496,20 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 // En producción el API server sirve también el build de Vite.
 // El archivo principal es portal.html (SPA monolítica de un solo archivo).
 
-if (IS_PROD) {
-  if (fs.existsSync(STATIC_DIR)) {
-    app.use(express.static(STATIC_DIR, { index: false }));
-  }
-
-  app.get('/', servePortal);
- // Rutas ocultas del Admin General
-  app.get('/admin-ycgestor',      servePortal);
-  app.get('/admin-portal-secure', servePortal);
-
-  // Fallback SPA: cualquier ruta no-API devuelve portal.html
-  app.get('/{*path}', (req, res) => {
-    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
-    return servePortal(req, res);
-  });
+if (fs.existsSync(STATIC_DIR)) {
+  app.use(express.static(STATIC_DIR, { index: false }));
 }
+
+app.get('/', servePortal);
+// Rutas ocultas del Admin General
+app.get('/admin-ycgestor',      servePortal);
+app.get('/admin-portal-secure', servePortal);
+
+// Fallback SPA: cualquier ruta no-API devuelve portal.html
+app.get('/{*path}', (req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+  return servePortal(req, res);
+});
 
 // ============================================================
 // A08 · INICIO DEL SERVIDOR
