@@ -17534,13 +17534,14 @@ function _pagPorRol(rol){
 // ── Login biométrico DIRECTO para una plataforma específica (sin pedir usuario) ──
 // Recopila todos los webAuthnId registrados en esa institución,
 // invoca navigator.credentials.get con la lista completa,
-// identifica al usuario por el rawId devuelto y lo redirige a su panel.
+// identifica al usuario por el rawId devuelto y establece la sesión con su rol real.
 async function loginBiometricoPortal(platId){
   if(!window.navigator.credentials||!window.PublicKeyCredential){
     alert('⚠️ Autenticación biométrica no soportada en este navegador.\nUse Chrome, Edge o Safari en un dispositivo con lector de huellas o Face ID.');return;
   }
   const plat=gestorDB.platforms.find(x=>x.id===platId);
   if(!plat){alert('Institución no encontrada.');return;}
+  if(plat.bloqueada){alert('🔒 Esta plataforma está temporalmente bloqueada. Comuníquese con su institución.');return;}
   let platDB;
   try{platDB=await _fetchPlatDB(plat.sk);}catch(e){alert('❌ Error cargando datos de la institución.');return;}
 
@@ -17566,9 +17567,18 @@ async function loginBiometricoPortal(platId){
     const usedId=btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
     const user=credMap[usedId];
     if(!user){alert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
-    const pagTarget=_pagPorRol(user.r);
-    window._pendingLogin={sesionData:user,platDB,plat,pag:pagTarget};
-    entrarPlataforma(platId);
+    // Establecer sesión con el rol real del usuario — NO sobreescribir con admin
+    db=platDB;
+    window._currentPlatSK=plat.sk;
+    window._currentPlatId=platId;
+    sesion=user;
+    pag=_pagPorRol(user.r);
+    if(user.r==='docente'){
+      try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:user.n,message:'El/La docente '+user.n+' ingresó al sistema (biométrico)',meta:{u:user.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}
+    }
+    _sseInit();
+    _checkSchemaMigrationBanner();
+    render();
   }catch(e){
     if(e.name==='NotAllowedError') alert('❌ Autenticación biométrica cancelada por el usuario.');
     else alert('❌ Error en autenticación biométrica: '+e.message);
@@ -17577,7 +17587,7 @@ async function loginBiometricoPortal(platId){
 
 // ── Login biométrico DIRECTO desde el gestor (todas las plataformas activas) ──
 // Sin pedir usuario ni contraseña: identifica al usuario por su credencial
-// biométrica registrada y lo lleva directo a su panel según su rol.
+// biométrica registrada y establece la sesión con su rol real.
 async function loginBiometrico(){
   if(!window.navigator.credentials||!window.PublicKeyCredential){
     alert('⚠️ Autenticación biométrica no soportada en este navegador.');return;
@@ -17609,9 +17619,18 @@ async function loginBiometrico(){
     const found=credMap[usedId];
     if(!found){alert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
     const {user,plat,platDB}=found;
-    const pagTarget=_pagPorRol(user.r);
-    window._pendingLogin={sesionData:user,platDB,plat,pag:pagTarget};
-    renderBienvenidaInstitucion(plat.id);
+    // Establecer sesión con el rol real del usuario — NO sobreescribir con admin
+    db=platDB;
+    window._currentPlatSK=plat.sk;
+    window._currentPlatId=plat.id;
+    sesion=user;
+    pag=_pagPorRol(user.r);
+    if(user.r==='docente'){
+      try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:user.n,message:'El/La docente '+user.n+' ingresó al sistema (biométrico)',meta:{u:user.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}
+    }
+    _sseInit();
+    _checkSchemaMigrationBanner();
+    render();
   }catch(e){
     if(e.name==='NotAllowedError') alert('❌ Autenticación biométrica cancelada por el usuario.');
     else alert('❌ Error en autenticación biométrica: '+e.message);
