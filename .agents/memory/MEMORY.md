@@ -1,0 +1,1 @@
+- [Portability rules](portability-rules.md) — no Replit services; PostgreSQL via DATABASE_URL; .replit/.nix untouched; portable Express+Node.js for Render
