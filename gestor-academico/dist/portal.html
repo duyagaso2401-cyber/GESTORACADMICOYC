@@ -930,6 +930,9 @@ function _migrateGestorDB(data){
     todosIds.forEach(function(mid){
       if(!plat.modulosActivos.includes(mid)&&!plat.modulosDesactivados.includes(mid)) plat.modulosActivos.push(mid);
     });
+    // Forzar 'repositorio' como activo en todas las plataformas, aunque haya estado en desactivados
+    if(!plat.modulosActivos.includes('repositorio')) plat.modulosActivos.push('repositorio');
+    plat.modulosDesactivados=plat.modulosDesactivados.filter(function(id){return id!=='repositorio';});
     if(!plat.fechaCreacion) plat.fechaCreacion=new Date().toISOString().slice(0,10);
     if(typeof plat.activa==='undefined') plat.activa=true;
     // Migración: sistema de años lectivos por plataforma
@@ -1477,6 +1480,8 @@ async function _fetchPlatDB(sk){
   return loadPlatformDB(sk);
 }
 function moduloActivo(modId,platId){
+    // Repositorio institucional: siempre activo — el rol ya lo controla en el menu.push
+    if(modId==='repositorio') return true;
     // El Gestor admin dentro de una plataforma siempre ve todos los módulos
     if(gestorSesion&&gestorEnPlataforma) return true;
     const pid=platId||window._currentPlatId;if(!pid){
@@ -3091,9 +3096,10 @@ function renderApp(){
       if(_acEval===null||_acEval===undefined||_acEval.includes(sesion.u)) menu.push({id:'seguimiento-eval-docente',label:'📁 Eval. Desempeño Docente'});
     }
   }
-  // ── REPOSITORIO INSTITUCIONAL: visible para admin, rector, gestor, directivo y docente ─
+  // ── REPOSITORIO INSTITUCIONAL: visible para todos los roles autorizados ─────────────
+  // Se agrega sin depender de _ma() porque moduloActivo() ya retorna true para 'repositorio'.
   const _canRepo=['admin','rector','gestor','docente','directivo','estudiante','padre'].includes(sesion.r);
-  if(_canRepo&&_ma('repositorio')){
+  if(_canRepo){
     const _repoInst=window._currentPlatId||'';
     const _repoRole=encodeURIComponent(sesion.r||'estudiante');
     const _repoUser=encodeURIComponent(sesion.n||sesion.u||'Usuario');
