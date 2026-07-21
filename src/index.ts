@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { db, kvStore, notifications, documents } from './db/index.js';
+import repositorioRouter from './routes/repositorio.js';
 import { eq, desc } from 'drizzle-orm';
 import { GoogleGenAI } from '@google/genai';
 
@@ -488,6 +489,17 @@ app.post('/api/inetis/ai/general', async (req, res) => {
     const msg = e instanceof Error ? e.message : 'Error interno';
     return res.status(500).json({ error: msg });
   }
+});
+
+// ============================================================
+// A06b · RUTAS — MÓDULO REPOSITORIO
+// ============================================================
+
+app.use('/api/repositorio', repositorioRouter);
+
+app.get('/repositorio', (_req, res) => {
+  const repoHtml = path.resolve(__dirname, '../modulo-repositorio/index.html');
+  res.sendFile(repoHtml);
 });
 
 // ============================================================

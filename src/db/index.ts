@@ -37,6 +37,45 @@ async function initDb() {
         est_id TEXT,
         data JSONB
       );
+      CREATE TABLE IF NOT EXISTS repositorio_resources (
+        id SERIAL PRIMARY KEY,
+        institucion_id TEXT NOT NULL DEFAULT 'default',
+        title TEXT NOT NULL,
+        author TEXT DEFAULT '',
+        level TEXT DEFAULT 'General',
+        skill TEXT DEFAULT '',
+        metadata TEXT DEFAULT '',
+        type TEXT DEFAULT '',
+        description TEXT DEFAULT '',
+        uploader TEXT DEFAULT '',
+        link TEXT,
+        file_data TEXT,
+        file_name TEXT,
+        rating_sum INTEGER NOT NULL DEFAULT 0,
+        rating_count INTEGER NOT NULL DEFAULT 0,
+        comments JSONB DEFAULT '[]',
+        downloads_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS repositorio_users (
+        id SERIAL PRIMARY KEY,
+        institucion_id TEXT NOT NULL DEFAULT 'default',
+        username TEXT NOT NULL,
+        fullname TEXT NOT NULL,
+        role TEXT NOT NULL,
+        pass TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS repositorio_stats (
+        institucion_id TEXT PRIMARY KEY,
+        views INTEGER NOT NULL DEFAULT 0,
+        downloads INTEGER NOT NULL DEFAULT 0,
+        logs JSONB DEFAULT '[]'
+      );
+      CREATE TABLE IF NOT EXISTS repositorio_config (
+        institucion_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT 'REPOSITORIO INSTITUCIONAL',
+        logo TEXT NOT NULL DEFAULT ''
+      );
     `);
     console.log("✅ Tablas verificadas/creadas en Neon exitosamente.");
   } catch (err) {
