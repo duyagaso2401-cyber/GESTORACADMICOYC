@@ -1,0 +1,7 @@
+
+> gestor-academico-yc-plano@1.0.0 dev
+> tsx watch src/index.ts
+
+[1G[0KAPI Server escuchando en puerto 5000
+⚠️  GEMINI_API_KEY no configurada — IA no disponible
+✅ Tablas verificadas/creadas en Neon exitosamente.
