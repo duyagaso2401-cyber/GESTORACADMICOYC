@@ -497,6 +497,10 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
 app.use('/api/repositorio', repositorioRouter);
 
+// Servir archivos estáticos de la carpeta modulo-repositorio
+// (CSS, imágenes, JS adicionales que puedan existir junto al index.html)
+app.use('/modulo-repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio')));
+
 app.get('/repositorio', (_req, res) => {
   const repoHtml = path.resolve(__dirname, '../modulo-repositorio/index.html');
   res.sendFile(repoHtml);

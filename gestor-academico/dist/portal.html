@@ -882,6 +882,8 @@ const TODOS_MODULOS=[
   {id:'asistente-ia',label:'🤖 Asistente IA (Adán)'},
   {id:'nav-voz',label:'🗣️ Navegación por Voz'},
   {id:'manual-usuario',label:'📖 Manual de Usuario'},
+  // ─── REPOSITORIO ───────────────────────────────────────────────────────────
+  {id:'repositorio',label:'📁 Repositorio Institucional'},
 ];
 const GESTOR_DEFAULT={
   superAdmin:{u:'gestor',p:'Gestor2026*',nombre:'Adán Yesid Jiménez Cabrales'},
@@ -3089,6 +3091,8 @@ function renderApp(){
       if(_acEval===null||_acEval===undefined||_acEval.includes(sesion.u)) menu.push({id:'seguimiento-eval-docente',label:'📁 Eval. Desempeño Docente'});
     }
   }
+  // ── REPOSITORIO INSTITUCIONAL: visible para admin, rector y docente ─────────
+  if((isAdmin||sesion.r==='docente')&&_ma('repositorio')) menu.push({id:'repositorio',label:'📁 Repositorio Recursos'});
 
   // Ordenar todos los módulos alfabéticamente (ignorando emojis y caracteres especiales)
   function _labelSort(s){return s.label.replace(/[^\p{L}\p{N}\s]/gu,'').trim().toLowerCase();}
@@ -3137,6 +3141,13 @@ function renderApp(){
   else if(pag==='quizzes-docente') contenido=htmlDocenteQuizzes();
   else if(pag==='eval-docente-admin'&&isAdmin) contenido=htmlEvalDocenteAdmin();
   else if(pag==='seguimiento-eval-docente') contenido=isAdmin?htmlSeguimientoEvalDocenteAdmin():htmlSeguimientoEvalDocenteDocente();
+  else if(pag==='repositorio'&&(isAdmin||sesion.r==='docente')){
+    // Abre el módulo externo en un iframe de pantalla completa dentro del layout
+    const _repoInst=window._currentPlatId||'';
+    contenido=`<div style="margin:-16px -20px -20px;height:calc(100vh - 58px);overflow:hidden">
+      <iframe src="/repositorio?inst=${_repoInst}" style="width:100%;height:100%;border:none;display:block" title="Repositorio Institucional" allowfullscreen></iframe>
+    </div>`;
+  }
 
   const _platId2=gestorEnPlataforma||window._currentPlatId;
   const _platDat2=_platId2?gestorDB.platforms.find(x=>x.id===_platId2):null;
