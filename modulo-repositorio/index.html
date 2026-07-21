@@ -373,43 +373,40 @@ async function init() {
   let repoCfg = { name: '', logo: '' };
   try { repoCfg = await apiFetch('/config'); } catch(e) {}
 
-  // 3. Determinar nombre a mostrar:
-  //    Prioridad: config admin guardada > texto ya inyectado por el servidor > params JS > inst-context API > genérico
-  //    El servidor ya puede haber escrito el nombre correcto en el HTML antes de que JS corriera,
-  //    así que lo leemos como fallback confiable para no sobrescribirlo con el genérico.
-  const _serverInjectedTitle = (document.getElementById('hdr-inst-name')?.textContent || '').trim();
-  const _serverHasRealTitle  = _serverInjectedTitle && _serverInjectedTitle !== 'REPOSITORIO INSTITUCIONAL';
+  // 3. Identidad visual — siempre actualizar desde la API, sin condiciones que bloqueen.
+  //    Prioridad: personalización admin > nombre de la institución real > fallback genérico
+  //    Fuentes del nombre: repoCfg.name (Panel de Control) > instCtx.nombre (BD principal) > _instNombre (URL)
+  //    Ignorar repoCfg.name si es el texto genérico por defecto (no es un nombre personalizado real).
+  const NOMBRES_GENERICOS = ['REPOSITORIO INSTITUCIONAL', 'Repositorio Institucional', 'repositorio institucional'];
+  const cfgNameReal   = NOMBRES_GENERICOS.includes((repoCfg.name || '').trim()) ? '' : (repoCfg.name || '');
+  const instNombreReal = instCtx.nombre || _instNombre || '';
+  const tituloBase     = cfgNameReal   || instNombreReal;
 
-  const instNombreReal = _instNombre || instCtx.nombre ||
-    (_serverHasRealTitle ? _serverInjectedTitle.replace(/^REPOSITORIO RECURSOS\s*·\s*/, '') : '');
+  // Formato: "REPOSITORIO DE RECURSOS - [NOMBRE]" cuando hay nombre real;
+  // solo "REPOSITORIO DE RECURSOS" genérico si no hay ninguna fuente disponible.
+  const displayName = tituloBase
+    ? `REPOSITORIO DE RECURSOS - ${tituloBase}`
+    : 'REPOSITORIO DE RECURSOS';
 
-  const displayName = repoCfg.name ||
-    (instNombreReal ? `REPOSITORIO RECURSOS · ${instNombreReal}` :
-      (_serverHasRealTitle ? _serverInjectedTitle : 'REPOSITORIO INSTITUCIONAL'));
+  const displayLogo = repoCfg.logo || instCtx.escudo || _instEscudo || '';
 
-  const displayLogo = repoCfg.logo || _instEscudo || instCtx.escudo || '';
+  // Actualizar DOM siempre — el nombre real tiene prioridad sobre cualquier texto previo
+  document.getElementById('site-title-tag').textContent = displayName;
+  document.getElementById('hdr-inst-name').textContent  = displayName;
 
-  // Solo sobreescribir si el servidor no inyectó un título real (evita reemplazar por el genérico)
-  if (!_serverHasRealTitle || repoCfg.name) {
-    document.getElementById('site-title-tag').textContent = displayName;
-    document.getElementById('hdr-inst-name').textContent  = displayName;
-  }
-  // Mostrar logo si lo hay
-  if (displayLogo && !_instEscudo) {
-    const img = document.getElementById('hdr-logo');
-    img.src = displayLogo; img.style.display = '';
-  }
-  // Pre-llenar el form de configuración con el nombre real (para que el admin pueda personalizar)
-  if (canAdmin) {
-    document.getElementById('cfg-name').value = repoCfg.name || displayName;
-    document.getElementById('cfg-logo').value = repoCfg.logo || displayLogo;
-  }
-
+  // Logo institucional
+  const logoImg = document.getElementById('hdr-logo');
   if (displayLogo) {
-    const img = document.getElementById('hdr-logo');
-    img.src = displayLogo;
-    img.style.display = '';
-    if (canAdmin) document.getElementById('cfg-logo').value = displayLogo;
+    logoImg.src = displayLogo;
+    logoImg.style.display = '';
+  } else {
+    logoImg.style.display = 'none';
+  }
+
+  // Pre-llenar formulario del Panel de Control con los datos reales
+  if (canAdmin) {
+    document.getElementById('cfg-name').value = repoCfg.name || instNombreReal;
+    document.getElementById('cfg-logo').value = repoCfg.logo || displayLogo;
   }
 
   // 4. Cargar áreas, grados, tipos y recursos en paralelo
@@ -829,10 +826,11 @@ function escH(s) {
 }
 
 // ── IDENTIDAD VISUAL INMEDIATA (síncrono, antes de cualquier API) ─
-// El encabezado es correcto desde el primer frame visible del navegador.
+// Muestra lo que venga del parámetro URL mientras llegan las APIs.
+// init() siempre sobreescribe con el nombre real de la BD.
 (function _setHeaderImmediate() {
   if (_instNombre) {
-    const title = 'REPOSITORIO RECURSOS · ' + _instNombre;
+    const title = 'REPOSITORIO DE RECURSOS - ' + _instNombre;
     document.getElementById('site-title-tag').textContent = title;
     document.getElementById('hdr-inst-name').textContent  = title;
   }
