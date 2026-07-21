@@ -3036,9 +3036,9 @@ function renderApp(){
   if(!sesion||!sesion.r){render();return;}
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
   if(typeof htmlAvisoDocente==='undefined'){setTimeout(renderApp,30);return;}
-  if(sesion.r==='elecciones'){renderElecciones();return;}
-  if(sesion.r==='padre'){renderPadre();return;}
-  if(sesion.r==='estudiante'){renderEstudiante();return;}
+  if(sesion.r==='elecciones'){iaRemoveWidget();renderElecciones();return;}
+  if(sesion.r==='padre'){iaRemoveWidget();renderPadre();return;}
+  if(sesion.r==='estudiante'){iaRemoveWidget();renderEstudiante();return;}
   const isAdmin=sesion.r==='admin';
   const _ma=moduloActivo;
   const menu=[];
@@ -9377,10 +9377,20 @@ function iaInputKeydown(e){
 // eliminadas en la siguiente limpieza de código.
 // ============================================================
 function iaInjectWidget(){
-  if(document.getElementById('iaFab')) return;
   if(!moduloActivo('asistente-ia')) return;
-  // SEGURIDAD: solo mostrar para usuarios autenticados con rol autorizado
-  if(!sesion||!['gestor','admin','rector','docente'].includes(sesion.r)) return;
+  // SEGURIDAD: solo Docente, Directivo (admin/rector) y Gestor pueden ver el asistente.
+  // Estudiantes, padres de familia y visitantes anónimos NUNCA acceden al widget.
+  if(!sesion||!['gestor','admin','rector','docente'].includes(sesion.r)){
+    iaRemoveWidget(); // retira el widget si el rol no tiene acceso o no hay sesión
+    return;
+  }
+  // Si el widget ya existe en el DOM (versión estática cargada con el HTML),
+  // simplemente hacerlo visible en lugar de crear un duplicado.
+  if(document.getElementById('iaFab')){
+    const _w=document.getElementById('iaWidget');
+    if(_w) _w.style.display='';
+    return;
+  }
   const ctx=_iaGetCtx();
   const wrap=document.createElement('div');
   wrap.id='iaWidget';
@@ -10479,7 +10489,7 @@ setTimeout(function(){if(typeof iaInjectWidget==='function')iaInjectWidget();},1
       <button class="btn" style="background:#7f8c8d;color:#fff;padding:9px 18px" onclick="cerrarFichaModal()">✕ Cerrar</button>
     </div>
   </div>
-</div><div id="iaWidget">
+</div><div id="iaWidget" style="display:none">
   <button class="ia-fab" id="iaFab" onclick="iaToggle()" title="Asistente Adán — Agente Guía YC" aria-expanded="false">
     <div class="ia-face-wrap">
       <img class="ia-face-img" src="/avatar-adan.jpg" alt="Adán">
