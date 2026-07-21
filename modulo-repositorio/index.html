@@ -310,8 +310,12 @@
 <!-- ═══════════════════════════════════════════════════════ SCRIPT -->
 <script>
 // ── Configuración API ─────────────────────────────────────────────
-const INST = new URLSearchParams(location.search).get('inst') || 'default';
-const API  = '/api/repositorio';
+const INST        = new URLSearchParams(location.search).get('inst') || 'default';
+const API         = '/api/repositorio';
+// Identidad visual pasada directamente por el portal (máxima prioridad)
+const _qpInst     = new URLSearchParams(location.search);
+const _instNombre = decodeURIComponent(_qpInst.get('_instNombre') || '');
+const _instEscudo = decodeURIComponent(_qpInst.get('_instEscudo') || '');
 
 let currentPage = 1;
 const PER_PAGE  = 8;
@@ -359,28 +363,81 @@ async function init() {
   if (canEdit)  document.getElementById('btn-add-res').classList.remove('hidden');
   if (canAdmin) document.getElementById('tab-ctrl').classList.remove('hidden');
 
-  // Cargar configuración institucional (nombre + logo)
+  // 1. Cargar contexto de la institución (nombre real + escudo + grados + asignaturas)
+  let instCtx = { nombre: '', escudo: '', grados: [], asignaturas: [] };
   try {
-    const cfg = await apiFetch('/config');
-    if (cfg.name) {
-      document.getElementById('site-title-tag').textContent = cfg.name;
-      document.getElementById('hdr-inst-name').textContent  = cfg.name;
-      document.getElementById('cfg-name').value = cfg.name;
-    }
-    if (cfg.logo) {
-      const img = document.getElementById('hdr-logo');
-      img.src = cfg.logo;
-      img.style.display = '';
-      document.getElementById('cfg-logo').value = cfg.logo;
-    }
-  } catch(e) { /* usar títulos por defecto */ }
+    instCtx = await apiFetch('/inst-context');
+  } catch(e) { /* continuar con valores vacíos */ }
 
+  // 2. Cargar configuración personalizada guardada en el repositorio
+  let repoCfg = { name: '', logo: '' };
+  try { repoCfg = await apiFetch('/config'); } catch(e) {}
+
+  // 3. Determinar nombre a mostrar:
+  //    Prioridad: config admin guardada > texto ya inyectado por el servidor > params JS > inst-context API > genérico
+  //    El servidor ya puede haber escrito el nombre correcto en el HTML antes de que JS corriera,
+  //    así que lo leemos como fallback confiable para no sobrescribirlo con el genérico.
+  const _serverInjectedTitle = (document.getElementById('hdr-inst-name')?.textContent || '').trim();
+  const _serverHasRealTitle  = _serverInjectedTitle && _serverInjectedTitle !== 'REPOSITORIO INSTITUCIONAL';
+
+  const instNombreReal = _instNombre || instCtx.nombre ||
+    (_serverHasRealTitle ? _serverInjectedTitle.replace(/^REPOSITORIO RECURSOS\s*·\s*/, '') : '');
+
+  const displayName = repoCfg.name ||
+    (instNombreReal ? `REPOSITORIO RECURSOS · ${instNombreReal}` :
+      (_serverHasRealTitle ? _serverInjectedTitle : 'REPOSITORIO INSTITUCIONAL'));
+
+  const displayLogo = repoCfg.logo || _instEscudo || instCtx.escudo || '';
+
+  // Solo sobreescribir si el servidor no inyectó un título real (evita reemplazar por el genérico)
+  if (!_serverHasRealTitle || repoCfg.name) {
+    document.getElementById('site-title-tag').textContent = displayName;
+    document.getElementById('hdr-inst-name').textContent  = displayName;
+  }
+  // Mostrar logo si lo hay
+  if (displayLogo && !_instEscudo) {
+    const img = document.getElementById('hdr-logo');
+    img.src = displayLogo; img.style.display = '';
+  }
+  // Pre-llenar el form de configuración con el nombre real (para que el admin pueda personalizar)
+  if (canAdmin) {
+    document.getElementById('cfg-name').value = repoCfg.name || displayName;
+    document.getElementById('cfg-logo').value = repoCfg.logo || displayLogo;
+  }
+
+  if (displayLogo) {
+    const img = document.getElementById('hdr-logo');
+    img.src = displayLogo;
+    img.style.display = '';
+    if (canAdmin) document.getElementById('cfg-logo').value = displayLogo;
+  }
+
+  // 4. Cargar áreas, grados, tipos y recursos en paralelo
   await Promise.all([
     loadAreas(),
     loadGrados(),
     loadTipos(),
     loadResources(),
   ]);
+
+  // 5. Si las tablas de áreas/grados están vacías, sembrar desde datos reales de la institución
+  if (canAdmin && (instCtx.asignaturas.length || instCtx.grados.length)) {
+    const areasVacias  = allAreas.length  === 0;
+    const gradosVacios = allGrados.length === 0;
+    if (areasVacias || gradosVacios) {
+      try {
+        await apiFetch('/seed-areas-grados', {
+          method: 'POST',
+          body: JSON.stringify({
+            asignaturas: instCtx.asignaturas,
+            grados:      instCtx.grados,
+          }),
+        });
+        // Recargar para reflejar datos sembrados
+        await Promise.all([loadAreas(), loadGrados()]);
+      } catch(e) { /* no crítico */ }
+    }
+  }
 
   if (canAdmin) {
     loadStats();
@@ -770,6 +827,21 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 function escH(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// ── IDENTIDAD VISUAL INMEDIATA (síncrono, antes de cualquier API) ─
+// El encabezado es correcto desde el primer frame visible del navegador.
+(function _setHeaderImmediate() {
+  if (_instNombre) {
+    const title = 'REPOSITORIO RECURSOS · ' + _instNombre;
+    document.getElementById('site-title-tag').textContent = title;
+    document.getElementById('hdr-inst-name').textContent  = title;
+  }
+  if (_instEscudo) {
+    var img = document.getElementById('hdr-logo');
+    img.src = _instEscudo;
+    img.style.display = '';
+  }
+})();
 
 // ── INICIAR ───────────────────────────────────────────────────────
 init();

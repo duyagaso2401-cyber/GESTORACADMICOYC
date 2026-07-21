@@ -497,15 +497,57 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
 app.use('/api/repositorio', repositorioRouter);
 
-// Servir archivos estáticos bajo /repositorio/ (CSS, JS, imágenes junto al index.html).
-// index:false para que el GET /repositorio lo maneje la ruta explícita de abajo.
-app.use('/repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio'), { index: false }));
-// Mantener también el path /modulo-repositorio por compatibilidad
-app.use('/modulo-repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio')));
+// El GET explícito de /repositorio DEBE ir ANTES del express.static
+// porque static envía un 301 al detectar el directorio.
+app.get('/repositorio', (req, res) => {
+  // Inyectar identidad visual directamente en el HTML antes de enviarlo al navegador.
+  // Así el título y el logo aparecen desde el primer frame, sin depender de JS async.
+  // Decodificar con fallback: algunos clientes envían caracteres sin percent-encodear
+  function _safeDecodeQP(raw: unknown): string {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    try { return decodeURIComponent(s); } catch { return s; }
+  }
+  const instNombre = _safeDecodeQP(req.query._instNombre);
+  const instEscudo = _safeDecodeQP(req.query._instEscudo);
 
-app.get('/repositorio', (_req, res) => {
-  res.sendFile(path.resolve(__dirname, '../modulo-repositorio/index.html'));
+  try {
+    let html = fs.readFileSync(path.resolve(__dirname, '../modulo-repositorio/index.html'), 'utf8');
+
+    if (instNombre) {
+      const title = `REPOSITORIO RECURSOS · ${instNombre}`;
+      // Reemplazar texto del <title> y del encabezado
+      html = html
+        .replace(/<title id="site-title-tag">.*?<\/title>/,
+          `<title id="site-title-tag">${title}</title>`)
+        .replace(/<div class="hdr-title" id="hdr-inst-name">.*?<\/div>/,
+          `<div class="hdr-title" id="hdr-inst-name">${title}</div>`);
+    }
+
+    if (instEscudo) {
+      // Mostrar logo desde el primer frame
+      html = html.replace(
+        /<img id="hdr-logo"[^>]*>/,
+        `<img id="hdr-logo" class="hdr-logo" src="${instEscudo}" alt="" style="">`
+      );
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.removeHeader('ETag');
+    res.send(html);
+  } catch (_e) {
+    // Fallback: enviar el archivo sin modificar
+    res.sendFile(path.resolve(__dirname, '../modulo-repositorio/index.html'));
+  }
 });
+
+// Archivos estáticos del módulo repositorio (CSS, imágenes, JS externos si los hubiera).
+// Va DESPUÉS del GET /repositorio para que el handler explícito no sea tapado por el 301.
+app.use('/repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio'), { index: false }));
+// Compatibilidad con el path alternativo /modulo-repositorio
+app.use('/modulo-repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio')));
 
 // ============================================================
 // A07 · RUTAS — FRONTEND ESTÁTICO (PRODUCCIÓN)

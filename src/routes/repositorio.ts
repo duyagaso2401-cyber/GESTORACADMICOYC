@@ -5,8 +5,10 @@
 
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { repositorioResources, repositorioUsers, repositorioStats, repositorioConfig, repositorioAreas, repositorioGrados, repositorioTipos } from '../db/schema.js';
+import { repositorioResources, repositorioUsers, repositorioStats, repositorioConfig, repositorioAreas, repositorioGrados, repositorioTipos, kvStore } from '../db/schema.js';
 import { eq, and, sql } from 'drizzle-orm';
+
+const GESTOR_SK = '__gestor_academico_yc__';
 
 const router = Router();
 
@@ -254,7 +256,110 @@ router.get('/config', async (req, res) => {
   const inst = getInst(req);
   try {
     const rows = await db.select().from(repositorioConfig).where(eq(repositorioConfig.institucionId, inst));
-    return res.json(rows[0] ?? { name: 'REPOSITORIO INSTITUCIONAL', logo: '' });
+    return res.json(rows[0] ?? { name: '', logo: '' });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// CONTEXTO DE INSTITUCIÓN — nombre, escudo, grados y asignaturas
+// reales leídos desde la BD principal de la institución
+// ============================================================
+router.get('/inst-context', async (req, res) => {
+  const inst = getInst(req);
+  try {
+    // 1. Leer GestorDB para encontrar la plataforma por id
+    const gestorRows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorData = gestorRows[0]?.value as any;
+
+    let nombre  = '';
+    let escudo  = '';
+    let platSK  = '';
+    let grados: string[]      = [];
+    let asignaturas: string[] = [];
+
+    if (gestorData?.platforms) {
+      const plat = gestorData.platforms.find((p: any) => p.id === inst);
+      if (plat) {
+        nombre = plat.nombre || '';
+        escudo = plat.escudo || '';
+        platSK = plat.sk    || '';
+      }
+    }
+
+    // 2. Leer la BD de la plataforma usando su sk para obtener grados y carga
+    if (platSK) {
+      const platRows = await db.select().from(kvStore).where(eq(kvStore.key, platSK));
+      const platData = platRows[0]?.value as any;
+      if (platData) {
+        if (!nombre && platData.nombre) nombre = platData.nombre;
+        if (!escudo) escudo = platData.escudo || platData.logo || '';
+
+        // Grados: array de objetos con campo .n (nombre del grado)
+        const gradosArr = (platData.grados || []) as any[];
+        grados = [...new Set(
+          gradosArr.map((g: any) => (typeof g === 'string' ? g : g.n || g.id || '')).filter(Boolean)
+        )] as string[];
+
+        // Asignaturas: campo .m (materia) de cada entrada de carga académica
+        const cargaArr = (platData.carga || []) as any[];
+        asignaturas = [...new Set(
+          cargaArr.map((c: any) => c.m || c.a || '').filter(Boolean)
+        )] as string[];
+      }
+    }
+
+    return res.json({ nombre, escudo, grados, asignaturas });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// SEMBRAR ÁREAS Y GRADOS desde datos reales de la institución
+// Solo actúa si la tabla repositorio está vacía para esa inst.
+// ============================================================
+router.post('/seed-areas-grados', async (req, res) => {
+  const inst = getInst(req);
+  const { asignaturas = [], grados = [] } = req.body as {
+    asignaturas: string[];
+    grados: string[];
+  };
+  try {
+    const [existAreas, existGrados] = await Promise.all([
+      db.select({ id: repositorioAreas.id }).from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst)),
+      db.select({ id: repositorioGrados.id }).from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst)),
+    ]);
+
+    let addedAreas  = 0;
+    let addedGrados = 0;
+
+    if (!existAreas.length && asignaturas.length) {
+      for (const nombre of asignaturas) {
+        if (nombre?.trim()) {
+          await db.insert(repositorioAreas).values({ institucionId: inst, nombre: nombre.trim() }).onConflictDoNothing();
+          addedAreas++;
+        }
+      }
+    }
+
+    if (!existGrados.length && grados.length) {
+      for (const nombre of grados) {
+        if (nombre?.trim()) {
+          await db.insert(repositorioGrados).values({ institucionId: inst, nombre: nombre.trim() }).onConflictDoNothing();
+          addedGrados++;
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      addedAreas,
+      addedGrados,
+      skippedAreas:  existAreas.length  > 0,
+      skippedGrados: existGrados.length > 0,
+    });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
   }

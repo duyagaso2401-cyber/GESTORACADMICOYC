@@ -3103,7 +3103,9 @@ function renderApp(){
     const _repoInst=window._currentPlatId||'';
     const _repoRole=encodeURIComponent(sesion.r||'estudiante');
     const _repoUser=encodeURIComponent(sesion.n||sesion.u||'Usuario');
-    menu.push({id:'repositorio',label:'📁 Repositorio Recursos',href:`/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}`,external:true});
+    const _repoNombre=encodeURIComponent(db.nombre||'');
+    const _repoEscudo=encodeURIComponent(db.escudo||db.logo||'');
+    menu.push({id:'repositorio',label:'🗂️ Repositorio Recursos',href:`/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}&_instNombre=${_repoNombre}&_instEscudo=${_repoEscudo}`,external:true});
   }
 
   // Ordenar todos los módulos alfabéticamente (ignorando emojis y caracteres especiales)
@@ -3117,7 +3119,7 @@ function renderApp(){
     return {icon:'•',text:label};
   }
   const navBtns=menu.map(m=>`<button class="nav-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}')">${m.label}</button>`).join('');
-  const sidebarItems=menu.map(m=>{const {icon,text}=_sbLabel(m.label);if(m.external)return `<a class="sb-btn" href="${m.href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit"><span class="sb-icon">${icon}</span><span>${text} ↗</span></a>`;return `<button class="sb-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}');toggleSidebar(false)"><span class="sb-icon">${icon}</span><span>${text}</span></button>`;}).join('');
+  const sidebarItems=menu.map(m=>{const {icon,text}=_sbLabel(m.label);if(m.external)return `<a class="sb-btn" href="${m.href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit;background:linear-gradient(90deg,rgba(230,140,20,.13),transparent);border-left:3px solid #e68c14"><span class="sb-icon" style="color:#e68c14">${icon}</span><span style="color:#9a5e05">${text} ↗</span></a>`;return `<button class="sb-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}');toggleSidebar(false)"><span class="sb-icon">${icon}</span><span>${text}</span></button>`;}).join('');
   let contenido='';
   if(pag==='tablero'&&isAdmin) contenido=htmlTablero();
   else if(pag==='alerta-temprana'&&isAdmin) contenido=htmlAlertaTemprana();
