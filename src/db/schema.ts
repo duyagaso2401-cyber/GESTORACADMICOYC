@@ -73,3 +73,21 @@ export const repositorioConfig = pgTable('repositorio_config', {
   name:          text('name').notNull().default('REPOSITORIO INSTITUCIONAL'),
   logo:          text('logo').notNull().default(''),
 });
+
+export const repositorioAreas = pgTable('repositorio_areas', {
+  id:            serial('id').primaryKey(),
+  institucionId: text('institucion_id').notNull().default('default'),
+  nombre:        text('nombre').notNull(),
+});
+
+export const repositorioGrados = pgTable('repositorio_grados', {
+  id:            serial('id').primaryKey(),
+  institucionId: text('institucion_id').notNull().default('default'),
+  nombre:        text('nombre').notNull(),
+});
+
+export const repositorioTipos = pgTable('repositorio_tipos', {
+  id:            serial('id').primaryKey(),
+  institucionId: text('institucion_id').notNull().default('default'),
+  nombre:        text('nombre').notNull(),
+});

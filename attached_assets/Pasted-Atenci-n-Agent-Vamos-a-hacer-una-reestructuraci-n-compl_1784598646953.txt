@@ -1,0 +1,28 @@
+Atención Agent: Vamos a hacer una reestructuración completa, definitiva y directa del Módulo de Repositorio. Olvida las integraciones por iframe dentro del layout principal para evitar sobrecarga y pantallas en blanco.
+
+Aplica la siguiente arquitectura definitiva en la plataforma:
+
+1. BOTÓN Y ACCESO EXTERNO POR INSTITUCIÓN (portal.html):
+   - Elimina cualquier renderizado en iframe dentro de renderApp().
+   - En el menú lateral (#sbNav) y en el buscador de módulos (_sbSearch), crea/mantiene la tarjeta "📁 Repositorio Recursos" visible para los roles: `admin`, `rector`, `gestor`, `docente`, `directivo`, `estudiante` y `padre`.
+   - El botón debe ser un enlace directo que abra en una NUEVA PESTAÑA LIMPIA (target="_blank"):
+     href="/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}"
+
+2. AISLAMIENTO MULTI-INSTITUCIONAL (modulo-repositorio/index.html & Express):
+   - Al abrir /repositorio?inst=ID, la vista debe leer el parámetro ?inst= de la URL y consultar a la base de datos (PostgreSQL) el nombre y logo de la institución correspondiente.
+   - El encabezado debe personalizarse dinámicamente con la sede activa (Ej: "REPOSITORIO DIDÁCTICO - I.E. TÉCNICA EN INFORMÁTICA DE SINCELEJITO"). Los materiales de una institución jamás se mezclan con los de otra.
+
+3. ESTRUCTURA DINÁMICA DE ÁREAS Y GRADOS (CRUD COMPLETO):
+   - Elimina los filtros hardcodeados de inglés.
+   - Conecta el menú de filtros y el selector de "+ Cargar Material" a las tablas de PostgreSQL para cargar AUTOMÁTICAMENTE las Asignaturas/Áreas y los Grados/Niveles creados en el plan de estudios de esa institución.
+   - En el Panel de Control del Repositorio (para Admin/Rector), permite realizar un CRUD completo (Crear, Editar/Renombrar y Eliminar) tanto para Áreas como para Grados/Niveles y Tipos de Recursos, asegurando que la configuración sea 100% personalizable por colegio.
+
+4. CONTROL ESTRICTO DE PERMISOS POR ROL:
+   - Lee el rol desde _portalRole (o la sesión activa).
+   - ROLES DOCENTES/DIRECTIVOS (`docente`, `rector`, `admin`, `gestor`, `directivo`): Habilita los botones de "+ Cargar Material Real", "Editar", "Borrar" y el "Panel de Control / Configuración".
+   - ROLES ESTUDIANTES / PADRES (`estudiante`, `padre`): Oculta los botones de carga, edición y borrado. Ofréceles únicamente la interfaz de búsqueda, filtro cruzado (Área + Grado + Formato) y descarga/visualización de guías y talleres.
+
+5. RUTAS EN EXPRESS (src/index.ts):
+   - Configura Express para servir la carpeta estática del módulo sin interferir con la plantilla principal:
+     app.use('/repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio')));
+   - Al acceder a /repositorio?inst=..., debe entregar directamente modulo-repositorio/index.html listo para procesar la sesión en la nueva pestaña.

@@ -3092,8 +3092,13 @@ function renderApp(){
     }
   }
   // ── REPOSITORIO INSTITUCIONAL: visible para admin, rector, gestor, directivo y docente ─
-  const _canRepo=['admin','rector','gestor','docente','directivo'].includes(sesion.r);
-  if(_canRepo&&_ma('repositorio')) menu.push({id:'repositorio',label:'📁 Repositorio Recursos'});
+  const _canRepo=['admin','rector','gestor','docente','directivo','estudiante','padre'].includes(sesion.r);
+  if(_canRepo&&_ma('repositorio')){
+    const _repoInst=window._currentPlatId||'';
+    const _repoRole=encodeURIComponent(sesion.r||'estudiante');
+    const _repoUser=encodeURIComponent(sesion.n||sesion.u||'Usuario');
+    menu.push({id:'repositorio',label:'📁 Repositorio Recursos',href:`/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}`,external:true});
+  }
 
   // Ordenar todos los módulos alfabéticamente (ignorando emojis y caracteres especiales)
   function _labelSort(s){return s.label.replace(/[^\p{L}\p{N}\s]/gu,'').trim().toLowerCase();}
@@ -3106,7 +3111,7 @@ function renderApp(){
     return {icon:'•',text:label};
   }
   const navBtns=menu.map(m=>`<button class="nav-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}')">${m.label}</button>`).join('');
-  const sidebarItems=menu.map(m=>{const {icon,text}=_sbLabel(m.label);return `<button class="sb-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}');toggleSidebar(false)"><span class="sb-icon">${icon}</span><span>${text}</span></button>`;}).join('');
+  const sidebarItems=menu.map(m=>{const {icon,text}=_sbLabel(m.label);if(m.external)return `<a class="sb-btn" href="${m.href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit"><span class="sb-icon">${icon}</span><span>${text} ↗</span></a>`;return `<button class="sb-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}');toggleSidebar(false)"><span class="sb-icon">${icon}</span><span>${text}</span></button>`;}).join('');
   let contenido='';
   if(pag==='tablero'&&isAdmin) contenido=htmlTablero();
   else if(pag==='alerta-temprana'&&isAdmin) contenido=htmlAlertaTemprana();
@@ -3142,17 +3147,7 @@ function renderApp(){
   else if(pag==='quizzes-docente') contenido=htmlDocenteQuizzes();
   else if(pag==='eval-docente-admin'&&isAdmin) contenido=htmlEvalDocenteAdmin();
   else if(pag==='seguimiento-eval-docente') contenido=isAdmin?htmlSeguimientoEvalDocenteAdmin():htmlSeguimientoEvalDocenteDocente();
-  else if(pag==='repositorio'&&_canRepo){
-    // Abre el módulo en iframe. Se pasan _portalRole y _portalUser para que
-    // el repositorio haga auto-login sin pedir credenciales propias.
-    const _repoInst=window._currentPlatId||'';
-    // Pasar sesion.r directamente; el repositorio mapea: admin/rector/gestor/directivo→Administrador, docente→Docente
-    const _repoRole=encodeURIComponent(sesion.r||'docente');
-    const _repoUser=encodeURIComponent(sesion.n||sesion.u||'Usuario');
-    contenido=`<div style="margin:-16px -20px -20px;height:calc(100vh - 58px);overflow:hidden">
-      <iframe src="/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}" style="width:100%;height:100%;border:none;display:block" title="Repositorio Institucional" allowfullscreen></iframe>
-    </div>`;
-  }
+  // repositorio: abre en nueva pestaña (ver href en menu.push), sin contenido iframe aquí
 
   const _platId2=gestorEnPlataforma||window._currentPlatId;
   const _platDat2=_platId2?gestorDB.platforms.find(x=>x.id===_platId2):null;

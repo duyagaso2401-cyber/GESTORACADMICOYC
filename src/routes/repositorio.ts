@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { repositorioResources, repositorioUsers, repositorioStats, repositorioConfig } from '../db/schema.js';
+import { repositorioResources, repositorioUsers, repositorioStats, repositorioConfig, repositorioAreas, repositorioGrados, repositorioTipos } from '../db/schema.js';
 import { eq, and, sql } from 'drizzle-orm';
 
 const router = Router();
@@ -273,6 +273,126 @@ router.post('/config', async (req, res) => {
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
   }
+});
+
+// ============================================================
+// ÁREAS
+// ============================================================
+router.get('/areas', async (req, res) => {
+  const inst = getInst(req);
+  try {
+    const rows = await db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst));
+    return res.json(rows);
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.post('/areas', async (req, res) => {
+  const inst = getInst(req);
+  const { nombre } = req.body;
+  if (!nombre?.trim()) return res.status(400).json({ error: 'Nombre requerido' });
+  try {
+    const r = await db.insert(repositorioAreas).values({ institucionId: inst, nombre: nombre.trim() }).returning({ id: repositorioAreas.id });
+    return res.json({ success: true, id: r[0].id });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.put('/areas/:id', async (req, res) => {
+  const inst = getInst(req);
+  const id = parseInt(req.params.id);
+  const { nombre } = req.body;
+  try {
+    await db.update(repositorioAreas).set({ nombre }).where(and(eq(repositorioAreas.id, id), eq(repositorioAreas.institucionId, inst)));
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/areas/:id', async (req, res) => {
+  const inst = getInst(req);
+  const id = parseInt(req.params.id);
+  try {
+    await db.delete(repositorioAreas).where(and(eq(repositorioAreas.id, id), eq(repositorioAreas.institucionId, inst)));
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================
+// GRADOS
+// ============================================================
+router.get('/grados', async (req, res) => {
+  const inst = getInst(req);
+  try {
+    const rows = await db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst));
+    return res.json(rows);
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.post('/grados', async (req, res) => {
+  const inst = getInst(req);
+  const { nombre } = req.body;
+  if (!nombre?.trim()) return res.status(400).json({ error: 'Nombre requerido' });
+  try {
+    const r = await db.insert(repositorioGrados).values({ institucionId: inst, nombre: nombre.trim() }).returning({ id: repositorioGrados.id });
+    return res.json({ success: true, id: r[0].id });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.put('/grados/:id', async (req, res) => {
+  const inst = getInst(req);
+  const id = parseInt(req.params.id);
+  const { nombre } = req.body;
+  try {
+    await db.update(repositorioGrados).set({ nombre }).where(and(eq(repositorioGrados.id, id), eq(repositorioGrados.institucionId, inst)));
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/grados/:id', async (req, res) => {
+  const inst = getInst(req);
+  const id = parseInt(req.params.id);
+  try {
+    await db.delete(repositorioGrados).where(and(eq(repositorioGrados.id, id), eq(repositorioGrados.institucionId, inst)));
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================
+// TIPOS DE RECURSO
+// ============================================================
+router.get('/tipos', async (req, res) => {
+  const inst = getInst(req);
+  try {
+    const rows = await db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, inst));
+    return res.json(rows);
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.post('/tipos', async (req, res) => {
+  const inst = getInst(req);
+  const { nombre } = req.body;
+  if (!nombre?.trim()) return res.status(400).json({ error: 'Nombre requerido' });
+  try {
+    const r = await db.insert(repositorioTipos).values({ institucionId: inst, nombre: nombre.trim() }).returning({ id: repositorioTipos.id });
+    return res.json({ success: true, id: r[0].id });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.put('/tipos/:id', async (req, res) => {
+  const inst = getInst(req);
+  const id = parseInt(req.params.id);
+  const { nombre } = req.body;
+  try {
+    await db.update(repositorioTipos).set({ nombre }).where(and(eq(repositorioTipos.id, id), eq(repositorioTipos.institucionId, inst)));
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/tipos/:id', async (req, res) => {
+  const inst = getInst(req);
+  const id = parseInt(req.params.id);
+  try {
+    await db.delete(repositorioTipos).where(and(eq(repositorioTipos.id, id), eq(repositorioTipos.institucionId, inst)));
+    return res.json({ success: true });
+  } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
 export default router;

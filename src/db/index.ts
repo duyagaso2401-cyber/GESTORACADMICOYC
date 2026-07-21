@@ -76,6 +76,21 @@ async function initDb() {
         name TEXT NOT NULL DEFAULT 'REPOSITORIO INSTITUCIONAL',
         logo TEXT NOT NULL DEFAULT ''
       );
+      CREATE TABLE IF NOT EXISTS repositorio_areas (
+        id SERIAL PRIMARY KEY,
+        institucion_id TEXT NOT NULL DEFAULT 'default',
+        nombre TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS repositorio_grados (
+        id SERIAL PRIMARY KEY,
+        institucion_id TEXT NOT NULL DEFAULT 'default',
+        nombre TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS repositorio_tipos (
+        id SERIAL PRIMARY KEY,
+        institucion_id TEXT NOT NULL DEFAULT 'default',
+        nombre TEXT NOT NULL
+      );
     `);
     console.log("✅ Tablas verificadas/creadas en Neon exitosamente.");
   } catch (err) {
