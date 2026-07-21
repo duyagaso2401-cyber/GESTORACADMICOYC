@@ -3142,10 +3142,13 @@ function renderApp(){
   else if(pag==='eval-docente-admin'&&isAdmin) contenido=htmlEvalDocenteAdmin();
   else if(pag==='seguimiento-eval-docente') contenido=isAdmin?htmlSeguimientoEvalDocenteAdmin():htmlSeguimientoEvalDocenteDocente();
   else if(pag==='repositorio'&&(isAdmin||sesion.r==='docente')){
-    // Abre el módulo externo en un iframe de pantalla completa dentro del layout
+    // Abre el módulo en iframe. Se pasan _portalRole y _portalUser para que
+    // el repositorio haga auto-login sin pedir credenciales propias.
     const _repoInst=window._currentPlatId||'';
+    const _repoRole=encodeURIComponent(isAdmin?(sesion.r==='rector'?'rector':'admin'):sesion.r);
+    const _repoUser=encodeURIComponent(sesion.n||sesion.u||'Usuario');
     contenido=`<div style="margin:-16px -20px -20px;height:calc(100vh - 58px);overflow:hidden">
-      <iframe src="/repositorio?inst=${_repoInst}" style="width:100%;height:100%;border:none;display:block" title="Repositorio Institucional" allowfullscreen></iframe>
+      <iframe src="/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}" style="width:100%;height:100%;border:none;display:block" title="Repositorio Institucional" allowfullscreen></iframe>
     </div>`;
   }
 

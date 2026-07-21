@@ -784,6 +784,29 @@
 
         // ── Inicialización ────────────────────────────────────────────────────
         async function init() {
+            // Auto-login desde el portal principal (iframe con parámetros _portalRole/_portalUser).
+            // Cuando el Gestor Académico abre el repositorio en iframe, pasa estos params
+            // para que el docente/admin no tenga que autenticarse dos veces.
+            const _qp = new URLSearchParams(location.search);
+            const _pRole = _qp.get('_portalRole');
+            const _pUser = _qp.get('_portalUser');
+            if (_pRole && _pUser) {
+                const _rolMap = {
+                    'admin':   'Administrador',
+                    'rector':  'Administrador',
+                    'gestor':  'Administrador',
+                    'docente': 'Docente'
+                };
+                sessionUser = {
+                    fullname: decodeURIComponent(_pUser),
+                    role: _rolMap[_pRole] || 'Docente'
+                };
+                document.getElementById('login-screen').style.display = 'none';
+                try { applyConfig(await apiFetch('/config')); } catch(e) {}
+                await initPlatform();
+                return;
+            }
+            // Login normal (acceso directo sin parámetros del portal)
             try {
                 const cfg = await apiFetch('/config');
                 applyConfig(cfg);
