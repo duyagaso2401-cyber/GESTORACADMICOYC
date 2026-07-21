@@ -792,10 +792,11 @@
             const _pUser = _qp.get('_portalUser');
             if (_pRole && _pUser) {
                 const _rolMap = {
-                    'admin':   'Administrador',
-                    'rector':  'Administrador',
-                    'gestor':  'Administrador',
-                    'docente': 'Docente'
+                    'admin':      'Administrador',
+                    'rector':     'Administrador',
+                    'gestor':     'Administrador',
+                    'directivo':  'Administrador',
+                    'docente':    'Docente'
                 };
                 sessionUser = {
                     fullname: decodeURIComponent(_pUser),
