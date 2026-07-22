@@ -91,12 +91,12 @@ async function connectDB() {
 }
 connectDB();
 
-// --- RUTAS DE ESTRUCTURA INSTITUCIONAL ---
+// --- RUTAS DE ESTRUCTURA INSTITUCIONAL (GARANTIZA DATOS SIEMPRE) ---
 const handleContext = async (req, res) => {
     try {
         const config = await db.collection('institution_config').findOne({});
         res.json({
-            institution: config ? config.name : "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+            institution: (config && config.name) ? config.name : "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
             areas: defaultAreas,
             grados: defaultGrados,
             tipos: defaultTipos
@@ -114,25 +114,34 @@ const handleContext = async (req, res) => {
 const handleAreas = async (req, res) => {
     try {
         const areas = await db.collection('areas').find().toArray();
-        res.json(areas && areas.length > 0 ? areas : defaultAreas);
-    } catch (e) { res.json(defaultAreas); }
+        if (areas && areas.length > 0) {
+            return res.json(areas);
+        }
+    } catch (e) {}
+    res.json(defaultAreas);
 };
 
 const handleGrados = async (req, res) => {
     try {
         const grados = await db.collection('grados').find().toArray();
-        res.json(grados && grados.length > 0 ? grados : defaultGrados);
-    } catch (e) { res.json(defaultGrados); }
+        if (grados && grados.length > 0) {
+            return res.json(grados);
+        }
+    } catch (e) {}
+    res.json(defaultGrados);
 };
 
 const handleTipos = async (req, res) => {
     try {
         const tipos = await db.collection('tipos').find().toArray();
-        res.json(tipos && tipos.length > 0 ? tipos : defaultTipos);
-    } catch (e) { res.json(defaultTipos); }
+        if (tipos && tipos.length > 0) {
+            return res.json(tipos);
+        }
+    } catch (e) {}
+    res.json(defaultTipos);
 };
 
-// Se agregan variantes directas (/inst-context, /areas, /grados, /tipos)
+// Endpoints flexibles (soportan llamadas directas, con /api/ o con /api/inetis/)
 app.get(['/inst-context', '/api/inst-context', '/api/inetis/inst-context'], handleContext);
 app.get(['/areas', '/api/areas', '/api/inetis/areas'], handleAreas);
 app.get(['/grados', '/api/grados', '/api/inetis/grados'], handleGrados);
