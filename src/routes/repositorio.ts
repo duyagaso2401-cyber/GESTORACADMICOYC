@@ -9,8 +9,6 @@ import { repositorioResources, repositorioUsers, repositorioStats, repositorioCo
 import { eq, and, sql } from 'drizzle-orm';
 
 const GESTOR_SK = '__gestor_academico_yc__';
-const MAIN_INST = 'default';
-const INST_ALIASES = new Set(['inetis-sincelejito']);
 
 const router = Router();
 
@@ -19,20 +17,15 @@ function getInst(req: any): string {
   return ((req.query.inst as string) || 'default').trim();
 }
 
-/** Resuelve el id de institución; alias de plataforma → institución principal */
-function resolveInst(inst: string): string {
-  return INST_ALIASES.has(inst) ? MAIN_INST : inst;
-}
-
-/** Consulta por institucion_id con fallback a la institución principal si no hay registros */
-async function queryWithInstFallback<T>(
-  queryFn: (instId: string) => Promise<T[]>,
+/** Catálogo (áreas/grados/tipos): filtra por inst; si vacío, devuelve todos los registros */
+async function queryCatalogByInstOrAll<T>(
+  queryByInst: (instId: string) => Promise<T[]>,
+  queryAll: () => Promise<T[]>,
   inst: string
 ): Promise<T[]> {
-  const primaryInst = resolveInst(inst);
-  let rows = await queryFn(primaryInst);
-  if (!rows.length && primaryInst !== MAIN_INST) {
-    rows = await queryFn(MAIN_INST);
+  let rows = await queryByInst(inst);
+  if (!rows.length) {
+    rows = await queryAll();
   }
   return rows;
 }
@@ -138,10 +131,7 @@ router.delete('/users/:username', async (req, res) => {
 router.get('/resources', async (req, res) => {
   const inst = getInst(req);
   try {
-    const items = await queryWithInstFallback(
-      (instId) => db.select().from(repositorioResources).where(eq(repositorioResources.institucionId, instId)),
-      inst
-    );
+    const items = await db.select().from(repositorioResources).where(eq(repositorioResources.institucionId, inst));
     return res.json(items);
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -409,8 +399,9 @@ router.post('/config', async (req, res) => {
 router.get('/areas', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await queryWithInstFallback(
+    const rows = await queryCatalogByInstOrAll(
       (instId) => db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, instId)),
+      () => db.select().from(repositorioAreas),
       inst
     );
     return res.json(rows);
@@ -452,8 +443,9 @@ router.delete('/areas/:id', async (req, res) => {
 router.get('/grados', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await queryWithInstFallback(
+    const rows = await queryCatalogByInstOrAll(
       (instId) => db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, instId)),
+      () => db.select().from(repositorioGrados),
       inst
     );
     return res.json(rows);
@@ -495,8 +487,9 @@ router.delete('/grados/:id', async (req, res) => {
 router.get('/tipos', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await queryWithInstFallback(
+    const rows = await queryCatalogByInstOrAll(
       (instId) => db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, instId)),
+      () => db.select().from(repositorioTipos),
       inst
     );
     return res.json(rows);
