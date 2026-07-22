@@ -314,7 +314,33 @@
       <div class="fg"><label>Grado / Nivel</label><select id="form-grado"><option value="">— Seleccionar —</option></select></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="fg"><label>Tipo de Recurso</label><select id="form-tipo"><option value="">— Seleccionar —</option></select></div>
+      <div class="fg">
+        <label>Tipo de Recurso</label>
+        <select id="form-tipo" required>
+          <option value="">-- Selecciona el tipo de recurso --</option>
+      
+          <optgroup label="📄 Documentos y Archivos">
+            <option value="Documento (PDF, Word, PPT)">Documento (PDF, Word, PowerPoint)</option>
+            <option value="Hoja de Cálculo (Excel, CSV)">Hoja de Cálculo (Excel, CSV)</option>
+            <option value="Imagen / Infografía (JPG, PNG)">Imagen / Infografía (JPG, PNG)</option>
+          </optgroup>
+      
+          <optgroup label="🎵 Audio y Multimedia">
+            <option value="Audio / Podcast (MP3, WAV)">Audio / Podcast (MP3, WAV)</option>
+            <option value="Video (Archivo MP4, AVI)">Video (Archivo MP4, AVI)</option>
+          </optgroup>
+      
+          <optgroup label="🌐 Enlaces y Plataformas Externas">
+            <option value="Enlace / URL Web">Enlace / URL Web general</option>
+            <option value="Video YouTube / Vimeo">Video YouTube / Vimeo</option>
+            <option value="Almacenamiento (Google Drive, OneDrive)">Almacenamiento (Google Drive, OneDrive, Dropbox)</option>
+          </optgroup>
+      
+          <optgroup label="🚀 Recursos Educativos Digitales (RED)">
+            <option value="RED (Educaplay, Canva, Genially)">RED Interactivo (Educaplay, Canva, Genially, PhET, Scratch, H5P)</option>
+          </optgroup>
+        </select>
+      </div>
       <div class="fg"><label>Autor del Documento</label><input id="form-author" placeholder="Nombre del docente o creador"></div>
     </div>
     <div class="fg"><label>Descripción Pedagógica</label><textarea id="form-desc" placeholder="Resumen o propósito pedagógico del material…"></textarea></div>
