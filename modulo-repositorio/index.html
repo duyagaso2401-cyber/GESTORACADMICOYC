@@ -558,7 +558,39 @@ async function deleteGrado(id) {
 async function loadTipos() {
   try { allTipos = await apiFetch('/tipos'); } catch(e) { allTipos = []; }
   renderFilterTipos();
-  renderFormSelect('form-tipo', allTipos);
+  
+  // Opciones predefinidas estructuradas
+  const opcionesPredeterminadas = `
+    <option value="">-- Selecciona el tipo de recurso --</option>
+    <optgroup label="📄 Documentos y Archivos">
+      <option value="Documento (PDF, Word, PPT)">Documento (PDF, Word, PowerPoint)</option>
+      <option value="Hoja de Cálculo (Excel, CSV)">Hoja de Cálculo (Excel, CSV)</option>
+      <option value="Imagen / Infografía (JPG, PNG)">Imagen / Infografía (JPG, PNG)</option>
+    </optgroup>
+    <optgroup label="🎵 Audio y Multimedia">
+      <option value="Audio / Podcast (MP3, WAV)">Audio / Podcast (MP3, WAV)</option>
+      <option value="Video (Archivo MP4, AVI)">Video (Archivo MP4, AVI)</option>
+    </optgroup>
+    <optgroup label="🌐 Enlaces y Plataformas Externas">
+      <option value="Enlace / URL Web">Enlace / URL Web general</option>
+      <option value="Video YouTube / Vimeo">Video YouTube / Vimeo</option>
+      <option value="Almacenamiento (Google Drive, OneDrive)">Almacenamiento (Google Drive, OneDrive, Dropbox)</option>
+    </optgroup>
+    <optgroup label="🚀 Recursos Educativos Digitales (RED)">
+      <option value="RED (Educaplay, Canva, Genially)">RED Interactivo (Educaplay, Canva, Genially, PhET, Scratch, H5P)</option>
+    </optgroup>
+  `;
+
+  // Tipos dinámicos que vengan de la base de datos (si existen)
+  const opcionesDB = allTipos.length 
+    ? `<optgroup label="🏷️ Otros Tipos Registrados">${allTipos.map(t => `<option value="${escH(t.nombre)}">${escH(t.nombre)}</option>`).join('')}</optgroup>` 
+    : '';
+
+  const selectEl = document.getElementById('form-tipo');
+  if (selectEl) {
+    selectEl.innerHTML = opcionesPredeterminadas + opcionesDB;
+  }
+
   if (canAdmin) renderAdminTipos();
 }
 
