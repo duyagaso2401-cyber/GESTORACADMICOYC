@@ -110,12 +110,10 @@
     .action-btn-group { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
     .btn-dl { background: var(--success); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s, transform 0.1s; }
     .btn-dl:hover { background: #238579; transform: translateY(-1px); }
-    .btn-view { background: var(--secondary); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s; }
-    .btn-view:hover { background: #005ce6; }
 
     /* ── ESTADÍSTICAS ── */
     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 12px; margin-bottom: 16px; }
-    .stat-box { background: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid var(--primary); text-align: center; border-top: 1px solid var(--border-color); border-right: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); }
+    .stat-box { background: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid var(--primary); text-align: center; border: 1px solid var(--border-color); }
     .stat-box h4 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; }
     .stat-box p { font-size: 24px; font-weight: 800; color: var(--primary); margin-top: 4px; }
     
@@ -129,13 +127,12 @@
     .ctrl-add input { flex: 1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; outline: none; }
 
     /* ── BOTONES ── */
-    .btn { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: background 0.2s; }
+    .btn { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: opacity 0.2s; }
     .btn:hover { opacity: 0.95; }
     .btn.danger { background: var(--danger); }
     .btn.success { background: var(--success); }
     .btn.warn { background: var(--warn); }
     .btn.sm { padding: 4px 8px; font-size: 11px; border-radius: 4px; }
-    .btn:disabled { opacity: .5; cursor: not-allowed; }
 
     /* ── TABLAS ── */
     .table-wrap { overflow-x: auto; margin-top: 10px; border-radius: 8px; border: 1px solid var(--border-color); }
@@ -164,7 +161,7 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════════════ HEADER -->
+<!-- HEADER -->
 <header>
   <div class="hdr-left">
     <img id="hdr-logo" class="hdr-logo" src="" alt="" onerror="this.style.display='none'">
@@ -175,31 +172,26 @@
   </div>
 </header>
 
-<!-- ═══════════════════════════════════════════════════════ NAV TABS -->
+<!-- NAV TABS -->
 <nav class="tabs">
   <button id="tab-recursos" class="active" onclick="showTab('recursos')">📚 Recursos</button>
   <button id="tab-stats" onclick="showTab('stats')">📊 Estadísticas</button>
   <button id="tab-ctrl" class="hidden" onclick="showTab('ctrl')">⚙️ Panel de Control</button>
 </nav>
 
-<!-- ═══════════════════════════════════════════════════════ SECCIÓN RECURSOS -->
+<!-- SECCIÓN RECURSOS -->
 <div id="sec-recursos" class="section active">
   <div class="main-container">
-
-    <!-- FILTROS DINÁMICOS -->
     <aside class="panel" id="sidebar-filters">
       <input class="search-box" id="search-input" placeholder="🔍 Buscar recursos…" oninput="applyFilters()">
-
       <div class="filter-section">
         <h4>Área / Asignatura</h4>
         <div id="filter-areas"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
       </div>
-
       <div class="filter-section">
         <h4>Grado / Nivel</h4>
         <div id="filter-grados"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
       </div>
-
       <div class="filter-section">
         <h4>Tipo de Recurso</h4>
         <div id="filter-tipos"><em style="font-size:12px;color:#aaa">Cargando tipos…</em></div>
@@ -216,7 +208,6 @@
       </div>
     </aside>
 
-    <!-- RECURSOS GRID -->
     <div class="panel">
       <div class="dash-hdr">
         <h2>📁 Materiales Didácticos</h2>
@@ -227,7 +218,6 @@
       <div id="pagination" class="pagination"></div>
     </div>
 
-    <!-- DETALLES E INFORMACIÓN DE METADATOS -->
     <aside class="panel sidebar-details" id="sidebar-details">
       <div id="detail-content">
         <div class="detail-placeholder">
@@ -236,11 +226,10 @@
         </div>
       </div>
     </aside>
-
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ SECCIÓN ESTADÍSTICAS -->
+<!-- SECCIÓN ESTADÍSTICAS -->
 <div id="sec-stats" class="section" style="padding:16px">
   <div class="panel">
     <h2 style="font-size:16px;color:var(--primary);margin-bottom:14px">📊 Estadísticas de Uso y Descargas</h2>
@@ -259,7 +248,7 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ SECCIÓN PANEL DE CONTROL -->
+<!-- SECCIÓN PANEL DE CONTROL -->
 <div id="sec-ctrl" class="section" style="padding:16px">
   <div class="panel">
     <h2 style="font-size:16px;color:var(--primary);margin-bottom:16px">⚙️ Panel de Control e Identidad Institucional</h2>
@@ -267,7 +256,7 @@
     <div class="ctrl-section">
       <h3>🏫 Configuración de la Institución</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-        <div class="fg" style="margin:0"><label>Nombre del Repositorio</label><input id="cfg-name" placeholder="Ej: REPOSITORIO DIDÁCTICO I.E. …"></div>
+        <div class="fg" style="margin:0"><label>Nombre del Repositorio</label><input id="cfg-name" placeholder="Ej: REPOSITORIO DIDÁCTICO..."></div>
         <div class="fg" style="margin:0"><label>Logo / Escudo (URL o base64)</label><input id="cfg-logo" placeholder="https://…"></div>
       </div>
       <button class="btn success" onclick="saveConfig()">💾 Guardar Configuración</button>
@@ -295,7 +284,7 @@
       <h3>📄 Tipos de Recurso</h3>
       <ul class="ctrl-list" id="admin-tipos-list"></ul>
       <div class="ctrl-add">
-        <input id="new-tipo" placeholder="Ej: Guía, Taller, Evaluación, Video…" onkeydown="if(event.key==='Enter')addTipo()">
+        <input id="new-tipo" placeholder="Ej: Guía, Taller, Evaluación…" onkeydown="if(event.key==='Enter')addTipo()">
         <button class="btn" onclick="addTipo()">+ Agregar</button>
       </div>
     </div>
@@ -309,16 +298,15 @@
         </table>
       </div>
     </div>
-
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ MODAL RECURSO -->
+<!-- MODAL RECURSO -->
 <div class="modal-bg" id="modal-res">
   <div class="modal">
     <h3 id="modal-res-title">Cargar Nuevo Material Didáctico</h3>
     <input type="hidden" id="modal-res-id">
-    <div class="fg"><label>Título del Material *</label><input id="form-title" required placeholder="Ej: Guía de Aprendizaje - Fraccionarios"></div>
+    <div class="fg"><label>Título del Material *</label><input id="form-title" required placeholder="Ej: Guía de Aprendizaje"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label>Área / Asignatura</label><select id="form-area"><option value="">— Seleccionar —</option></select></div>
       <div class="fg"><label>Grado / Nivel</label><select id="form-grado"><option value="">— Seleccionar —</option></select></div>
@@ -328,30 +316,23 @@
         <label>Tipo de Recurso</label>
         <select id="form-tipo" required>
           <option value="">-- Selecciona el tipo de recurso --</option>
-      
           <optgroup label="📄 Documentos y Archivos">
             <option value="Documento (PDF, Word, PPT)">Documento (PDF, Word, PowerPoint)</option>
             <option value="Hoja de Cálculo (Excel, CSV)">Hoja de Cálculo (Excel, CSV)</option>
             <option value="Imagen / Infografía (JPG, PNG)">Imagen / Infografía (JPG, PNG)</option>
           </optgroup>
-      
           <optgroup label="🎵 Audio y Multimedia">
             <option value="Audio / Podcast (MP3, WAV)">Audio / Podcast (MP3, WAV)</option>
             <option value="Video (Archivo MP4, AVI)">Video (Archivo MP4, AVI)</option>
           </optgroup>
-      
           <optgroup label="🌐 Enlaces y Plataformas Externas">
             <option value="Enlace / URL Web">Enlace / URL Web general</option>
             <option value="Video YouTube / Vimeo">Video YouTube / Vimeo</option>
-            <option value="Almacenamiento (Google Drive, OneDrive)">Almacenamiento (Google Drive, OneDrive, Dropbox)</option>
-          </optgroup>
-      
-          <optgroup label="🚀 Recursos Educativos Digitales (RED)">
-            <option value="RED (Educaplay, Canva, Genially)">RED Interactivo (Educaplay, Canva, Genially, PhET, Scratch, H5P)</option>
+            <option value="Almacenamiento (Google Drive, OneDrive)">Almacenamiento (Google Drive, OneDrive)</option>
           </optgroup>
         </select>
       </div>
-      <div class="fg" style="margin-top: 10px;">
+      <div class="fg">
         <label>Periodo Académico *</label>
         <select id="form-periodo" required>
           <option value="">-- Selecciona el Periodo --</option>
@@ -361,11 +342,11 @@
           <option value="Periodo IV">Periodo IV</option>
         </select>
       </div>
-      <div class="fg"><label>Autor del Documento</label><input id="form-author" placeholder="Nombre del docente o creador"></div>
     </div>
+    <div class="fg"><label>Autor del Documento</label><input id="form-author" placeholder="Nombre del docente o creador"></div>
     <div class="fg"><label>Descripción Pedagógica</label><textarea id="form-desc" placeholder="Resumen o propósito pedagógico del material…"></textarea></div>
-    <div class="fg"><label>Enlace / URL de Descarga o Archivo *</label><input id="form-link" placeholder="https://drive.google.com/... o enlace directo al PDF"></div>
-    <div class="fg"><label>Metadatos / Etiquetas (Separados por coma)</label><input id="form-meta" placeholder="Ej: PDF, Creative Commons, 2026, 2.5MB"></div>
+    <div class="fg"><label>Enlace / URL de Descarga o Archivo *</label><input id="form-link" placeholder="https://... o enlace directo"></div>
+    <div class="fg"><label>Metadatos / Etiquetas (Separados por coma)</label><input id="form-meta" placeholder="Ej: PDF, 2026, 2.5MB"></div>
     <div class="modal-btns">
       <button class="btn" style="background:#94a3b8" onclick="closeModal('modal-res')">Cancelar</button>
       <button class="btn success" onclick="saveResource()">💾 Guardar Material</button>
@@ -373,7 +354,7 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ SCRIPTS LÓGICA DE NEGOCIO -->
+<!-- SCRIPTS DE FUNCIONAMIENTO -->
 <script>
 const INST        = new URLSearchParams(location.search).get('inst') || 'default';
 const API         = '/api/repositorio';
@@ -414,7 +395,6 @@ async function apiFetch(path, opts = {}) {
   return r.json();
 }
 
-// ── INICIALIZACIÓN ────────────────────────────────────────────────
 async function init() {
   document.getElementById('hdr-user').textContent = _pUser;
   document.getElementById('hdr-role').textContent  = SESSION_ROLE_LABEL;
@@ -428,7 +408,7 @@ async function init() {
   let repoCfg = { name: '', logo: '' };
   try { repoCfg = await apiFetch('/config'); } catch(e) {}
 
-  const NOMBRES_GENERICOS = ['REPOSITORIO INSTITUCIONAL', 'Repositorio Institucional', 'repositorio institucional'];
+  const NOMBRES_GENERICOS = ['REPOSITORIO INSTITUCIONAL', 'Repositorio Institucional'];
   const cfgNameReal   = NOMBRES_GENERICOS.includes((repoCfg.name || '').trim()) ? '' : (repoCfg.name || '');
   const instNombreReal = instCtx.nombre || _instNombre || '';
   const tituloBase     = cfgNameReal   || instNombreReal;
@@ -452,26 +432,14 @@ async function init() {
     document.getElementById('cfg-logo').value = repoCfg.logo || displayLogo;
   }
 
-  // 1. Carga paralela inicial
-  await Promise.all([
-    loadAreas(),
-    loadGrados(),
-    loadTipos(),
-    loadResources(),
-  ]);
+  await Promise.all([loadAreas(), loadGrados(), loadTipos(), loadResources()]);
 
-  // 2. Asimilación automática de Grados/Asignaturas
   if (canAdmin && (instCtx.asignaturas?.length || instCtx.grados?.length)) {
-    const areasVacias  = allAreas.length  === 0;
-    const gradosVacios = allGrados.length === 0;
-    if (areasVacias || gradosVacios) {
+    if (allAreas.length === 0 || allGrados.length === 0) {
       try {
         await apiFetch('/seed-areas-grados', {
           method: 'POST',
-          body: JSON.stringify({
-            asignaturas: instCtx.asignaturas || [],
-            grados:      instCtx.grados || [],
-          }),
+          body: JSON.stringify({ asignaturas: instCtx.asignaturas || [], grados: instCtx.grados || [] }),
         });
         await Promise.all([loadAreas(), loadGrados()]);
       } catch(e) {}
@@ -484,7 +452,6 @@ async function init() {
   }
 }
 
-// ── NAVEGACIÓN ────────────────────────────────────────────────────
 function showTab(tab) {
   ['recursos','stats','ctrl'].forEach(t => {
     document.getElementById('sec-'+t).classList.toggle('active', t===tab);
@@ -494,7 +461,6 @@ function showTab(tab) {
   if (tab === 'ctrl')   { renderAdminAreas(); renderAdminGrados(); renderAdminTipos(); renderAdminResTable(); }
 }
 
-// ── CARGA Y CONTROL DE ÁREAS ──────────────────────────────────────
 async function loadAreas() {
   try { allAreas = await apiFetch('/areas'); } catch(e) { allAreas = []; }
   renderFilterAreas();
@@ -534,7 +500,6 @@ async function deleteArea(id) {
   catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── CARGA Y CONTROL DE GRADOS ─────────────────────────────────────
 async function loadGrados() {
   try { allGrados = await apiFetch('/grados'); } catch(e) { allGrados = []; }
   renderFilterGrados();
@@ -574,43 +539,9 @@ async function deleteGrado(id) {
   catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── TIPOS DE RECURSO ──────────────────────────────────────────────
 async function loadTipos() {
   try { allTipos = await apiFetch('/tipos'); } catch(e) { allTipos = []; }
   renderFilterTipos();
-  
-  // Opciones predefinidas estructuradas
-  const opcionesPredeterminadas = `
-    <option value="">-- Selecciona el tipo de recurso --</option>
-    <optgroup label="📄 Documentos y Archivos">
-      <option value="Documento (PDF, Word, PPT)">Documento (PDF, Word, PowerPoint)</option>
-      <option value="Hoja de Cálculo (Excel, CSV)">Hoja de Cálculo (Excel, CSV)</option>
-      <option value="Imagen / Infografía (JPG, PNG)">Imagen / Infografía (JPG, PNG)</option>
-    </optgroup>
-    <optgroup label="🎵 Audio y Multimedia">
-      <option value="Audio / Podcast (MP3, WAV)">Audio / Podcast (MP3, WAV)</option>
-      <option value="Video (Archivo MP4, AVI)">Video (Archivo MP4, AVI)</option>
-    </optgroup>
-    <optgroup label="🌐 Enlaces y Plataformas Externas">
-      <option value="Enlace / URL Web">Enlace / URL Web general</option>
-      <option value="Video YouTube / Vimeo">Video YouTube / Vimeo</option>
-      <option value="Almacenamiento (Google Drive, OneDrive)">Almacenamiento (Google Drive, OneDrive, Dropbox)</option>
-    </optgroup>
-    <optgroup label="🚀 Recursos Educativos Digitales (RED)">
-      <option value="RED (Educaplay, Canva, Genially)">RED Interactivo (Educaplay, Canva, Genially, PhET, Scratch, H5P)</option>
-    </optgroup>
-  `;
-
-  // Tipos dinámicos que vengan de la base de datos (si existen)
-  const opcionesDB = allTipos.length 
-    ? `<optgroup label="🏷️ Otros Tipos Registrados">${allTipos.map(t => `<option value="${escH(t.nombre)}">${escH(t.nombre)}</option>`).join('')}</optgroup>` 
-    : '';
-
-  const selectEl = document.getElementById('form-tipo');
-  if (selectEl) {
-    selectEl.innerHTML = opcionesPredeterminadas + opcionesDB;
-  }
-
   if (canAdmin) renderAdminTipos();
 }
 
@@ -646,7 +577,6 @@ async function deleteTipo(id) {
   catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── GESTIÓN DE RECURSOS ───────────────────────────────────────────
 async function loadResources() {
   try { allResources = await apiFetch('/resources'); } catch(e) { allResources = []; }
   applyFilters();
@@ -660,16 +590,16 @@ function applyFilters() {
   const selPeriodo = document.getElementById('filter-periodo')?.value || '';
 
   filteredResources = allResources.filter(r => {
-    const area   = r.skill || '';
-    const grado  = r.level || '';
-    const tipo   = r.type  || '';
+    const area = r.skill || '';
+    const grado = r.level || '';
+    const tipo = r.type  || '';
     const periodo = r.periodo || '';
     
-    const matchArea    = !selAreas.length  || selAreas.includes(area);
-    const matchGrado   = !selGrados.length || selGrados.includes(grado);
-    const matchTipo    = !selTipos.length  || selTipos.includes(tipo);
+    const matchArea = !selAreas.length  || selAreas.includes(area);
+    const matchGrado = !selGrados.length || selGrados.includes(grado);
+    const matchTipo = !selTipos.length  || selTipos.includes(tipo);
     const matchPeriodo = !selPeriodo       || periodo === selPeriodo;
-    const matchQ       = !q || [r.title, r.author, area, grado, tipo, periodo, r.description, r.metadata].join(' ').toLowerCase().includes(q);
+    const matchQ = !q || [r.title, r.author, area, grado, tipo, periodo, r.description, r.metadata].join(' ').toLowerCase().includes(q);
     
     return matchArea && matchGrado && matchTipo && matchPeriodo && matchQ;
   });
@@ -694,33 +624,19 @@ function renderResourcesPage() {
   empty.classList.add('hidden');
 
   grid.innerHTML = slice.map(r => {
-    const avg        = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '-';
-    const stars      = r.rating_count ? '★'.repeat(Math.round(r.rating_sum / r.rating_count)) : '';
-    const area       = r.skill || 'General';
-    const grado      = r.level || 'General';
-    const tipo       = r.type || '';
-    const periodo    = r.periodo || '';
-    const metadata   = r.metadata && r.metadata !== 'Ninguno' ? r.metadata : '';
+    const avg = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '-';
+    const stars = r.rating_count ? '★'.repeat(Math.round(r.rating_sum / r.rating_count)) : '';
+    const area = r.skill || 'General';
+    const grado = r.level || 'General';
+    const tipo = r.type || '';
+    const periodo = r.periodo || '';
+    const metadata = r.metadata && r.metadata !== 'Ninguno' ? r.metadata : '';
     const isSelected = selectedRes?.id === r.id;
 
     let actionBtn = '';
     if (r.link) {
       const linkUrl = r.link.startsWith('http') ? r.link : `https://${r.link}`;
-      actionBtn = `
-        <a href="${linkUrl}" target="_blank" rel="noopener noreferrer" 
-           onclick="trackDownload(${r.id})" 
-           class="btn-page active" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px;">
-          🔗 Abrir Enlace
-        </a>`;
-    } else if (r.fileData || r.file_data) {
-      const fileData = r.fileData || r.file_data;
-      const fileName = r.fileName || r.file_name || 'recurso';
-      const ext      = fileName.includes('.') ? fileName.split('.').pop().toUpperCase() : 'ARCHIVO';
-      actionBtn = `
-        <button onclick="downloadResourceFile(${r.id}, '${fileData}', '${fileName}')" 
-                class="btn-page active" style="display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px; cursor:pointer;">
-          📥 Descargar (${ext})
-        </button>`;
+      actionBtn = `<a href="${linkUrl}" target="_blank" rel="noopener noreferrer" onclick="trackDownload(${r.id})" class="btn-page active" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px;">🔗 Abrir Enlace</a>`;
     }
 
     return `
@@ -728,23 +644,14 @@ function renderResourcesPage() {
         ${tipo ? `<span class="card-badge">📁 ${tipo}</span>` : ''}
         <h3 class="card-title">${r.title}</h3>
         <p class="card-meta">Por: <strong>${r.author || r.uploader || 'Docente'}</strong></p>
-        
         <div style="display:flex; gap:4px; flex-wrap:wrap; margin: 6px 0;">
           <span class="card-tag">📚 ${area}</span>
           <span class="card-tag">🎓 ${grado}</span>
           ${periodo ? `<span class="card-tag" style="background:#e6fffa; color:#234e52;">📅 ${periodo}</span>` : ''}
-          ${metadata ? `<span class="card-tag" style="background:#e0f2fe; color:#0369a1;">🏷️ ${metadata}</span>` : ''}
         </div>
-
-        ${r.description ? `<p style="font-size:12px; color:#666; margin:6px 0; max-height:40px; overflow:hidden;">${r.description}</p>` : ''}
-
-        <div class="card-footer" style="margin-top:8px; padding-top:6px; border-top:1px solid #f0f0f0;">
-          <div class="card-rating">
-            <span style="color:#f59e0b;">${stars}</span> <span>${avg}</span>
-          </div>
-          <div class="card-actions" onclick="event.stopPropagation()">
-            ${actionBtn}
-          </div>
+        <div class="card-footer">
+          <div class="card-rating"><span style="color:#f59e0b;">${stars}</span> <span>${avg}</span></div>
+          <div class="card-actions" onclick="event.stopPropagation()">${actionBtn}</div>
         </div>
       </div>
     `;
@@ -767,19 +674,8 @@ function trackDownload(id) {
   fetch(`${API}/resources/${id}/download`, { method: 'POST' }).catch(console.error);
 }
 
-function downloadResourceFile(id, fileData, fileName) {
-  trackDownload(id);
-  const a = document.createElement('a');
-  a.href = fileData;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
 function gotoPage(n) { currentPage = n; renderResourcesPage(); }
 
-// ── VISTA DE DETALLES Y METADATOS ENRIQUECIDOS ───────────────────
 function selectResource(id) {
   selectedRes = allResources.find(r => r.id === id);
   renderResourcesPage();
@@ -795,19 +691,8 @@ function selectResource(id) {
   ).join('');
 
   const comments = (r.comments || []).slice(-5).reverse().map(c =>
-    `<div style="border-bottom:1px solid #edf2f7;padding:6px 0;font-size:11px"><strong>${escH(c.user||'—')}</strong>: ${escH(c.text)} <br><em style="color:#aaa">${c.date||''}</em></div>`
+    `<div style="border-bottom:1px solid #edf2f7;padding:6px 0;font-size:11px"><strong>${escH(c.user||'—')}</strong>: ${escH(c.text)}</div>`
   ).join('') || '<div style="font-size:11px;color:#aaa">Sin comentarios registrados.</div>';
-
-  let metaChips = '';
-  if (r.metadata) {
-    const rawMeta = r.metadata.split(/[,;|]/);
-    metaChips = `<div class="meta-chip-container">` + 
-      rawMeta.map(m => `<span class="meta-chip">🏷️ ${escH(m.trim())}</span>`).join('') + 
-      `</div>`;
-  }
-
-  const isDirectLink = r.link && (r.link.endsWith('.pdf') || r.link.endsWith('.docx') || r.link.endsWith('.xlsx') || r.link.endsWith('.png') || r.link.endsWith('.jpg'));
-  const downloadAttr = isDirectLink ? `download="${escH(r.title)}"` : '';
 
   document.getElementById('detail-content').innerHTML = `
     <div class="detail-title">${escH(r.title)}</div>
@@ -817,24 +702,17 @@ function selectResource(id) {
       <strong>Tipo de Recurso:</strong> ${escH(r.type||'Sin especificar')}<br>
       <strong>Periodo Académico:</strong> ${escH(r.periodo||'No especificado')}<br>
       <strong>Autor/Creador:</strong> ${escH(r.author||'—')}<br>
-      <strong>Subido por:</strong> ${escH(r.uploader||'Docente')}<br>
-      ${r.description ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;"><strong>Propósito Pedagógico:</strong><br>${escH(r.description)}</div>` : ''}
-      ${r.metadata ? `<div style="margin-top:6px;"><strong>Metadatos:</strong> ${metaChips}</div>` : ''}
+      ${r.description ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;"><strong>Propósito:</strong><br>${escH(r.description)}</div>` : ''}
     </div>
-    
     <div style="font-size:12px;margin-bottom:4px"><strong>Valoración:</strong> ${avg} / 5 (${ratingCount} votos)</div>
     <div class="rating-stars">${starsHtml}</div>
-
     <div class="action-btn-group">
-      <a class="btn-dl" href="${escH(r.link||'#')}" target="_blank" ${downloadAttr} onclick="trackDownload(${r.id})">
-        📥 Descargar / Acceder al Recurso
-      </a>
+      <a class="btn-dl" href="${escH(r.link||'#')}" target="_blank" onclick="trackDownload(${r.id})">📥 Acceder al Recurso</a>
     </div>
-
     <div class="comment-area">
-      <strong style="font-size:12px;color:var(--primary)">Comentarios y Retroalimentación</strong>
+      <strong style="font-size:12px;color:var(--primary)">Comentarios</strong>
       <div style="margin:8px 0;max-height:150px;overflow-y:auto">${comments}</div>
-      <textarea id="comment-txt" placeholder="Escribe un comentario o sugerencia pedagógica…"></textarea>
+      <textarea id="comment-txt" placeholder="Escribe un comentario…"></textarea>
       <button class="btn" style="margin-top:6px;width:100%" onclick="sendComment(${r.id})">Enviar comentario</button>
     </div>`;
 }
@@ -870,14 +748,13 @@ async function deleteResource(id) {
   } catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── FORMULARIO MODAL RECURSO ──────────────────────────────────────
 function openAddModal() {
   document.getElementById('modal-res-title').textContent = 'Cargar Nuevo Material Didáctico';
   document.getElementById('modal-res-id').value = '';
   ['form-title','form-author','form-desc','form-link','form-meta'].forEach(id => document.getElementById(id).value='');
-  document.getElementById('form-area').value   = '';
-  document.getElementById('form-grado').value  = '';
-  document.getElementById('form-tipo').value   = '';
+  document.getElementById('form-area').value = '';
+  document.getElementById('form-grado').value = '';
+  document.getElementById('form-tipo').value = '';
   document.getElementById('form-periodo').value = '';
   openModal('modal-res');
 }
@@ -886,38 +763,36 @@ function openEditModal(id) {
   const r = allResources.find(x => x.id===id);
   if (!r) return;
   document.getElementById('modal-res-title').textContent = 'Editar Material Didáctico';
-  document.getElementById('modal-res-id').value  = r.id;
-  document.getElementById('form-title').value    = r.title || '';
-  document.getElementById('form-author').value   = r.author || '';
-  document.getElementById('form-desc').value     = r.description || '';
-  document.getElementById('form-link').value     = r.link || '';
-  document.getElementById('form-meta').value     = r.metadata || '';
-  document.getElementById('form-area').value     = r.skill || '';
-  document.getElementById('form-grado').value    = r.level || '';
-  document.getElementById('form-tipo').value     = r.type  || '';
-  document.getElementById('form-periodo').value  = r.periodo || '';
+  document.getElementById('modal-res-id').value = r.id;
+  document.getElementById('form-title').value = r.title || '';
+  document.getElementById('form-author').value = r.author || '';
+  document.getElementById('form-desc').value = r.description || '';
+  document.getElementById('form-link').value = r.link || '';
+  document.getElementById('form-meta').value = r.metadata || '';
+  document.getElementById('form-area').value = r.skill || '';
+  document.getElementById('form-grado').value = r.level || '';
+  document.getElementById('form-tipo').value = r.type  || '';
+  document.getElementById('form-periodo').value = r.periodo || '';
   openModal('modal-res');
 }
 
 async function saveResource() {
-  const id      = document.getElementById('modal-res-id').value;
-  const title   = document.getElementById('form-title').value.trim();
-  const link    = document.getElementById('form-link').value.trim();
+  const id = document.getElementById('modal-res-id').value;
+  const title = document.getElementById('form-title').value.trim();
+  const link = document.getElementById('form-link').value.trim();
   const periodo = document.getElementById('form-periodo').value;
 
-  if (!title)   { alert('El título es obligatorio.'); return; }
-  if (!link)    { alert('El enlace o URL del recurso es obligatorio.'); return; }
-  if (!periodo) { alert('El periodo académico es obligatorio.'); return; }
+  if (!title || !link || !periodo) { alert('Por favor completa los campos obligatorios (*).'); return; }
 
   const body = {
     title,
-    author:   document.getElementById('form-author').value.trim(),
-    skill:    document.getElementById('form-area').value,
-    level:    document.getElementById('form-grado').value,
-    type:     document.getElementById('form-tipo').value,
-    periodo:  periodo,
-    desc:     document.getElementById('form-desc').value.trim(),
-    link:     link,
+    author: document.getElementById('form-author').value.trim(),
+    skill: document.getElementById('form-area').value,
+    level: document.getElementById('form-grado').value,
+    type: document.getElementById('form-tipo').value,
+    periodo: periodo,
+    desc: document.getElementById('form-desc').value.trim(),
+    link: link,
     metadata: document.getElementById('form-meta').value.trim(),
     uploader: _pUser,
   };
@@ -934,7 +809,6 @@ async function saveResource() {
   } catch(e) { alert('Error al guardar: ' + e.message); }
 }
 
-// ── VISTA ADMIN TABLA ─────────────────────────────────────────────
 function renderAdminResTable() {
   const tbody = document.getElementById('admin-res-body');
   if (!tbody) return;
@@ -955,13 +829,12 @@ function renderAdminResTable() {
   ).join('');
 }
 
-// ── ESTADÍSTICAS ──────────────────────────────────────────────────
 async function loadStats() {
   try {
     const st = await apiFetch('/stats');
     document.getElementById('st-views').textContent = st.views || 0;
-    document.getElementById('st-dl').textContent    = st.downloads || 0;
-    document.getElementById('st-res').textContent   = allResources.length;
+    document.getElementById('st-dl').textContent = st.downloads || 0;
+    document.getElementById('st-res').textContent = allResources.length;
     const logs = (st.logs || []).slice(-20).reverse();
     const tbody = document.getElementById('log-body');
     if (!logs.length) return;
@@ -971,7 +844,6 @@ async function loadStats() {
   } catch(e) {}
 }
 
-// ── CONFIGURACIÓN GLOBAL ──────────────────────────────────────────
 async function saveConfig() {
   const name = document.getElementById('cfg-name').value.trim();
   const logo = document.getElementById('cfg-logo').value.trim();
@@ -985,7 +857,6 @@ async function saveConfig() {
   } catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── UTILS ─────────────────────────────────────────────────────────
 function renderFormSelect(selectId, items) {
   const sel = document.getElementById(selectId);
   if (!sel) return;
@@ -1001,21 +872,7 @@ function escH(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-(function _setHeaderImmediate() {
-  if (_instNombre) {
-    const title = 'REPOSITORIO DE RECURSOS - ' + _instNombre;
-    document.getElementById('site-title-tag').textContent = title;
-    document.getElementById('hdr-inst-name').textContent  = title;
-  }
-  if (_instEscudo) {
-    var img = document.getElementById('hdr-logo');
-    img.src = _instEscudo;
-    img.style.display = '';
-  }
-})();
-
 init();
 </script>
-
 </body>
 </html>
