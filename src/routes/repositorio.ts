@@ -1,6 +1,6 @@
 // ============================================================
 // MÓDULO REPOSITORIO — Rutas API
-// Todos los recursos se filtran por institucion_id (multitenant)
+// Integración directa con Neon DB (Gestor Académico YC)
 // ============================================================
 
 import { Router } from 'express';
@@ -12,22 +12,45 @@ const GESTOR_SK = '__gestor_academico_yc__';
 
 const router = Router();
 
-/** Lee institucion_id desde query param ?inst=... (válido para todos los métodos HTTP) */
+/** Lee institucion_id desde query param ?inst=... */
 function getInst(req: any): string {
   return ((req.query.inst as string) || 'default').trim();
 }
 
-/** Catálogo (áreas/grados/tipos): filtra por inst; si vacío, devuelve todos los registros */
-async function queryCatalogByInstOrAll<T>(
-  queryByInst: (instId: string) => Promise<T[]>,
-  queryAll: () => Promise<T[]>,
-  inst: string
-): Promise<T[]> {
-  let rows = await queryByInst(inst);
-  if (!rows.length) {
-    rows = await queryAll();
+/** Auxiliar para extraer asignaturas y grados reales guardados en el kvStore de Neon */
+async function getDatosRealesDesdeNeon(inst: string) {
+  try {
+    const gestorRows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorData = gestorRows[0]?.value as any;
+
+    let platSK = '';
+    if (gestorData?.platforms) {
+      const plat = gestorData.platforms.find((p: any) => p.id === inst);
+      if (plat) platSK = plat.sk || '';
+    }
+
+    if (!platSK) return { grados: [], asignaturas: [] };
+
+    const platRows = await db.select().from(kvStore).where(eq(kvStore.key, platSK));
+    const platData = platRows[0]?.value as any;
+
+    if (!platData) return { grados: [], asignaturas: [] };
+
+    const gradosArr = (platData.grados || []) as any[];
+    const grados = [...new Set(
+      gradosArr.map((g: any) => (typeof g === 'string' ? g : g.n || g.id || '')).filter(Boolean)
+    )] as string[];
+
+    const cargaArr = (platData.carga || []) as any[];
+    const asignaturas = [...new Set(
+      cargaArr.map((c: any) => c.m || c.a || '').filter(Boolean)
+    )] as string[];
+
+    return { grados, asignaturas };
+  } catch (e) {
+    console.error('Error leyendo kvStore de Neon:', e);
+    return { grados: [], asignaturas: [] };
   }
-  return rows;
 }
 
 // ============================================================
@@ -250,7 +273,7 @@ router.post('/resources/:id/download', async (req, res) => {
 });
 
 // ============================================================
-// ESTADÍSTICAS
+// ESTADÍSTICAS & CONFIGURACIÓN
 // ============================================================
 router.get('/stats', async (req, res) => {
   const inst = getInst(req);
@@ -262,9 +285,6 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// ============================================================
-// CONFIGURACIÓN INSTITUCIONAL
-// ============================================================
 router.get('/config', async (req, res) => {
   const inst = getInst(req);
   try {
@@ -275,51 +295,21 @@ router.get('/config', async (req, res) => {
   }
 });
 
-// ============================================================
-// CONTEXTO DE INSTITUCIÓN — nombre, escudo, grados y asignaturas
-// reales leídos desde la BD principal de la institución
-// ============================================================
 router.get('/inst-context', async (req, res) => {
   const inst = getInst(req);
   try {
-    // 1. Leer GestorDB para encontrar la plataforma por id
     const gestorRows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
     const gestorData = gestorRows[0]?.value as any;
 
-    let nombre  = '';
-    let escudo  = '';
-    let platSK  = '';
-    let grados: string[]      = [];
-    let asignaturas: string[] = [];
+    let nombre = '';
+    let escudo = '';
+    const { grados, asignaturas } = await getDatosRealesDesdeNeon(inst);
 
     if (gestorData?.platforms) {
       const plat = gestorData.platforms.find((p: any) => p.id === inst);
       if (plat) {
         nombre = plat.nombre || '';
         escudo = plat.escudo || '';
-        platSK = plat.sk    || '';
-      }
-    }
-
-    // 2. Leer la BD de la plataforma usando su sk para obtener grados y carga
-    if (platSK) {
-      const platRows = await db.select().from(kvStore).where(eq(kvStore.key, platSK));
-      const platData = platRows[0]?.value as any;
-      if (platData) {
-        if (!nombre && platData.nombre) nombre = platData.nombre;
-        if (!escudo) escudo = platData.escudo || platData.logo || '';
-
-        // Grados: array de objetos con campo .n (nombre del grado)
-        const gradosArr = (platData.grados || []) as any[];
-        grados = [...new Set(
-          gradosArr.map((g: any) => (typeof g === 'string' ? g : g.n || g.id || '')).filter(Boolean)
-        )] as string[];
-
-        // Asignaturas: campo .m (materia) de cada entrada de carga académica
-        const cargaArr = (platData.carga || []) as any[];
-        asignaturas = [...new Set(
-          cargaArr.map((c: any) => c.m || c.a || '').filter(Boolean)
-        )] as string[];
       }
     }
 
@@ -329,23 +319,16 @@ router.get('/inst-context', async (req, res) => {
   }
 });
 
-// ============================================================
-// SEMBRAR ÁREAS Y GRADOS desde datos reales de la institución
-// Solo actúa si la tabla repositorio está vacía para esa inst.
-// ============================================================
 router.post('/seed-areas-grados', async (req, res) => {
   const inst = getInst(req);
-  const { asignaturas = [], grados = [] } = req.body as {
-    asignaturas: string[];
-    grados: string[];
-  };
+  const { asignaturas = [], grados = [] } = req.body as { asignaturas: string[]; grados: string[]; };
   try {
     const [existAreas, existGrados] = await Promise.all([
       db.select({ id: repositorioAreas.id }).from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst)),
       db.select({ id: repositorioGrados.id }).from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst)),
     ]);
 
-    let addedAreas  = 0;
+    let addedAreas = 0;
     let addedGrados = 0;
 
     if (!existAreas.length && asignaturas.length) {
@@ -366,13 +349,7 @@ router.post('/seed-areas-grados', async (req, res) => {
       }
     }
 
-    return res.json({
-      success: true,
-      addedAreas,
-      addedGrados,
-      skippedAreas:  existAreas.length  > 0,
-      skippedGrados: existGrados.length > 0,
-    });
+    return res.json({ success: true, addedAreas, addedGrados });
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
   }
@@ -394,16 +371,19 @@ router.post('/config', async (req, res) => {
 });
 
 // ============================================================
-// ÁREAS
+// ÁREAS (Consultadas directamente de Neon)
 // ============================================================
 router.get('/areas', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await queryCatalogByInstOrAll(
-      (instId) => db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, instId)),
-      () => db.select().from(repositorioAreas),
-      inst
-    );
+    let rows = await db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst));
+    
+    // Si la tabla del repositorio está vacía, extrae las asignaturas reales creadas en el Gestor (Neon DB)
+    if (!rows.length) {
+      const { asignaturas } = await getDatosRealesDesdeNeon(inst);
+      rows = asignaturas.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
+    }
+
     return res.json(rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -438,16 +418,19 @@ router.delete('/areas/:id', async (req, res) => {
 });
 
 // ============================================================
-// GRADOS
+// GRADOS (Consultados directamente de Neon)
 // ============================================================
 router.get('/grados', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await queryCatalogByInstOrAll(
-      (instId) => db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, instId)),
-      () => db.select().from(repositorioGrados),
-      inst
-    );
+    let rows = await db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst));
+
+    // Si la tabla del repositorio está vacía, extrae los grados reales creados en el Gestor (Neon DB)
+    if (!rows.length) {
+      const { grados } = await getDatosRealesDesdeNeon(inst);
+      rows = grados.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
+    }
+
     return res.json(rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -487,11 +470,7 @@ router.delete('/grados/:id', async (req, res) => {
 router.get('/tipos', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await queryCatalogByInstOrAll(
-      (instId) => db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, instId)),
-      () => db.select().from(repositorioTipos),
-      inst
-    );
+    const rows = await db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, inst));
     return res.json(rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
