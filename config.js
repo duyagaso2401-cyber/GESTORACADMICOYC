@@ -1,3 +1,3 @@
 const CONFIG = {
-    API_URL: "https://gestoracademicoyc.onrender.com"
+    API_URL: "https://gestoracadmicoyc.onrender.com/"
 };
