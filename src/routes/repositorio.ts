@@ -9,12 +9,32 @@ import { repositorioResources, repositorioUsers, repositorioStats, repositorioCo
 import { eq, and, sql } from 'drizzle-orm';
 
 const GESTOR_SK = '__gestor_academico_yc__';
+const MAIN_INST = 'default';
+const INST_ALIASES = new Set(['inetis-sincelejito']);
 
 const router = Router();
 
 /** Lee institucion_id desde query param ?inst=... (válido para todos los métodos HTTP) */
 function getInst(req: any): string {
   return ((req.query.inst as string) || 'default').trim();
+}
+
+/** Resuelve el id de institución; alias de plataforma → institución principal */
+function resolveInst(inst: string): string {
+  return INST_ALIASES.has(inst) ? MAIN_INST : inst;
+}
+
+/** Consulta por institucion_id con fallback a la institución principal si no hay registros */
+async function queryWithInstFallback<T>(
+  queryFn: (instId: string) => Promise<T[]>,
+  inst: string
+): Promise<T[]> {
+  const primaryInst = resolveInst(inst);
+  let rows = await queryFn(primaryInst);
+  if (!rows.length && primaryInst !== MAIN_INST) {
+    rows = await queryFn(MAIN_INST);
+  }
+  return rows;
 }
 
 // ============================================================
@@ -118,7 +138,10 @@ router.delete('/users/:username', async (req, res) => {
 router.get('/resources', async (req, res) => {
   const inst = getInst(req);
   try {
-    const items = await db.select().from(repositorioResources).where(eq(repositorioResources.institucionId, inst));
+    const items = await queryWithInstFallback(
+      (instId) => db.select().from(repositorioResources).where(eq(repositorioResources.institucionId, instId)),
+      inst
+    );
     return res.json(items);
   } catch (e: any) {
     return res.status(500).json({ error: e.message });
@@ -386,7 +409,10 @@ router.post('/config', async (req, res) => {
 router.get('/areas', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst));
+    const rows = await queryWithInstFallback(
+      (instId) => db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, instId)),
+      inst
+    );
     return res.json(rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -426,7 +452,10 @@ router.delete('/areas/:id', async (req, res) => {
 router.get('/grados', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst));
+    const rows = await queryWithInstFallback(
+      (instId) => db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, instId)),
+      inst
+    );
     return res.json(rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
@@ -466,7 +495,10 @@ router.delete('/grados/:id', async (req, res) => {
 router.get('/tipos', async (req, res) => {
   const inst = getInst(req);
   try {
-    const rows = await db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, inst));
+    const rows = await queryWithInstFallback(
+      (instId) => db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, instId)),
+      inst
+    );
     return res.json(rows);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });

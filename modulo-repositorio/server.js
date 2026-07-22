@@ -46,6 +46,37 @@ const defaultTipos = [
     { id: "audio_video", name: "Audio / Video Didáctico" }
 ];
 
+// Institución principal en BD y alias de plataforma del gestor
+const MAIN_INST = 'default';
+const INST_ALIASES = new Set(['inetis-sincelejito']);
+
+function getInst(req) {
+    return String(req.query.inst || 'default').trim();
+}
+
+function resolveInst(inst) {
+    return INST_ALIASES.has(inst) ? MAIN_INST : inst;
+}
+
+/** Consulta por institucion_id con fallback a la institución principal */
+async function findWithInstFallback(collectionName, inst) {
+    const col = db.collection(collectionName);
+    const primaryInst = resolveInst(inst);
+
+    let docs = await col.find({ institucion_id: primaryInst }).toArray();
+    if (!docs.length && primaryInst !== MAIN_INST) {
+        docs = await col.find({ institucion_id: MAIN_INST }).toArray();
+    }
+    // Datos legacy sin campo institucion_id (instalaciones anteriores)
+    if (!docs.length) {
+        docs = await col.find({ institucion_id: { $exists: false } }).toArray();
+    }
+    if (!docs.length && (INST_ALIASES.has(inst) || inst === MAIN_INST)) {
+        docs = await col.find({}).toArray();
+    }
+    return docs;
+}
+
 // Conexión inicial e inicialización de colecciones
 async function connectDB() {
     try {
@@ -121,7 +152,8 @@ const handleContext = async (req, res) => {
 
 const handleAreas = async (req, res) => {
     try {
-        const areas = await db.collection('areas').find().toArray();
+        const inst = getInst(req);
+        const areas = await findWithInstFallback('areas', inst);
         if (areas && areas.length > 0) return res.json(areas);
     } catch (e) {}
     res.json(defaultAreas);
@@ -129,7 +161,8 @@ const handleAreas = async (req, res) => {
 
 const handleGrados = async (req, res) => {
     try {
-        const grados = await db.collection('grados').find().toArray();
+        const inst = getInst(req);
+        const grados = await findWithInstFallback('grados', inst);
         if (grados && grados.length > 0) return res.json(grados);
     } catch (e) {}
     res.json(defaultGrados);
@@ -137,7 +170,8 @@ const handleGrados = async (req, res) => {
 
 const handleTipos = async (req, res) => {
     try {
-        const tipos = await db.collection('tipos').find().toArray();
+        const inst = getInst(req);
+        const tipos = await findWithInstFallback('tipos', inst);
         if (tipos && tipos.length > 0) return res.json(tipos);
     } catch (e) {}
     res.json(defaultTipos);
@@ -198,7 +232,8 @@ app.delete(['/users/:username', '/api/users/:username', '/api/inetis/users/:user
 // --- RECURSOS DIDÁCTICOS ---
 app.get(['/resources', '/api/resources', '/api/inetis/resources'], async (req, res) => {
     try {
-        const items = await db.collection('resources').find().toArray();
+        const inst = getInst(req);
+        const items = await findWithInstFallback('resources', inst);
         res.json(items);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
