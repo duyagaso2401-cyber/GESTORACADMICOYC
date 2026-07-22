@@ -1,17 +1,24 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const path = require('path');
+
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Middlewares base
 app.use(express.static(path.join(__dirname)));
-app.use(express.json({ limit: '50mb' })); 
+app.use(express.json({ limit: '50mb' }));
 
-const uri = process.env.MONGODB_URI || "mongodb+srv://duyagaso2401_db_user:d3JymLsokpyqfkzY@repositorioiedelviolo.rfszbka.mongodb.net/?appName=REPOSITORIOIEDELVIOLO";
+// Cadena de conexión parametrizada por entorno (Seguridad)
+const uri = process.env.MONGODB_URI;
+if (!uri) {
+    console.warn("⚠️ ADVERTENCIA: La variable MONGODB_URI no está definida en las variables de entorno.");
+}
+
 const client = new MongoClient(uri);
 let db;
 
-// Estructura de datos por defecto para la institución
+// Estructuras por defecto
 const defaultAreas = [
     { id: "ingles", name: "Inglés / Idiomas Extranjeros" },
     { id: "informatica", name: "Tecnología e Informática" },
@@ -39,62 +46,63 @@ const defaultTipos = [
     { id: "audio_video", name: "Audio / Video Didáctico" }
 ];
 
+// Conexión inicial e inicialización de colecciones
 async function connectDB() {
     try {
         await client.connect();
         db = client.db('repositorio_ingles_violo');
-        console.log("¡Conexión segura establecida con MongoDB Atlas en la nube!");
-        
-        // Inicializar documento de estadísticas y configuración
+        console.log("¡Conexión segura establecida con MongoDB Atlas!");
+
+        // Inicializaciones base
         const statsCount = await db.collection('platform_stats').countDocuments();
         if (statsCount === 0) {
             await db.collection('platform_stats').insertOne({ views: 0, uploads: 0, downloads: 0, logs: [] });
         }
-        
+
         const configCount = await db.collection('institution_config').countDocuments();
         if (configCount === 0) {
-            await db.collection('institution_config').insertOne({ 
-                name: "REPOSITORIO DE RECURSOS - INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO", 
-                logo: "" 
+            await db.collection('institution_config').insertOne({
+                name: "REPOSITORIO DE RECURSOS - INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+                logo: ""
             });
         }
 
-        // Poblar colecciones si están vacías
         const areasCount = await db.collection('areas').countDocuments();
-        if (areasCount === 0) {
-            await db.collection('areas').insertMany(defaultAreas);
-        }
+        if (areasCount === 0) await db.collection('areas').insertMany(defaultAreas);
 
         const gradosCount = await db.collection('grados').countDocuments();
-        if (gradosCount === 0) {
-            await db.collection('grados').insertMany(defaultGrados);
-        }
+        if (gradosCount === 0) await db.collection('grados').insertMany(defaultGrados);
 
         const tiposCount = await db.collection('tipos').countDocuments();
-        if (tiposCount === 0) {
-            await db.collection('tipos').insertMany(defaultTipos);
-        }
+        if (tiposCount === 0) await db.collection('tipos').insertMany(defaultTipos);
 
-        // Crear usuario administrador por defecto si no existe
         const adminExists = await db.collection('users').findOne({ username: 'admin' });
         if (!adminExists) {
-            await db.collection('users').insertOne({ 
-                username: 'admin', 
-                fullname: 'Administrador General', 
-                role: 'Administrador', 
-                pass: 'admin123' 
+            await db.collection('users').insertOne({
+                username: 'admin',
+                fullname: 'Administrador General',
+                role: 'Administrador',
+                pass: 'admin123'
             });
         }
     } catch (e) {
-        console.error("Error grave de conexión a la nube de MongoDB:", e);
+        console.error("Error grave de conexión a MongoDB Atlas:", e.message);
     }
 }
-connectDB();
 
-// --- RUTAS DE ESTRUCTURA INSTITUCIONAL (GARANTIZA DATOS SIEMPRE) ---
+// Middleware para asegurar que la BD está lista antes de atender solicitudes
+app.use((req, res, next) => {
+    // Si la petición es para archivos estáticos o context con fallback, continuar
+    if (!db && !req.path.includes('/inst-context')) {
+        return res.status(503).json({ error: "Servicio temporalmente no disponible: Conectando a la base de datos..." });
+    }
+    next();
+});
+
+// --- RUTAS DE ESTRUCTURA INSTITUCIONAL ---
 const handleContext = async (req, res) => {
     try {
-        const config = await db.collection('institution_config').findOne({});
+        const config = db ? await db.collection('institution_config').findOne({}) : null;
         res.json({
             institution: (config && config.name) ? config.name : "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
             areas: defaultAreas,
@@ -114,9 +122,7 @@ const handleContext = async (req, res) => {
 const handleAreas = async (req, res) => {
     try {
         const areas = await db.collection('areas').find().toArray();
-        if (areas && areas.length > 0) {
-            return res.json(areas);
-        }
+        if (areas && areas.length > 0) return res.json(areas);
     } catch (e) {}
     res.json(defaultAreas);
 };
@@ -124,9 +130,7 @@ const handleAreas = async (req, res) => {
 const handleGrados = async (req, res) => {
     try {
         const grados = await db.collection('grados').find().toArray();
-        if (grados && grados.length > 0) {
-            return res.json(grados);
-        }
+        if (grados && grados.length > 0) return res.json(grados);
     } catch (e) {}
     res.json(defaultGrados);
 };
@@ -134,14 +138,12 @@ const handleGrados = async (req, res) => {
 const handleTipos = async (req, res) => {
     try {
         const tipos = await db.collection('tipos').find().toArray();
-        if (tipos && tipos.length > 0) {
-            return res.json(tipos);
-        }
+        if (tipos && tipos.length > 0) return res.json(tipos);
     } catch (e) {}
     res.json(defaultTipos);
 };
 
-// Endpoints flexibles (soportan llamadas directas, con /api/ o con /api/inetis/)
+// Rutas flexibles
 app.get(['/inst-context', '/api/inst-context', '/api/inetis/inst-context'], handleContext);
 app.get(['/areas', '/api/areas', '/api/inetis/areas'], handleAreas);
 app.get(['/grados', '/api/grados', '/api/inetis/grados'], handleGrados);
@@ -155,16 +157,19 @@ app.post(['/login', '/api/login', '/api/inetis/login'], async (req, res) => {
         if (found) {
             const now = new Date();
             const logEntry = {
-                user: found.fullname, role: found.role, 
-                action: 'Ingresó a la plataforma', 
-                timestamp: now.toLocaleDateString() + ' ' + now.toLocaleTimeString()
+                user: found.fullname,
+                role: found.role,
+                action: 'Ingresó a la plataforma',
+                timestamp: `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`
             };
             await db.collection('platform_stats').updateOne({}, { $push: { logs: { $each: [logEntry], $position: 0 } }, $inc: { views: 1 } });
             res.json({ success: true, user: found });
         } else {
             res.json({ success: false });
         }
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // --- GESTIÓN DE USUARIOS ---
@@ -190,7 +195,7 @@ app.delete(['/users/:username', '/api/users/:username', '/api/inetis/users/:user
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- MATERIALES DIDÁCTICOS (RECURSOS) ---
+// --- RECURSOS DIDÁCTICOS ---
 app.get(['/resources', '/api/resources', '/api/inetis/resources'], async (req, res) => {
     try {
         const items = await db.collection('resources').find().toArray();
@@ -210,8 +215,10 @@ app.post(['/resources', '/api/resources', '/api/inetis/resources'], async (req, 
 app.put(['/resources/:id', '/api/resources/:id', '/api/inetis/resources/:id'], async (req, res) => {
     try {
         const { id } = req.params;
-        delete req.body._id;
-        await db.collection('resources').updateOne({ _id: new ObjectId(id) }, { $set: req.body });
+        const updateData = { ...req.body };
+        delete updateData._id; // Eliminar el ID para evitar error de inmutabilidad en MongoDB
+        
+        await db.collection('resources').updateOne({ _id: new ObjectId(id) }, { $set: updateData });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -228,7 +235,7 @@ app.post(['/resources/:id/rate', '/api/resources/:id/rate', '/api/inetis/resourc
     try {
         await db.collection('resources').updateOne(
             { _id: new ObjectId(req.params.id) },
-            { $inc: { ratingSum: rating, ratingCount: 1 } }
+            { $inc: { ratingSum: Number(rating), ratingCount: 1 } }
         );
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -245,7 +252,7 @@ app.post(['/resources/:id/comment', '/api/resources/:id/comment', '/api/inetis/r
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// --- ESTADÍSTICAS Y CONFIGURACIONES ---
+// --- ESTADÍSTICAS Y CONFIGURACIÓN ---
 app.get(['/stats', '/api/stats', '/api/inetis/stats'], async (req, res) => {
     try {
         const stats = await db.collection('platform_stats').findOne({});
@@ -275,10 +282,14 @@ app.post(['/config', '/api/config', '/api/inetis/config'], async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Single Page Application Fallback
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.listen(port, () => {
-    console.log(`Servidor de Repositorio de Inglés corriendo de forma segura en puerto: ${port}`);
+// Iniciar servidor tras conectar
+connectDB().then(() => {
+    app.listen(port, () => {
+        console.log(`Servidor de Repositorio corriendo en el puerto: ${port}`);
+    });
 });
