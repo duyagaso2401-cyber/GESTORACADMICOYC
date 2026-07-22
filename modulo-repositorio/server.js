@@ -7,9 +7,37 @@ const port = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname)));
 app.use(express.json({ limit: '50mb' })); 
 
-const uri = "mongodb+srv://duyagaso2401_db_user:d3JymLsokpyqfkzY@repositorioiedelviolo.rfszbka.mongodb.net/?appName=REPOSITORIOIEDELVIOLO";
+const uri = process.env.MONGODB_URI || "mongodb+srv://duyagaso2401_db_user:d3JymLsokpyqfkzY@repositorioiedelviolo.rfszbka.mongodb.net/?appName=REPOSITORIOIEDELVIOLO";
 const client = new MongoClient(uri);
 let db;
+
+// Áreas y Grados por defecto para la institución (INETIS)
+const defaultAreas = [
+    { id: "ingles", name: "Inglés / Idiomas Extranjeros" },
+    { id: "informatica", name: "Tecnología e Informática" },
+    { id: "matematicas", name: "Matemáticas" },
+    { id: "lenguaje", name: "Lengua Castellana" },
+    { id: "ciencias", name: "Ciencias Naturales" },
+    { id: "sociales", name: "Ciencias Sociales" }
+];
+
+const defaultGrados = [
+    { id: "sexto", name: "Grado 6°" },
+    { id: "septimo", name: "Grado 7°" },
+    { id: "octavo", name: "Grado 8°" },
+    { id: "noveno", name: "Grado 9°" },
+    { id: "decimo", name: "Grado 10°" },
+    { id: "once", name: "Grado 11°" }
+];
+
+const defaultTipos = [
+    { id: "guia", name: "Guía de Aprendizaje" },
+    { id: "taller", name: "Taller / Actividad" },
+    { id: "evaluacion", name: "Evaluación / Examen" },
+    { id: "presentacion", name: "Presentación / Diapositivas" },
+    { id: "lectura", name: "Lectura / Documento" },
+    { id: "audio_video", name: "Audio / Video Didáctico" }
+];
 
 async function connectDB() {
     try {
@@ -22,14 +50,42 @@ async function connectDB() {
         if (statsCount === 0) {
             await db.collection('platform_stats').insertOne({ views: 0, uploads: 0, downloads: 0, logs: [] });
         }
+        
         const configCount = await db.collection('institution_config').countDocuments();
         if (configCount === 0) {
-            await db.collection('institution_config').insertOne({ name: "REPOSITORIO RED - INGLÉS DE LA I.E. DEL VIOLO", logo: "" });
+            await db.collection('institution_config').insertOne({ 
+                name: "REPOSITORIO DE RECURSOS - INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO", 
+                logo: "" 
+            });
         }
+
+        // Inicializar áreas si la colección está vacía
+        const areasCount = await db.collection('areas').countDocuments();
+        if (areasCount === 0) {
+            await db.collection('areas').insertMany(defaultAreas);
+        }
+
+        // Inicializar grados si la colección está vacía
+        const gradosCount = await db.collection('grados').countDocuments();
+        if (gradosCount === 0) {
+            await db.collection('grados').insertMany(defaultGrados);
+        }
+
+        // Inicializar tipos de recursos si la colección está vacía
+        const tiposCount = await db.collection('tipos').countDocuments();
+        if (tiposCount === 0) {
+            await db.collection('tipos').insertMany(defaultTipos);
+        }
+
         // Crear usuario administrador por defecto si no existe
         const adminExists = await db.collection('users').findOne({ username: 'admin' });
         if (!adminExists) {
-            await db.collection('users').insertOne({ username: 'admin', fullname: 'Administrador General', role: 'Administrador', pass: 'admin123' });
+            await db.collection('users').insertOne({ 
+                username: 'admin', 
+                fullname: 'Administrador General', 
+                role: 'Administrador', 
+                pass: 'admin123' 
+            });
         }
     } catch (e) {
         console.error("Error grave de conexión a la nube de MongoDB:", e);
@@ -37,7 +93,44 @@ async function connectDB() {
 }
 connectDB();
 
-// --- AUTHENTICACIÓN ---
+// --- RUTAS DE ESTRUCTURA INSTITUCIONAL (FALTANTES) ---
+app.get('/api/inst-context', async (req, res) => {
+    try {
+        const config = await db.collection('institution_config').findOne({});
+        const areas = await db.collection('areas').find().toArray();
+        const grados = await db.collection('grados').find().toArray();
+        const tipos = await db.collection('tipos').find().toArray();
+        res.json({
+            institution: config ? config.name : "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+            areas,
+            grados,
+            tipos
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/areas', async (req, res) => {
+    try {
+        const areas = await db.collection('areas').find().toArray();
+        res.json(areas.length > 0 ? areas : defaultAreas);
+    } catch (e) { res.json(defaultAreas); }
+});
+
+app.get('/api/grados', async (req, res) => {
+    try {
+        const grados = await db.collection('grados').find().toArray();
+        res.json(grados.length > 0 ? grados : defaultGrados);
+    } catch (e) { res.json(defaultGrados); }
+});
+
+app.get('/api/tipos', async (req, res) => {
+    try {
+        const tipos = await db.collection('tipos').find().toArray();
+        res.json(tipos.length > 0 ? tipos : defaultTipos);
+    } catch (e) { res.json(defaultTipos); }
+});
+
+// --- AUTENTICACIÓN ---
 app.post('/api/login', async (req, res) => {
     const { userIn, passIn, selectedRole } = req.body;
     try {
