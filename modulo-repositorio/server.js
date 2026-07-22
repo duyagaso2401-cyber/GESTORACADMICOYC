@@ -11,7 +11,7 @@ const uri = process.env.MONGODB_URI || "mongodb+srv://duyagaso2401_db_user:d3Jym
 const client = new MongoClient(uri);
 let db;
 
-// Áreas y Grados por defecto para la institución (INETIS)
+// Estructura de datos por defecto para la institución
 const defaultAreas = [
     { id: "ingles", name: "Inglés / Idiomas Extranjeros" },
     { id: "informatica", name: "Tecnología e Informática" },
@@ -45,7 +45,7 @@ async function connectDB() {
         db = client.db('repositorio_ingles_violo');
         console.log("¡Conexión segura establecida con MongoDB Atlas en la nube!");
         
-        // Inicializar documento de estadísticas y configuración si no existen
+        // Inicializar documento de estadísticas y configuración
         const statsCount = await db.collection('platform_stats').countDocuments();
         if (statsCount === 0) {
             await db.collection('platform_stats').insertOne({ views: 0, uploads: 0, downloads: 0, logs: [] });
@@ -59,19 +59,17 @@ async function connectDB() {
             });
         }
 
-        // Inicializar áreas si la colección está vacía
+        // Poblar colecciones si están vacías
         const areasCount = await db.collection('areas').countDocuments();
         if (areasCount === 0) {
             await db.collection('areas').insertMany(defaultAreas);
         }
 
-        // Inicializar grados si la colección está vacía
         const gradosCount = await db.collection('grados').countDocuments();
         if (gradosCount === 0) {
             await db.collection('grados').insertMany(defaultGrados);
         }
 
-        // Inicializar tipos de recursos si la colección está vacía
         const tiposCount = await db.collection('tipos').countDocuments();
         if (tiposCount === 0) {
             await db.collection('tipos').insertMany(defaultTipos);
@@ -93,41 +91,51 @@ async function connectDB() {
 }
 connectDB();
 
-// --- RUTAS DE ESTRUCTURA INSTITUCIONAL (FALTANTES) ---
+// --- RUTAS DE ESTRUCTURA INSTITUCIONAL ---
 app.get('/api/inst-context', async (req, res) => {
     try {
         const config = await db.collection('institution_config').findOne({});
-        const areas = await db.collection('areas').find().toArray();
-        const grados = await db.collection('grados').find().toArray();
-        const tipos = await db.collection('tipos').find().toArray();
         res.json({
             institution: config ? config.name : "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
-            areas,
-            grados,
-            tipos
+            areas: defaultAreas,
+            grados: defaultGrados,
+            tipos: defaultTipos
         });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+        res.json({
+            institution: "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+            areas: defaultAreas,
+            grados: defaultGrados,
+            tipos: defaultTipos
+        });
+    }
 });
 
 app.get('/api/areas', async (req, res) => {
     try {
         const areas = await db.collection('areas').find().toArray();
-        res.json(areas.length > 0 ? areas : defaultAreas);
-    } catch (e) { res.json(defaultAreas); }
+        res.json(areas && areas.length > 0 ? areas : defaultAreas);
+    } catch (e) { 
+        res.json(defaultAreas); 
+    }
 });
 
 app.get('/api/grados', async (req, res) => {
     try {
         const grados = await db.collection('grados').find().toArray();
-        res.json(grados.length > 0 ? grados : defaultGrados);
-    } catch (e) { res.json(defaultGrados); }
+        res.json(grados && grados.length > 0 ? grados : defaultGrados);
+    } catch (e) { 
+        res.json(defaultGrados); 
+    }
 });
 
 app.get('/api/tipos', async (req, res) => {
     try {
         const tipos = await db.collection('tipos').find().toArray();
-        res.json(tipos.length > 0 ? tipos : defaultTipos);
-    } catch (e) { res.json(defaultTipos); }
+        res.json(tipos && tipos.length > 0 ? tipos : defaultTipos);
+    } catch (e) { 
+        res.json(defaultTipos); 
+    }
 });
 
 // --- AUTENTICACIÓN ---
