@@ -91,8 +91,8 @@ async function connectDB() {
 }
 connectDB();
 
-// --- RUTAS DE ESTRUCTURA INSTITUCIONAL ---
-app.get('/api/inst-context', async (req, res) => {
+// --- RUTAS DE ESTRUCTURA INSTITUCIONAL (SOPORTA AMBAS RUTAS) ---
+const handleContext = async (req, res) => {
     try {
         const config = await db.collection('institution_config').findOne({});
         res.json({
@@ -109,37 +109,37 @@ app.get('/api/inst-context', async (req, res) => {
             tipos: defaultTipos
         });
     }
-});
+};
 
-app.get('/api/areas', async (req, res) => {
+const handleAreas = async (req, res) => {
     try {
         const areas = await db.collection('areas').find().toArray();
         res.json(areas && areas.length > 0 ? areas : defaultAreas);
-    } catch (e) { 
-        res.json(defaultAreas); 
-    }
-});
+    } catch (e) { res.json(defaultAreas); }
+};
 
-app.get('/api/grados', async (req, res) => {
+const handleGrados = async (req, res) => {
     try {
         const grados = await db.collection('grados').find().toArray();
         res.json(grados && grados.length > 0 ? grados : defaultGrados);
-    } catch (e) { 
-        res.json(defaultGrados); 
-    }
-});
+    } catch (e) { res.json(defaultGrados); }
+};
 
-app.get('/api/tipos', async (req, res) => {
+const handleTipos = async (req, res) => {
     try {
         const tipos = await db.collection('tipos').find().toArray();
         res.json(tipos && tipos.length > 0 ? tipos : defaultTipos);
-    } catch (e) { 
-        res.json(defaultTipos); 
-    }
-});
+    } catch (e) { res.json(defaultTipos); }
+};
+
+// Endpoints con prefijo estándar y con prefijo /inetis/
+app.get(['/api/inst-context', '/api/inetis/inst-context'], handleContext);
+app.get(['/api/areas', '/api/inetis/areas'], handleAreas);
+app.get(['/api/grados', '/api/inetis/grados'], handleGrados);
+app.get(['/api/tipos', '/api/inetis/tipos'], handleTipos);
 
 // --- AUTENTICACIÓN ---
-app.post('/api/login', async (req, res) => {
+app.post(['/api/login', '/api/inetis/login'], async (req, res) => {
     const { userIn, passIn, selectedRole } = req.body;
     try {
         const found = await db.collection('users').findOne({ username: userIn, pass: passIn, role: selectedRole });
@@ -159,14 +159,14 @@ app.post('/api/login', async (req, res) => {
 });
 
 // --- GESTIÓN DE USUARIOS ---
-app.get('/api/users', async (req, res) => {
+app.get(['/api/users', '/api/inetis/users'], async (req, res) => {
     try {
         const users = await db.collection('users').find({ username: { $ne: 'admin' } }).toArray();
         res.json(users);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/users', async (req, res) => {
+app.post(['/api/users', '/api/inetis/users'], async (req, res) => {
     const { user, name, role, pass } = req.body;
     try {
         const result = await db.collection('users').insertOne({ username: user, fullname: name, role, pass });
@@ -174,7 +174,7 @@ app.post('/api/users', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/users/:username', async (req, res) => {
+app.delete(['/api/users/:username', '/api/inetis/users/:username'], async (req, res) => {
     try {
         await db.collection('users').deleteOne({ username: req.params.username });
         res.json({ success: true });
@@ -182,14 +182,14 @@ app.delete('/api/users/:username', async (req, res) => {
 });
 
 // --- MATERIALES DIDÁCTICOS (RECURSOS) ---
-app.get('/api/resources', async (req, res) => {
+app.get(['/api/resources', '/api/inetis/resources'], async (req, res) => {
     try {
         const items = await db.collection('resources').find().toArray();
         res.json(items);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/resources', async (req, res) => {
+app.post(['/api/resources', '/api/inetis/resources'], async (req, res) => {
     try {
         const resource = { ...req.body, ratingSum: 0, ratingCount: 0, comments: [] };
         const result = await db.collection('resources').insertOne(resource);
@@ -198,7 +198,7 @@ app.post('/api/resources', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/resources/:id', async (req, res) => {
+app.put(['/api/resources/:id', '/api/inetis/resources/:id'], async (req, res) => {
     try {
         const { id } = req.params;
         delete req.body._id;
@@ -207,14 +207,14 @@ app.put('/api/resources/:id', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/resources/:id', async (req, res) => {
+app.delete(['/api/resources/:id', '/api/inetis/resources/:id'], async (req, res) => {
     try {
         await db.collection('resources').deleteOne({ _id: new ObjectId(req.params.id) });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/resources/:id/rate', async (req, res) => {
+app.post(['/api/resources/:id/rate', '/api/inetis/resources/:id/rate'], async (req, res) => {
     const { rating } = req.body;
     try {
         await db.collection('resources').updateOne(
@@ -225,7 +225,7 @@ app.post('/api/resources/:id/rate', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/resources/:id/comment', async (req, res) => {
+app.post(['/api/resources/:id/comment', '/api/inetis/resources/:id/comment'], async (req, res) => {
     const { user, text, date } = req.body;
     try {
         await db.collection('resources').updateOne(
@@ -237,28 +237,28 @@ app.post('/api/resources/:id/comment', async (req, res) => {
 });
 
 // --- ESTADÍSTICAS Y CONFIGURACIONES ---
-app.get('/api/stats', async (req, res) => {
+app.get(['/api/stats', '/api/inetis/stats'], async (req, res) => {
     try {
         const stats = await db.collection('platform_stats').findOne({});
         res.json(stats);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/stats/download', async (req, res) => {
+app.post(['/api/stats/download', '/api/inetis/stats/download'], async (req, res) => {
     try {
         await db.collection('platform_stats').updateOne({}, { $inc: { downloads: 1 } });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/config', async (req, res) => {
+app.get(['/api/config', '/api/inetis/config'], async (req, res) => {
     try {
         const cfg = await db.collection('institution_config').findOne({});
         res.json(cfg);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/config', async (req, res) => {
+app.post(['/api/config', '/api/inetis/config'], async (req, res) => {
     const { name, logo } = req.body;
     try {
         await db.collection('institution_config').updateOne({}, { $set: { name, logo } });
