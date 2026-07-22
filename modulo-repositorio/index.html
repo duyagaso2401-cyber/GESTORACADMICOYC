@@ -62,6 +62,22 @@
     .filter-option { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; cursor: pointer; color: #4a5568; transition: color 0.15s; }
     .filter-option:hover { color: var(--primary); }
     .filter-option input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--primary); }
+    
+    /* Contenedor deslizante para listas largas de filtros */
+    .filter-options-container {
+      max-height: 160px;
+      overflow-y: auto;
+      padding-right: 4px;
+      margin-bottom: 4px;
+    }
+    .filter-options-container::-webkit-scrollbar {
+      width: 5px;
+    }
+    .filter-options-container::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+
     input.search-box { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; margin-bottom: 14px; transition: border 0.2s; outline: none; }
     input.search-box:focus { border-color: var(--secondary); box-shadow: 0 0 0 3px rgba(26,117,255,0.15); }
 
@@ -97,8 +113,6 @@
     .detail-title { font-size: 16px; font-weight: 700; color: var(--primary); margin-bottom: 8px; line-height: 1.3; }
     .detail-meta { font-size: 12px; line-height: 1.6; background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border-color); }
     .detail-meta strong { color: #334155; }
-    .meta-chip-container { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .meta-chip { background: #e2e8f0; color: #334155; padding: 2px 8px; border-radius: 12px; font-size: 10.5px; font-weight: 600; }
     
     .rating-stars { display: flex; gap: 6px; font-size: 22px; color: #cbd5e1; cursor: pointer; margin: 8px 0; }
     .rating-stars span:hover, .rating-stars span.lit { color: #f59e0b; }
@@ -471,9 +485,10 @@ async function loadAreas() {
 function renderFilterAreas() {
   const el = document.getElementById('filter-areas');
   if (!allAreas.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin asignaturas registradas</em>'; return; }
-  el.innerHTML = allAreas.map(a =>
+  const content = allAreas.map(a =>
     `<label class="filter-option"><input type="checkbox" class="chk-area" value="${escH(a.nombre)}" onchange="applyFilters()" checked> ${escH(a.nombre)}</label>`
   ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-area" value="" onchange="applyFilters()" checked> General</label>`;
+  el.innerHTML = `<div class="filter-options-container">${content}</div>`;
 }
 
 function renderAdminAreas() {
@@ -510,9 +525,10 @@ async function loadGrados() {
 function renderFilterGrados() {
   const el = document.getElementById('filter-grados');
   if (!allGrados.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin grados registrados</em>'; return; }
-  el.innerHTML = allGrados.map(g =>
+  const content = allGrados.map(g =>
     `<label class="filter-option"><input type="checkbox" class="chk-grado" value="${escH(g.nombre)}" onchange="applyFilters()" checked> ${escH(g.nombre)}</label>`
   ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-grado" value="" onchange="applyFilters()" checked> General</label>`;
+  el.innerHTML = `<div class="filter-options-container">${content}</div>`;
 }
 
 function renderAdminGrados() {
