@@ -596,11 +596,11 @@ function applyFilters() {
 }
 
 function renderResourcesPage() {
-  const grid   = document.getElementById('resources-grid');
-  const empty  = document.getElementById('empty-msg');
-  const pag    = document.getElementById('pagination');
-  const total  = filteredResources.length;
-  const pages  = Math.ceil(total / PER_PAGE) || 1;
+  const grid  = document.getElementById('resources-grid');
+  const empty = document.getElementById('empty-msg');
+  const pag   = document.getElementById('pagination');
+  const total = filteredResources.length;
+  const pages = Math.ceil(total / PER_PAGE) || 1;
   if (currentPage > pages) currentPage = pages;
 
   const slice = filteredResources.slice((currentPage-1)*PER_PAGE, currentPage*PER_PAGE);
@@ -611,38 +611,79 @@ function renderResourcesPage() {
   empty.classList.add('hidden');
 
   grid.innerHTML = slice.map(r => {
-    const avg     = r.ratingCount ? (r.ratingSum / r.ratingCount).toFixed(1) : '—';
-    const stars   = r.ratingCount ? '★'.repeat(Math.round(r.ratingSum/r.ratingCount)) : '';
-    const area    = r.skill || 'General';
-    const grado   = r.level || 'General';
-    const tipo    = r.type  || '';
+    const avg        = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '-';
+    const stars      = r.rating_count ? '★'.repeat(Math.round(r.rating_sum / r.rating_count)) : '';
+    const area       = r.skill || 'General';
+    const grado      = r.level || 'General';
+    const tipo       = r.type || '';
+    const metadata   = r.metadata && r.metadata !== 'Ninguno' ? r.metadata : '';
     const isSelected = selectedRes?.id === r.id;
-    
-    const editBtn = canEdit ? `<button class="btn sm warn" onclick="event.stopPropagation();openEditModal(${r.id})">✏️</button><button class="btn sm danger" onclick="event.stopPropagation();deleteResource(${r.id})">🗑</button>` : '';
 
-    return `<div class="card ${isSelected ? 'selected' : ''}" onclick="selectResource(${r.id})">
-      ${tipo ? `<span class="card-badge">${escH(tipo)}</span>` : ''}
-      <div>
-        <div class="card-title">${escH(r.title)}</div>
-        <div class="card-meta">📚 ${escH(area)} · 🎓 ${escH(grado)}</div>
-        <div class="card-meta">✍️ ${escH(r.author||'—')}</div>
-        <div style="margin-top:6px">${[area,grado].filter(Boolean).map(t=>`<span class="card-tag">${escH(t)}</span>`).join('')}</div>
+    // Lógica para determinar el botón de acción (Link vs Archivo)
+    let actionBtn = '';
+    if (r.link) {
+      const linkUrl = r.link.startsWith('http') ? r.link : `https://${r.link}`;
+      actionBtn = `
+        <a href="${linkUrl}" target="_blank" rel="noopener noreferrer" 
+           onclick="trackDownload(${r.id})" 
+           class="btn-page active" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px;">
+          🔗 Abrir Enlace
+        </a>`;
+    } else if (r.fileData || r.file_data) {
+      const fileData = r.fileData || r.file_data;
+      const fileName = r.fileName || r.file_name || 'recurso';
+      const ext      = fileName.includes('.') ? fileName.split('.').pop().toUpperCase() : 'ARCHIVO';
+      actionBtn = `
+        <button onclick="downloadResourceFile(${r.id}, '${fileData}', '${fileName}')" 
+                class="btn-page active" style="display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px; cursor:pointer;">
+          📥 Descargar (${ext})
+        </button>`;
+    }
+
+    return `
+      <div class="card ${isSelected ? 'selected' : ''}" onclick="selectResource(${r.id})">
+        ${tipo ? `<span class="card-badge">📁 ${tipo}</span>` : ''}
+        <h3 class="card-title">${r.title}</h3>
+        <p class="card-meta">Por: <strong>${r.author || r.uploader || 'Docente'}</strong></p>
+        
+        <div style="display:flex; gap:4px; flex-wrap:wrap; margin: 6px 0;">
+          <span class="card-tag">📚 ${area}</span>
+          <span class="card-tag">🎓 ${grado}</span>
+          ${metadata ? `<span class="card-tag" style="background:#e0f2fe; color:#0369a1;">🏷️ ${metadata}</span>` : ''}
+        </div>
+
+        ${r.description ? `<p style="font-size:12px; color:#666; margin:6px 0; max-height:40px; overflow:hidden;">${r.description}</p>` : ''}
+
+        <div class="card-footer" style="margin-top:8px; padding-top:6px; border-top:1px solid #f0f0f0;">
+          <div class="card-rating">
+            <span style="color:#f59e0b;">${stars}</span> <span>${avg}</span>
+          </div>
+          <div class="card-actions" onclick="event.stopPropagation()">
+            ${actionBtn}
+          </div>
+        </div>
       </div>
-      <div class="card-footer">
-        <span class="card-rating">${stars} <small>${avg}</small></span>
-        <div class="card-actions">${editBtn}</div>
-      </div>
-    </div>`;
+    `;
   }).join('');
 
-  if (pages <= 1) { pag.innerHTML = ''; return; }
-  let btns = '';
-  for (let i=1; i<=pages; i++) {
-    btns += `<button class="btn-page${i===currentPage?' active':''}" onclick="gotoPage(${i})">${i}</button>`;
-  }
-  pag.innerHTML = btns;
+  renderPagination(pages);
 }
 
+// Funciones auxiliares para descarga y seguimiento
+function trackDownload(id) {
+  const inst = new URLSearchParams(window.location.search).get('inst') || 'default';
+  fetch(`/repositorio/resources/${id}/download?inst=${inst}`, { method: 'POST' }).catch(console.error);
+}
+
+function downloadResourceFile(id, fileData, fileName) {
+  trackDownload(id);
+  const a = document.createElement('a');
+  a.href = fileData;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
 function gotoPage(n) { currentPage = n; renderResourcesPage(); }
 
 // ── VISTA DE DETALLES Y METADATOS ENRIQUECIDOS ───────────────────
