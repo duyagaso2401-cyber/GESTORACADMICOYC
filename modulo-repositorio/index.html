@@ -7,137 +7,159 @@
   <style>
     :root {
       --primary: #1e6091;
+      --primary-dark: #16476b;
       --secondary: #1a75ff;
       --bg: #f4f6f9;
       --white: #ffffff;
-      --text: #333333;
+      --text: #2b2d42;
+      --text-muted: #6c757d;
       --danger: #e63946;
       --success: #2a9d8f;
       --warn: #f1a545;
+      --border-color: #e2e8f0;
+      --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      --card-shadow-hover: 0 8px 20px rgba(0, 0, 0, 0.1);
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif; }
     body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
 
     /* ── HEADER ── */
     header {
       background: linear-gradient(135deg, var(--primary), var(--secondary));
-      color: white; padding: 12px 18px;
+      color: white; padding: 12px 24px;
       display: flex; align-items: center; justify-content: space-between;
-      gap: 12px; flex-wrap: wrap; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 10;
+      gap: 12px; flex-wrap: wrap; box-shadow: 0 2px 10px rgba(0,0,0,0.12); z-index: 10;
     }
-    .hdr-left { display: flex; align-items: center; gap: 10px; }
-    .hdr-logo { max-height: 44px; max-width: 44px; object-fit: contain; border-radius: 4px; background: rgba(255,255,255,.2); }
-    .hdr-title { font-size: 13px; font-weight: bold; line-height: 1.3; letter-spacing: .4px; }
+    .hdr-left { display: flex; align-items: center; gap: 12px; }
+    .hdr-logo { max-height: 46px; max-width: 46px; object-fit: contain; border-radius: 6px; background: rgba(255,255,255,.2); padding: 2px; }
+    .hdr-title { font-size: 14px; font-weight: 700; line-height: 1.3; letter-spacing: .5px; text-transform: uppercase; }
     .hdr-right { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
-    .hdr-session { background: rgba(255,255,255,.15); padding: 5px 10px; border-radius: 5px; white-space: nowrap; }
+    .hdr-session { background: rgba(255,255,255,.18); backdrop-filter: blur(4px); padding: 6px 12px; border-radius: 20px; white-space: nowrap; font-weight: 500; }
 
     /* ── NAV TABS ── */
-    nav.tabs { background: var(--primary); display: flex; gap: 0; border-bottom: 2px solid rgba(255,255,255,.1); }
+    nav.tabs { background: var(--primary-dark); display: flex; gap: 4px; padding: 0 16px; border-bottom: 2px solid rgba(255,255,255,.1); }
     nav.tabs button {
-      color: rgba(255,255,255,.75); background: none; border: none; padding: 10px 16px;
-      font-size: 12px; font-weight: bold; cursor: pointer; border-bottom: 3px solid transparent;
-      transition: all .2s; white-space: nowrap;
+      color: rgba(255,255,255,.75); background: none; border: none; padding: 12px 18px;
+      font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent;
+      transition: all .2s ease; white-space: nowrap;
     }
-    nav.tabs button.active { color: white; border-bottom-color: var(--warn); }
-    nav.tabs button:hover { color: white; background: rgba(255,255,255,.08); }
+    nav.tabs button.active { color: white; border-bottom-color: var(--warn); background: rgba(255,255,255,.08); }
+    nav.tabs button:hover { color: white; background: rgba(255,255,255,.12); }
     nav.tabs button.hidden { display: none; }
 
     /* ── LAYOUT CENTRAL ── */
-    .main-container { display: grid; grid-template-columns: 240px 1fr 320px; gap: 14px; padding: 14px; flex: 1; }
-    @media(max-width:1024px){ .main-container { grid-template-columns: 220px 1fr; } .sidebar-details { grid-column: 1/-1; } }
-    @media(max-width:720px){ .main-container { grid-template-columns: 1fr; padding:10px; } }
+    .main-container { display: grid; grid-template-columns: 260px 1fr 340px; gap: 16px; padding: 16px; flex: 1; }
+    @media(max-width:1100px){ .main-container { grid-template-columns: 240px 1fr; } .sidebar-details { grid-column: 1/-1; } }
+    @media(max-width:768px){ .main-container { grid-template-columns: 1fr; padding:12px; } }
 
     /* ── PANEL GENÉRICO ── */
-    .panel { background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; }
+    .panel { background: white; border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
 
     /* ── FILTROS ── */
-    .filter-section { margin-bottom: 14px; }
-    .filter-section h4 { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; border-bottom: 1px solid #eee; padding-bottom: 3px; }
-    .filter-option { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
-    .filter-option input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; }
-    input.search-box { width: 100%; padding: 9px 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 13px; margin-bottom: 12px; }
+    .filter-section { margin-bottom: 16px; }
+    .filter-section h4 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; border-bottom: 1px solid #edf2f7; padding-bottom: 4px; font-weight: 700; }
+    .filter-option { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; cursor: pointer; color: #4a5568; transition: color 0.15s; }
+    .filter-option:hover { color: var(--primary); }
+    .filter-option input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--primary); }
+    input.search-box { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; margin-bottom: 14px; transition: border 0.2s; outline: none; }
+    input.search-box:focus { border-color: var(--secondary); box-shadow: 0 0 0 3px rgba(26,117,255,0.15); }
 
     /* ── RECURSOS ── */
-    .dash-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid var(--primary); padding-bottom: 8px; gap: 8px; flex-wrap: wrap; }
-    .dash-hdr h2 { font-size: 15px; color: var(--primary); }
-    .resources-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px,1fr)); gap: 12px; }
+    .dash-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 2px solid var(--primary); padding-bottom: 8px; gap: 8px; flex-wrap: wrap; }
+    .dash-hdr h2 { font-size: 16px; color: var(--primary); font-weight: 700; }
+    .resources-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px,1fr)); gap: 14px; }
     .card {
-      background: white; border-radius: 8px; border: 1px solid #e0e0e0; padding: 11px;
+      background: white; border-radius: 10px; border: 1px solid var(--border-color); padding: 14px;
       display: flex; flex-direction: column; justify-content: space-between;
-      position: relative; cursor: pointer; min-height: 175px;
-      transition: transform .15s, box-shadow .15s;
+      position: relative; cursor: pointer; min-height: 190px;
+      transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
     }
-    .card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,.07); }
-    .card-badge { position: absolute; top: 8px; right: 8px; background: #e1f5fe; color: #0288d1; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; }
-    .card-title { font-size: 13px; font-weight: bold; margin: 18px 0 4px; color: #222; word-break: break-word; }
-    .card-meta { font-size: 11px; color: #666; line-height: 1.4; }
-    .card-tag { display: inline-block; background: #f0f0f0; color: #555; padding: 1px 5px; border-radius: 3px; font-size: 10px; margin: 1px 2px 0 0; }
-    .card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 4px; flex-wrap: wrap; }
-    .card-rating { color: #ffb703; font-size: 11px; }
-    .card-actions { display: flex; gap: 3px; }
-    .empty-msg { text-align: center; color: #e63946; padding: 30px 0; font-weight: bold; font-size: 14px; }
+    .card:hover { transform: translateY(-3px); box-shadow: var(--card-shadow-hover); border-color: var(--secondary); }
+    .card.selected { border: 2px solid var(--secondary); background: #f8fa1; }
+    .card-badge { position: absolute; top: 10px; right: 10px; background: #e0f2fe; color: #0369a1; padding: 3px 8px; border-radius: 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .card-title { font-size: 13.5px; font-weight: 700; margin: 16px 0 6px; color: #1e293b; line-height: 1.35; word-break: break-word; }
+    .card-meta { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+    .card-tag { display: inline-block; background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin: 2px 2px 0 0; font-weight: 500; }
+    .card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 4px; flex-wrap: wrap; border-top: 1px solid #f1f5f9; padding-top: 8px; }
+    .card-rating { color: #f59e0b; font-size: 12px; font-weight: 600; }
+    .card-actions { display: flex; gap: 4px; }
+    .empty-msg { text-align: center; color: var(--danger); padding: 40px 0; font-weight: 600; font-size: 14px; }
 
     /* ── PAGINACIÓN ── */
-    .pagination { display: flex; justify-content: center; gap: 4px; margin-top: 16px; flex-wrap: wrap; }
-    .btn-page { padding: 5px 11px; border: 1px solid #ddd; background: white; cursor: pointer; font-size: 12px; border-radius: 3px; }
+    .pagination { display: flex; justify-content: center; gap: 6px; margin-top: 20px; flex-wrap: wrap; }
+    .btn-page { padding: 6px 12px; border: 1px solid var(--border-color); background: white; cursor: pointer; font-size: 12px; border-radius: 6px; font-weight: 600; transition: all 0.15s; }
     .btn-page.active { background: var(--primary); color: white; border-color: var(--primary); }
+    .btn-page:hover:not(.active) { background: #f1f5f9; }
 
     /* ── DETALLES ── */
-    .detail-placeholder { text-align: center; color: #aaa; padding: 30px 10px; font-size: 13px; }
-    .detail-title { font-size: 15px; font-weight: bold; color: var(--primary); margin-bottom: 6px; }
-    .detail-meta { font-size: 12px; line-height: 1.6; background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px; }
-    .detail-meta strong { color: #555; }
-    .rating-stars { display: flex; gap: 6px; font-size: 22px; color: #ccc; cursor: pointer; margin: 6px 0; }
-    .rating-stars span:hover, .rating-stars span.lit { color: #ffb703; }
-    .comment-area { border-top: 1px solid #eee; padding-top: 10px; margin-top: 10px; }
-    .comment-area textarea { width: 100%; height: 55px; border: 1px solid #ccc; border-radius: 4px; padding: 7px; font-size: 12px; resize: vertical; margin-top: 5px; }
-    .btn-dl { background: var(--success); color: white; text-align: center; padding: 11px; border-radius: 5px; text-decoration: none; font-weight: bold; display: block; margin-top: 12px; font-size: 13px; }
+    .detail-placeholder { text-align: center; color: #94a3b8; padding: 40px 10px; font-size: 13px; line-height: 1.5; }
+    .detail-title { font-size: 16px; font-weight: 700; color: var(--primary); margin-bottom: 8px; line-height: 1.3; }
+    .detail-meta { font-size: 12px; line-height: 1.6; background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border-color); }
+    .detail-meta strong { color: #334155; }
+    .meta-chip-container { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .meta-chip { background: #e2e8f0; color: #334155; padding: 2px 8px; border-radius: 12px; font-size: 10.5px; font-weight: 600; }
+    
+    .rating-stars { display: flex; gap: 6px; font-size: 22px; color: #cbd5e1; cursor: pointer; margin: 8px 0; }
+    .rating-stars span:hover, .rating-stars span.lit { color: #f59e0b; }
+    
+    .comment-area { border-top: 1px solid var(--border-color); padding-top: 12px; margin-top: 12px; }
+    .comment-area textarea { width: 100%; height: 60px; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; font-size: 12px; resize: vertical; margin-top: 6px; outline: none; }
+    .comment-area textarea:focus { border-color: var(--secondary); }
+
+    .action-btn-group { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+    .btn-dl { background: var(--success); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s, transform 0.1s; }
+    .btn-dl:hover { background: #238579; transform: translateY(-1px); }
+    .btn-view { background: var(--secondary); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s; }
+    .btn-view:hover { background: #005ce6; }
 
     /* ── ESTADÍSTICAS ── */
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 10px; margin-bottom: 14px; }
-    .stat-box { background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid var(--primary); text-align: center; }
-    .stat-box h4 { font-size: 10px; color: #888; text-transform: uppercase; }
-    .stat-box p { font-size: 22px; font-weight: bold; color: var(--primary); margin-top: 3px; }
-    .log-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
-    .log-table th, .log-table td { border: 1px solid #eee; padding: 7px; text-align: left; }
-    .log-table th { background: #f1f1f1; }
-
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 12px; margin-bottom: 16px; }
+    .stat-box { background: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid var(--primary); text-align: center; border-top: 1px solid var(--border-color); border-right: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); }
+    .stat-box h4 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; }
+    .stat-box p { font-size: 24px; font-weight: 800; color: var(--primary); margin-top: 4px; }
+    
     /* ── PANEL DE CONTROL ── */
-    .ctrl-section { margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 16px; }
-    .ctrl-section h3 { font-size: 14px; color: var(--primary); margin-bottom: 10px; }
-    .ctrl-list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-    .ctrl-chip { background: #e8f4fd; color: var(--primary); padding: 4px 10px; border-radius: 15px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
-    .ctrl-chip button { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--danger); padding: 0 2px; }
-    .ctrl-add { display: flex; gap: 6px; margin-top: 6px; }
-    .ctrl-add input { flex: 1; padding: 7px 9px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
+    .ctrl-section { margin-bottom: 22px; border-bottom: 1px solid var(--border-color); padding-bottom: 18px; }
+    .ctrl-section h3 { font-size: 14px; color: var(--primary); margin-bottom: 12px; font-weight: 700; }
+    .ctrl-list { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .ctrl-chip { background: #e0f2fe; color: var(--primary); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .ctrl-chip button { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--danger); font-weight: bold; padding: 0 2px; }
+    .ctrl-add { display: flex; gap: 8px; margin-top: 8px; max-width: 400px; }
+    .ctrl-add input { flex: 1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; outline: none; }
 
     /* ── BOTONES ── */
-    .btn { background: var(--primary); color: white; border: none; padding: 7px 13px; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+    .btn { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: background 0.2s; }
+    .btn:hover { opacity: 0.95; }
     .btn.danger { background: var(--danger); }
     .btn.success { background: var(--success); }
     .btn.warn { background: var(--warn); }
-    .btn.sm { padding: 4px 8px; font-size: 11px; }
-    .btn:disabled { opacity: .5; cursor: default; }
+    .btn.sm { padding: 4px 8px; font-size: 11px; border-radius: 4px; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── TABLAS ── */
+    .table-wrap { overflow-x: auto; margin-top: 10px; border-radius: 8px; border: 1px solid var(--border-color); }
+    table.tbl { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 500px; background: white; }
+    table.tbl th, table.tbl td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
+    table.tbl th { background: #f8fafc; font-weight: 700; color: #475569; }
+    table.tbl tr:hover { background: #f1f5f9; }
 
     /* ── MODALES ── */
-    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; justify-content: center; align-items: center; z-index: 200; padding: 15px; }
+    .modal-bg { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); backdrop-filter: blur(3px); display: none; justify-content: center; align-items: center; z-index: 200; padding: 15px; }
     .modal-bg.open { display: flex; }
-    .modal { background: white; padding: 20px; border-radius: 8px; width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; }
-    .modal h3 { font-size: 15px; color: var(--primary); margin-bottom: 14px; }
-    .fg { margin-bottom: 11px; }
-    .fg label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 3px; color: #444; }
-    .fg input, .fg select, .fg textarea { width: 100%; padding: 7px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
-    .fg textarea { height: 65px; resize: vertical; }
-    .modal-btns { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+    .modal { background: white; padding: 24px; border-radius: 12px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); }
+    .modal h3 { font-size: 16px; color: var(--primary); margin-bottom: 16px; font-weight: 700; }
+    .fg { margin-bottom: 12px; }
+    .fg label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px; color: #334155; }
+    .fg input, .fg select, .fg textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; outline: none; }
+    .fg input:focus, .fg select:focus, .fg textarea:focus { border-color: var(--secondary); }
+    .fg textarea { height: 70px; resize: vertical; }
+    .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
     /* ── UTILS ── */
     .hidden { display: none !important; }
     .section { display: none; }
     .section.active { display: block; }
-    .table-wrap { overflow-x: auto; margin-top: 10px; }
-    table.tbl { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 420px; }
-    table.tbl th, table.tbl td { border: 1px solid #eee; padding: 7px; text-align: left; }
-    table.tbl th { background: #f1f1f1; }
   </style>
 </head>
 <body>
@@ -164,41 +186,44 @@
 <div id="sec-recursos" class="section active">
   <div class="main-container">
 
-    <!-- FILTROS -->
+    <!-- FILTROS DINÁMICOS -->
     <aside class="panel" id="sidebar-filters">
       <input class="search-box" id="search-input" placeholder="🔍 Buscar recursos…" oninput="applyFilters()">
 
       <div class="filter-section">
         <h4>Área / Asignatura</h4>
-        <div id="filter-areas"><em style="font-size:12px;color:#aaa">Cargando…</em></div>
+        <div id="filter-areas"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
       </div>
 
       <div class="filter-section">
         <h4>Grado / Nivel</h4>
-        <div id="filter-grados"><em style="font-size:12px;color:#aaa">Cargando…</em></div>
+        <div id="filter-grados"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
       </div>
 
       <div class="filter-section">
         <h4>Tipo de Recurso</h4>
-        <div id="filter-tipos"><em style="font-size:12px;color:#aaa">Cargando…</em></div>
+        <div id="filter-tipos"><em style="font-size:12px;color:#aaa">Cargando tipos…</em></div>
       </div>
     </aside>
 
-    <!-- TARJETAS -->
+    <!-- RECURSOS GRID -->
     <div class="panel">
       <div class="dash-hdr">
         <h2>📁 Materiales Didácticos</h2>
         <button id="btn-add-res" class="btn hidden" onclick="openAddModal()">+ Cargar Material</button>
       </div>
       <div id="resources-grid" class="resources-grid"></div>
-      <div id="empty-msg" class="empty-msg hidden">No se encontraron recursos.</div>
+      <div id="empty-msg" class="empty-msg hidden">No se encontraron recursos registrados para esta selección.</div>
       <div id="pagination" class="pagination"></div>
     </div>
 
-    <!-- DETALLES -->
-    <aside class="panel" id="sidebar-details">
+    <!-- DETALLES E INFORMACIÓN DE METADATOS -->
+    <aside class="panel sidebar-details" id="sidebar-details">
       <div id="detail-content">
-        <div class="detail-placeholder">← Selecciona un material para ver sus detalles.</div>
+        <div class="detail-placeholder">
+          <p style="font-size:24px; margin-bottom:8px;">📌</p>
+          Selecciona un recurso o material didáctico para visualizar sus detalles, acceder a los archivos y ver sus metadatos.
+        </div>
       </div>
     </aside>
 
@@ -206,42 +231,40 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ SECCIÓN ESTADÍSTICAS -->
-<div id="sec-stats" class="section" style="padding:14px">
+<div id="sec-stats" class="section" style="padding:16px">
   <div class="panel">
-    <h2 style="font-size:15px;color:var(--primary);margin-bottom:12px">📊 Estadísticas de Uso</h2>
+    <h2 style="font-size:16px;color:var(--primary);margin-bottom:14px">📊 Estadísticas de Uso y Descargas</h2>
     <div class="stats-grid">
-      <div class="stat-box"><h4>Vistas</h4><p id="st-views">0</p></div>
+      <div class="stat-box"><h4>Vistas Totales</h4><p id="st-views">0</p></div>
       <div class="stat-box"><h4>Descargas</h4><p id="st-dl">0</p></div>
-      <div class="stat-box"><h4>Recursos</h4><p id="st-res">0</p></div>
+      <div class="stat-box"><h4>Total Recursos</h4><p id="st-res">0</p></div>
     </div>
-    <h4 style="font-size:12px;color:#555;margin-bottom:6px">Registro de Actividad</h4>
+    <h4 style="font-size:12px;color:#555;margin-bottom:8px">Registro de Actividad Reciente</h4>
     <div class="table-wrap">
       <table class="tbl">
-        <thead><tr><th>Fecha/Hora</th><th>Usuario</th><th>Rol</th><th>Acción</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="4" style="text-align:center;color:#aaa">Sin registros</td></tr></tbody>
+        <thead><tr><th>Fecha/Hora</th><th>Usuario</th><th>Rol</th><th>Acción Realizada</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="4" style="text-align:center;color:#aaa">Sin registros recientes</td></tr></tbody>
       </table>
     </div>
   </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ SECCIÓN PANEL DE CONTROL -->
-<div id="sec-ctrl" class="section" style="padding:14px">
+<div id="sec-ctrl" class="section" style="padding:16px">
   <div class="panel">
-    <h2 style="font-size:15px;color:var(--primary);margin-bottom:14px">⚙️ Panel de Control Institucional</h2>
+    <h2 style="font-size:16px;color:var(--primary);margin-bottom:16px">⚙️ Panel de Control e Identidad Institucional</h2>
 
-    <!-- Configuración general -->
     <div class="ctrl-section">
       <h3>🏫 Configuración de la Institución</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
         <div class="fg" style="margin:0"><label>Nombre del Repositorio</label><input id="cfg-name" placeholder="Ej: REPOSITORIO DIDÁCTICO I.E. …"></div>
-        <div class="fg" style="margin:0"><label>Logo (URL o base64)</label><input id="cfg-logo" placeholder="https://…"></div>
+        <div class="fg" style="margin:0"><label>Logo / Escudo (URL o base64)</label><input id="cfg-logo" placeholder="https://…"></div>
       </div>
       <button class="btn success" onclick="saveConfig()">💾 Guardar Configuración</button>
     </div>
 
-    <!-- ÁREAS -->
     <div class="ctrl-section">
-      <h3>📚 Áreas / Asignaturas</h3>
+      <h3>📚 Áreas / Asignaturas Registradas</h3>
       <ul class="ctrl-list" id="admin-areas-list"></ul>
       <div class="ctrl-add">
         <input id="new-area" placeholder="Ej: Matemáticas, Lenguaje…" onkeydown="if(event.key==='Enter')addArea()">
@@ -249,33 +272,30 @@
       </div>
     </div>
 
-    <!-- GRADOS -->
     <div class="ctrl-section">
-      <h3>🎓 Grados / Niveles</h3>
+      <h3>🎓 Grados / Niveles Educativos</h3>
       <ul class="ctrl-list" id="admin-grados-list"></ul>
       <div class="ctrl-add">
-        <input id="new-grado" placeholder="Ej: Primero, Segundo, 6°…" onkeydown="if(event.key==='Enter')addGrado()">
+        <input id="new-grado" placeholder="Ej: Primero, Sexto, 11°…" onkeydown="if(event.key==='Enter')addGrado()">
         <button class="btn" onclick="addGrado()">+ Agregar</button>
       </div>
     </div>
 
-    <!-- TIPOS -->
     <div class="ctrl-section">
       <h3>📄 Tipos de Recurso</h3>
       <ul class="ctrl-list" id="admin-tipos-list"></ul>
       <div class="ctrl-add">
-        <input id="new-tipo" placeholder="Ej: Guía, Taller, Video…" onkeydown="if(event.key==='Enter')addTipo()">
+        <input id="new-tipo" placeholder="Ej: Guía, Taller, Evaluación, Video…" onkeydown="if(event.key==='Enter')addTipo()">
         <button class="btn" onclick="addTipo()">+ Agregar</button>
       </div>
     </div>
 
-    <!-- RECURSOS (tabla admin) -->
     <div class="ctrl-section">
-      <h3>📋 Todos los Recursos</h3>
+      <h3>📋 Todos los Recursos Registrados</h3>
       <div class="table-wrap">
         <table class="tbl">
           <thead><tr><th>ID</th><th>Título</th><th>Área</th><th>Grado</th><th>Tipo</th><th>Autor</th><th>Acciones</th></tr></thead>
-          <tbody id="admin-res-body"><tr><td colspan="7" style="text-align:center;color:#aaa">Cargando…</td></tr></tbody>
+          <tbody id="admin-res-body"><tr><td colspan="7" style="text-align:center;color:#aaa">Cargando elementos…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -283,36 +303,35 @@
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ MODAL AGREGAR/EDITAR RECURSO -->
+<!-- ═══════════════════════════════════════════════════════ MODAL RECURSO -->
 <div class="modal-bg" id="modal-res">
   <div class="modal">
-    <h3 id="modal-res-title">Cargar Nuevo Material</h3>
+    <h3 id="modal-res-title">Cargar Nuevo Material Didáctico</h3>
     <input type="hidden" id="modal-res-id">
-    <div class="fg"><label>Título *</label><input id="form-title" required></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <div class="fg"><label>Área / Asignatura</label><select id="form-area"><option value="">— General —</option></select></div>
-      <div class="fg"><label>Grado / Nivel</label><select id="form-grado"><option value="">— General —</option></select></div>
+    <div class="fg"><label>Título del Material *</label><input id="form-title" required placeholder="Ej: Guía de Aprendizaje - Fraccionarios"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label>Área / Asignatura</label><select id="form-area"><option value="">— Seleccionar —</option></select></div>
+      <div class="fg"><label>Grado / Nivel</label><select id="form-grado"><option value="">— Seleccionar —</option></select></div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <div class="fg"><label>Tipo de Recurso</label><select id="form-tipo"><option value="">— Sin tipo —</option></select></div>
-      <div class="fg"><label>Autor</label><input id="form-author"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label>Tipo de Recurso</label><select id="form-tipo"><option value="">— Seleccionar —</option></select></div>
+      <div class="fg"><label>Autor del Documento</label><input id="form-author" placeholder="Nombre del docente o creador"></div>
     </div>
-    <div class="fg"><label>Descripción Pedagógica</label><textarea id="form-desc"></textarea></div>
-    <div class="fg"><label>Enlace / URL del Recurso</label><input id="form-link" placeholder="https://drive.google.com/…"></div>
-    <div class="fg"><label>Metadatos / Notas</label><input id="form-meta" placeholder="Ej: Creative Commons, PDF, 2024…"></div>
+    <div class="fg"><label>Descripción Pedagógica</label><textarea id="form-desc" placeholder="Resumen o propósito pedagógico del material…"></textarea></div>
+    <div class="fg"><label>Enlace / URL de Descarga o Archivo *</label><input id="form-link" placeholder="https://drive.google.com/... o enlace directo al PDF"></div>
+    <div class="fg"><label>Metadatos / Etiquetas (Separados por coma)</label><input id="form-meta" placeholder="Ej: PDF, Creative Commons, 2026, 2.5MB"></div>
     <div class="modal-btns">
-      <button class="btn" style="background:#aaa" onclick="closeModal('modal-res')">Cancelar</button>
-      <button class="btn success" onclick="saveResource()">💾 Guardar</button>
+      <button class="btn" style="background:#94a3b8" onclick="closeModal('modal-res')">Cancelar</button>
+      <button class="btn success" onclick="saveResource()">💾 Guardar Material</button>
     </div>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ SCRIPT -->
+<!-- ═══════════════════════════════════════════════════════ SCRIPTS LÓGICA DE NEGOCIO -->
 <script>
-// ── Configuración API ─────────────────────────────────────────────
 const INST        = new URLSearchParams(location.search).get('inst') || 'default';
 const API         = '/api/repositorio';
-// Identidad visual pasada directamente por el portal (máxima prioridad)
+
 const _qpInst     = new URLSearchParams(location.search);
 const _instNombre = decodeURIComponent(_qpInst.get('_instNombre') || '');
 const _instEscudo = decodeURIComponent(_qpInst.get('_instEscudo') || '');
@@ -326,25 +345,21 @@ let allGrados = [];
 let allTipos  = [];
 let selectedRes = null;
 
-// ── Sesión desde parámetros del portal ───────────────────────────
 const _qp       = new URLSearchParams(location.search);
 const _pRole    = (_qp.get('_portalRole') || '').toLowerCase();
 const _pUser    = decodeURIComponent(_qp.get('_portalUser') || 'Visitante');
 
-// Roles con permisos de edición (docentes y directivos)
 const EDIT_ROLES  = ['admin','rector','gestor','directivo','docente'];
-// Roles con Panel de Control completo
 const ADMIN_ROLES = ['admin','rector','gestor','directivo'];
 
 const canEdit  = EDIT_ROLES.includes(_pRole);
 const canAdmin = ADMIN_ROLES.includes(_pRole);
 
 const SESSION_ROLE_LABEL = {
-  admin:'Administrador', rector:'Rector/a', gestor:'Gestor', directivo:'Directivo Docente',
+  admin:'Administrador', rector:'Rector/a', gestor:'Gestor Institucional', directivo:'Directivo Docente',
   docente:'Docente', estudiante:'Estudiante', padre:'Acudiente'
 }[_pRole] || _pRole || 'Visitante';
 
-// ── Helper fetch ──────────────────────────────────────────────────
 async function apiFetch(path, opts = {}) {
   const sep = path.includes('?') ? '&' : '?';
   const url = `${API}${path}${sep}inst=${encodeURIComponent(INST)}`;
@@ -353,48 +368,31 @@ async function apiFetch(path, opts = {}) {
   return r.json();
 }
 
-// ── Inicialización ────────────────────────────────────────────────
+// ── INICIALIZACIÓN ────────────────────────────────────────────────
 async function init() {
-  // Mostrar sesión en header
   document.getElementById('hdr-user').textContent = _pUser;
   document.getElementById('hdr-role').textContent  = SESSION_ROLE_LABEL;
 
-  // Mostrar/ocultar controles según rol
   if (canEdit)  document.getElementById('btn-add-res').classList.remove('hidden');
   if (canAdmin) document.getElementById('tab-ctrl').classList.remove('hidden');
 
-  // 1. Cargar contexto de la institución (nombre real + escudo + grados + asignaturas)
   let instCtx = { nombre: '', escudo: '', grados: [], asignaturas: [] };
-  try {
-    instCtx = await apiFetch('/inst-context');
-  } catch(e) { /* continuar con valores vacíos */ }
+  try { instCtx = await apiFetch('/inst-context'); } catch(e) {}
 
-  // 2. Cargar configuración personalizada guardada en el repositorio
   let repoCfg = { name: '', logo: '' };
   try { repoCfg = await apiFetch('/config'); } catch(e) {}
 
-  // 3. Identidad visual — siempre actualizar desde la API, sin condiciones que bloqueen.
-  //    Prioridad: personalización admin > nombre de la institución real > fallback genérico
-  //    Fuentes del nombre: repoCfg.name (Panel de Control) > instCtx.nombre (BD principal) > _instNombre (URL)
-  //    Ignorar repoCfg.name si es el texto genérico por defecto (no es un nombre personalizado real).
   const NOMBRES_GENERICOS = ['REPOSITORIO INSTITUCIONAL', 'Repositorio Institucional', 'repositorio institucional'];
   const cfgNameReal   = NOMBRES_GENERICOS.includes((repoCfg.name || '').trim()) ? '' : (repoCfg.name || '');
   const instNombreReal = instCtx.nombre || _instNombre || '';
   const tituloBase     = cfgNameReal   || instNombreReal;
 
-  // Formato: "REPOSITORIO DE RECURSOS - [NOMBRE]" cuando hay nombre real;
-  // solo "REPOSITORIO DE RECURSOS" genérico si no hay ninguna fuente disponible.
-  const displayName = tituloBase
-    ? `REPOSITORIO DE RECURSOS - ${tituloBase}`
-    : 'REPOSITORIO DE RECURSOS';
-
+  const displayName = tituloBase ? `REPOSITORIO DE RECURSOS - ${tituloBase}` : 'REPOSITORIO DE RECURSOS';
   const displayLogo = repoCfg.logo || instCtx.escudo || _instEscudo || '';
 
-  // Actualizar DOM siempre — el nombre real tiene prioridad sobre cualquier texto previo
   document.getElementById('site-title-tag').textContent = displayName;
   document.getElementById('hdr-inst-name').textContent  = displayName;
 
-  // Logo institucional
   const logoImg = document.getElementById('hdr-logo');
   if (displayLogo) {
     logoImg.src = displayLogo;
@@ -403,13 +401,12 @@ async function init() {
     logoImg.style.display = 'none';
   }
 
-  // Pre-llenar formulario del Panel de Control con los datos reales
   if (canAdmin) {
     document.getElementById('cfg-name').value = repoCfg.name || instNombreReal;
     document.getElementById('cfg-logo').value = repoCfg.logo || displayLogo;
   }
 
-  // 4. Cargar áreas, grados, tipos y recursos en paralelo
+  // 1. Carga paralela inicial
   await Promise.all([
     loadAreas(),
     loadGrados(),
@@ -417,8 +414,8 @@ async function init() {
     loadResources(),
   ]);
 
-  // 5. Si las tablas de áreas/grados están vacías, sembrar desde datos reales de la institución
-  if (canAdmin && (instCtx.asignaturas.length || instCtx.grados.length)) {
+  // 2. Asimilación automática de Grados/Asignaturas
+  if (canAdmin && (instCtx.asignaturas?.length || instCtx.grados?.length)) {
     const areasVacias  = allAreas.length  === 0;
     const gradosVacios = allGrados.length === 0;
     if (areasVacias || gradosVacios) {
@@ -426,13 +423,12 @@ async function init() {
         await apiFetch('/seed-areas-grados', {
           method: 'POST',
           body: JSON.stringify({
-            asignaturas: instCtx.asignaturas,
-            grados:      instCtx.grados,
+            asignaturas: instCtx.asignaturas || [],
+            grados:      instCtx.grados || [],
           }),
         });
-        // Recargar para reflejar datos sembrados
         await Promise.all([loadAreas(), loadGrados()]);
-      } catch(e) { /* no crítico */ }
+      } catch(e) {}
     }
   }
 
@@ -442,7 +438,7 @@ async function init() {
   }
 }
 
-// ── TABS ──────────────────────────────────────────────────────────
+// ── NAVEGACIÓN ────────────────────────────────────────────────────
 function showTab(tab) {
   ['recursos','stats','ctrl'].forEach(t => {
     document.getElementById('sec-'+t).classList.toggle('active', t===tab);
@@ -452,7 +448,7 @@ function showTab(tab) {
   if (tab === 'ctrl')   { renderAdminAreas(); renderAdminGrados(); renderAdminTipos(); renderAdminResTable(); }
 }
 
-// ── ÁREAS ─────────────────────────────────────────────────────────
+// ── CARGA Y CONTROL DE ÁREAS ──────────────────────────────────────
 async function loadAreas() {
   try { allAreas = await apiFetch('/areas'); } catch(e) { allAreas = []; }
   renderFilterAreas();
@@ -462,7 +458,7 @@ async function loadAreas() {
 
 function renderFilterAreas() {
   const el = document.getElementById('filter-areas');
-  if (!allAreas.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin áreas registradas</em>'; return; }
+  if (!allAreas.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin asignaturas registradas</em>'; return; }
   el.innerHTML = allAreas.map(a =>
     `<label class="filter-option"><input type="checkbox" class="chk-area" value="${escH(a.nombre)}" onchange="applyFilters()" checked> ${escH(a.nombre)}</label>`
   ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-area" value="" onchange="applyFilters()" checked> General</label>`;
@@ -487,12 +483,12 @@ async function addArea() {
 }
 
 async function deleteArea(id) {
-  if (!confirm('¿Eliminar esta área?')) return;
+  if (!confirm('¿Eliminar esta área/asignatura?')) return;
   try { await apiFetch('/areas/'+id, { method:'DELETE' }); await loadAreas(); }
   catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── GRADOS ────────────────────────────────────────────────────────
+// ── CARGA Y CONTROL DE GRADOS ─────────────────────────────────────
 async function loadGrados() {
   try { allGrados = await apiFetch('/grados'); } catch(e) { allGrados = []; }
   renderFilterGrados();
@@ -532,7 +528,7 @@ async function deleteGrado(id) {
   catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── TIPOS ─────────────────────────────────────────────────────────
+// ── TIPOS DE RECURSO ──────────────────────────────────────────────
 async function loadTipos() {
   try { allTipos = await apiFetch('/tipos'); } catch(e) { allTipos = []; }
   renderFilterTipos();
@@ -545,7 +541,7 @@ function renderFilterTipos() {
   if (!allTipos.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin tipos registrados</em>'; return; }
   el.innerHTML = allTipos.map(t =>
     `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="${escH(t.nombre)}" onchange="applyFilters()" checked> ${escH(t.nombre)}</label>`
-  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="" onchange="applyFilters()" checked> Sin tipo</label>`;
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="" onchange="applyFilters()" checked> Sin clasificar</label>`;
 }
 
 function renderAdminTipos() {
@@ -567,12 +563,12 @@ async function addTipo() {
 }
 
 async function deleteTipo(id) {
-  if (!confirm('¿Eliminar este tipo?')) return;
+  if (!confirm('¿Eliminar este tipo de recurso?')) return;
   try { await apiFetch('/tipos/'+id, { method:'DELETE' }); await loadTipos(); }
   catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── RECURSOS ──────────────────────────────────────────────────────
+// ── GESTIÓN DE RECURSOS ───────────────────────────────────────────
 async function loadResources() {
   try { allResources = await apiFetch('/resources'); } catch(e) { allResources = []; }
   applyFilters();
@@ -591,7 +587,7 @@ function applyFilters() {
     const matchArea  = !selAreas.length  || selAreas.includes(area);
     const matchGrado = !selGrados.length || selGrados.includes(grado);
     const matchTipo  = !selTipos.length  || selTipos.includes(tipo);
-    const matchQ     = !q || [r.title, r.author, area, grado, tipo, r.description].join(' ').toLowerCase().includes(q);
+    const matchQ     = !q || [r.title, r.author, area, grado, tipo, r.description, r.metadata].join(' ').toLowerCase().includes(q);
     return matchArea && matchGrado && matchTipo && matchQ;
   });
 
@@ -615,19 +611,22 @@ function renderResourcesPage() {
   empty.classList.add('hidden');
 
   grid.innerHTML = slice.map(r => {
-    const avg   = r.ratingCount ? (r.ratingSum / r.ratingCount).toFixed(1) : '—';
-    const stars  = r.ratingCount ? '★'.repeat(Math.round(r.ratingSum/r.ratingCount)) : '';
-    const area   = r.skill || 'General';
-    const grado  = r.level || 'General';
-    const tipo   = r.type  || '';
+    const avg     = r.ratingCount ? (r.ratingSum / r.ratingCount).toFixed(1) : '—';
+    const stars   = r.ratingCount ? '★'.repeat(Math.round(r.ratingSum/r.ratingCount)) : '';
+    const area    = r.skill || 'General';
+    const grado   = r.level || 'General';
+    const tipo    = r.type  || '';
+    const isSelected = selectedRes?.id === r.id;
+    
     const editBtn = canEdit ? `<button class="btn sm warn" onclick="event.stopPropagation();openEditModal(${r.id})">✏️</button><button class="btn sm danger" onclick="event.stopPropagation();deleteResource(${r.id})">🗑</button>` : '';
-    return `<div class="card" onclick="selectResource(${r.id})">
+
+    return `<div class="card ${isSelected ? 'selected' : ''}" onclick="selectResource(${r.id})">
       ${tipo ? `<span class="card-badge">${escH(tipo)}</span>` : ''}
       <div>
         <div class="card-title">${escH(r.title)}</div>
         <div class="card-meta">📚 ${escH(area)} · 🎓 ${escH(grado)}</div>
         <div class="card-meta">✍️ ${escH(r.author||'—')}</div>
-        <div style="margin-top:4px">${[area,grado,tipo].filter(Boolean).map(t=>`<span class="card-tag">${escH(t)}</span>`).join('')}</div>
+        <div style="margin-top:6px">${[area,grado].filter(Boolean).map(t=>`<span class="card-tag">${escH(t)}</span>`).join('')}</div>
       </div>
       <div class="card-footer">
         <span class="card-rating">${stars} <small>${avg}</small></span>
@@ -636,7 +635,6 @@ function renderResourcesPage() {
     </div>`;
   }).join('');
 
-  // Paginación
   if (pages <= 1) { pag.innerHTML = ''; return; }
   let btns = '';
   for (let i=1; i<=pages; i++) {
@@ -645,45 +643,73 @@ function renderResourcesPage() {
   pag.innerHTML = btns;
 }
 
-function gotoPage(n) { currentPage = n; renderResourcesPage(); window.scrollTo(0,0); }
+function gotoPage(n) { currentPage = n; renderResourcesPage(); }
 
+// ── VISTA DE DETALLES Y METADATOS ENRIQUECIDOS ───────────────────
 function selectResource(id) {
   selectedRes = allResources.find(r => r.id === id);
+  renderResourcesPage(); // Actualizar clase seleccionada en grid
+
   if (!selectedRes) return;
   const r = selectedRes;
-  const avg    = r.ratingCount ? (r.ratingSum/r.ratingCount).toFixed(1) : '—';
+  const avg = r.ratingCount ? (r.ratingSum/r.ratingCount).toFixed(1) : '—';
+
   const starsHtml = [1,2,3,4,5].map(s =>
     `<span class="${s<=Math.round(r.ratingCount?r.ratingSum/r.ratingCount:0)?'lit':''}" onclick="rateResource(${r.id},${s})" title="${s} estrella(s)">★</span>`
   ).join('');
+
   const comments = (r.comments || []).slice(-5).reverse().map(c =>
-    `<div style="border-bottom:1px solid #eee;padding:4px 0;font-size:11px"><strong>${escH(c.user||'—')}</strong>: ${escH(c.text)} <em style="color:#aaa">${c.date||''}</em></div>`
-  ).join('') || '<div style="font-size:11px;color:#aaa">Sin comentarios</div>';
+    `<div style="border-bottom:1px solid #edf2f7;padding:6px 0;font-size:11px"><strong>${escH(c.user||'—')}</strong>: ${escH(c.text)} <br><em style="color:#aaa">${c.date||''}</em></div>`
+  ).join('') || '<div style="font-size:11px;color:#aaa">Sin comentarios registrados.</div>';
+
+  // Formatear Metadatos en Chips
+  let metaChips = '';
+  if (r.metadata) {
+    const rawMeta = r.metadata.split(/[,;|]/);
+    metaChips = `<div class="meta-chip-container">` + 
+      rawMeta.map(m => `<span class="meta-chip">🏷️ ${escH(m.trim())}</span>`).join('') + 
+      `</div>`;
+  }
+
+  // Verificar tipo de enlace para la acción de Descarga/Visualización
+  const isDirectLink = r.link && (r.link.endsWith('.pdf') || r.link.endsWith('.docx') || r.link.endsWith('.xlsx') || r.link.endsWith('.png') || r.link.endsWith('.jpg'));
+  const downloadAttr = isDirectLink ? `download="${escH(r.title)}"` : '';
 
   document.getElementById('detail-content').innerHTML = `
     <div class="detail-title">${escH(r.title)}</div>
     <div class="detail-meta">
-      <strong>Área:</strong> ${escH(r.skill||'General')}<br>
-      <strong>Grado:</strong> ${escH(r.level||'General')}<br>
-      <strong>Tipo:</strong> ${escH(r.type||'—')}<br>
-      <strong>Autor:</strong> ${escH(r.author||'—')}<br>
-      <strong>Subido por:</strong> ${escH(r.uploader||'—')}<br>
-      <strong>Metadatos:</strong> ${escH(r.metadata||'—')}<br>
-      ${r.description ? `<strong>Descripción:</strong> ${escH(r.description)}` : ''}
+      <strong>Área / Asignatura:</strong> ${escH(r.skill||'General')}<br>
+      <strong>Grado / Nivel:</strong> ${escH(r.level||'General')}<br>
+      <strong>Tipo de Recurso:</strong> ${escH(r.type||'Sin especificar')}<br>
+      <strong>Autor/Creador:</strong> ${escH(r.author||'—')}<br>
+      <strong>Subido por:</strong> ${escH(r.uploader||'Docente')}<br>
+      ${r.description ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;"><strong>Propósito Pedagógico:</strong><br>${escH(r.description)}</div>` : ''}
+      ${r.metadata ? `<div style="margin-top:6px;"><strong>Metadatos:</strong> ${metaChips}</div>` : ''}
     </div>
-    <div style="font-size:12px;margin-bottom:4px"><strong>Calificación:</strong> ${avg} / 5 (${r.ratingCount||0} votos)</div>
+    
+    <div style="font-size:12px;margin-bottom:4px"><strong>Valoración:</strong> ${avg} / 5 (${r.ratingCount||0} votos)</div>
     <div class="rating-stars">${starsHtml}</div>
-    <a class="btn-dl" href="${escH(r.link||'#')}" target="_blank" onclick="trackDl(${r.id})">📥 Acceder / Descargar</a>
+
+    <div class="action-btn-group">
+      <a class="btn-dl" href="${escH(r.link||'#')}" target="_blank" ${downloadAttr} onclick="trackDl(${r.id})">
+        📥 Descargar / Acceder al Recurso
+      </a>
+    </div>
+
     <div class="comment-area">
-      <strong style="font-size:12px">Comentarios</strong>
-      <div style="margin:8px 0">${comments}</div>
-      <textarea id="comment-txt" placeholder="Escribe un comentario…"></textarea>
+      <strong style="font-size:12px;color:var(--primary)">Comentarios y Retroalimentación</strong>
+      <div style="margin:8px 0;max-height:150px;overflow-y:auto">${comments}</div>
+      <textarea id="comment-txt" placeholder="Escribe un comentario o sugerencia pedagógica…"></textarea>
       <button class="btn" style="margin-top:6px;width:100%" onclick="sendComment(${r.id})">Enviar comentario</button>
     </div>`;
 }
 
 async function rateResource(id, stars) {
-  try { await apiFetch('/resources/'+id+'/rate', { method:'POST', body: JSON.stringify({ rating: stars }) }); await loadResources(); selectResource(id); }
-  catch(e) {}
+  try {
+    await apiFetch('/resources/'+id+'/rate', { method:'POST', body: JSON.stringify({ rating: stars }) });
+    await loadResources();
+    selectResource(id);
+  } catch(e) {}
 }
 
 async function trackDl(id) {
@@ -694,21 +720,28 @@ async function sendComment(id) {
   const txt = document.getElementById('comment-txt')?.value.trim();
   if (!txt) return;
   try {
-    await apiFetch('/resources/'+id+'/comment', { method:'POST', body: JSON.stringify({ user: _pUser, text: txt, date: new Date().toLocaleDateString('es-CO') }) });
+    await apiFetch('/resources/'+id+'/comment', {
+      method:'POST',
+      body: JSON.stringify({ user: _pUser, text: txt, date: new Date().toLocaleDateString('es-CO') })
+    });
     await loadResources();
     selectResource(id);
   } catch(e) { alert('Error: ' + e.message); }
 }
 
 async function deleteResource(id) {
-  if (!confirm('¿Eliminar este recurso?')) return;
-  try { await apiFetch('/resources/'+id, { method:'DELETE' }); await loadResources(); renderAdminResTable(); document.getElementById('detail-content').innerHTML='<div class="detail-placeholder">← Selecciona un material.</div>'; }
-  catch(e) { alert('Error: ' + e.message); }
+  if (!confirm('¿Eliminar este material pedagógico?')) return;
+  try {
+    await apiFetch('/resources/'+id, { method:'DELETE' });
+    await loadResources();
+    renderAdminResTable();
+    document.getElementById('detail-content').innerHTML='<div class="detail-placeholder">← Selecciona un material para visualizar sus detalles.</div>';
+  } catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── MODAL RECURSO ─────────────────────────────────────────────────
+// ── FORMULARIO MODAL RECURSO ──────────────────────────────────────
 function openAddModal() {
-  document.getElementById('modal-res-title').textContent = 'Cargar Nuevo Material';
+  document.getElementById('modal-res-title').textContent = 'Cargar Nuevo Material Didáctico';
   document.getElementById('modal-res-id').value = '';
   ['form-title','form-author','form-desc','form-link','form-meta'].forEach(id => document.getElementById(id).value='');
   document.getElementById('form-area').value  = '';
@@ -720,7 +753,7 @@ function openAddModal() {
 function openEditModal(id) {
   const r = allResources.find(x => x.id===id);
   if (!r) return;
-  document.getElementById('modal-res-title').textContent = 'Editar Material';
+  document.getElementById('modal-res-title').textContent = 'Editar Material Didáctico';
   document.getElementById('modal-res-id').value  = r.id;
   document.getElementById('form-title').value    = r.title || '';
   document.getElementById('form-author').value   = r.author || '';
@@ -736,7 +769,11 @@ function openEditModal(id) {
 async function saveResource() {
   const id    = document.getElementById('modal-res-id').value;
   const title = document.getElementById('form-title').value.trim();
+  const link  = document.getElementById('form-link').value.trim();
+
   if (!title) { alert('El título es obligatorio.'); return; }
+  if (!link)  { alert('El enlace o URL del recurso es obligatorio.'); return; }
+
   const body = {
     title,
     author:   document.getElementById('form-author').value.trim(),
@@ -744,10 +781,11 @@ async function saveResource() {
     level:    document.getElementById('form-grado').value,
     type:     document.getElementById('form-tipo').value,
     desc:     document.getElementById('form-desc').value.trim(),
-    link:     document.getElementById('form-link').value.trim(),
+    link:     link,
     metadata: document.getElementById('form-meta').value.trim(),
     uploader: _pUser,
   };
+
   try {
     if (id) {
       await apiFetch('/resources/'+id, { method:'PUT', body: JSON.stringify(body) });
@@ -757,23 +795,26 @@ async function saveResource() {
     closeModal('modal-res');
     await loadResources();
     renderAdminResTable();
-  } catch(e) { alert('Error: ' + e.message); }
+  } catch(e) { alert('Error al guardar: ' + e.message); }
 }
 
-// ── TABLA ADMIN DE RECURSOS ───────────────────────────────────────
+// ── VISTA ADMIN TABLA ─────────────────────────────────────────────
 function renderAdminResTable() {
   const tbody = document.getElementById('admin-res-body');
   if (!tbody) return;
-  if (!allResources.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#aaa">Sin recursos</td></tr>'; return; }
+  if (!allResources.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#aaa">Sin recursos cargados</td></tr>'; return; }
   tbody.innerHTML = allResources.map(r =>
     `<tr>
       <td>${r.id}</td>
-      <td>${escH(r.title)}</td>
-      <td>${escH(r.skill||'')}</td>
-      <td>${escH(r.level||'')}</td>
-      <td>${escH(r.type||'')}</td>
-      <td>${escH(r.author||'')}</td>
-      <td><button class="btn sm warn" onclick="openEditModal(${r.id})">✏️</button> <button class="btn sm danger" onclick="deleteResource(${r.id})">🗑</button></td>
+      <td><strong>${escH(r.title)}</strong></td>
+      <td>${escH(r.skill||'—')}</td>
+      <td>${escH(r.level||'—')}</td>
+      <td>${escH(r.type||'—')}</td>
+      <td>${escH(r.author||'—')}</td>
+      <td>
+        <button class="btn sm warn" onclick="openEditModal(${r.id})">✏️ Edit</button> 
+        <button class="btn sm danger" onclick="deleteResource(${r.id})">🗑 Del</button>
+      </td>
     </tr>`
   ).join('');
 }
@@ -789,12 +830,12 @@ async function loadStats() {
     const tbody = document.getElementById('log-body');
     if (!logs.length) return;
     tbody.innerHTML = logs.map(l =>
-      `<tr><td>${escH(l.timestamp||'')}</td><td>${escH(l.user||'')}</td><td>${escH(l.role||'')}</td><td>${escH(l.action||'')}</td></tr>`
+      `<tr><td>${escH(l.timestamp||'')}</td><td>${escH(l.user||'—')}</td><td>${escH(l.role||'—')}</td><td>${escH(l.action||'—')}</td></tr>`
     ).join('');
   } catch(e) {}
 }
 
-// ── CONFIGURACIÓN ─────────────────────────────────────────────────
+// ── CONFIGURACIÓN GLOBAL ──────────────────────────────────────────
 async function saveConfig() {
   const name = document.getElementById('cfg-name').value.trim();
   const logo = document.getElementById('cfg-logo').value.trim();
@@ -804,17 +845,16 @@ async function saveConfig() {
     document.getElementById('hdr-inst-name').textContent = name;
     document.getElementById('site-title-tag').textContent = name;
     if (logo) { const img = document.getElementById('hdr-logo'); img.src=logo; img.style.display=''; }
-    alert('✅ Configuración guardada.');
+    alert('✅ Configuración guardada exitosamente.');
   } catch(e) { alert('Error: ' + e.message); }
 }
 
-// ── UTILIDADES ────────────────────────────────────────────────────
+// ── UTILS ─────────────────────────────────────────────────────────
 function renderFormSelect(selectId, items) {
   const sel = document.getElementById(selectId);
   if (!sel) return;
   const cur = sel.value;
-  const base = sel.options[0]?.outerHTML || '';
-  sel.innerHTML = base + items.map(it => `<option value="${escH(it.nombre)}">${escH(it.nombre)}</option>`).join('');
+  sel.innerHTML = '<option value="">— Seleccionar —</option>' + items.map(it => `<option value="${escH(it.nombre)}">${escH(it.nombre)}</option>`).join('');
   sel.value = cur;
 }
 
@@ -825,9 +865,6 @@ function escH(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── IDENTIDAD VISUAL INMEDIATA (síncrono, antes de cualquier API) ─
-// Muestra lo que venga del parámetro URL mientras llegan las APIs.
-// init() siempre sobreescribe con el nombre real de la BD.
 (function _setHeaderImmediate() {
   if (_instNombre) {
     const title = 'REPOSITORIO DE RECURSOS - ' + _instNombre;
@@ -841,7 +878,6 @@ function escH(s) {
   }
 })();
 
-// ── INICIAR ───────────────────────────────────────────────────────
 init();
 </script>
 
