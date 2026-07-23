@@ -1,987 +1,175 @@
 <!DOCTYPE html>
-<html lang="es"><head>
-<meta charset="UTF-8">
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
-<meta http-equiv="Expires" content="0">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GESTOR ACADÉMICO YC v2.6</title>
-<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;🎓&lt;/text&gt;&lt;/svg&gt;">
-<script>
-// Bloquear y ocultar marca de agua de Replit agresivamente
-(function(){
-  const hideReplit = () => {
-    try {
-      // Buscar por id, class, src, data attributes
-      document.querySelectorAll('[id*="replit"], [class*="replit"], [src*="replit"], [data-replit], [data-component*="replit"]').forEach(el => {
-        if(el && el.parentNode) {
-          el.style.cssText = 'display:none !important; visibility:hidden !important; width:0 !important; height:0 !important; margin:0 !important; padding:0 !important; border:0 !important; opacity:0 !important; pointer-events:none !important;';
-          try { el.remove(); } catch(e) {}
-        }
-      });
-      // Buscar iframes con Replit
-      document.querySelectorAll('iframe').forEach(el => {
-        if (el.src && el.src.includes('replit')) {
-          el.style.cssText = 'display:none !important; visibility:hidden !important;';
-          try { el.remove(); } catch(e) {}
-        }
-      });
-      // Buscar scripts de Replit
-      document.querySelectorAll('script').forEach(el => {
-        if (el.src && (el.src.includes('replit') || el.src.includes('dev-banner'))) {
-          el.style.cssText = 'display:none !important;';
-          try { el.remove(); } catch(e) {}
-        }
-      });
-      // Buscar por nombre de clase común de Replit
-      document.querySelectorAll('.replit-banner, .replit-watermark, .replit-notice, [role="banner"][style*="replit"]').forEach(el => {
-        if(el) {
-          el.style.cssText = 'display:none !important; visibility:hidden !important;';
-          try { el.remove(); } catch(e) {}
-        }
-      });
-    } catch(e) {}
-  };
-  
-  // Ejecutar inmediatamente
-  hideReplit();
-  
-  // Ejecutar cuando está lista la página
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', hideReplit);
-  }
-  
-  // Monitorear continuamente
-  const observer = new MutationObserver(() => { 
-    setTimeout(hideReplit, 10); 
-  });
-  observer.observe(document.documentElement, { 
-    childList: true, 
-    subtree: true, 
-    attributes: true, 
-    attributeFilter: ['id', 'class', 'src', 'data-replit'] 
-  });
-  
-  // Ejecutar en varios puntos del ciclo
-  window.addEventListener('load', hideReplit);
-  setTimeout(hideReplit, 100);
-  setTimeout(hideReplit, 500);
-  setTimeout(hideReplit, 1000);
-  setInterval(hideReplit, 2000);
-})();
-
-// ── PROTECCIÓN DE CÓDIGO FUENTE — GESTOR ACADÉMICO YC ─────────────────────
-(function(){
-  // 1. Bloquear clic derecho (menú contextual)
-  document.addEventListener('contextmenu', function(e){
-    e.preventDefault();
-    return false;
-  }, true);
-  // 2. Bloquear teclas de desarrollo y descarga
-  document.addEventListener('keydown', function(e){
-    if(e.key==='F12'){ e.preventDefault(); e.stopPropagation(); return false; }
-    if(e.ctrlKey&&e.shiftKey&&['I','J','C','K','S'].includes(e.key.toUpperCase())){
-      e.preventDefault(); e.stopPropagation(); return false;
-    }
-    if(e.ctrlKey&&['U','P'].includes(e.key.toUpperCase())){
-      e.preventDefault(); e.stopPropagation(); return false;
-    }
-    // Ctrl+S solo se permite en inputs/textareas
-    if(e.ctrlKey&&e.key.toUpperCase()==='S'&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)){
-      e.preventDefault(); return false;
-    }
-    // Bloquear Ctrl+A en área de app (no en campos de texto)
-    if(e.ctrlKey&&e.key.toUpperCase()==='A'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)&&!document.activeElement?.isContentEditable){
-      e.preventDefault(); return false;
-    }
-  }, true);
-  // 3. Bloquear arrastre
-  document.addEventListener('dragstart', function(e){
-    if(!['INPUT','TEXTAREA'].includes(e.target?.tagName)) e.preventDefault();
-  });
-  // 4. Bloquear selección masiva de texto fuera de campos editables
-  document.addEventListener('selectstart', function(e){
-    if(['INPUT','TEXTAREA'].includes(e.target?.tagName)||e.target?.isContentEditable) return true;
-    // Permitir selección solo para copiar datos académicos en tablas
-    if(e.target?.closest&&e.target.closest('table,textarea,input')) return true;
-    e.preventDefault(); return false;
-  });
-  // 5. Bloquear acceso a devtools por timing (detección básica)
-  let _devtoolsOpen=false;
-  const _dtCheck=function(){
-    const _t=new Date();
-    debugger;
-    if(new Date()-_t>100&&!_devtoolsOpen){
-      _devtoolsOpen=true;
-    }
-  };
-  // 6. Ocultar fuente al imprimir (solo estilos)
-  const _pStyle=document.createElement('style');
-  _pStyle.textContent='@media print{body{display:none!important}}'+'@media print{#app{display:none!important}}';
-  document.head.appendChild(_pStyle);
-})();
-</script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script>
-/* Carga SheetJS con fallback entre dos CDNs para garantizar disponibilidad */
-(function(){
-  function tryLoad(urls,idx){
-    if(idx>=urls.length)return;
-    var s=document.createElement('script');
-    s.src=urls[idx];
-    s.onerror=function(){tryLoad(urls,idx+1);};
-    document.head.appendChild(s);
-  }
-  tryLoad([
-    'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
-    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-    'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'
-  ],0);
-})();
-</script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
-<style>
-/* Ocultar marca de agua de Replit */
-[id*="replit"],
-[class*="replit"],
-[src*="replit"],
-#replit-dev-banner,
-.replit-banner,
-.replit-watermark,
-.replit-notice {
-  display: none !important;
-  visibility: hidden !important;
-}
-iframe[src*="replit"],
-script[src*="replit"] {
-  display: none !important;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:#eef2f7;color:#222;font-size:14px;-webkit-font-smoothing:antialiased}
-#app{min-height:100vh}
-.header{background:linear-gradient(135deg,#003366 0%,#0a4080 100%);border-bottom:4px solid #f1c40f;padding:14px 20px;text-align:center;box-shadow:0 2px 8px rgba(0,51,102,0.25)}
-.header h1{font-size:1.1rem;color:#fff;margin:0;word-break:break-word;overflow-wrap:break-word;max-width:100%;text-shadow:0 1px 3px rgba(0,0,0,0.3)}
-.header p{font-size:0.8rem;color:rgba(255,255,255,0.75);margin:3px 0 0;word-break:break-word;overflow-wrap:break-word}
-.header img{max-height:70px;margin:0 auto 8px;display:block;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3))}
-.topbar{background:#001f3f;color:#fff;padding:8px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;border-bottom:2px solid rgba(241,196,15,0.4)}
-.topbar span{font-size:0.84rem}
-.topbar-btns{display:flex;gap:6px;flex-wrap:wrap}
-.tbtn{border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:0.79rem;font-weight:bold;color:#fff;transition:opacity .15s,transform .1s}
-.tbtn:hover{opacity:.88;transform:translateY(-1px)}
-.main{max-width:1300px;margin:20px auto;padding:0 16px}
-.card{border:1px solid #dce4ef;padding:20px;border-radius:12px;background:#fff;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,51,102,0.07)}
-.card-title{color:#003366;margin:0 0 14px;font-size:1rem;font-weight:700;letter-spacing:.01em}
-.sec-title{color:#003366;margin-bottom:15px;font-weight:700;font-size:1.05rem}
-input,select,textarea{width:100%;padding:9px 12px;border:1px solid #c8d4e8;border-radius:7px;font-size:0.88rem;font-family:inherit;transition:border-color .15s,box-shadow .15s;background:#fff}
-input:focus,select:focus,textarea:focus{outline:none;border-color:#003366;box-shadow:0 0 0 3px rgba(0,51,102,0.12)}
-label.lbl{display:block;margin-bottom:5px;font-size:0.82rem;font-weight:700;color:#444}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-.grid4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px}
-.btn{border:none;border-radius:8px;padding:10px 18px;cursor:pointer;font-weight:700;font-size:0.87rem;color:#fff;transition:opacity .15s,transform .12s,box-shadow .12s}
-.btn:hover{opacity:.9;transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,0.18)}
-.btn-green{background:#27ae60}.btn-blue{background:#1a5276}.btn-navy{background:#003366}
-.btn-gray{background:#7f8c8d}.btn-orange{background:#e67e22}.btn-red{background:#c0392b}
-.btn-purple{background:#6c3483}.btn-teal{background:#16a085}
-.btn-sm{border:none;border-radius:6px;padding:5px 11px;cursor:pointer;font-size:0.79rem;font-weight:700;color:#fff;margin-right:3px;margin-bottom:2px;transition:opacity .12s,transform .1s}
-.btn-sm:hover{opacity:.85;transform:scale(1.05)}
-.flex-gap{display:flex;gap:8px;flex-wrap:wrap}
-table{width:100%;border-collapse:collapse;font-size:0.82rem}
-th{background:#003366;color:#fff;padding:9px 8px;text-align:center;border:1px solid #1a5276;font-size:0.8rem;letter-spacing:.02em}
-td{padding:8px 8px;border:1px solid #e0e8f0;text-align:center}.desc-table td{padding:2px 4px;line-height:1.35;word-break:break-word;white-space:pre-wrap;vertical-align:top;height:auto!important;min-height:unset!important}.desc-table th{padding:4px 5px;}.desc-table td:nth-child(6){text-align:left;min-width:180px;max-width:320px;word-break:break-word}
-tr:nth-child(even){background:#f9f9f9}
-.nota-input{width:65px;padding:5px 6px;border:1px solid #ccc;border-radius:4px;text-align:center;font-size:0.88rem}
-nav.nav{display:flex;gap:6px;margin-bottom:18px;border-bottom:2px solid #eee;padding-bottom:10px;flex-wrap:wrap}
-.nav-btn{padding:9px 16px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;font-size:0.85rem;background:#eaeff2;color:#333}
-.nav-btn.active{background:#003366;color:#fff}
-.info-box{background:#f0f4f8;border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:0.83rem;color:#555}
-.warn-box{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:0.82rem;color:#856404}
-.nota-popup-btn{min-width:44px;padding:5px 2px;border:1px solid rgba(255,255,255,0.35);border-radius:5px;font-size:0.83rem;font-weight:bold;cursor:pointer;color:#fff;transition:transform .1s,box-shadow .1s}
-.nota-popup-btn:hover{transform:scale(1.13);box-shadow:0 2px 8px rgba(0,0,0,0.3)}
-#popupNota{animation:popFade .15s ease}
-@keyframes popFade{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
-.stat-box{padding:8px 16px;border-radius:8px;font-size:0.85rem;color:#fff;display:inline-block}
-.scale-box{margin-top:10px;padding:10px;background:#f8f9fa;border-radius:6px;font-size:0.78rem;color:#666}
-.perfil-box{background:#fff8f0;border:1px solid #ffcc80;border-radius:8px;padding:12px 16px;margin-bottom:15px}
-.perfil-title{font-weight:bold;color:#d35400;font-size:0.92rem;cursor:pointer}
-.empty{color:#999;text-align:center;padding:30px}
-.over{overflow-x:auto}
-.login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(160deg,#001f3f 0%,#003366 50%,#0a4080 100%)}
-.login-box{background:#fff;border-radius:16px;padding:32px 36px;width:100%;max-width:440px;box-shadow:0 12px 50px rgba(0,0,0,0.35);border-top:4px solid #f1c40f}
-.login-box h2{color:#003366;text-align:center;margin-bottom:22px;font-size:1.15rem;font-weight:800}
-.login-box .btn{width:100%;margin-top:4px;font-size:1rem;padding:13px;border-radius:9px}
-.photo-preview{height:80px;width:65px;object-fit:cover;border-radius:6px;border:2px solid #003366;cursor:pointer;transition:transform .15s;box-shadow:0 2px 6px rgba(0,0,0,.15)}
-.photo-preview:hover{transform:scale(1.08);box-shadow:0 4px 12px rgba(0,0,0,.25)}
-.photo-cell{height:58px;width:46px;object-fit:cover;border-radius:5px;border:2px solid #003366;cursor:pointer;transition:transform .15s;box-shadow:0 1px 4px rgba(0,0,0,.12)}
-.photo-cell:hover{transform:scale(1.1);box-shadow:0 3px 10px rgba(0,0,0,.22)}
-/* ===== PHOTO ZOOM MODAL ===== */
-.photo-zoom-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:99999;align-items:center;justify-content:center;cursor:pointer}
-.photo-zoom-ov.open{display:flex}
-.photo-zoom-ov img{max-width:90vw;max-height:85vh;border-radius:12px;border:3px solid #fff;box-shadow:0 8px 40px rgba(0,0,0,0.6);object-fit:contain}
-.photo-zoom-ov .pz-name{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;padding:6px 18px;border-radius:20px;font-size:0.9rem;font-weight:bold;white-space:nowrap;max-width:90vw;overflow:hidden;text-overflow:ellipsis}
-.photo-zoom-ov .pz-close{position:absolute;top:16px;right:20px;background:rgba(255,255,255,0.18);color:#fff;border:none;border-radius:50%;width:38px;height:38px;font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center}
-/* ===== BIGGER EMOJIS FOR INICIAL GRADE ===== */
-.emoji-inicial{font-size:2rem;line-height:1}
-.emoji-badge-inicial{font-size:1.6rem;display:block;text-align:center;margin-bottom:2px}
-.cand-card{border:2px solid #003366;border-radius:8px;padding:12px;text-align:center;cursor:pointer;transition:all 0.2s}
-.cand-card:hover{background:#e8f0fe;border-color:#1a5276}
-.cand-card.selected{background:#003366;color:#fff;border-color:#001f3f}
-.cand-card img{width:70px;height:80px;object-fit:cover;border-radius:6px;margin-bottom:8px;display:block;margin-left:auto;margin-right:auto}
-.tab-btns{display:flex;gap:5px;margin-bottom:15px;flex-wrap:wrap}
-.tab-btn{padding:7px 14px;border:1px solid #ddd;border-radius:5px;cursor:pointer;font-size:0.84rem;background:#eee;font-weight:bold}
-.tab-btn.active{background:#003366;color:#fff;border-color:#003366}
-.horario-cell{padding:4px;border:1px solid #ccc;font-size:0.75rem;min-width:80px;cursor:pointer}
-.horario-cell.ocupado{background:#d5e8d4;color:#1a5276}
-.material-item{background:#f8f9fa;border:1px solid #dee2e6;border-radius:6px;padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
-.material-item .mat-info{flex:1}
-.material-item .mat-info b{display:block;margin-bottom:2px;color:#003366}
-.material-item .mat-info span{font-size:0.78rem;color:#666}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.73rem;font-weight:bold;color:#fff;margin-right:4px}
-@keyframes _slideInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-@media(max-width:700px){.grid2,.grid3,.grid4{grid-template-columns:1fr}}
-/* ===== MOBILE-FIRST IMPROVEMENTS ===== */
-@media(max-width:576px){
-  .topbar{padding:8px 12px;gap:5px}
-  .main{padding:0 8px;margin:10px auto}
-  .card{padding:12px 10px}
-  .btn{font-size:0.8rem;padding:8px 12px}
-  .btn-sm{font-size:0.74rem;padding:3px 7px}
-  nav.nav{gap:4px;padding-bottom:6px}
-  .nav-btn{padding:7px 10px;font-size:0.79rem}
-  .gestor-topbar{padding:10px 12px;gap:6px}
-  .gestor-topbar h2{font-size:0.9rem}
-  .gestor-login-card{padding:20px 16px}
-  .ia-panel{width:calc(100vw - 16px);right:8px;bottom:140px}
-  .ia-fab{bottom:75px;right:12px}
-  .header h1{font-size:0.95rem}
-  .tbtn{font-size:0.72rem;padding:4px 8px}
-  table{font-size:0.75rem}
-  th,td{padding:5px 4px}
-  .over{overflow-x:auto;-webkit-overflow-scrolling:touch}
-  input,select,textarea{font-size:0.85rem;padding:8px 10px}
-  .flex-gap{gap:5px}
-  .nota-input{width:56px}
-  .gestor-back-pill{bottom:14px;right:12px;padding:10px 16px;font-size:0.8rem}
-  .fm-box{margin:0;border-radius:0;max-height:100vh}
-  .fm-ov.open{padding:0}
-}
-@media(max-width:400px){
-  .gestor-hero h1{font-size:1.3rem}
-  .tbtn{font-size:0.68rem;padding:3px 6px}
-}
-
-/* == PRE-MATRÍCULA == */
-.pm-sec{background:#e8f4fd;border-left:4px solid #1a5276;padding:7px 12px;margin:16px 0 8px;font-weight:700;font-size:0.83rem;color:#1a5276;border-radius:0 5px 5px 0}
-.pm-doc-item{background:#f8f9fa;border:1px solid #dee2e6;border-radius:6px;padding:10px 14px;margin-bottom:8px;font-size:0.85rem}
-.pm-doc-item b{color:#003366}
-
-/* == FICHA MATRÍCULA MODAL == */
-.fm-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9000;overflow-y:auto;padding:20px 10px}
-.fm-ov.open{display:flex;align-items:flex-start;justify-content:center}
-.fm-box{background:#fff;border-radius:10px;width:100%;max-width:840px;box-shadow:0 8px 40px rgba(0,0,0,0.35);margin:auto}
-.fm-hd{background:#003366;color:#fff;padding:14px 20px;border-radius:10px 10px 0 0;display:flex;justify-content:space-between;align-items:center}
-.fm-hd h3{margin:0;font-size:0.95rem}
-.fm-bd{padding:18px 20px}
-.fm-sec{background:#dce9f7;border-left:4px solid #003366;padding:7px 12px;margin:16px 0 8px;font-weight:700;font-size:0.83rem;color:#003366;border-radius:0 5px 5px 0}
-.fm-g2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}
-.fm-g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:8px}
-.fm-g1{margin-bottom:8px}
-.fm-f label{display:block;font-size:0.76rem;font-weight:600;color:#555;margin-bottom:3px}
-.fm-f input,.fm-f select,.fm-f textarea{width:100%;padding:7px 10px;border:1px solid #bbb;border-radius:5px;font-size:0.84rem;font-family:inherit}
-.fm-ft{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;padding:14px 20px;border-top:1px solid #ddd;background:#f5f7fa;border-radius:0 0 10px 10px}
-
-/* ===== ASISTENTE IA — AVATAR ADÁN ===== */
-@keyframes _iaFloat{0%,100%{transform:translateY(0) scale(1);}50%{transform:translateY(-5px) scale(1.03);}}
-@keyframes _iaPulse{0%,100%{box-shadow:0 4px 20px rgba(0,51,102,.55),0 0 0 0 rgba(241,196,15,.7);}60%{box-shadow:0 6px 28px rgba(0,51,102,.7),0 0 0 12px rgba(241,196,15,0);}}
-@keyframes _iaSpeak{0%,100%{box-shadow:0 4px 20px rgba(0,51,102,.55),0 0 0 0 rgba(39,174,96,.8);}50%{box-shadow:0 4px 28px rgba(0,51,102,.8),0 0 0 14px rgba(39,174,96,0);}}
-@keyframes _iaMouthTalk{0%,100%{height:2px;border-radius:2px 2px 10px 10px;}30%{height:9px;border-radius:1px 1px 16px 16px;}65%{height:4px;border-radius:2px 2px 12px 12px;}85%{height:10px;border-radius:1px 1px 18px 18px;}}
-@keyframes _iaEyeBlink{0%,82%,100%{transform:scaleY(1);}87%{transform:scaleY(0.04);}92%{transform:scaleY(1);}95%{transform:scaleY(0.04);}99%{transform:scaleY(1);}}
-@keyframes _iaHeadBob{0%,100%{transform:rotate(0deg);}30%{transform:rotate(-0.7deg);}70%{transform:rotate(0.7deg);}}
-@keyframes _iaWave1{0%,100%{height:3px;}50%{height:11px;}}
-@keyframes _iaWave2{0%,100%{height:7px;}50%{height:3px;}}
-@keyframes _iaWave3{0%,100%{height:2px;}50%{height:13px;}}
-@keyframes _iaWave4{0%,100%{height:9px;}50%{height:2px;}}
-@keyframes _iaWave5{0%,100%{height:4px;}50%{height:10px;}}
-.ia-fab{position:fixed;bottom:90px;right:22px;width:64px;height:64px;border-radius:50%;background:#003366;border:3px solid #f1c40f;cursor:pointer;z-index:9010;overflow:hidden;padding:0;display:flex;align-items:center;justify-content:center;animation:_iaFloat 3.5s ease-in-out infinite,_iaPulse 2s ease-in-out infinite;}
-.ia-fab:hover{transform:scale(1.08);}
-.ia-fab.ia-speaking{animation:_iaFloat 0.4s ease-in-out infinite,_iaSpeak 0.6s ease-in-out infinite;}
-.ia-fab .ia-face-wrap{width:100%;height:100%;position:relative;overflow:hidden;border-radius:50%;}
-.ia-fab .ia-face-img{width:100%;height:100%;object-fit:cover;object-position:center 8%;display:block;pointer-events:none;}
-.ia-fab .ia-eye{position:absolute;overflow:hidden;pointer-events:none;}
-.ia-fab .ia-eye-lid{width:100%;height:100%;background:rgba(210,170,130,0.9);border-radius:50%;transform-origin:center top;animation:_iaEyeBlink 5s ease-in-out infinite;}
-.ia-fab .ia-mouth-ov{position:absolute;background:rgba(80,30,30,0.82);border-radius:2px 2px 12px 12px;pointer-events:none;transition:height .08s,opacity .15s;display:none;opacity:0;}
-.ia-fab.ia-speaking .ia-mouth-ov{display:block;opacity:1;animation:_iaMouthTalk 0.22s ease-in-out infinite;}
-.ia-fab.ia-speaking .ia-face-wrap{animation:_iaHeadBob 0.35s ease-in-out infinite;}
-.ia-fab .ia-badge{position:absolute;top:-4px;right:-4px;background:#ea4335;color:#fff;border-radius:50%;width:18px;height:18px;font-size:0.62rem;font-weight:bold;display:flex;align-items:center;justify-content:center;z-index:2;}
-/* Ondas de voz debajo del fab */
-.ia-waves{position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);display:flex;align-items:flex-end;gap:1.5px;height:12px;opacity:0;transition:opacity .3s;pointer-events:none;}
-.ia-fab.ia-speaking .ia-waves{opacity:1;}
-.ia-wbar{display:inline-block;width:3.5px;border-radius:3px;background:linear-gradient(to top,#f1c40f,#27ae60);}
-.ia-wbar:nth-child(1){animation:_iaWave1 .4s ease-in-out infinite;}
-.ia-wbar:nth-child(2){animation:_iaWave2 .35s ease-in-out infinite .05s;}
-.ia-wbar:nth-child(3){animation:_iaWave3 .42s ease-in-out infinite .1s;}
-.ia-wbar:nth-child(4){animation:_iaWave4 .38s ease-in-out infinite .15s;}
-.ia-wbar:nth-child(5){animation:_iaWave5 .44s ease-in-out infinite .08s;}
-.ia-panel{position:fixed;bottom:160px;right:22px;width:360px;max-width:calc(100vw - 30px);background:#fff;border-radius:16px;box-shadow:0 8px 50px rgba(0,0,0,0.28);z-index:9011;display:none;flex-direction:column;overflow:hidden;max-height:calc(100vh - 200px)}
-.ia-panel.open{display:flex}
-.ia-header{background:linear-gradient(135deg,#0d47a1,#1565c0);color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
-.ia-header h4{margin:0;font-size:0.93rem;font-weight:700;letter-spacing:.5px}
-.ia-header small{display:block;font-size:0.7rem;color:#90caf9;margin-top:2px}
-.ia-header-btns{display:flex;gap:6px;align-items:center}
-.ia-hbtn{background:rgba(255,255,255,0.18);border:none;color:#fff;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:0.78rem;font-weight:bold}
-.ia-hbtn:hover{background:rgba(255,255,255,0.32)}
-.ia-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;background:#f8faff}
-.ia-msg{max-width:88%;padding:10px 14px;border-radius:12px;font-size:0.84rem;line-height:1.5;word-break:break-word;white-space:pre-wrap;user-select:text;-webkit-user-select:text}
-.ia-msg.user{background:#0d47a1;color:#fff;align-self:flex-end;border-radius:12px 12px 3px 12px}
-.ia-msg.assistant{background:#fff;color:#222;align-self:flex-start;border:1px solid #e0e7ff;border-radius:12px 12px 12px 3px;box-shadow:0 1px 4px rgba(0,0,0,0.08);user-select:text;-webkit-user-select:text;cursor:text}
-.ia-msg.loading{background:#e8eaf6;color:#5c6bc0;font-style:italic}
-.ia-input-area{padding:10px 12px;border-top:1px solid #e0e7ff;background:#fff;flex-shrink:0}
-.ia-input-row{display:flex;gap:6px;align-items:flex-end}
-.ia-textarea{flex:1;resize:none;border:1.5px solid #c5cae9;border-radius:10px;padding:9px 12px;font-size:0.84rem;font-family:inherit;min-height:40px;max-height:100px;outline:none;transition:border .2s}
-.ia-textarea:focus{border-color:#3f51b5}
-.ia-send{background:#0d47a1;color:#fff;border:none;border-radius:10px;width:42px;height:42px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;transition:background .2s}
-.ia-send:hover{background:#1565c0}
-.ia-send:disabled{background:#b0bec5;cursor:not-allowed}
-.ia-mic{background:#e53935;color:#fff;border:none;border-radius:10px;width:42px;height:42px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;transition:background .2s}
-.ia-mic:hover{background:#c62828}
-.ia-mic.active{background:#b71c1c;animation:micPulse 1s infinite}
-@keyframes micPulse{0%,100%{box-shadow:0 0 0 0 rgba(229,57,53,0.5)}50%{box-shadow:0 0 0 8px rgba(229,57,53,0)}}
-.ia-voz-pill{background:#e53935;color:#fff;font-size:0.75rem;padding:3px 10px;border-radius:10px;margin-bottom:6px;display:none;align-items:center;gap:5px;font-weight:bold}
-.ia-voz-pill.show{display:flex}
-.ia-ctx{font-size:0.7rem;color:#7986cb;padding:0 2px 6px;text-align:center}
-/* ===== GESTOR ACADÉMICO YC — MULTI-PLATAFORMA ===== */
-.gestor-landing{min-height:100vh;background:linear-gradient(145deg,#001428 0%,#002d5a 45%,#004080 100%);display:flex;flex-direction:column;align-items:center;padding:20px 16px 50px}
-.gestor-hero{text-align:center;padding:28px 0 14px;color:#fff;width:100%;max-width:820px}
-.gestor-hero h1{font-size:2.2rem;font-weight:900;letter-spacing:4px;text-shadow:0 3px 12px rgba(0,0,0,0.6);margin-bottom:4px;line-height:1.1}
-.gestor-hero h1 span{color:#f1c40f}
-.gestor-owner{background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);border-radius:12px;padding:14px 24px;display:inline-block;margin:14px 0 8px;backdrop-filter:blur(6px)}
-.gestor-contact{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:10px 0}
-.gestor-wsp{display:flex;align-items:center;gap:8px;background:#25D366;color:#fff;border-radius:25px;padding:10px 20px;text-decoration:none;font-weight:bold;font-size:0.9rem;box-shadow:0 3px 14px rgba(37,211,102,0.45);transition:transform .2s,box-shadow .2s}
-.gestor-wsp:hover{transform:scale(1.07);box-shadow:0 5px 20px rgba(37,211,102,0.65)}
-.gestor-divider{width:100%;max-width:820px;height:1px;background:rgba(255,255,255,0.18);margin:18px 0}
-.gestor-login-wrap{display:flex;gap:22px;flex-wrap:wrap;justify-content:center;width:100%;max-width:870px;margin-top:6px}
-.gestor-login-card{background:#fff;border-radius:14px;padding:28px 30px;width:100%;max-width:395px;box-shadow:0 12px 55px rgba(0,0,0,0.38)}
-.gestor-login-card h3{color:#003366;text-align:center;margin-bottom:18px;font-size:1rem;border-bottom:3px solid #003366;padding-bottom:10px}
-.gestor-admin-wrap{min-height:100vh;background:#eef2f7}
-.gestor-topbar{background:#001428;color:#fff;padding:13px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;border-bottom:4px solid #f1c40f}
-.gestor-topbar h2{margin:0;font-size:1.05rem;color:#f1c40f;letter-spacing:3px;font-weight:900}
-.plat-card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,0.07);transition:box-shadow .25s,transform .25s}
-.plat-card:hover{box-shadow:0 6px 26px rgba(0,0,0,0.13);transform:translateY(-3px)}
-.plat-nombre{font-size:1rem;font-weight:bold;color:#003366;margin-bottom:3px}
-.plat-info{font-size:0.78rem;color:#777;margin-bottom:10px}
-.plat-badge-on{background:#27ae60;color:#fff;border-radius:10px;padding:3px 12px;font-size:0.71rem;font-weight:bold}
-.plat-badge-off{background:#c0392b;color:#fff;border-radius:10px;padding:3px 12px;font-size:0.71rem;font-weight:bold}
-.modulo-toggle{display:flex;align-items:center;gap:10px;font-size:0.85rem;cursor:pointer;background:#f8f9fa;padding:9px 12px;border-radius:8px;border:1px solid #e0e0e0;margin-bottom:6px;transition:background .15s}
-.modulo-toggle:hover{background:#e8f0fe}
-.toggle-sw{position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0}
-.toggle-sw input{opacity:0;width:0;height:0}
-.toggle-sw .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#ccc;border-radius:22px;transition:.3s}
-.toggle-sw .slider:before{position:absolute;content:"";height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
-.toggle-sw input:checked+.slider{background:#27ae60}
-.toggle-sw input:checked+.slider:before{transform:translateX(18px)}
-.gestor-back-pill{position:fixed;bottom:22px;right:22px;background:#c0392b;color:#fff;border:none;border-radius:30px;padding:12px 22px;font-weight:bold;font-size:0.88rem;cursor:pointer;z-index:9001;box-shadow:0 4px 18px rgba(0,0,0,0.35);transition:transform .15s}
-.gestor-back-pill:hover{transform:scale(1.05)}
-@media(max-width:700px){.gestor-hero h1{font-size:1.55rem}.gestor-login-wrap{flex-direction:column;align-items:center}}
-
-/* ================================================================
-   NUEVO LAYOUT CON SIDEBAR — Gestor Académico YC
-   ================================================================ */
-.app-layout{display:flex;flex-direction:column;min-height:100vh}
-.app-body{display:flex;flex:1;min-height:0}
-
-/* --- Sidebar --- */
-.sidebar{
-  width:220px;min-width:220px;background:linear-gradient(180deg,#001428 0%,#001f3f 100%);
-  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
-  overflow-y:auto;overflow-x:hidden;z-index:100;flex-shrink:0;
-  border-right:1px solid rgba(255,255,255,0.06);
-  scrollbar-width:thin;scrollbar-color:rgba(255,255,255,0.12) transparent;
-}
-.sidebar::-webkit-scrollbar{width:4px}
-.sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px}
-.sidebar-hdr{
-  padding:14px 14px 10px;border-bottom:1px solid rgba(255,255,255,0.08);
-  text-align:center;flex-shrink:0
-}
-.sidebar-hdr img{max-height:44px;border-radius:6px;margin-bottom:6px;display:block;margin-left:auto;margin-right:auto}
-.sidebar-hdr .inst-name{font-size:0.72rem;color:#f1c40f;font-weight:700;letter-spacing:.5px;line-height:1.3;word-break:break-word}
-.sidebar-hdr .inst-sub{font-size:0.65rem;color:#7fb3d3;margin-top:2px}
-.sidebar-search{padding:8px 10px 4px;flex-shrink:0}
-.sidebar-search input{width:100%;box-sizing:border-box;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);border-radius:7px;color:#e0eaf5;font-size:0.78rem;padding:6px 10px 6px 28px;outline:none;transition:border .15s,background .15s;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237fb3d3' stroke-width='2.5'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:8px center}
-.sidebar-search input::placeholder{color:rgba(176,207,232,0.5)}
-.sidebar-search input:focus{border-color:rgba(241,196,15,0.5);background:rgba(255,255,255,0.12)}
-.sb-no-results{color:rgba(176,207,232,0.45);font-size:0.75rem;padding:10px 14px;font-style:italic}
-.sidebar-nav{flex:1;padding:6px 0;overflow-y:auto}
-.sidebar-section{font-size:0.6rem;font-weight:700;color:rgba(255,255,255,0.3);
-  letter-spacing:1.5px;text-transform:uppercase;padding:10px 14px 4px;margin-top:4px}
-.sb-btn{
-  display:flex;align-items:center;gap:9px;width:100%;
-  padding:9px 14px;border:none;background:transparent;
-  color:#b0cfe8;font-size:0.82rem;font-weight:600;cursor:pointer;text-align:left;
-  transition:background .15s,color .15s,border-left-color .15s;
-  border-left:3px solid transparent;line-height:1.3
-}
-.sb-btn:hover{background:rgba(255,255,255,0.07);color:#fff}
-.sb-btn.active{background:rgba(241,196,15,0.12);color:#f1c40f;border-left-color:#f1c40f}
-.sb-btn .sb-icon{font-size:1rem;width:18px;text-align:center;flex-shrink:0}
-.sidebar-footer{
-  padding:10px 14px;border-top:1px solid rgba(255,255,255,0.08);
-  font-size:0.72rem;color:#7fb3d3;flex-shrink:0
-}
-.sidebar-footer .sf-user{color:#f1c40f;font-weight:700;margin-bottom:2px;font-size:0.78rem}
-.sidebar-footer .sf-rol{color:#90c4e0;margin-bottom:6px}
-
-/* --- Mobile overlay --- */
-.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:199;backdrop-filter:blur(2px)}
-.sidebar-overlay.open{display:block}
-
-/* --- Topbar nuevo --- */
-.topbar-new{
-  background:#001f3f;color:#fff;
-  padding:8px 18px;display:flex;justify-content:space-between;align-items:center;
-  gap:8px;flex-wrap:wrap;border-bottom:2px solid rgba(241,196,15,0.25);
-  position:sticky;top:0;z-index:50;flex-shrink:0
-}
-.topbar-new .tn-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
-.topbar-new .tn-right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0}
-.topbar-new .tn-userinfo{font-size:0.81rem;line-height:1.35;min-width:0}
-.topbar-new .tn-userinfo b{color:#f1c40f}
-.topbar-new .tn-userinfo .tn-meta{color:#a8d4ef;font-size:0.73rem}
-.hamburger-btn{
-  display:none;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);
-  color:#fff;border-radius:6px;width:36px;height:36px;align-items:center;
-  justify-content:center;font-size:1.15rem;cursor:pointer;flex-shrink:0
-}
-
-/* --- Contenido principal --- */
-.main-content{flex:1;min-width:0;display:flex;flex-direction:column;background:#f0f4f8}
-.main-area{max-width:1280px;width:100%;margin:18px auto;padding:0 18px;flex:1}
-
-/* --- Perfil colapsable (nuevo estilo) --- */
-.perfil-new{
-  background:#fff;border:1px solid #e0e8f0;border-radius:10px;
-  margin-bottom:14px;overflow:hidden;box-shadow:0 1px 4px rgba(0,51,102,0.06)
-}
-.perfil-new summary{
-  padding:10px 16px;cursor:pointer;font-weight:700;font-size:0.84rem;
-  color:#003366;background:#f5f8fc;border-bottom:1px solid #e0e8f0;
-  list-style:none;display:flex;align-items:center;gap:8px
-}
-.perfil-new summary::-webkit-details-marker{display:none}
-.perfil-new summary::after{content:'▾';margin-left:auto;font-size:0.8rem;color:#7b96b2}
-.perfil-new[open] summary::after{content:'▴'}
-.perfil-new .perfil-body{padding:14px 16px}
-
-/* --- Dropdown Acciones (Bootstrap override) --- */
-.dd-acciones .dropdown-menu{min-width:200px;border:1px solid rgba(0,51,102,.15);box-shadow:0 6px 24px rgba(0,0,0,.14);border-radius:8px}
-.dd-acciones .dropdown-item{font-size:0.83rem;padding:8px 16px;color:#2c3e50;display:flex;align-items:center;gap:8px}
-.dd-acciones .dropdown-item:hover{background:#eaf1fb;color:#003366}
-.dd-acciones .dropdown-divider{margin:4px 0}
-
-/* --- Sync chip (ajustado) --- */
-#_syncChip{cursor:pointer;background:rgba(255,255,255,0.1);color:#a8d8f0;
-  padding:4px 10px;border-radius:20px;font-size:0.72rem;white-space:nowrap;
-  border:1px solid rgba(255,255,255,0.15);user-select:none;transition:background .2s}
-#_syncChip:hover{background:rgba(255,255,255,0.18)}
-
-/* --- Grillas con mejor espaciado --- */
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
-.grid4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px}
-.card{border:1px solid #e0e8f0;padding:20px;border-radius:10px;background:#fff;
-  margin-bottom:16px;box-shadow:0 1px 4px rgba(0,51,102,.05)}
-.flex-gap{display:flex;gap:10px;flex-wrap:wrap}
-
-/* --- Botones primarios Bootstrap-first --- */
-.btn-primary-main{background:#003366;color:#fff;border:none;border-radius:6px;
-  padding:9px 18px;font-weight:700;font-size:0.86rem;cursor:pointer;
-  transition:background .15s;display:inline-flex;align-items:center;gap:6px}
-.btn-primary-main:hover{background:#00264d}
-.tbtn{border:none;border-radius:5px;padding:6px 13px;cursor:pointer;font-size:0.79rem;font-weight:700;color:#fff;transition:opacity .15s}
-.tbtn:hover{opacity:.87}
-
-/* --- Responsive mobile-first --- */
-@media(max-width:768px){
-  .sidebar{
-    position:fixed;left:-224px;top:0;height:100%;z-index:200;
-    transition:left .28s cubic-bezier(.4,0,.2,1);box-shadow:4px 0 18px rgba(0,0,0,.35)
-  }
-  .sidebar.open{left:0}
-  .hamburger-btn{display:flex}
-  .main-content{width:100%}
-  .main-area{padding:0 10px;margin:12px auto}
-  .grid2,.grid3,.grid4{grid-template-columns:1fr}
-  .topbar-new{padding:7px 12px}
-}
-@media(max-width:576px){
-  .main-area{padding:0 8px;margin:8px auto}
-  .card{padding:13px 11px}
-  .topbar-new .tn-userinfo .tn-meta{display:none}
-}
-</style>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GESTOR ACADÉMICO YC - Sistema de Gestión Multi-Plataforma de Notas</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body>
-<div id="app">
-  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#001428;flex-direction:column;gap:18px">
-    <div style="font-size:3rem">🎓</div>
-    <div style="color:#f1c40f;font-size:1.1rem;font-weight:700;letter-spacing:3px;font-family:sans-serif">GESTOR ACADÉMICO YC</div>
-    <div style="color:#b0c4de;font-size:0.88rem;font-family:sans-serif">Cargando sistema...</div>
-    <div style="width:40px;height:40px;border:4px solid rgba(241,196,15,0.2);border-top:4px solid #f1c40f;border-radius:50%;animation:_spin 0.9s linear infinite"></div>
-  </div>
-  <style>@keyframes _spin{to{transform:rotate(360deg)}}</style>
-</div>
-<script>
-// ============================================================
-// S01 · CONSTANTES GLOBALES Y CONFIGURACIÓN DEL SISTEMA
-// Claves de BD, estructura vacía de institución, estado global
-// y variables de sesión activa.
-// ============================================================
-const ESCUDO_INETIS = 'data:image/jpeg;base64,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';
-let sesionActiva = null;
-let plataformasConfig = {};
-const CLAVE_BD_PLATAFORMAS = 'gestor_yc_plataformas_config_v2';
-const CLAVE_BD_GLOBAL = 'gestor_yc_db_global_v2';
+<body class="bg-[#0b1f3f] text-white font-sans min-h-screen flex flex-col items-center py-10 px-4">
 
-// ── SISTEMA DE NAVEGACIÓN SPA (RUTAS AMIGABLES) ──
-function inicializarRutas() {
-  window.addEventListener('popstate', (event) => {
-    if (event.state && event.state.vista) {
-      cargarVistaDesdeRuta(event.state.vista, false);
-    } else {
-      verLandingGeneral();
-    }
-  });
-
-  const rutaActual = window.location.pathname.replace(/^\/+/, '') || window.location.hash.replace(/^#\//, '');
-  if (rutaActual && rutaActual !== 'portal.html') {
-    cargarVistaDesdeRuta(rutaActual, false);
-  }
-}
-
-function cambiarSeccion(nombreVista, actualizarHistorial = true) {
-  if (actualizarHistorial) {
-    const nuevaRuta = nombreVista ? nombreVista : 'portal.html';
-    history.pushState({ vista: nombreVista }, '', nuevaRuta);
-  }
-  cargarVistaDesdeRuta(nombreVista, false);
-}
-
-function cargarVistaDesdeRuta(vista, actualizarHistorial = true) {
-  if (actualizarHistorial) {
-    history.pushState({ vista: vista }, '', vista);
-  }
-  
-  if (!vista || vista === 'landing' || vista === 'portal.html') {
-    verLandingGeneral();
-    return;
-  }
-
-  // Lógica de carga según el rol o la vista activa dentro del Gestor Académico YC
-  if (vista === 'admin') {
-    abrirPanelAdminGeneral();
-  } else if (vista === 'docente') {
-    if (sesionActiva && sesionActiva.rol === 'docente') {
-      entrarModuloDocente();
-    } else {
-      mostrarLoginRol('docente');
-    }
-  } else if (vista === 'estudiante') {
-    if (sesionActiva && sesionActiva.rol === 'estudiante') {
-      entrarModuloEstudiante();
-    } else {
-      mostrarLoginRol('estudiante');
-    }
-  } else if (vista === 'padre') {
-    if (sesionActiva && sesionActiva.rol === 'padre') {
-      entrarModuloPadre();
-    } else {
-      mostrarLoginRol('padre');
-    }
-  }
-}
-
-// ============================================================
-// S02 · MOTOR DE PERSISTENCIA Y CARGA INICIAL
-// ============================================================
-function inicializarSistema() {
-  const cfgGuardada = localStorage.getItem(CLAVE_BD_PLATAFORMAS);
-  if (cfgGuardada) {
-    try {
-      plataformasConfig = JSON.parse(cfgGuardada);
-    } catch(e) {
-      cargarConfigPorDefecto();
-    }
-  } else {
-    cargarConfigPorDefecto();
-  }
-  inicializarRutas();
-  verLandingGeneral();
-}
-
-function cargarConfigPorDefecto() {
-  plataformasConfig = {
-    'institucion_1': {
-      id: 'institucion_1',
-      nombre: 'Institución Educativa Rural',
-      activo: true,
-      lema: 'Educación con Calidad y Compromiso',
-      docentes: [
-        { id: 'doc1', nombre: 'Adán Jiménez', pin: '1234', asignaturas: ['Matemáticas', 'Tecnología'] },
-        { id: 'doc2', nombre: 'Miguel Hernández', pin: '5678', asignaturas: ['Ciencias', 'Física'] }
-      ],
-      estudiantes: [
-        { id: 'est1', nombre: 'Carlos Pérez', grado: '6°', pin: '1111' },
-        { id: 'est2', nombre: 'Ana Gómez', grado: '7°', pin: '2222' }
-      ]
-    }
-  };
-  guardarConfigPlataformas();
-}
-
-function guardarConfigPlataformas() {
-  localStorage.setItem(CLAVE_BD_PLATAFORMAS, JSON.stringify(plataformasConfig));
-}
-
-// ============================================================
-// S03 · VISTA LANDING GENERAL (MULTIPLATAFORMA)
-// ============================================================
-function verLandingGeneral() {
-  sesionActiva = null;
-  const app = document.getElementById('app');
-  
-  let htmlCards = '';
-  for (let key in plataformasConfig) {
-    let p = plataformasConfig[key];
-    let estadoBadge = p.activo ? '<span class="plat-badge-on">ACTIVO</span>' : '<span class="plat-badge-off">INACTIVO</span>';
-    
-    htmlCards += `
-      <div class="plat-card">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
-          <div>
-            <div class="plat-nombre">🎓 ${p.nombre}</div>
-            <div class="plat-info">${p.lema || 'Gestión Académica Integral'}</div>
-          </div>
-          <div>${estadoBadge}</div>
+    <!-- Encabezado Principal -->
+    <div class="text-center max-w-4xl mb-8">
+        <div class="flex justify-center mb-3">
+            <div class="bg-indigo-950 p-4 rounded-full border border-indigo-800 shadow-lg">
+                <i class="fa-solid fa-graduation-cap text-4xl text-amber-400"></i>
+            </div>
         </div>
-        ${p.activo ? `
-          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
-            <button class="btn btn-navy" style="flex:1;padding:8px" onclick="seleccionarInstitucion('${p.id}')">Ingresar al Portal</button>
-          </div>
-        ` : `
-          <div style="color:#c0392b;font-size:0.8rem;margin-top:10px;font-weight:bold">Plataforma temporalmente suspendida o inactiva.</div>
-        `}
-      </div>
-    `;
-  }
-
-  app.innerHTML = `
-    <div class="gestor-landing">
-      <div class="gestor-hero">
-        <h1>GESTOR ACADÉMICO <span>YC</span></h1>
-        <p style="color:#b0c4de;font-size:0.95rem;margin-top:6px">Plataforma Multi-Institucional de Gestión y Control Escolar</p>
-        <div class="gestor-owner">
-          <div style="font-size:0.85rem;color:#f1c40f;font-weight:bold">Desarrollado por: Magister Adán Yesid Jiménez Cabrales & Miguel Angel Hernandez Arango</div>
-          <div style="font-size:0.75rem;color:#d0e1fd;margin-top:2px">Sistemas Académicos de Alta Confiabilidad para Zonas Rurales</div>
-        </div>
-        <div class="gestor-contact">
-          <a class="gestor-wsp" href="https://wa.me/573227483837" target="_blank">💬 Soporte WhatsApp 1</a>
-          <a class="gestor-wsp" href="https://wa.me/573205292337" target="_blank">💬 Soporte WhatsApp 2</a>
-        </div>
-      </div>
-      
-      <div class="gestor-divider"></div>
-
-      <div style="width:100%;max-width:900px;margin-top:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <h3 style="color:#fff;font-size:1.1rem">Instituciones Registradas en el Sistema</h3>
-          <button class="btn btn-outline-light btn-sm" onclick="cambiarSeccion('admin', true)">⚙️ Panel Administrador General</button>
-        </div>
-        <div class="grid2">
-          ${htmlCards}
-        </div>
-      </div>
+        <h1 class="text-4xl font-extrabold tracking-wider text-white mb-2">GESTOR ACADÉMICO YC</h1>
+        <p class="text-xl text-indigo-200 font-medium">Sistema de Gestión Multi-Plataforma de Notas</p>
+        <p class="text-sm text-indigo-300 mt-1">Administre todas sus plataformas académicas desde un solo lugar</p>
     </div>
-  `;
-}
 
-// ============================================================
-// S04 · SELECCIÓN DE INSTITUCIÓN Y LOGIN DE ROLES
-// ============================================================
-let institucionActualId = null;
-
-function seleccionarInstitucion(id) {
-  institucionActualId = id;
-  let p = plataformasConfig[id];
-  if (!p || !p.activo) {
-    alert('La institución seleccionada no está disponible.');
-    return;
-  }
-  
-  const app = document.getElementById('app');
-  app.innerHTML = `
-    <div class="login-wrap">
-      <div class="login-box">
-        <div style="text-align:center;font-size:2.5rem;margin-bottom:6px">🏫</div>
-        <h2>${p.nombre}</h2>
-        <p style="text-align:center;font-size:0.8rem;color:#666;margin-bottom:20px">${p.lema}</p>
+    <!-- Contenedor Central / Tarjeta Informativa -->
+    <div class="w-full max-w-4xl bg-[#0e2a52]/80 border border-indigo-900/50 rounded-2xl p-6 md:p-8 shadow-2xl backdrop-blur-md mb-10">
         
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <button class="btn btn-blue" onclick="mostrarLoginRol('docente')">👩‍🏫 Acceso Docentes</button>
-          <button class="btn btn-green" onclick="mostrarLoginRol('estudiante')">👨‍🎓 Acceso Estudiantes</button>
-          <button class="btn btn-orange" onclick="mostrarLoginRol('padre')">👪 Acceso Padres / acudientes</button>
-          <button class="btn btn-gray" style="margin-top:10px" onclick="cambiarSeccion('landing', true)">⬅️ Volver al Selector General</button>
+        <h2 class="text-center text-lg font-semibold text-indigo-200 mb-6">¿Por qué elegir GESTOR ACADÉMICO YC?</h2>
+        
+        <ul class="space-y-2 text-sm md:text-base text-indigo-100 mb-8 text-center">
+            <li class="flex items-center justify-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Gestión centralizada de múltiples instituciones en una sola plataforma</li>
+            <li class="flex items-center justify-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Multi-usuario con roles y permisos granulares</li>
+            <li class="flex items-center justify-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Asistente IA con dictado por voz en español</li>
+            <li class="flex items-center justify-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Disponibilidad offline — descargue el HTML y trabaje sin internet</li>
+            <li class="flex items-center justify-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Sincronización en la nube automática cuando se reconecta</li>
+            <li class="flex items-center justify-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Reportes y boletines PDF en tiempo real</li>
+        </ul>
+
+        <!-- Módulos Disponibles -->
+        <div class="border-t border-indigo-800/60 pt-6">
+            <h3 class="text-center text-emerald-400 font-semibold mb-4 flex items-center justify-center gap-2">
+                <i class="fa-solid fa-clover"></i> Módulos Disponibles (36)
+            </h3>
+            
+            <div class="flex flex-wrap justify-center gap-2 text-xs md:text-sm">
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-chart-pie text-indigo-300 mr-1.5"></i> Tablero Dashboard</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-sliders text-indigo-300 mr-1.5"></i> Configuración Base</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-layer-group text-indigo-300 mr-1.5"></i> Carga Académica</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-users text-indigo-300 mr-1.5"></i> Gestión de Estudiantes</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-key text-amber-400 mr-1.5"></i> Ver Credenciales</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-calendar-days text-indigo-300 mr-1.5"></i> Cronograma de Notas</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-magnifying-glass text-indigo-300 mr-1.5"></i> Estado de Notas</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-table text-indigo-300 mr-1.5"></i> Planilla de Calificaciones</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-file-lines text-indigo-300 mr-1.5"></i> Descriptores</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-clock text-indigo-300 mr-1.5"></i> Horarios</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-user-check text-indigo-300 mr-1.5"></i> Asistencia</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-id-card text-indigo-300 mr-1.5"></i> Observador del Estudiante</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-file-pdf text-indigo-300 mr-1.5"></i> Informes / Reportes</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-folder-open text-indigo-300 mr-1.5"></i> Documentos / Actas</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-chalkboard-user text-indigo-300 mr-1.5"></i> Actividades Docente</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-puzzle-piece text-indigo-300 mr-1.5"></i> Quiz / Evaluaciones</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-award text-indigo-300 mr-1.5"></i> Menciones de Honor</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-person-walking-arrow-right text-indigo-300 mr-1.5"></i> Permisos de Ausencia</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-bullhorn text-indigo-300 mr-1.5"></i> Avisos a Estudiantes (Docente)</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-eye text-indigo-300 mr-1.5"></i> Observador de Aula (Docente)</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-triangle-exclamation text-indigo-300 mr-1.5"></i> Alertas Académicas</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-envelope text-indigo-300 mr-1.5"></i> Comunicado General</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-comments text-indigo-300 mr-1.5"></i> Contacto / Notificaciones</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-bullseye text-indigo-300 mr-1.5"></i> Centros de Interés</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-box-archive text-indigo-300 mr-1.5"></i> Elecciones / Democracia Escolar</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-user-plus text-indigo-300 mr-1.5"></i> Pre-Matrícula Online</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-ticket text-indigo-300 mr-1.5"></i> Recepción de Permisos</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-shield-halved text-indigo-300 mr-1.5"></i> Control de Permisos</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-binoculars text-indigo-300 mr-1.5"></i> Seguimiento del Observador</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-timeline text-indigo-300 mr-1.5"></i> Histórico de Años</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-star text-indigo-300 mr-1.5"></i> Evaluación de Docentes</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-chart-line text-indigo-300 mr-1.5"></i> Seguimiento Eval. Desempeño</span>
+                
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-robot text-indigo-300 mr-1.5"></i> Asistente IA (Adán)</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-microphone text-indigo-300 mr-1.5"></i> Navegación por Voz</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-book text-indigo-300 mr-1.5"></i> Manual de Usuario</span>
+                <span class="bg-[#133866] hover:bg-[#1a4985] text-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-700/50 transition"><i class="fa-solid fa-building-columns text-indigo-300 mr-1.5"></i> Repositorio Institucional</span>
+            </div>
         </div>
-      </div>
+
     </div>
-  `;
-}
 
-function mostrarLoginRol(rol) {
-  const p = plataformasConfig[institucionActualId];
-  const app = document.getElementById('app');
-  
-  let tituloRol = 'Docente';
-  if (rol === 'estudiante') tituloRol = 'Estudiante';
-  if (rol === 'padre') tituloRol = 'Padre de Familia';
-
-  app.innerHTML = `
-    <div class="login-wrap">
-      <div class="login-box">
-        <h2>Acceso - ${tituloRol}</h2>
-        <p style="text-align:center;font-size:0.82rem;color:#555;margin-bottom:16px">${p.nombre}</p>
-        
-        <div style="margin-bottom:12px">
-          <label class="lbl">Seleccione su usuario:</label>
-          <select id="loginSelectUser" class="form-select">
-            <option value="">-- Seleccione --</option>
-            ${generarOpcionesUsuariosRol(rol)}
-          </select>
+    <!-- Propietario y Contacto -->
+    <div class="text-center max-w-xl mb-10">
+        <div class="bg-indigo-950/70 border border-indigo-800 rounded-xl p-4 shadow-lg mb-4">
+            <p class="text-xs uppercase tracking-widest text-indigo-300 font-semibold mb-1">Propietario y Administrador</p>
+            <p class="text-lg font-bold text-white">Adán Yesid Jiménez Cabrales</p>
         </div>
         
-        <div style="margin-bottom:18px">
-          <label class="lbl">PIN de Seguridad o Contraseña:</label>
-          <input type="password" id="loginPin" class="form-control" placeholder="Ingrese PIN">
+        <div class="inline-flex items-center gap-2 bg-[#133866] px-4 py-2 rounded-lg border border-indigo-800 text-sm mb-4">
+            <i class="fa-solid fa-envelope text-indigo-300"></i>
+            <span>E-mail: contacto@gestoracademicoyc.com</span>
         </div>
 
-        <button class="btn btn-navy" onclick="procesarLogin('${rol}')">Ingresar al Sistema</button>
-        <button class="btn btn-gray" style="width:100%;margin-top:8px" onclick="seleccionarInstitucion('${institucionActualId}')">Volver</button>
-      </div>
+        <div class="flex justify-center gap-4 mb-4">
+            <a href="https://wa.me/573205292337" target="_blank" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm transition">
+                <i class="fa-brands fa-whatsapp text-lg"></i> 3205292337
+            </a>
+            <a href="https://wa.me/573227483837" target="_blank" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg shadow-md flex items-center gap-2 text-sm transition">
+                <i class="fa-brands fa-whatsapp text-lg"></i> 3227483837
+            </a>
+        </div>
+
+        <p class="text-xs text-indigo-300 bg-indigo-950/40 px-3 py-1.5 rounded border border-indigo-900 inline-block">
+            Link de acceso al GESTOR ACADÉMICO YC: gestoracademicoyc.onrender.com
+        </p>
     </div>
-  `;
-}
 
-function generarOpcionesUsuariosRol(rol) {
-  const p = plataformasConfig[institucionActualId];
-  if (!p) return '';
-  
-  if (rol === 'docente' && p.docentes) {
-    return p.docentes.map(d => `<option value="${d.id}">${d.nombre} (${d.asignaturas.join(', ')})</option>`).join('');
-  } else if (rol === 'estudiante' && p.estudiantes) {
-    return p.estudiantes.map(e => `<option value="${e.id}">${e.nombre} - ${e.grado}</option>`).join('');
-  } else if (rol === 'padre' && p.estudiantes) {
-    // Para simplificar, los padres acceden vinculados al estudiante
-    return p.estudiantes.map(e => `<option value="${e.id}">Acudiente de: ${e.nombre}</option>`).join('');
-  }
-  return '';
-}
+    <!-- Sección de Acceso Institucional -->
+    <div class="w-full max-w-md bg-white text-slate-800 rounded-2xl p-6 shadow-2xl border border-indigo-100">
+        <div class="text-center mb-6">
+            <div class="inline-block bg-amber-100 p-3 rounded-full text-amber-700 mb-2 shadow-sm">
+                <i class="fa-solid fa-school text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-bold text-[#0b1f3f]">Acceso Institucional</h3>
+            <p class="text-xs text-slate-500 mt-1">Ingrese sus credenciales para acceder a su institución</p>
+        </div>
 
-function procesarLogin(rol) {
-  const userId = document.getElementById('loginSelectUser').value;
-  const pin = document.getElementById('loginPin').value;
-  
-  if (!userId) {
-    alert('Por favor seleccione un usuario.');
-    return;
-  }
-  
-  const p = plataformasConfig[institucionActualId];
-  let usuarioEncontrado = null;
-  
-  if (rol === 'docente') {
-    usuarioEncontrado = p.docentes.find(d => d.id === userId && d.pin === pin);
-  } else if (rol === 'estudiante') {
-    usuarioEncontrado = p.estudiantes.find(e => e.id === userId && e.pin === pin);
-  } else if (rol === 'padre') {
-    usuarioEncontrado = p.estudiantes.find(e => e.id === userId); // Validación flexible para pruebas
-  }
-  
-  if (!usuarioEncontrado && pin !== '1234') { // PIN comodín maestro
-    alert('PIN incorrecto o usuario no válido.');
-    return;
-  }
-  
-  sesionActiva = {
-    institucionId: institucionActualId,
-    rol: rol,
-    datos: usuarioEncontrado || { nombre: 'Usuario Autorizado', id: userId }
-  };
-  
-  cambiarSeccion(rol, true);
-}
+        <form class="space-y-4">
+            <div>
+                <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Rol</label>
+                <select class="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-600 focus:outline-none">
+                    <option>🏫 Administrador / Rector(a)</option>
+                    <option>👨‍🏫 Docente</option>
+                    <option>👨‍🎓 Estudiante</option>
+                </select>
+            </div>
 
-// ============================================================
-// S05 · MÓDULOS DE ROL (DOCENTE, ESTUDIANTE, PADRE)
-// ============================================================
-function entrarModuloDocente() {
-  const p = plataformasConfig[sesionActiva.institucionId];
-  const u = sesionActiva.datos;
-  const app = document.getElementById('app');
-  
-  app.innerHTML = `
-    <div class="app-layout">
-      <div class="topbar-new">
-        <div class="tn-left">
-          <span style="color:#f1c40f;font-weight:bold">🎓 GESTOR ACADÉMICO YC</span>
-          <span style="color:#7fb3d3">| Módulo Docente</span>
-        </div>
-        <div class="tn-right">
-          <div class="tn-userinfo">
-            <div><b>${u.nombre}</b></div>
-            <div class="tn-meta">${p.nombre}</div>
-          </div>
-          <button class="tbtn btn-red" onclick="cambiarSeccion('landing', true)">Cerrar Sesión</button>
-        </div>
-      </div>
-      <div class="main-area">
-        <div class="card">
-          <h3 class="card-title">Panel de Control Docente</h3>
-          <p>Bienvenido al sistema de notas y registro académico. Aquí puede gestionar las calificaciones de sus asignaturas de forma eficiente.</p>
-          <div class="alert alert-info mt-3">
-            <b>Asignaturas asignadas:</b> ${u.asignaturas ? u.asignaturas.join(', ') : 'General'}
-          </div>
-          <div class="flex-gap mt-3">
-            <button class="btn btn-navy" onclick="alert('Módulo de calificaciones activo.')">Registrar Calificaciones</button>
-            <button class="btn btn-green" onclick="alert('Generando planilla en Excel/PDF...')">Exportar Planillas</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-}
+            <div>
+                <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Usuario</label>
+                <input type="text" placeholder="Usuario o N° documento" class="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-600 focus:outline-none">
+            </div>
 
-function entrarModuloEstudiante() {
-  const p = plataformasConfig[sesionActiva.institucionId];
-  const u = sesionActiva.datos;
-  const app = document.getElementById('app');
-  
-  app.innerHTML = `
-    <div class="app-layout">
-      <div class="topbar-new">
-        <div class="tn-left">
-          <span style="color:#f1c40f;font-weight:bold">🎓 GESTOR ACADÉMICO YC</span>
-          <span style="color:#7fb3d3">| Módulo Estudiante</span>
-        </div>
-        <div class="tn-right">
-          <div class="tn-userinfo">
-            <div><b>${u.nombre}</b> (${u.grado || 'Grado General'})</div>
-            <div class="tn-meta">${p.nombre}</div>
-          </div>
-          <button class="tbtn btn-red" onclick="cambiarSeccion('landing', true)">Cerrar Sesión</button>
-        </div>
-      </div>
-      <div class="main-area">
-        <div class="card">
-          <h3 class="card-title">Portal del Estudiante</h3>
-          <p>Consulta tus calificaciones, boletines y actividades pendientes.</p>
-          <div class="alert alert-success mt-3">
-            Estado académico: <b>Matriculado y al día</b>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-}
+            <div>
+                <label class="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">Contraseña</label>
+                <div class="relative">
+                    <input type="password" placeholder="Contraseña o N° documento" class="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-600 focus:outline-none">
+                    <button type="button" class="absolute right-3 top-3 text-slate-400 hover:text-slate-600">
+                        <i class="fa-solid fa-eye"></i>
+                    </button>
+                </div>
+            </div>
 
-function entrarModuloPadre() {
-  const p = plataformasConfig[sesionActiva.institucionId];
-  const u = sesionActiva.datos;
-  const app = document.getElementById('app');
-  
-  app.innerHTML = `
-    <div class="app-layout">
-      <div class="topbar-new">
-        <div class="tn-left">
-          <span style="color:#f1c40f;font-weight:bold">🎓 GESTOR ACADÉMICO YC</span>
-          <span style="color:#7fb3d3">| Módulo Padres</span>
-        </div>
-        <div class="tn-right">
-          <div class="tn-userinfo">
-            <div><b>Acudiente de:</b> ${u.nombre}</div>
-            <div class="tn-meta">${p.nombre}</div>
-          </div>
-          <button class="tbtn btn-red" onclick="cambiarSeccion('landing', true)">Cerrar Sesión</button>
-        </div>
-      </div>
-      <div class="main-area">
-        <div class="card">
-          <h3 class="card-title">Seguimiento Académico del Acudido</h3>
-          <p>Monitoree el progreso escolar, asistencias y reportes disciplinarios.</p>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ============================================================
-// S06 · PANEL ADMINISTRADOR GENERAL
-// ============================================================
-function abrirPanelAdminGeneral() {
-  const app = document.getElementById('app');
-  
-  let listaInstHtml = '';
-  for (let key in plataformasConfig) {
-    let p = plataformasConfig[key];
-    listaInstHtml += `
-      <div class="card" style="margin-bottom:10px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <b>${p.nombre}</b> (${p.id})<br>
-            <small style="color:#666">${p.lema}</small>
-          </div>
-          <div>
-            <button class="btn btn-sm ${p.activo ? 'btn-red' : 'btn-green'}" onclick="toggleInstitucion('${p.id}')">
-              ${p.activo ? 'Desactivar' : 'Activar'}
+            <button type="submit" class="w-full bg-[#0b1f3f] hover:bg-[#153463] text-white font-bold py-3 rounded-lg shadow-lg transition flex items-center justify-center gap-2 text-sm uppercase tracking-wider">
+                <i class="fa-solid fa-school-lock"></i> Ingresar a mi Institución
             </button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
 
-  app.innerHTML = `
-    <div class="gestor-admin-wrap">
-      <div class="gestor-topbar">
-        <h2>PANEL ADMINISTRADOR GENERAL — GESTOR YC</h2>
-        <button class="tbtn btn-gray" onclick="cambiarSeccion('landing', true)">Salir al Inicio</button>
-      </div>
-      <div class="main-area">
-        <div class="card">
-          <h3 class="card-title">Gestión de Instituciones Asociadas</h3>
-          <p>Habilite o deshabilite el acceso a las diferentes instituciones conectadas al sistema central.</p>
-          <div style="margin-top:16px">
-            ${listaInstHtml}
-          </div>
-        </div>
-      </div>
+            <div class="flex gap-2 pt-2">
+                <button type="button" class="flex-1 bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-semibold py-2 px-3 rounded-lg border border-sky-200 transition flex items-center justify-center gap-1">
+                    <i class="fa-solid fa-key"></i> Huella / Face ID
+                </button>
+                <button type="button" class="flex-1 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold py-2 px-3 rounded-lg border border-rose-200 transition flex items-center justify-center gap-1">
+                    <i class="fa-solid fa-lock"></i> ¿Olvidó contraseña?
+                </button>
+            </div>
+        </form>
+
+        <p class="text-center text-[11px] text-slate-400 mt-4">
+            Si tiene un enlace directo de su institución, úselo para acceder.
+        </p>
     </div>
-  `;
-}
 
-function toggleInstitucion(id) {
-  if (plataformasConfig[id]) {
-    plataformasConfig[id].activo = !plataformasConfig[id].activo;
-    guardarConfigPlataformas();
-    abrirPanelAdminGeneral();
-  }
-}
-
-// Inicializar la aplicación al cargar la página
-window.addEventListener('DOMContentLoaded', () => {
-  inicializarSistema();
-});
-</script>
 </body>
 </html>
