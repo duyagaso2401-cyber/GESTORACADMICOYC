@@ -63,6 +63,8 @@
     .filter-option:hover { color: var(--primary); }
     .filter-option input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--primary); }
     
+    .filter-select-all { font-weight: 600; color: var(--primary); border-bottom: 1px dashed #cbd5e1; padding-bottom: 4px; margin-bottom: 6px; }
+
     /* Contenedor deslizante para listas largas de filtros */
     .filter-options-container {
       max-height: 160px;
@@ -198,18 +200,31 @@
   <div class="main-container">
     <aside class="panel" id="sidebar-filters">
       <input class="search-box" id="search-input" placeholder="🔍 Buscar recursos…" oninput="applyFilters()">
+      
       <div class="filter-section">
         <h4>Área / Asignatura</h4>
+        <label class="filter-option filter-select-all">
+          <input type="checkbox" id="chk-all-areas" onchange="toggleSelectAll('area', this.checked)"> (Seleccionar / Deseleccionar todos)
+        </label>
         <div id="filter-areas"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
       </div>
+
       <div class="filter-section">
         <h4>Grado / Nivel</h4>
+        <label class="filter-option filter-select-all">
+          <input type="checkbox" id="chk-all-grados" onchange="toggleSelectAll('grado', this.checked)"> (Seleccionar / Deseleccionar todos)
+        </label>
         <div id="filter-grados"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
       </div>
+
       <div class="filter-section">
         <h4>Tipo de Recurso</h4>
+        <label class="filter-option filter-select-all">
+          <input type="checkbox" id="chk-all-tipos" onchange="toggleSelectAll('tipo', this.checked)"> (Seleccionar / Deseleccionar todos)
+        </label>
         <div id="filter-tipos"><em style="font-size:12px;color:#aaa">Cargando tipos…</em></div>
       </div>
+
       <div class="filter-section">
         <h4>Periodo Académico</h4>
         <select id="filter-periodo" onchange="applyFilters()" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ccc;">
@@ -486,8 +501,8 @@ function renderFilterAreas() {
   const el = document.getElementById('filter-areas');
   if (!allAreas.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin asignaturas registradas</em>'; return; }
   const content = allAreas.map(a =>
-    `<label class="filter-option"><input type="checkbox" class="chk-area" value="${escH(a.nombre)}" onchange="applyFilters()" checked> ${escH(a.nombre)}</label>`
-  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-area" value="" onchange="applyFilters()" checked> General</label>`;
+    `<label class="filter-option"><input type="checkbox" class="chk-area" value="${escH(a.nombre)}" onchange="applyFilters()"> ${escH(a.nombre)}</label>`
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-area" value="" onchange="applyFilters()"> General</label>`;
   el.innerHTML = `<div class="filter-options-container">${content}</div>`;
 }
 
@@ -526,8 +541,8 @@ function renderFilterGrados() {
   const el = document.getElementById('filter-grados');
   if (!allGrados.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin grados registrados</em>'; return; }
   const content = allGrados.map(g =>
-    `<label class="filter-option"><input type="checkbox" class="chk-grado" value="${escH(g.nombre)}" onchange="applyFilters()" checked> ${escH(g.nombre)}</label>`
-  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-grado" value="" onchange="applyFilters()" checked> General</label>`;
+    `<label class="filter-option"><input type="checkbox" class="chk-grado" value="${escH(g.nombre)}" onchange="applyFilters()"> ${escH(g.nombre)}</label>`
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-grado" value="" onchange="applyFilters()"> General</label>`;
   el.innerHTML = `<div class="filter-options-container">${content}</div>`;
 }
 
@@ -564,9 +579,10 @@ async function loadTipos() {
 function renderFilterTipos() {
   const el = document.getElementById('filter-tipos');
   if (!allTipos.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin tipos registrados</em>'; return; }
-  el.innerHTML = allTipos.map(t =>
-    `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="${escH(t.nombre)}" onchange="applyFilters()" checked> ${escH(t.nombre)}</label>`
-  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="" onchange="applyFilters()" checked> Sin clasificar</label>`;
+  const content = allTipos.map(t =>
+    `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="${escH(t.nombre)}" onchange="applyFilters()"> ${escH(t.nombre)}</label>`
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="" onchange="applyFilters()"> Sin clasificar</label>`;
+  el.innerHTML = `<div class="filter-options-container">${content}</div>`;
 }
 
 function renderAdminTipos() {
@@ -591,6 +607,12 @@ async function deleteTipo(id) {
   if (!confirm('¿Eliminar este tipo de recurso?')) return;
   try { await apiFetch('/tipos/'+id, { method:'DELETE' }); await loadTipos(); }
   catch(e) { alert('Error: ' + e.message); }
+}
+
+function toggleSelectAll(type, checked) {
+  const checkboxes = document.querySelectorAll(`.chk-${type}`);
+  checkboxes.forEach(chk => { chk.checked = checked; });
+  applyFilters();
 }
 
 async function loadResources() {
