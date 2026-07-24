@@ -19520,22 +19520,27 @@ function _ejecutarTrasladoMasivo(){
 
 <script>
 /* ============================================================
-   ROUTER HASH-BASED — GESTOR ACADÉMICO YC v2.6
-   Refleja el estado de navegación en la URL via window.location.hash.
-   Funciona 100% estático en cualquier servidor web (Render, GitHub Pages…).
-   No requiere backend, PHP, ni configuración especial del servidor.
+   ROUTER HISTORY API — GESTOR ACADÉMICO YC v2.6
+   Rutas limpias con history.pushState + popstate + pathname.
+   Sin "#" en la URL. Compartible y legible.
 
-   Formato de rutas:
-     #/                          → pantalla de inicio / login
-     #/gestor/{pagina}           → panel del gestor
-     #/plat/{platId}/{modulo}    → app institucional (acceso desde gestor)
-     #/app/{rol}/{modulo}        → app institucional (acceso directo)
-     #/pre-matricula             → prematrícula pública
+   ⚠️  REQUISITO DE SERVIDOR: todas las rutas deben servir este
+   mismo archivo HTML (SPA fallback). En Render, crea el archivo
+   "_redirects" con el contenido:   /* /index.html 200
+   (o en render.yaml: routes con catchall a index.html)
+
+   Esquema de rutas:
+     /                             → pantalla de inicio / login
+     /gestor/{pagina}              → panel del gestor YC
+     /plat/{platId}/{modulo}       → app institucional (desde gestor)
+     /app/{rol}/{modulo}           → app institucional (login directo)
+     /pre-matricula                → prematrícula pública
+     /admin-portal                 → portal de administración
    ============================================================ */
 (function () {
   'use strict';
 
-  /* Claves de sessionStorage para persistir la sesión entre recargas */
+  /* ── Claves de sessionStorage ─────────────────────────────────────────── */
   var _SS = {
     sesion:       '__yc_sesion__',
     gestorSesion: '__yc_gsesion__',
@@ -19546,7 +19551,7 @@ function _ejecutarTrasladoMasivo(){
     gestorPag:    '__yc_gpag__',
   };
 
-  /* ── Persistir estado en sessionStorage ── */
+  /* ── Persistir todo el estado de navegación ───────────────────────────── */
   function _save() {
     try {
       if (typeof sesion !== 'undefined' && sesion)
@@ -19575,7 +19580,7 @@ function _ejecutarTrasladoMasivo(){
     } catch (e) {}
   }
 
-  /* ── Restaurar estado desde sessionStorage (sobrevive recarga) ── */
+  /* ── Restaurar estado desde sessionStorage (sobrevive recarga) ─────────── */
   function _restore() {
     try {
       var s = sessionStorage.getItem(_SS.sesion);
@@ -19601,45 +19606,46 @@ function _ejecutarTrasladoMasivo(){
     } catch (e) {}
   }
 
-  /* ── Calcular el hash que corresponde al estado actual ── */
-  function _computeHash() {
+  /* ── Construir pathname limpio desde el estado actual ─────────────────── */
+  function _computePath() {
     try {
-      if (window._adminPortalMode) return '#/admin-portal';
+      if (window._adminPortalMode) return '/admin-portal';
 
       if (typeof sesion !== 'undefined' && sesion && sesion.r) {
         var modulo = (typeof pag !== 'undefined' && pag) ? pag : 'planilla';
         if (typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma)
-          return '#/plat/' + gestorEnPlataforma + '/' + modulo;
-        return '#/app/' + sesion.r + '/' + modulo;
+          return '/plat/' + gestorEnPlataforma + '/' + modulo;
+        return '/app/' + sesion.r + '/' + modulo;
       }
 
       if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
-        var gp = (typeof _gestorPag !== 'undefined' && _gestorPag) ? _gestorPag : 'plataformas';
-        return '#/gestor/' + gp;
+        var gpPart = (typeof _gestorPag !== 'undefined' && _gestorPag)
+          ? _gestorPag : 'plataformas';
+        return '/gestor/' + gpPart;
       }
 
       if (typeof pag !== 'undefined' && pag === 'pre-matricula-publica')
-        return '#/pre-matricula';
+        return '/pre-matricula';
     } catch (e) {}
-    return '#/';
+    return '/';
   }
 
-  /* ── Actualizar URL sin recargar la página ── */
-  var _timer = null;
-  function _scheduleHashUpdate() {
-    if (_timer) clearTimeout(_timer);
-    _timer = setTimeout(function() {
-      _timer = null;
+  /* ── Actualizar la barra de direcciones sin recargar ──────────────────── */
+  var _navTimer = null;
+  function _scheduleNavUpdate() {
+    if (_navTimer) clearTimeout(_navTimer);
+    _navTimer = setTimeout(function() {
+      _navTimer = null;
       try {
-        var h = _computeHash();
-        if (window.location.hash !== h)
-          history.pushState({ yc: true }, '', h);
+        var target = _computePath();
+        if (window.location.pathname !== target)
+          history.pushState({ yc: 1, path: target }, '', target);
         _save();
       } catch(e) {}
     }, 80);
   }
 
-  /* ── Limpiar sesión del almacenamiento ── */
+  /* ── Limpiar sesiones ─────────────────────────────────────────────────── */
   function _clearSesion() {
     try {
       sessionStorage.removeItem(_SS.sesion);
@@ -19653,124 +19659,143 @@ function _ejecutarTrasladoMasivo(){
     } catch(e) {}
   }
 
-  /* ── Leer el hash actual y mostrar la vista correspondiente ── */
-  function _resolveHash() {
-    var raw   = (window.location.hash || '').replace(/^#\//, '');
-    var parts = raw.split('/').filter(Boolean);
+  /* ── Leer pathname y mostrar la vista correcta ────────────────────────── */
+  function _resolvePath() {
+    var pathname = window.location.pathname || '/';
+    // Normalizar: quitar trailing slash (excepto raíz)
+    if (pathname.length > 1 && pathname.slice(-1) === '/')
+      pathname = pathname.slice(0, -1);
+
+    var parts = pathname.split('/').filter(Boolean);
     var sec   = parts[0] || '';
 
-    /* Sin hash o raíz → pantalla de inicio */
-    if (!sec || sec === 'landing') {
+    /* Raíz → pantalla de inicio */
+    if (!sec) {
       try { iaRemoveWidget(); renderGestorLanding(); } catch(e) { try { render(); } catch(e2){} }
       return;
     }
 
-    /* Panel del gestor: #/gestor/{pagina} */
+    /* Panel del gestor: /gestor/{pagina} */
     if (sec === 'gestor') {
       var gpagTarget = parts[1] || 'plataformas';
       if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
         try { _gestorPag = gpagTarget; renderGestorAdmin(); } catch(e) {}
       } else {
+        /* Sin sesión de gestor → landing con mensaje */
         try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
       }
       return;
     }
 
-    /* App desde el gestor: #/plat/{platId}/{modulo} */
+    /* App desde gestor: /plat/{platId}/{modulo} */
     if (sec === 'plat' && parts[1] && parts[2]) {
+      var platId = parts[1];
+      var modulo = parts[2];
       if (typeof sesion !== 'undefined' && sesion &&
-          typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma === parts[1]) {
-        try { pag = parts[2]; renderApp(); } catch(e) {}
+          typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma === platId) {
+        try { pag = modulo; renderApp(); } catch(e) {}
       } else if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
-        try { renderGestorAdmin(); } catch(e) {}
+        /* Gestor logueado pero la sesión de plataforma se perdió → panel gestor */
+        try { _gestorPag = 'plataformas'; renderGestorAdmin(); } catch(e) {}
       } else {
         try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
       }
       return;
     }
 
-    /* App acceso directo: #/app/{rol}/{modulo} */
+    /* App acceso directo: /app/{rol}/{modulo} */
     if (sec === 'app' && parts[1]) {
+      var moduloTarget = parts[2] || 'planilla';
       if (typeof sesion !== 'undefined' && sesion && sesion.r) {
-        try { pag = parts[2] || 'planilla'; renderApp(); } catch(e) {}
+        try { pag = moduloTarget; renderApp(); } catch(e) {}
       } else {
+        /* Sin sesión → ir al login, guardar destino para post-login */
+        window._routerPendingPath = pathname;
         try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
       }
       return;
     }
 
-    /* Prematrícula pública */
+    /* Prematrícula pública: /pre-matricula */
     if (sec === 'pre-matricula') {
-      try { pag = 'pre-matricula-publica'; iaRemoveWidget(); renderPreMatriculaPublica(); } catch(e) {}
+      try {
+        pag = 'pre-matricula-publica';
+        iaRemoveWidget();
+        renderPreMatriculaPublica();
+      } catch(e) {}
       return;
     }
 
-    /* Admin portal */
+    /* Admin portal: /admin-portal */
     if (sec === 'admin-portal') {
       try { renderAdminPortal(); } catch(e) {}
       return;
     }
 
-    /* Fallback */
-    try { render(); } catch(e) {}
+    /* Cualquier otra ruta desconocida → pantalla de inicio */
+    try { iaRemoveWidget(); renderGestorLanding(); } catch(e) { try { render(); } catch(e2){} }
   }
 
   /* ============================================================
      PARCHEO DE FUNCIONES DE NAVEGACIÓN
-     Envuelve las funciones ya definidas para añadir tracking de URL.
+     Envuelve las funciones originales con tracking de URL limpia.
+     Usa debounce para que renders recursivos no generen entradas
+     duplicadas en el historial del navegador.
      ============================================================ */
 
-  /* navTo — navegación de módulos dentro de la app institucional */
+  /* navTo — cambio de módulo dentro de la app institucional */
   var _origNavTo = window.navTo;
   window.navTo = function(id) {
     try { pag = id; } catch(e) {}
-    try { (_origNavTo || function(i){ pag=i; renderApp(); })(id); } catch(e) {}
-    _scheduleHashUpdate();
+    try {
+      if (_origNavTo) _origNavTo(id);
+      else { pag = id; renderApp(); }
+    } catch(e) {}
+    _scheduleNavUpdate();
   };
 
-  /* renderApp — actualiza hash después de cada render del módulo */
+  /* renderApp — se dispara en cada cambio de módulo */
   var _origRenderApp = window.renderApp;
   window.renderApp = function() {
     try { if (_origRenderApp) _origRenderApp.apply(this, arguments); } catch(e) {}
-    _scheduleHashUpdate();
+    _scheduleNavUpdate();
   };
 
-  /* renderGestorAdmin — actualiza hash cuando el gestor cambia de sección */
+  /* renderGestorAdmin — sección activa del panel del gestor */
   var _origRenderGestorAdmin = window.renderGestorAdmin;
   window.renderGestorAdmin = function() {
     try { if (_origRenderGestorAdmin) _origRenderGestorAdmin.apply(this, arguments); } catch(e) {}
-    _scheduleHashUpdate();
+    _scheduleNavUpdate();
   };
 
-  /* renderGestorLanding — siempre vuelve a la raíz */
+  /* renderGestorLanding — pantalla de inicio → siempre "/" */
   var _origRenderGestorLanding = window.renderGestorLanding;
   window.renderGestorLanding = function() {
     try { if (_origRenderGestorLanding) _origRenderGestorLanding.apply(this, arguments); } catch(e) {}
     try {
-      var h = window.location.hash;
-      if (h && h !== '#/' && h !== '#' && h !== '#/landing')
-        history.pushState({ yc: true }, '', '#/');
+      if (window.location.pathname !== '/')
+        history.pushState({ yc: 1, path: '/' }, '', '/');
       _save();
     } catch(e) {}
   };
 
-  /* cerrarSesion */
+  /* cerrarSesion — limpia sesión y vuelve a "/" */
   var _origCerrarSesion = window.cerrarSesion;
   window.cerrarSesion = function() {
     _clearSesion();
     try { if (_origCerrarSesion) _origCerrarSesion.apply(this, arguments); } catch(e) {}
-    try { history.replaceState({ yc: true }, '', '#/'); } catch(e) {}
+    try { history.replaceState({ yc: 1, path: '/' }, '', '/'); } catch(e) {}
   };
 
-  /* cerrarGestorSesion */
+  /* cerrarGestorSesion — limpia todo y vuelve a "/" */
   var _origCerrarGestorSesion = window.cerrarGestorSesion;
   window.cerrarGestorSesion = function() {
     _clearAll();
     try { if (_origCerrarGestorSesion) _origCerrarGestorSesion.apply(this, arguments); } catch(e) {}
-    try { history.replaceState({ yc: true }, '', '#/'); } catch(e) {}
+    try { history.replaceState({ yc: 1, path: '/' }, '', '/'); } catch(e) {}
   };
 
-  /* salirDeGestorPlataforma */
+  /* salirDeGestorPlataforma — limpia sesión de plataforma */
   var _origSalirGestorPlat = window.salirDeGestorPlataforma;
   window.salirDeGestorPlataforma = function() {
     try {
@@ -19779,42 +19804,57 @@ function _ejecutarTrasladoMasivo(){
       });
     } catch(e) {}
     try { if (_origSalirGestorPlat) _origSalirGestorPlat.apply(this, arguments); } catch(e) {}
-    _scheduleHashUpdate();
+    _scheduleNavUpdate();
   };
 
-  /* entrarPlataforma — cuando el gestor entra a una institución */
+  /* entrarPlataforma — gestor entra a una institución → /plat/{id}/tablero */
   var _origEntrarPlataforma = window.entrarPlataforma;
   window.entrarPlataforma = function(platId) {
     try { if (_origEntrarPlataforma) _origEntrarPlataforma.apply(this, arguments); } catch(e) {}
-    _scheduleHashUpdate();
+    _scheduleNavUpdate();
   };
 
-  /* ── Botón atrás / adelante del navegador ── */
+  /* ── Botón atrás / adelante del navegador ──────────────────────────────── */
   window.addEventListener('popstate', function(e) {
-    if (e.state && e.state.yc !== undefined) _resolveHash();
+    if (e.state && typeof e.state.yc !== 'undefined') {
+      _resolvePath();
+    }
   });
 
   /* ============================================================
      INICIALIZACIÓN
      ============================================================ */
   function _init() {
-    /* 1. Restaurar sesión guardada (sobrevive recarga de página) */
+    /* 1. Restaurar sesión guardada (sobrevive recarga) */
     _restore();
 
-    /* 2. Si hay un hash en la URL, mostrar la vista correspondiente */
-    var h = window.location.hash || '';
-    if (h && h !== '#/' && h !== '#') {
-      setTimeout(_resolveHash, 150);
+    /* 2. Leer la URL actual y mostrar la vista correspondiente.
+          Si estamos en "/" y no hay sesión, el flujo normal de la
+          app ya muestra el login; solo intervenimos en rutas distintas
+          a "/" para resolver el estado correcto. */
+    var initialPath = window.location.pathname || '/';
+    if (initialPath !== '/' && initialPath !== '') {
+      /* Pequeño delay para que todas las funciones del bundle principal
+         estén definidas antes de intentar resolver */
+      setTimeout(_resolvePath, 150);
+    } else {
+      /* Marcar el estado inicial en el historial */
+      try {
+        history.replaceState({ yc: 1, path: '/' }, '', '/');
+      } catch(e) {}
     }
 
-    /* 3. Helper de depuración expuesto en window._router */
+    /* 3. API pública para depuración (window._router) */
     window._router = {
-      computeHash:  _computeHash,
-      resolveHash:  _resolveHash,
+      computePath:  _computePath,
+      resolvePath:  _resolvePath,
       save:         _save,
       restore:      _restore,
-      pushHash: function() {
-        try { var hh = _computeHash(); history.pushState({ yc: true }, '', hh); _save(); } catch(e){}
+      navigate: function(path) {
+        try {
+          history.pushState({ yc: 1, path: path }, '', path);
+          _resolvePath();
+        } catch(e) {}
       }
     };
   }
@@ -19827,4 +19867,3 @@ function _ejecutarTrasladoMasivo(){
 })();
 </script>
 </body>
-</html>
