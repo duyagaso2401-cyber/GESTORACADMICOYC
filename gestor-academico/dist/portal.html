@@ -19520,22 +19520,23 @@ function _ejecutarTrasladoMasivo(){
 
 <script>
 /* ============================================================
-   ROUTER HISTORY API — GESTOR ACADÉMICO YC v2.6
-   Rutas limpias con history.pushState + popstate + pathname.
-   Sin "#" en la URL. Compartible y legible.
+   ROUTER HISTORY API v3 — GESTOR ACADÉMICO YC
+   Rutas limpias con institución en la URL:
+     /plat/{slug}/app/{rol}/{modulo}
 
-   ⚠️  REQUISITO DE SERVIDOR: todas las rutas deben servir este
-   mismo archivo HTML (SPA fallback). En Render, crea el archivo
-   "_redirects" con el contenido:   /* /index.html 200
-   (o en render.yaml: routes con catchall a index.html)
+   Esquema completo:
+     /                                 → landing / login
+     /gestor/{pagina}                  → panel del gestor YC
+     /plat/{slug}/app/{rol}/{modulo}   → app institucional
+     /pre-matricula                    → prematrícula pública
+     /admin-portal                     → portal de administración
 
-   Esquema de rutas:
-     /                             → pantalla de inicio / login
-     /gestor/{pagina}              → panel del gestor YC
-     /plat/{platId}/{modulo}       → app institucional (desde gestor)
-     /app/{rol}/{modulo}           → app institucional (login directo)
-     /pre-matricula                → prematrícula pública
-     /admin-portal                 → portal de administración
+   {slug} = base del plat.sk sin año, ej. "inetis" de "inetis_2026"
+            Si el SK no es legible, se usa el platId interno.
+
+   ⚠️  REQUISITO DE SERVIDOR (Render, Netlify…):
+   Todas las rutas deben servir este mismo HTML.
+   Usa el archivo _redirects con:   /* /index.html 200
    ============================================================ */
 (function () {
   'use strict';
@@ -19547,11 +19548,101 @@ function _ejecutarTrasladoMasivo(){
     gestorEnPlat: '__yc_gplat__',
     platSK:       '__yc_platsk__',
     platId:       '__yc_platid__',
+    platSlug:     '__yc_platslug__',   /* ← slug legible para la URL */
     pag:          '__yc_pag__',
     gestorPag:    '__yc_gpag__',
   };
 
-  /* ── Persistir todo el estado de navegación ───────────────────────────── */
+  /* ── Obtener slug legible a partir del estado global ──────────────────── */
+  function _getPlatSlug() {
+    /* Prioridad: SK base → nombre slugificado → platId */
+    try {
+      var platId = null;
+      if (typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma)
+        platId = gestorEnPlataforma;
+      else if (window._currentPlatId)
+        platId = window._currentPlatId;
+
+      if (!platId) return null;
+
+      /* Intentar derivar slug del SK */
+      var rawSK = window._currentPlatSK || '';
+      if (!rawSK && typeof gestorDB !== 'undefined') {
+        var platObj = (gestorDB.platforms || []).find(function(p){ return p.id === platId; });
+        if (platObj) rawSK = platObj.sk || '';
+      }
+      if (rawSK) {
+        /* Quitar prefijo _hist_YYYY y sufijo _YYYY */
+        var base = rawSK.replace(/_hist_.*/, '').replace(/_d{4,}$/, '').trim();
+        if (base) return base;
+      }
+
+      /* Intentar usar nombre de la plataforma como slug */
+      if (typeof gestorDB !== 'undefined') {
+        var pl = (gestorDB.platforms || []).find(function(p){ return p.id === platId; });
+        if (pl && pl.nombre) {
+          var slug = pl.nombre
+            .toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 40);
+          if (slug) return slug;
+        }
+      }
+
+      /* Fallback: platId */
+      return platId;
+    } catch(e) {}
+    return null;
+  }
+
+  /* ── Buscar platId a partir del slug recibido en la URL ───────────────── */
+  function _findPlatIdFromSlug(slug) {
+    if (!slug) return null;
+    try {
+      if (typeof gestorDB !== 'undefined') {
+        var plats = gestorDB.platforms || [];
+
+        /* 1. Coincidencia exacta por ID */
+        var byId = plats.find(function(p){ return p.id === slug; });
+        if (byId) return byId.id;
+
+        /* 2. Coincidencia por base del SK */
+        var bySK = plats.find(function(p){
+          if (!p.sk) return false;
+          var base = p.sk.replace(/_hist_.*/, '').replace(/_d{4,}$/, '').trim();
+          return base === slug;
+        });
+        if (bySK) {
+          window._currentPlatSK = bySK.sk;
+          window._currentPlatId = bySK.id;
+          return bySK.id;
+        }
+
+        /* 3. Coincidencia por slug del nombre */
+        var byName = plats.find(function(p){
+          if (!p.nombre) return false;
+          var s = p.nombre
+            .toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 40);
+          return s === slug;
+        });
+        if (byName) {
+          window._currentPlatSK = byName.sk;
+          window._currentPlatId = byName.id;
+          return byName.id;
+        }
+      }
+    } catch(e) {}
+    /* Último recurso: tratar el slug como platId directamente */
+    return slug;
+  }
+
+  /* ── Persistir estado ─────────────────────────────────────────────────── */
   function _save() {
     try {
       if (typeof sesion !== 'undefined' && sesion)
@@ -19562,8 +19653,8 @@ function _ejecutarTrasladoMasivo(){
         sessionStorage.setItem(_SS.gestorSesion, JSON.stringify(gestorSesion));
       else sessionStorage.removeItem(_SS.gestorSesion);
 
-      if (typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma)
-        sessionStorage.setItem(_SS.gestorEnPlat, gestorEnPlataforma);
+      var gep = (typeof gestorEnPlataforma !== 'undefined') ? gestorEnPlataforma : null;
+      if (gep) sessionStorage.setItem(_SS.gestorEnPlat, gep);
       else sessionStorage.removeItem(_SS.gestorEnPlat);
 
       if (window._currentPlatSK) sessionStorage.setItem(_SS.platSK, window._currentPlatSK);
@@ -19572,15 +19663,20 @@ function _ejecutarTrasladoMasivo(){
       if (window._currentPlatId) sessionStorage.setItem(_SS.platId, window._currentPlatId);
       else sessionStorage.removeItem(_SS.platId);
 
+      /* Guardar slug calculado para usarlo en rutas futuras */
+      var slug = _getPlatSlug();
+      if (slug) sessionStorage.setItem(_SS.platSlug, slug);
+      else sessionStorage.removeItem(_SS.platSlug);
+
       sessionStorage.setItem(_SS.pag,
         (typeof pag !== 'undefined' && pag) ? pag : 'planilla');
 
       if (typeof _gestorPag !== 'undefined' && _gestorPag)
         sessionStorage.setItem(_SS.gestorPag, _gestorPag);
-    } catch (e) {}
+    } catch(e) {}
   }
 
-  /* ── Restaurar estado desde sessionStorage (sobrevive recarga) ─────────── */
+  /* ── Restaurar estado desde sessionStorage ────────────────────────────── */
   function _restore() {
     try {
       var s = sessionStorage.getItem(_SS.sesion);
@@ -19598,12 +19694,15 @@ function _ejecutarTrasladoMasivo(){
       var pid = sessionStorage.getItem(_SS.platId);
       if (pid) { window._currentPlatId = pid; }
 
+      /* platSlug no necesita restaurarse en variables globales;
+         solo se usa para construir URLs */
+
       var p = sessionStorage.getItem(_SS.pag);
       if (p) { pag = p; }
 
       var gpag = sessionStorage.getItem(_SS.gestorPag);
       if (gpag) { _gestorPag = gpag; }
-    } catch (e) {}
+    } catch(e) {}
   }
 
   /* ── Construir pathname limpio desde el estado actual ─────────────────── */
@@ -19613,9 +19712,19 @@ function _ejecutarTrasladoMasivo(){
 
       if (typeof sesion !== 'undefined' && sesion && sesion.r) {
         var modulo = (typeof pag !== 'undefined' && pag) ? pag : 'planilla';
-        if (typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma)
-          return '/plat/' + gestorEnPlataforma + '/' + modulo;
-        return '/app/' + sesion.r + '/' + modulo;
+        var rol    = sesion.r;
+
+        /* Obtener slug de la institución activa */
+        var slug = _getPlatSlug()
+               || sessionStorage.getItem(_SS.platSlug)
+               || null;
+
+        if (slug) {
+          /* Ruta completa con institución */
+          return '/plat/' + slug + '/app/' + rol + '/' + modulo;
+        }
+        /* Sin institución identificada (acceso legacy de un solo archivo) */
+        return '/app/' + rol + '/' + modulo;
       }
 
       if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
@@ -19626,7 +19735,7 @@ function _ejecutarTrasladoMasivo(){
 
       if (typeof pag !== 'undefined' && pag === 'pre-matricula-publica')
         return '/pre-matricula';
-    } catch (e) {}
+    } catch(e) {}
     return '/';
   }
 
@@ -19648,75 +19757,95 @@ function _ejecutarTrasladoMasivo(){
   /* ── Limpiar sesiones ─────────────────────────────────────────────────── */
   function _clearSesion() {
     try {
-      sessionStorage.removeItem(_SS.sesion);
-      sessionStorage.removeItem(_SS.pag);
+      [_SS.sesion, _SS.pag, _SS.platSlug, _SS.platId,
+       _SS.platSK, _SS.gestorEnPlat].forEach(function(k){
+        sessionStorage.removeItem(k);
+      });
     } catch(e) {}
   }
 
   function _clearAll() {
     try {
-      Object.keys(_SS).forEach(function(k) { sessionStorage.removeItem(_SS[k]); });
+      Object.keys(_SS).forEach(function(k){ sessionStorage.removeItem(_SS[k]); });
     } catch(e) {}
   }
 
   /* ── Leer pathname y mostrar la vista correcta ────────────────────────── */
   function _resolvePath() {
     var pathname = window.location.pathname || '/';
-    // Normalizar: quitar trailing slash (excepto raíz)
     if (pathname.length > 1 && pathname.slice(-1) === '/')
       pathname = pathname.slice(0, -1);
 
     var parts = pathname.split('/').filter(Boolean);
     var sec   = parts[0] || '';
 
-    /* Raíz → pantalla de inicio */
+    /* ── Raíz → landing ──────────────────────────────────────────────────── */
     if (!sec) {
-      try { iaRemoveWidget(); renderGestorLanding(); } catch(e) { try { render(); } catch(e2){} }
+      try { iaRemoveWidget(); renderGestorLanding(); }
+      catch(e) { try { render(); } catch(e2){} }
       return;
     }
 
-    /* Panel del gestor: /gestor/{pagina} */
+    /* ── /gestor/{pagina} → panel del gestor ─────────────────────────────── */
     if (sec === 'gestor') {
       var gpagTarget = parts[1] || 'plataformas';
       if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
         try { _gestorPag = gpagTarget; renderGestorAdmin(); } catch(e) {}
       } else {
-        /* Sin sesión de gestor → landing con mensaje */
         try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
       }
       return;
     }
 
-    /* App desde gestor: /plat/{platId}/{modulo} */
-    if (sec === 'plat' && parts[1] && parts[2]) {
-      var platId = parts[1];
-      var modulo = parts[2];
-      if (typeof sesion !== 'undefined' && sesion &&
-          typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma === platId) {
-        try { pag = modulo; renderApp(); } catch(e) {}
-      } else if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
-        /* Gestor logueado pero la sesión de plataforma se perdió → panel gestor */
-        try { _gestorPag = 'plataformas'; renderGestorAdmin(); } catch(e) {}
-      } else {
-        try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
-      }
-      return;
-    }
+    /* ── /plat/{slug}/app/{rol}/{modulo} → app institucional ─────────────── */
+    if (sec === 'plat' && parts[1]) {
+      var slug    = parts[1];
+      var subsec  = parts[2] || 'app';   /* "app" o ausente */
+      var modulo  = parts[4] || parts[3] || 'planilla';
 
-    /* App acceso directo: /app/{rol}/{modulo} */
-    if (sec === 'app' && parts[1]) {
-      var moduloTarget = parts[2] || 'planilla';
+      /* Guardar slug en SS para que _save() lo use */
+      try { sessionStorage.setItem(_SS.platSlug, slug); } catch(e) {}
+
+      /* Intentar resolver el platId desde el slug */
+      var resolvedId = _findPlatIdFromSlug(slug);
+      if (resolvedId) {
+        window._currentPlatId = resolvedId;
+        if (typeof gestorEnPlataforma !== 'undefined' && gestorEnPlataforma === resolvedId) {
+          /* Gestor mode: ok */
+        }
+      }
+
+      /* ¿Hay sesión activa? → renderizar módulo */
       if (typeof sesion !== 'undefined' && sesion && sesion.r) {
-        try { pag = moduloTarget; renderApp(); } catch(e) {}
+        try { pag = modulo; renderApp(); } catch(e) {}
+        return;
+      }
+
+      /* ¿Gestor logueado pero sin sesión de plataforma? → panel gestor */
+      if (typeof gestorSesion !== 'undefined' && gestorSesion && gestorSesion.logged) {
+        try { _gestorPag = 'plataformas'; renderGestorAdmin(); } catch(e) {}
+        return;
+      }
+
+      /* Sin sesión → guardar destino y mostrar login */
+      window._routerPendingPath = pathname;
+      try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
+      return;
+    }
+
+    /* ── /app/{rol}/{modulo} → app (legacy, sin institución en URL) ──────── */
+    if (sec === 'app' && parts[1]) {
+      var moduloApp = parts[2] || 'planilla';
+      if (typeof sesion !== 'undefined' && sesion && sesion.r) {
+        try { pag = moduloApp; renderApp(); } catch(e) {}
       } else {
-        /* Sin sesión → ir al login, guardar destino para post-login */
         window._routerPendingPath = pathname;
         try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
       }
       return;
     }
 
-    /* Prematrícula pública: /pre-matricula */
+    /* ── /pre-matricula ───────────────────────────────────────────────────── */
     if (sec === 'pre-matricula') {
       try {
         pag = 'pre-matricula-publica';
@@ -19726,21 +19855,21 @@ function _ejecutarTrasladoMasivo(){
       return;
     }
 
-    /* Admin portal: /admin-portal */
+    /* ── /admin-portal ────────────────────────────────────────────────────── */
     if (sec === 'admin-portal') {
       try { renderAdminPortal(); } catch(e) {}
       return;
     }
 
-    /* Cualquier otra ruta desconocida → pantalla de inicio */
-    try { iaRemoveWidget(); renderGestorLanding(); } catch(e) { try { render(); } catch(e2){} }
+    /* ── Fallback ─────────────────────────────────────────────────────────── */
+    try { iaRemoveWidget(); renderGestorLanding(); }
+    catch(e) { try { render(); } catch(e2){} }
   }
 
   /* ============================================================
      PARCHEO DE FUNCIONES DE NAVEGACIÓN
-     Envuelve las funciones originales con tracking de URL limpia.
-     Usa debounce para que renders recursivos no generen entradas
-     duplicadas en el historial del navegador.
+     Cada función original se envuelve para añadir tracking de URL.
+     Debounce de 80 ms evita entradas duplicadas en el historial.
      ============================================================ */
 
   /* navTo — cambio de módulo dentro de la app institucional */
@@ -19754,21 +19883,21 @@ function _ejecutarTrasladoMasivo(){
     _scheduleNavUpdate();
   };
 
-  /* renderApp — se dispara en cada cambio de módulo */
+  /* renderApp — emitido en cada cambio de módulo */
   var _origRenderApp = window.renderApp;
   window.renderApp = function() {
     try { if (_origRenderApp) _origRenderApp.apply(this, arguments); } catch(e) {}
     _scheduleNavUpdate();
   };
 
-  /* renderGestorAdmin — sección activa del panel del gestor */
+  /* renderGestorAdmin — sección activa del gestor */
   var _origRenderGestorAdmin = window.renderGestorAdmin;
   window.renderGestorAdmin = function() {
     try { if (_origRenderGestorAdmin) _origRenderGestorAdmin.apply(this, arguments); } catch(e) {}
     _scheduleNavUpdate();
   };
 
-  /* renderGestorLanding — pantalla de inicio → siempre "/" */
+  /* renderGestorLanding — siempre vuelve a "/" */
   var _origRenderGestorLanding = window.renderGestorLanding;
   window.renderGestorLanding = function() {
     try { if (_origRenderGestorLanding) _origRenderGestorLanding.apply(this, arguments); } catch(e) {}
@@ -19779,7 +19908,7 @@ function _ejecutarTrasladoMasivo(){
     } catch(e) {}
   };
 
-  /* cerrarSesion — limpia sesión y vuelve a "/" */
+  /* cerrarSesion — limpia estado y vuelve a "/" */
   var _origCerrarSesion = window.cerrarSesion;
   window.cerrarSesion = function() {
     _clearSesion();
@@ -19795,11 +19924,12 @@ function _ejecutarTrasladoMasivo(){
     try { history.replaceState({ yc: 1, path: '/' }, '', '/'); } catch(e) {}
   };
 
-  /* salirDeGestorPlataforma — limpia sesión de plataforma */
+  /* salirDeGestorPlataforma — sale de la plataforma pero queda en el gestor */
   var _origSalirGestorPlat = window.salirDeGestorPlataforma;
   window.salirDeGestorPlataforma = function() {
     try {
-      [_SS.sesion, _SS.gestorEnPlat, _SS.platSK, _SS.platId, _SS.pag].forEach(function(k){
+      [_SS.sesion, _SS.gestorEnPlat, _SS.platSK,
+       _SS.platId, _SS.platSlug, _SS.pag].forEach(function(k){
         sessionStorage.removeItem(k);
       });
     } catch(e) {}
@@ -19807,47 +19937,39 @@ function _ejecutarTrasladoMasivo(){
     _scheduleNavUpdate();
   };
 
-  /* entrarPlataforma — gestor entra a una institución → /plat/{id}/tablero */
+  /* entrarPlataforma — gestor entra a una institución */
   var _origEntrarPlataforma = window.entrarPlataforma;
   window.entrarPlataforma = function(platId) {
     try { if (_origEntrarPlataforma) _origEntrarPlataforma.apply(this, arguments); } catch(e) {}
     _scheduleNavUpdate();
   };
 
-  /* ── Botón atrás / adelante del navegador ──────────────────────────────── */
+  /* ── Botón atrás / adelante ───────────────────────────────────────────── */
   window.addEventListener('popstate', function(e) {
-    if (e.state && typeof e.state.yc !== 'undefined') {
-      _resolvePath();
-    }
+    if (e.state && typeof e.state.yc !== 'undefined') _resolvePath();
   });
 
   /* ============================================================
      INICIALIZACIÓN
      ============================================================ */
   function _init() {
-    /* 1. Restaurar sesión guardada (sobrevive recarga) */
+    /* 1. Restaurar sesión desde sessionStorage (sobrevive recarga) */
     _restore();
 
-    /* 2. Leer la URL actual y mostrar la vista correspondiente.
-          Si estamos en "/" y no hay sesión, el flujo normal de la
-          app ya muestra el login; solo intervenimos en rutas distintas
-          a "/" para resolver el estado correcto. */
+    /* 2. Resolver la ruta inicial */
     var initialPath = window.location.pathname || '/';
     if (initialPath !== '/' && initialPath !== '') {
-      /* Pequeño delay para que todas las funciones del bundle principal
-         estén definidas antes de intentar resolver */
+      /* Delay corto para que el bundle principal esté listo */
       setTimeout(_resolvePath, 150);
     } else {
-      /* Marcar el estado inicial en el historial */
-      try {
-        history.replaceState({ yc: 1, path: '/' }, '', '/');
-      } catch(e) {}
+      try { history.replaceState({ yc: 1, path: '/' }, '', '/'); } catch(e) {}
     }
 
-    /* 3. API pública para depuración (window._router) */
+    /* 3. API pública de depuración */
     window._router = {
       computePath:  _computePath,
       resolvePath:  _resolvePath,
+      getPlatSlug:  _getPlatSlug,
       save:         _save,
       restore:      _restore,
       navigate: function(path) {
