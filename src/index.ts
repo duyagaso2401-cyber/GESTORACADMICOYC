@@ -565,7 +565,8 @@ app.get('/admin-ycgestor',      servePortal);
 app.get('/admin-portal-secure', servePortal);
 
 // Fallback SPA: cualquier ruta no-API devuelve portal.html
-app.get('/{*path}', (req, res) => {
+// NOTA: Se usa '*' (Express 4) — NO '/{*path}' que es sintaxis de Express 5.
+app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
   return servePortal(req, res);
 });
