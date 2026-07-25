@@ -19770,19 +19770,22 @@ function _ejecutarTrasladoMasivo(){
   }
 
   /* ── Leer pathname y mostrar la vista correcta ────────────────────────── */
-  function _resolvePath() {
-    var pathname = window.location.pathname || '/';
-    if (pathname.length > 1 && pathname.slice(-1) === '/')
-      pathname = pathname.slice(0, -1);
-
-    var parts = pathname.split('/').filter(Boolean);
-    var sec   = parts[0] || '';
-
-    /* ── Raíz → landing ──────────────────────────────────────────────────── */
-    if (!sec) {
-      try { iaRemoveWidget(); renderGestorLanding(); }
-      catch(e) { try { render(); } catch(e2){} }
-      return;
+ /* ——— /plat/{slug}/{resto} → plataforma específica ——— */
+ if (sec === 'plat' && parts[1]) {
+        var platSlug = parts[1];
+        window.activePlatSlug = platSlug;
+        
+        // Si hay una ruta interna (ej. /app/docente/descriptores), forzamos la carga del módulo
+        if (parts.length > 2) {
+            try {
+                // Asigna los segmentos restantes para que la app los renderice
+                window._routerPendingPath = pathname;
+                // Si la función para entrar o renderizar la plataforma existe, la invocamos
+                if (typeof window.entrarPlataforma === 'function') {
+                    window.entrarPlataforma(platSlug);
+                }
+            } catch(e) {}
+        }
     }
 
     /* ── /gestor/{pagina} → panel del gestor ─────────────────────────────── */
