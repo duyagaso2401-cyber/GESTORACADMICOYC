@@ -19908,10 +19908,10 @@ function _ejecutarTrasladoMasivo(){
   window.renderGestorLanding = function() {
     try { if (_origRenderGestorLanding) _origRenderGestorLanding.apply(this, arguments); } catch(e) {}
     try {
-      if (window.location.pathname !== '/')
+    if (window.location.pathname !== '/')
         history.pushState({ yc: 1, path: '/' }, '', '/');
-      _save();
-    } catch(e) {}
+    _save();
+} catch(e) {}
   };
 
   /* cerrarSesion — limpia estado y vuelve a "/" */
