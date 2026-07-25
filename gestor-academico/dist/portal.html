@@ -19826,11 +19826,18 @@ function _ejecutarTrasladoMasivo(){
         return;
       }
 
-     /* Sin sesión o cargando deep link de plataforma → guardar destino y mostrar login/landing sin perder la ruta */
-window._routerPendingPath = pathname;
-try { iaRemoveWidget(); renderGestorLanding(); } catch (e) {}
-return;
+ /* Sin sesión → guardar destino y mostrar login */
+ window._routerPendingPath = pathname;
+    
+    // Evita que el landing limpie la URL si es un enlace profundo de plataforma
+    if (pathname && pathname.startsWith('/plat/')) {
+        try { iaRemoveWidget(); } catch (e) {}
+        return;
     }
+
+    try { iaRemoveWidget(); renderGestorLanding(); } catch (e) {}
+    return;
+}
 
     /* ── /app/{rol}/{modulo} → app (legacy, sin institución en URL) ──────── */
     if (sec === 'app' && parts[1]) {
