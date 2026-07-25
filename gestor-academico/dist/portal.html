@@ -1536,8 +1536,9 @@ async function entrarPlataforma(platId){
   renderApp();
 }
 function salirDeGestorPlataforma(){
-  gestorEnPlataforma=null;sesion=null;
+  gestorEnPlataforma=null;sesion=null;_clearSession();
   db=loadDB();window._currentPlatSK=null;window._currentPlatId=null;
+  history.replaceState({},'',window.location.pathname);
   renderGestorAdmin();
 }
 function doLoginGestor(){
@@ -1691,7 +1692,7 @@ async function abrirPreMatriculaPortalIntermedio(platId){
   db=await _fetchPlatDB(p.sk);
   abrirPreMatriculaPublica();
 }
-function cerrarGestorSesion(){gestorSesion=null;gestorEnPlataforma=null;sesion=null;window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();render();}
+function cerrarGestorSesion(){gestorSesion=null;gestorEnPlataforma=null;sesion=null;_clearSession();window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();history.replaceState({},'',window.location.pathname);render();}
 
 // ============================================================
 // S05 · PANEL ADMINISTRADOR GENERAL (GESTOR YC)
@@ -3047,6 +3048,7 @@ function renderApp(){
   if(!sesion||!sesion.r){render();return;}
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
   if(typeof htmlAvisoDocente==='undefined'){setTimeout(renderApp,30);return;}
+  _syncURL(false);_saveSession();
   if(sesion.r==='elecciones'){iaRemoveWidget();renderElecciones();return;}
   if(sesion.r==='padre'){iaRemoveWidget();renderPadre();return;}
   if(sesion.r==='estudiante'){iaRemoveWidget();renderEstudiante();return;}
@@ -3290,7 +3292,55 @@ function renderApp(){
   // Re-inyectar widget IA si aplica (rector/admin/docente)
   setTimeout(function(){if(typeof iaInjectWidget==='function')iaInjectWidget();},60);
 }
-function navTo(id){pag=id;renderApp();}
+function navTo(id){pag=id;_syncURL(true);renderApp();}
+
+// ============================================================
+// URL ROUTING PROFUNDO — persistencia de sesión + historial
+// Permite refrescar, compartir enlaces y usar atrás/adelante
+// ============================================================
+var _SES_KEY='_yc_ses_v2';
+
+function _saveSession(){
+  try{
+    if(sesion){
+      localStorage.setItem(_SES_KEY,JSON.stringify({
+        sesion:sesion,
+        platId:window._currentPlatId||null,
+        platSK:window._currentPlatSK||null,
+        gestorPlat:gestorEnPlataforma||null,
+        pag:pag
+      }));
+    } else {
+      localStorage.removeItem(_SES_KEY);
+    }
+  }catch(e){}
+}
+
+function _clearSession(){
+  try{localStorage.removeItem(_SES_KEY);}catch(e){}
+}
+
+function _syncURL(push){
+  try{
+    var params=new URLSearchParams();
+    var platId=window._currentPlatId||gestorEnPlataforma||null;
+    if(platId) params.set('inst',platId);
+    if(pag) params.set('pag',pag);
+    var qs=params.toString();
+    var url=window.location.pathname+(qs?'?'+qs:'');
+    var state={pag:pag,inst:platId};
+    if(push) history.pushState(state,'',url);
+    else history.replaceState(state,'',url);
+  }catch(e){}
+}
+
+window.addEventListener('popstate',function(e){
+  try{
+    if(!sesion) return;
+    var st=e.state;
+    if(st&&st.pag&&st.pag!==pag){pag=st.pag;renderApp();}
+  }catch(ex){}
+});
 function _sbSearch(q){
   q=(q||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   const nav=document.getElementById('sbNav');
@@ -3314,13 +3364,15 @@ function toggleSidebar(open){
   else{sb.classList.remove('open');ov.classList.remove('open');}
 }
 function cerrarSesion(){
-  sesion=null;
+  sesion=null;_clearSession();
   _disconnectSSE();
   if(gestorSesion&&gestorEnPlataforma){
     gestorEnPlataforma=null;db=loadDB();window._currentPlatSK=null;window._currentPlatId=null;
+    history.replaceState({},'',window.location.pathname);
     renderGestorAdmin();return;
   }
   window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();
+  history.replaceState({},'',window.location.pathname);
   render();
 }
 function actualizarPerfil(){
@@ -9573,7 +9625,7 @@ function renderPreMatriculaPublica(){
     <p>${db.nombre||db.rectora||''}</p>
   </div>
   <div class="topbar"><span>📝 Inscripción / Pre-Matrícula — ${db.nombre||'Institución'}</span><div class="topbar-btns">
-    <button class="tbtn" style="background:#7f8c8d" onclick="const _pid=window._portalOrigenPlatId;window._portalOrigenPlatId=null;pag='planilla';sesion=null;if(_pid){renderBienvenidaInstitucion(_pid);}else{render();}">← Volver al portal</button>
+    <button class="tbtn" style="background:#7f8c8d" onclick="const _pid=window._portalOrigenPlatId;window._portalOrigenPlatId=null;pag='planilla';sesion=null;_clearSession();history.replaceState({},'',window.location.pathname);if(_pid){renderBienvenidaInstitucion(_pid);}else{render();}">← Volver al portal</button>
   </div></div>
   <div class="main"><div class="card">${_htmlFormPreMatricula(false)}</div></div>`;
   setTimeout(_pmTipoChange,50);
@@ -10368,17 +10420,38 @@ function renderPortalInstitucion(platId,rolPre){
 // ============================================================
 // URL ROUTING — ?id=slug auto-selects institution on load
 // Admin portal: ?_x=gestor-admin OR path /admin-ycgestor
+// Deep-link: ?inst=ID&pag=MODULE restaura sesión y módulo
 // ============================================================
 (function(){
   try{
-    const params=new URLSearchParams(window.location.search);
-    const instId=params.get('id')||params.get('inst');
+    var params=new URLSearchParams(window.location.search);
+    var instId=params.get('id')||params.get('inst');
     if(instId) window._urlInstId=instId;
     // Ruta oculta para Administrador General
-    const adminKey=params.get('_x');
-    const isAdminPath=window.location.pathname.indexOf('/admin-ycgestor')!==-1||window.location.pathname.indexOf('/admin-portal-secure')!==-1;
+    var adminKey=params.get('_x');
+    var isAdminPath=window.location.pathname.indexOf('/admin-ycgestor')!==-1||window.location.pathname.indexOf('/admin-portal-secure')!==-1;
     if(adminKey==='gestor-admin'||isAdminPath){
       window._adminPortalMode=true;
+    }
+    // ── Restaurar sesión persistida ──────────────────────────
+    if(!window._adminPortalMode){
+      try{
+        var _raw=localStorage.getItem(_SES_KEY);
+        if(_raw){
+          var _saved=JSON.parse(_raw);
+          if(_saved&&_saved.sesion){
+            sesion=_saved.sesion;
+            if(_saved.platId){window._currentPlatId=_saved.platId;window._currentPlatSK=_saved.platSK;gestorEnPlataforma=_saved.gestorPlat;}
+            // Prioridad: módulo en URL > módulo guardado
+            var _pagURL=params.get('pag');
+            pag=_pagURL||_saved.pag||pag;
+            // Cargar la BD de la plataforma desde localStorage si había una activa
+            if(_saved.platSK){
+              try{var _d=localStorage.getItem(_saved.platSK);if(_d) db=_migrateDB(JSON.parse(_d));}catch(e){}
+            }
+          }
+        }
+      }catch(e2){}
     }
   }catch(e){}
 })();
