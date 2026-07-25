@@ -3324,11 +3324,20 @@ function _syncURL(push){
   try{
     var params=new URLSearchParams();
     var platId=window._currentPlatId||gestorEnPlataforma||null;
-    if(platId) params.set('inst',platId);
-    if(pag) params.set('pag',pag);
+    if(platId&&sesion){
+      // Formato jerárquico: ?inst=SLUG/&pag=PAGE
+      // Borrando &pag=PAGE → ?inst=SLUG/ (inicio institución)
+      // Borrando / → ?inst=SLUG (portal de acceso/login institución)
+      params.set('inst',platId+'/');
+      if(pag) params.set('pag',pag);
+    } else if(platId){
+      params.set('inst',platId);
+    } else if(pag){
+      params.set('pag',pag);
+    }
     var qs=params.toString();
     var url=window.location.pathname+(qs?'?'+qs:'');
-    var state={pag:pag,inst:platId};
+    var state={pag:pag,inst:platId,loggedIn:!!(sesion)};
     if(push) history.pushState(state,'',url);
     else history.replaceState(state,'',url);
   }catch(e){}
@@ -3336,9 +3345,24 @@ function _syncURL(push){
 
 window.addEventListener('popstate',function(e){
   try{
-    if(!sesion) return;
     var st=e.state;
-    if(st&&st.pag&&st.pag!==pag){pag=st.pag;renderApp();}
+    // Si hay sesión activa, navegar a la página del historial
+    if(sesion){
+      if(st&&st.pag&&st.pag!==pag){pag=st.pag;renderApp();}
+      return;
+    }
+    // Sin sesión: si la URL tiene ?inst=SLUG (sin slash), mostrar portal institución
+    var _params=new URLSearchParams(window.location.search);
+    var _inst=_params.get('inst');
+    if(_inst){
+      var _slug=_inst.replace(/\/.*$/,'').trim();
+      if(_slug){
+        var _p=(gestorDB&&gestorDB.platforms?gestorDB.platforms:[]).find(function(x){return x.id===_slug||x.sk===_slug;});
+        if(_p){renderPortalInstitucion(_p.id);return;}
+      }
+    }
+    // Sin institución: volver al landing
+    iaRemoveWidget();renderGestorLanding();
   }catch(ex){}
 });
 function _sbSearch(q){
@@ -10314,11 +10338,17 @@ function renderPortalInstitucion(platId,rolPre){
     html+='</form>';
     html+=preMatBtn;
     html+='</div>';
-    // Back button
-    html+='<button onclick="renderGestorLanding()" style="margin-top:18px;background:rgba(255,255,255,0.1);color:#cce4ff;padding:8px 22px;border-radius:20px;border:1px solid rgba(255,255,255,0.22);font-size:0.8rem;cursor:pointer;transition:background .15s;letter-spacing:0.3px" onmouseover="this.style.background=\'rgba(255,255,255,0.18)\'" onmouseout="this.style.background=\'rgba(255,255,255,0.1)\'">← Volver a instituciones</button>';
+    // Copy direct-access link button
+    var _directUrl=(window.location.origin+window.location.pathname+'?inst='+encodeURIComponent(platId));
+    html+='<div style="margin-top:14px;display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;max-width:390px">';
+    html+='<button id="btnCopiarEnlace_'+platId+'" onclick="(function(btn,url){try{navigator.clipboard.writeText(url).then(function(){btn.textContent=\'✅ ¡Enlace copiado!\';setTimeout(function(){btn.textContent=\'🔗 Copiar enlace de acceso directo\';},2200);});}catch(e){prompt(\'Copie este enlace:\',url);}})(this,\''+_directUrl+'\')" style="width:100%;background:rgba(241,196,15,0.15);color:#f1c40f;border:1.5px solid rgba(241,196,15,0.45);border-radius:20px;padding:8px 16px;font-size:0.78rem;font-weight:700;cursor:pointer;letter-spacing:0.3px;transition:background .15s" onmouseover="this.style.background=\'rgba(241,196,15,0.28)\'" onmouseout="this.style.background=\'rgba(241,196,15,0.15)\'">🔗 Copiar enlace de acceso directo</button>';
+    html+='<button onclick="(function(){history.pushState(null,\'\',\'?\');iaRemoveWidget();renderGestorLanding();})()" style="background:rgba(255,255,255,0.1);color:#cce4ff;padding:8px 22px;border-radius:20px;border:1px solid rgba(255,255,255,0.22);font-size:0.8rem;cursor:pointer;transition:background .15s;letter-spacing:0.3px" onmouseover="this.style.background=\'rgba(255,255,255,0.18)\'" onmouseout="this.style.background=\'rgba(255,255,255,0.1)\'">← Volver a instituciones</button>';
+    html+='</div>';
     html+='<div style="margin-top:14px;font-size:0.68rem;color:rgba(255,255,255,0.35);letter-spacing:0.5px">Powered by <b style="color:rgba(241,196,15,0.55)">Gestor Académico YC</b></div>';
     html+='</div>';
     document.getElementById('app').innerHTML=html;
+    // Sincronizar URL al portal de la institución: ?inst=SLUG (sin slash = login portal)
+    try{history.replaceState({inst:platId,portal:true},'','?inst='+encodeURIComponent(platId));}catch(e){}
     var entrar=document.getElementById('pEntrar');
     if(entrar) entrar.onclick=function(){doLoginPortal(platId);};
     var pUser=document.getElementById('pUser');
@@ -10377,11 +10407,18 @@ function renderPortalInstitucion(platId,rolPre){
     window._currentPlatSK=p.sk;
     window._currentPlatId=platId;
     sesion=sesionData;
-    pag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
+    // Página por defecto según rol; si el enlace tenía deep-link (?inst=SLUG/&pag=PAGE), ir allí
+    var _defaultPag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
+    var _deepPag=window._urlPag||null;
+    window._urlPag=null; // consumir
+    pag=_deepPag||_defaultPag;
     _sseInit();
     _checkSchemaMigrationBanner();
     if(window._routerPendingPath){var _rp4=window._routerPendingPath;window._routerPendingPath=null;window.location.href=_rp4;return;}
     render();
+    // Actualizar URL al formato jerárquico: ?inst=SLUG/&pag=PAGE
+    // (replace para no añadir entrada de historial extra para el login)
+    _syncURL(false);
   }
   function previewLogoGestor(inputId,previewId,hiddenId){
     const file=document.getElementById(inputId).files[0];
@@ -10420,13 +10457,23 @@ function renderPortalInstitucion(platId,rolPre){
 // ============================================================
 // URL ROUTING — ?id=slug auto-selects institution on load
 // Admin portal: ?_x=gestor-admin OR path /admin-ycgestor
-// Deep-link: ?inst=ID&pag=MODULE restaura sesión y módulo
+// Deep-link: ?inst=SLUG → portal login de institución
+//            ?inst=SLUG/ → institución (inicio tras login)
+//            ?inst=SLUG/&pag=MODULE → institución + módulo específico
 // ============================================================
 (function(){
   try{
     var params=new URLSearchParams(window.location.search);
-    var instId=params.get('id')||params.get('inst');
-    if(instId) window._urlInstId=instId;
+    var instRaw=params.get('id')||params.get('inst');
+    if(instRaw){
+      // Parsear formato jerárquico: el SLUG puede terminar en '/'
+      // Ej: "inetis-sincelejito/" → slug="inetis-sincelejito"
+      var instSlug=instRaw.replace(/\/+$/,'').trim(); // quitar slash(es) final
+      if(instSlug) window._urlInstId=instSlug;
+      // Si hay un pag en la URL, guardarlo para aplicar tras login
+      var _pagParam=params.get('pag');
+      if(_pagParam) window._urlPag=_pagParam;
+    }
     // Ruta oculta para Administrador General
     var adminKey=params.get('_x');
     var isAdminPath=window.location.pathname.indexOf('/admin-ycgestor')!==-1||window.location.pathname.indexOf('/admin-portal-secure')!==-1;
@@ -10443,11 +10490,20 @@ function renderPortalInstitucion(platId,rolPre){
             sesion=_saved.sesion;
             if(_saved.platId){window._currentPlatId=_saved.platId;window._currentPlatSK=_saved.platSK;gestorEnPlataforma=_saved.gestorPlat;}
             // Prioridad: módulo en URL > módulo guardado
+            // Si hay ?inst=SLUG en URL (sin barra = portal login), NO restaurar sesión
+            // ya que el usuario quiere acceder al portal directamente
             var _pagURL=params.get('pag');
-            pag=_pagURL||_saved.pag||pag;
-            // Cargar la BD de la plataforma desde localStorage si había una activa
-            if(_saved.platSK){
-              try{var _d=localStorage.getItem(_saved.platSK);if(_d) db=_migrateDB(JSON.parse(_d));}catch(e){}
+            var _instURL=params.get('inst')||params.get('id');
+            var _instIsLogin=_instURL&&!_instURL.endsWith('/');
+            if(_instIsLogin){
+              // El enlace es ?inst=SLUG (portal login) — limpiar sesión para mostrar login
+              sesion=null;
+            } else {
+              pag=_pagURL||_saved.pag||pag;
+              // Cargar la BD de la plataforma desde localStorage si había una activa
+              if(_saved.platSK){
+                try{var _d=localStorage.getItem(_saved.platSK);if(_d) db=_migrateDB(JSON.parse(_d));}catch(e){}
+              }
             }
           }
         }
