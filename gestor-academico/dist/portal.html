@@ -19826,10 +19826,10 @@ function _ejecutarTrasladoMasivo(){
         return;
       }
 
-      /* Sin sesión → guardar destino y mostrar login */
-      window._routerPendingPath = pathname;
-      try { iaRemoveWidget(); renderGestorLanding(); } catch(e) {}
-      return;
+     /* Sin sesión o cargando deep link de plataforma → guardar destino y mostrar login/landing sin perder la ruta */
+window._routerPendingPath = pathname;
+try { iaRemoveWidget(); renderGestorLanding(); } catch (e) {}
+return;
     }
 
     /* ── /app/{rol}/{modulo} → app (legacy, sin institución en URL) ──────── */
