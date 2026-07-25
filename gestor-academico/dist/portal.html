@@ -19908,10 +19908,10 @@ function _ejecutarTrasladoMasivo(){
   window.renderGestorLanding = function() {
     try { if (_origRenderGestorLanding) _origRenderGestorLanding.apply(this, arguments); } catch(e) {}
     try {
-    if (window.location.pathname !== '/')
+    if (window.location.pathname !== '/' && !window.location.pathname.startsWith('/plat/') && !window._routerPendingPath)
         history.pushState({ yc: 1, path: '/' }, '', '/');
     _save();
-} catch(e) {}
+} catch(e) {}s
   };
 
   /* cerrarSesion — limpia estado y vuelve a "/" */
@@ -19962,13 +19962,15 @@ function _ejecutarTrasladoMasivo(){
     /* 1. Restaurar sesión desde sessionStorage (sobrevive recarga) */
     _restore();
 
-    /* 2. Resolver la ruta inicial */
-    var initialPath = window.location.pathname || '/';
+   /* 2. Resolver la ruta inicial */
+   var initialPath = window.location.pathname || '/';
     if (initialPath !== '/' && initialPath !== '') {
-      /* Delay corto para que el bundle principal esté listo */
-      setTimeout(_resolvePath, 150);
+        // Guarda la ruta profunda de forma segura para que no se pierda al autenticar
+        window._routerPendingPath = initialPath;
+        /* Delay corto para que el bundle principal esté listo */
+        setTimeout(_resolvePath, 150);
     } else {
-      try { history.replaceState({ yc: 1, path: '/' }, '', '/'); } catch(e) {}
+        try { history.replaceState({ yc: 1, path: '/' }, '', '/'); } catch(e) {}
     }
 
     /* 3. API pública de depuración */
