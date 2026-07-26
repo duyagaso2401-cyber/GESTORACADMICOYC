@@ -42,15 +42,15 @@
       });
     } catch(e) {}
   };
-  
+
   // Ejecutar inmediatamente
   hideReplit();
-  
+
   // Ejecutar cuando está lista la página
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', hideReplit);
   }
-  
+
   // Monitorear continuamente
   const observer = new MutationObserver(() => { 
     setTimeout(hideReplit, 10); 
@@ -61,7 +61,7 @@
     attributes: true, 
     attributeFilter: ['id', 'class', 'src', 'data-replit'] 
   });
-  
+
   // Ejecutar en varios puntos del ciclo
   window.addEventListener('load', hideReplit);
   setTimeout(hideReplit, 100);
@@ -5153,16 +5153,18 @@ function htmlDescriptores(){
   const isAdmin=sesion.r==='admin';
   const docentes=db.users.filter(u=>u.r==='docente');
   const docsOpts=docentes.map(u=>`<option value="${u.u}">${u.n}</option>`).join('');
-  const gradOpts=db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
-  let descs=db.descriptores;
-  if(!isAdmin){
-    // Solo descriptores propios del docente Y de grados/asignaturas que le están asignados
-    const _cargaDoc=db.carga.filter(c=>c.d===sesion.u);
-    descs=descs.filter(d=>d.doc===sesion.u&&_cargaDoc.some(c=>c.g===d.gra&&c.m===d.mat));
-  }
   // ==== PANEL DE ESTADO: muestra cobertura de descriptores por docente/grado/asignatura/periodo ====
   // Determinar la carga a revisar
   const cargaRev=isAdmin?db.carga:db.carga.filter(c=>c.d===sesion.u);
+  // Para docente: solo los grados que tiene asignados; para admin: todos
+  const _gradosSet=isAdmin?null:new Set(cargaRev.map(c=>c.g));
+  const _gradosDocente=isAdmin?db.grados:db.grados.filter(g=>_gradosSet.has(g.n));
+  const gradOpts=_gradosDocente.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
+  let descs=db.descriptores;
+  if(!isAdmin){
+    // Solo descriptores propios del docente Y de grados/asignaturas que le están asignados
+    descs=descs.filter(d=>d.doc===sesion.u&&cargaRev.some(c=>c.g===d.gra&&c.m===d.mat));
+  }
   const periodos=[1,2,3];
   const niveles=['bajo','basico','alto','superior'];
   // Agrupar carga por docente para el panel
@@ -5210,7 +5212,7 @@ function htmlDescriptores(){
         </select>
         <select id="_descFiltGra" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
           <option value="">Todos los grados</option>
-          ${db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('')}
+          ${_gradosDocente.map(g=>`<option value="${g.n}">${g.n}</option>`).join('')}
         </select>
         <select id="_descFiltArea" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
           <option value="">Todas las áreas</option>
@@ -5257,8 +5259,11 @@ function htmlDescriptores(){
       <div style="border:1px solid #b2dfdb;border-radius:7px;padding:10px 14px;background:#f0faf8;flex:1;min-width:260px">
         <b style="color:#0e6655;font-size:0.85rem">🔁 Replicar en otros grupos del mismo grado</b>
         <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Guarde primero el descriptor, luego seleccione los grupos destino y replique (ej: 6°1 → 6°2, 6°3…)</p>
-        <div style="margin-bottom:6px"><label class="lbl" style="font-size:0.78rem">Grupos destino (Ctrl+clic para varios):</label>
-          <select id="descReplicaDest" multiple style="height:80px;font-size:0.8rem">${gradOpts}</select>
+        <div style="margin-bottom:6px"><label class="lbl" style="font-size:0.78rem">Grupos destino:</label>
+          <div id="descReplicaDest" style="display:flex;flex-direction:column;gap:1px;max-height:140px;overflow-y:auto;padding:5px 6px;border:1px solid #b2dfdb;border-radius:6px;background:#fff">
+            ${_gradosDocente.map(g=>`<label style="display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:5px;cursor:pointer;font-size:0.82rem;user-select:none" onmouseover="this.style.background='#e8f5e9'" onmouseout="this.style.background='transparent'"><input type="checkbox" class="descReplicaChk" value="${g.n}" style="width:15px;height:15px;cursor:pointer;accent-color:#0e6655"><span>${g.n}</span></label>`).join('')}
+            ${_gradosDocente.length===0?'<span style="color:#aaa;font-size:0.78rem;padding:4px">Sin grados asignados</span>':''}
+          </div>
         </div>
         <button class="btn btn-teal" style="font-size:0.8rem;padding:7px 12px" onclick="replicarUltimosDescs()">🔁 Replicar al/los grupo(s)</button>
         <div id="replicaStatus" style="font-size:0.78rem;color:#0e6655;margin-top:6px"></div>
@@ -5422,7 +5427,7 @@ function replicarUltimosDescs(){
   const gradSrc=document.getElementById('descGra')?.value||'';
   const selEl=document.getElementById('descReplicaDest');
   if(!selEl){alert('No se encontró el selector de grupos destino.');return;}
-  const gradsDest=Array.from(selEl.selectedOptions).map(o=>o.value).filter(g=>g!==gradSrc);
+  const gradsDest=Array.from(selEl.querySelectorAll('.descReplicaChk:checked')).map(c=>c.value).filter(g=>g!==gradSrc);
   if(!gradsDest.length){alert('Seleccione al menos un grupo destino diferente al grado origen.');return;}
   if(!mat){alert('Seleccione primero una asignatura.');return;}
   const srcDescs=db.descriptores.filter(d=>d.doc===doc&&String(d.per)===String(per)&&d.mat===mat&&d.gra===gradSrc);
@@ -6744,11 +6749,11 @@ function verConsolidadoGeneral(){
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const wrap=document.getElementById('consolidadoGeneralWrap');
   if(!mats.length||!ests.length){if(wrap) wrap.innerHTML=`<div class="card"><p class="empty">No hay datos para este grado.</p></div>`;return;}
-  
+
   // Group by area
   const areas={};
   mats.forEach(m=>{const a=m.a||m.m;if(!areas[a]) areas[a]=[];areas[a].push(m);});
-  
+
   const filas=ests.map(e=>{
     const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
     const prom=notas.length?parseFloat((notas.reduce((a,b)=>a+b,0)/notas.length).toFixed(2)):0;
@@ -6758,7 +6763,7 @@ function verConsolidadoGeneral(){
   const total=filas.length;
   const aprobados=filas.filter(f=>f.prom>=3).length;
   const promG=total?parseFloat((filas.reduce((a,f)=>a+f.prom,0)/total).toFixed(2)):0;
-  
+
   // Stats per subject
   const matStats=mats.map(m=>{
     const ns=ests.map(e=>calcNotaDef(e.nts,m.id,per));
@@ -6766,7 +6771,7 @@ function verConsolidadoGeneral(){
     const perd=ns.filter(n=>n<3).length;
     return{m,prom,perd,total:ns.length};
   });
-  
+
   const statsHtml=`<div class="flex-gap" style="margin-bottom:15px">
     <span class="stat-box" style="background:#27ae60">✅ Aprob.: <b>${aprobados}</b></span>
     <span class="stat-box" style="background:#c0392b">❌ Reprob.: <b>${total-aprobados}</b></span>
@@ -6776,7 +6781,7 @@ function verConsolidadoGeneral(){
   <div style="margin-bottom:12px;padding:8px;background:#f0f4f8;border-radius:6px;font-size:0.78rem">
     <b>Promedios por asignatura (P${per}):</b> ${matStats.map(s=>`<span style="margin:0 4px;color:${parseFloat(s.prom)<3?'#c0392b':'#1a7531'}">${s.m.m}: <b>${s.prom}</b>(${s.perd} perd.)</span>`).join('|')}
   </div>`;
-  
+
   const matHeads=mats.map(m=>`<th title="${m.m} — ${m.dn}" style="font-size:0.68rem">${m.m.substring(0,7)}<br><small style="font-weight:normal;font-size:0.6rem">${(m.a||'').substring(0,6)}</small></th>`).join('');
   const rows=filas.map((f,i)=>{
     const notasCells=f.notas.map(n=>`<td style="color:${n<3?'#c0392b':'#333'};font-size:0.79rem">${n.toFixed(1)}</td>`).join('');
@@ -6787,7 +6792,7 @@ function verConsolidadoGeneral(){
       <td style="font-weight:bold;color:${f.apAreas>0?'#c0392b':'#27ae60'}">${f.apAreas}</td>
       <td style="font-weight:bold;color:#6c3483">${pu}°</td></tr>`;
   }).join('');
-  
+
   if(wrap) wrap.innerHTML=`<div class="card">
     <h4 class="card-title">Consolidado General — Grado ${grado} — Periodo ${per} — Todas las áreas</h4>
     ${statsHtml}
@@ -6838,7 +6843,7 @@ function verEstadisticasGrado(){
   const wrap=document.getElementById('estadisticasWrap');
   if(!mats.length||!ests.length){if(wrap) wrap.innerHTML=`<div class="card"><p class="empty">Sin datos.</p></div>`;return;}
   const total=ests.length;
-  
+
   // Per subject stats
   const matStats=mats.map(m=>{
     const ns=ests.map(e=>calcNotaDef(e.nts,m.id,per));
@@ -6850,7 +6855,7 @@ function verEstadisticasGrado(){
     const bajo=ns.filter(n=>n<3).length;
     return{m:m.m,dn:m.dn,prom:prom.toFixed(2),aprobados,sup,alto,basico,bajo,total:ns.length};
   }).sort((a,b)=>parseFloat(a.prom)-parseFloat(b.prom));
-  
+
   const rows=matStats.map(s=>{
     const pct=Math.round(s.aprobados/s.total*100);
     const barW=pct;
@@ -6865,7 +6870,7 @@ function verEstadisticasGrado(){
       <td style="font-size:0.75rem">${s.sup}S|${s.alto}A|${s.basico}B|${s.bajo}I</td>
     </tr>`;
   }).join('');
-  
+
   // Global stats
   const promsEst=ests.map(e=>{
     const ns=mats.map(m=>calcNotaDef(e.nts,m.id,per));
@@ -6873,7 +6878,7 @@ function verEstadisticasGrado(){
   });
   const promGlobal=(promsEst.reduce((a,b)=>a+b,0)/promsEst.length||0).toFixed(2);
   const aprobadosGlobal=promsEst.filter(p=>p>=3).length;
-  
+
   if(wrap) wrap.innerHTML=`<div class="card">
     <h4 class="card-title">Estadísticas — Grado ${grado} — Periodo ${per}</h4>
     <div class="flex-gap" style="margin-bottom:15px">
@@ -6930,24 +6935,24 @@ function verConsolidadoDir(){
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const wrap=document.getElementById('consolidadoDirWrap');
   if(!mats.length||!ests.length){if(wrap) wrap.innerHTML=`<div class="card"><p class="empty">No hay datos.</p></div>`;return;}
-  
+
   const filas=ests.map(e=>{
     const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
     const prom=notas.length?parseFloat((notas.reduce((a,b)=>a+b,0)/notas.length).toFixed(2)):0;
     const areasPerd=mats.filter(m=>calcNotaDef(e.nts,m.id,per)<3).length;
     return{e,notas,prom,areasPerd};
   });
-  
+
   const total=filas.length;
   const aprobados=filas.filter(f=>f.prom>=3).length;
   const promG=total?parseFloat((filas.reduce((a,f)=>a+f.prom,0)/total).toFixed(2)):0;
-  
+
   const statsHtml=`<div class="flex-gap" style="margin-bottom:15px">
     <span class="stat-box" style="background:#27ae60">✅ Aprob.: <b>${aprobados}</b></span>
     <span class="stat-box" style="background:#c0392b">❌ Reprob.: <b>${total-aprobados}</b></span>
     <span class="stat-box" style="background:#003366">📊 Prom.: <b>${promG}</b></span>
   </div>`;
-  
+
   const matHeads=mats.map(m=>`<th title="${m.m} — ${m.dn}" style="font-size:0.68rem">${m.m.substring(0,7)}<br><small style="font-weight:normal;font-size:0.6rem">${m.dn.split(' ')[0]}</small></th>`).join('');
   const rows=filas.map((f,i)=>{
     const notasCells=f.notas.map(n=>`<td style="color:${n<3?'#c0392b':'#333'};font-size:0.79rem">${n.toFixed(1)}</td>`).join('');
@@ -6958,7 +6963,7 @@ function verConsolidadoDir(){
       <td style="font-weight:bold;color:${f.areasPerd>0?'#c0392b':'#27ae60'}">${f.areasPerd}</td>
       <td style="font-weight:bold;color:#6c3483">${pu}°</td></tr>`;
   }).join('');
-  
+
   if(wrap) wrap.innerHTML=`<div class="card">
     <h4 class="card-title">Seguimiento Académico — Grado ${grado} — Periodo ${per} — Todas las asignaturas</h4>
     ${statsHtml}
