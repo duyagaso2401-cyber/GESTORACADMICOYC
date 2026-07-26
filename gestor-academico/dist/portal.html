@@ -3169,7 +3169,8 @@ function renderApp(){
   const _platEscudo=_platDat2?.escudo||null;
   const _sidebarLogo=db.logo||_platEscudo||null;
   if(_sidebarLogo&&_platId2){try{sessionStorage.setItem('instLogoCache_'+_platId2,_sidebarLogo);}catch(e){}}
-  const _instNombre=(db.nombre||_platNombre)||(db.corregimiento?`I.E. ${db.corregimiento}`:null)||'Sistema Académico';
+  // Preferir nombre de gestorDB (fuente autoritativa) sobre db.nombre (puede tener errores en datos guardados)
+  const _instNombre=(_platNombre||db.nombre)||(db.corregimiento?`I.E. ${db.corregimiento}`:null)||'Sistema Académico';
   const _gestorModeBanner=gestorSesion&&gestorEnPlataforma?`<div style="background:#f1c40f;color:#001428;padding:5px 20px;font-size:0.78rem;font-weight:bold;text-align:center;letter-spacing:1px">🎓 GESTOR ACADÉMICO YC — Administrando: ${_platNombre}</div>`:'';
   const _rolLabel=isAdmin?'Administrador':sesion.r==='docente'?'Docente':sesion.r;
   const _avatarHtml=sesion.foto
@@ -6962,7 +6963,15 @@ function pdfConsolidadoDir(){
 // ============================================================
 const ROT1='REPÚBLICA DE COLOMBIA';
 function getROT2(){return db.depto||''}
-function getROT3(){return (db.nombre||(db.corregimiento?'INSTITUCIÓN EDUCATIVA DE '+db.corregimiento:'INSTITUCIÓN EDUCATIVA')).toUpperCase();}
+function getROT3(){
+  // Preferir nombre de gestorDB (fuente autoritativa) sobre db.nombre
+  var _pid=window._currentPlatId||gestorEnPlataforma;
+  if(_pid&&gestorDB&&gestorDB.platforms){
+    var _gp=gestorDB.platforms.find(function(p){return p.id===_pid;});
+    if(_gp&&_gp.nombre) return _gp.nombre.toUpperCase();
+  }
+  return (db.nombre||(db.corregimiento?'INSTITUCIÓN EDUCATIVA DE '+db.corregimiento:'INSTITUCIÓN EDUCATIVA')).toUpperCase();
+}
 function getROT4(){return db.resolucion||''}
 function getROT5(){return db.encabezado||''}
 function getROT6(){return db.piePagina||''}
@@ -15839,7 +15848,9 @@ function generarDiplomaPDF(id){
   doc.setTextColor(0,51,102);doc.setFontSize(28);doc.setFont('helvetica','bold');
   doc.text('DIPLOMA DE MENCIÓN DE HONOR',CX,48,{align:'center'});
   doc.setFontSize(12);doc.setFont('helvetica','normal');doc.setTextColor(80);
-  doc.text(mencion.categoria,CX,57,{align:'center'});
+  // Quitar emojis/caracteres no-Latin antes de pasar a jsPDF (helvetica no soporta emoji)
+  var _catText=(mencion.categoria||'').replace(/[^\u0000-\u00FF]/g,'').replace(/\s+/g,' ').trim();
+  doc.text(_catText,CX,57,{align:'center'});
   // Separador
   doc.setDrawColor(241,196,15);doc.setLineWidth(2);doc.line(60,62,W-60,62);
   // Nombre estudiante
