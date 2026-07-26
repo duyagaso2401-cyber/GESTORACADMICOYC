@@ -5154,7 +5154,12 @@ function htmlDescriptores(){
   const docentes=db.users.filter(u=>u.r==='docente');
   const docsOpts=docentes.map(u=>`<option value="${u.u}">${u.n}</option>`).join('');
   const gradOpts=db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
-  let descs=db.descriptores;if(!isAdmin) descs=descs.filter(d=>d.doc===sesion.u);
+  let descs=db.descriptores;
+  if(!isAdmin){
+    // Solo descriptores propios del docente Y de grados/asignaturas que le están asignados
+    const _cargaDoc=db.carga.filter(c=>c.d===sesion.u);
+    descs=descs.filter(d=>d.doc===sesion.u&&_cargaDoc.some(c=>c.g===d.gra&&c.m===d.mat));
+  }
   // ==== PANEL DE ESTADO: muestra cobertura de descriptores por docente/grado/asignatura/periodo ====
   // Determinar la carga a revisar
   const cargaRev=isAdmin?db.carga:db.carga.filter(c=>c.d===sesion.u);
@@ -5311,9 +5316,49 @@ function actualizarMatsDesc(){
   if(sel) sel.innerHTML=mats.map(m=>`<option value="${m.m}">${m.m}</option>`).join('');
 }
 function actualizarPrefixDesc(){}
-function llenarRangoNivelDesc(){
-  // Los selectores de rango ya no están en el formulario simplificado
-  // Esta función se mantiene por compatibilidad
+function llenarRangoNivelDesc(){}
+
+// ── Convierte la 3ª persona a infinitivo para el prefijo "Se le dificulta ___" ──
+function _verbAInfinitivoEsp(v){
+  v=(v||'').toLowerCase().trim();
+  // Verbos -ir frecuentes en contexto educativo (3ª persona → infinitivo)
+  var irMap=[
+    ['describe','describir'],['define','definir'],['produce','producir'],
+    ['distingue','distinguir'],['construye','construir'],['incluye','incluir'],
+    ['dirige','dirigir'],['exige','exigir'],['elige','elegir'],
+    ['compite','competir'],['repite','repetir'],['sirve','servir'],
+    ['sigue','seguir'],['decide','decidir'],['recibe','recibir'],
+    ['admite','admitir'],['escribe','escribir'],['exhibe','exhibir'],
+    ['asiste','asistir'],['persiste','persistir'],['resiste','resistir'],
+    ['insiste','insistir'],['permite','permitir'],['emite','emitir'],
+    ['existe','existir'],['consiste','consistir'],['comparte','compartir'],
+    ['imparte','impartir'],['convierte','convertir'],['invierte','invertir'],
+    ['miente','mentir'],['siente','sentir'],['advierte','advertir'],
+    ['interrumpe','interrumpir'],['distribuye','distribuir'],['destruye','destruir'],
+  ];
+  for(var ii=0;ii<irMap.length;ii++){
+    var _pat=irMap[ii][0],_inf=irMap[ii][1];
+    if(v===_pat||v.startsWith(_pat)) return _inf;
+  }
+  // 3ª persona plural: -an → -ar, -en → -er
+  if(v.endsWith('an')) return v.slice(0,-2)+'ar';
+  if(v.endsWith('en')) return v.slice(0,-2)+'er';
+  // 3ª persona singular: -a → -ar, -e → -er
+  if(v.endsWith('a')) return v+'r';
+  if(v.endsWith('e')) return v+'r';
+  // Ya está en infinitivo u otro caso: retornar tal cual
+  return v;
+}
+// Construye el texto para nivel BAJO: "Se le dificulta Verbo en infinitivo resto..."
+function _txtParaNivelBajo(txRaw){
+  var palabras=txRaw.trim().split(/\s+/);
+  if(!palabras.length) return 'Se le dificulta '+txRaw;
+  var primerVerbo=palabras[0];
+  var infinitivo=_verbAInfinitivoEsp(primerVerbo);
+  // Capitalizar primera letra del infinitivo
+  infinitivo=infinitivo.charAt(0).toUpperCase()+infinitivo.slice(1);
+  var resto=palabras.slice(1).join(' ');
+  return 'Se le dificulta '+infinitivo+(resto?' '+resto:'');
 }
 function guardarDesc(){
     const doc=document.getElementById('descDoc')?.value||sesion.u;
@@ -5322,7 +5367,7 @@ function guardarDesc(){
     const mat=document.getElementById('descMat').value;
     const txRaw=document.getElementById('descTxt').value.trim();
     if(!mat||!txRaw){alert('Complete el campo de asignatura e indicador');return;}
-    const prefijos={bajo:'Se le dificulta ',basico:'Algunas veces ',alto:'Casi siempre ',superior:'Siempre '};
+    const prefijos={basico:'Algunas veces ',alto:'Casi siempre ',superior:'Siempre '};
     const niveles=['bajo','basico','alto','superior'];
     const base=Date.now();
     // ===== AUTO-REPLICACIÓN ACTIVA (desactivable con check #autoReplicaChk) =====
@@ -5345,7 +5390,8 @@ function guardarDesc(){
         // Limpia descriptores previos de este docente/per/mat/gra para evitar duplicados.
         d.descriptores=d.descriptores.filter(x=>!(x.doc===doc&&String(x.per)===String(per)&&x.mat===mat&&x.gra===gDest));
         niveles.forEach((niv,i)=>{
-          d.descriptores.push({id:base+gi*10+i,per,mat,niv,gra:gDest,txt:prefijos[niv]+txRaw,doc});
+          var _txt=niv==='bajo'?_txtParaNivelBajo(txRaw):(prefijos[niv]+txRaw);
+          d.descriptores.push({id:base+gi*10+i,per,mat,niv,gra:gDest,txt:_txt,doc});
         });
       });
       return d;
