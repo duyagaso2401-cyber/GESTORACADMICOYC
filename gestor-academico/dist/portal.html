@@ -5206,10 +5206,7 @@ function htmlDescriptores(){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h4 class="card-title" style="margin:0">📊 Estado de Descriptores por Grado / Área / Asignatura</h4>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <select id="_descFiltDoc" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
-          <option value="">Todos los docentes</option>
-          ${docentesEnCarga.map(d=>`<option value="${d.u}">${d.n}</option>`).join('')}
-        </select>
+        ${isAdmin?`<select id="_descFiltDoc" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem"><option value="">Todos los docentes</option>${docentesEnCarga.map(d=>`<option value="${d.u}">${d.n}</option>`).join('')}</select>`:`<select id="_descFiltDoc" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem;background:#f0f4f9;cursor:default" disabled><option value="">${sesion.n||sesion.u}</option></select>`}
         <select id="_descFiltGra" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
           <option value="">Todos los grados</option>
           ${_gradosDocente.map(g=>`<option value="${g.n}">${g.n}</option>`).join('')}
