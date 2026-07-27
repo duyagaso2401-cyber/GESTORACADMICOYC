@@ -3289,7 +3289,8 @@ function renderApp(){
   attachLogoListeners();
   setTimeout(function(){if(typeof _agregarBotonHuellaPerfil==='function')_agregarBotonHuellaPerfil();},80);
   if(pag==='menciones-honor') setTimeout(actualizarTiposMencion,50);
-  if(pag==='actas') setTimeout(renderActaTab,60);
+  if(pag==='actas') setTimeout(()=>{renderActaTab();setTimeout(renderActaTipoEspecial,100);},60);
+  if(pag==='descriptores') setTimeout(actualizarMatsDesc,50);
   // Re-inyectar widget IA si aplica (rector/admin/docente)
   setTimeout(function(){if(typeof iaInjectWidget==='function')iaInjectWidget();},60);
 }
@@ -5238,7 +5239,7 @@ function htmlDescriptores(){
     <h4 class="card-title">+ Nuevo Descriptor</h4>
     ${isAdmin?`<div style="margin-bottom:10px"><label class="lbl">Docente</label><select id="descDoc" onchange="actualizarMatsDesc()">${docsOpts}</select></div>`:`<input type="hidden" id="descDoc" value="${sesion.u}">`}
     <div class="grid4" style="margin-bottom:10px">
-      <div><label class="lbl">Periodo</label><select id="descPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></div>
+      <div><label class="lbl">Periodo</label><select id="descPer" onchange="actualizarMatsDesc()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></div>
       <div><label class="lbl">Grado</label><select id="descGra" onchange="actualizarMatsDesc()">${gradOpts}</select></div>
       <div><label class="lbl">Asignatura</label><select id="descMat"></select></div>
     </div>
@@ -7705,14 +7706,15 @@ function renderActaTab(){
 
 // --- PANEL ACTAS ---
 function htmlActasPanel(){
-  const tiposActa=['Acta de Compromiso y Evaluación','Acta de Reunión con Padres de Familia','Acta de Inasistencias','Acta de Recuperación por Área','Acta de Nivelación por Área','Acta de Nivelación con Estudiantes','Citación a Padres / Cuidador(a)','Formato Personalizado'];
+  const tiposActa=['Acta de Entrega de Boletines por Periodo','Acta de Comisión de Evaluación y Promoción','Acta de Compromiso y Evaluación','Acta de Reunión con Padres de Familia','Acta de Inasistencias','Acta de Recuperación por Área','Acta de Nivelación por Área','Acta de Nivelación con Estudiantes','Citación a Padres / Cuidador(a)','Formato Personalizado'];
   const editActa=actaEditId!==null?db.actas[actaEditId]||null:null;
   const tiposOpts=tiposActa.map(t=>`<option${editActa&&editActa.tipo===t?' selected':''}>${t}</option>`).join('');
   const gradOpts=db.grados.map(g=>`<option value="${g.n}"${editActa&&editActa.grado===g.n?' selected':''}>${g.n}</option>`).join('');
   const actasRows=(db.actas||[]).map((a,i)=>`<tr>
     <td style="text-align:left">${a.tipo}</td><td>${a.fecha}</td><td>${a.grado||'General'}</td>
     <td><button class="btn-sm" style="background:#e67e22" onclick="editarActa(${i})">✎</button>
-    <button class="btn-sm" style="background:#003366" onclick="pdfActa(${i})">📥</button>
+    <button class="btn-sm" style="background:#003366" onclick="pdfActa(${i})">📥 PDF</button>
+    <button class="btn-sm" style="background:#27ae60" onclick="wordActa(${i})">📝 Word</button>
     <button class="btn-sm" style="background:#c0392b" onclick="eliminarActa(${i})">🗑</button></td></tr>`).join('');
   const actasPdfRows=(db.actasPdf||[]).map((a,i)=>`<tr>
     <td style="text-align:left">${a.nombre}</td><td>${a.fecha}</td>
@@ -7721,13 +7723,14 @@ function htmlActasPanel(){
   return `<div class="card">
     <h4 class="card-title">${editActa?'✎ Editar Acta':'+ Crear Acta / Documento'}</h4>
     <div class="grid3" style="margin-bottom:10px">
-      <div><label class="lbl">Tipo</label><select id="actaTipo">${tiposOpts}</select></div>
+      <div><label class="lbl">Tipo</label><select id="actaTipo" onchange="renderActaTipoEspecial()">${tiposOpts}</select></div>
       <div><label class="lbl">Fecha</label><input type="date" id="actaFecha" value="${editActa?editActa.fecha:new Date().toISOString().split('T')[0]}"></div>
       <div><label class="lbl">Grado</label><select id="actaGrado"><option value="">General</option>${gradOpts}</select></div>
       <div><label class="lbl">Área</label><input id="actaArea" placeholder="Área" value="${editActa?editActa.area||'':''}"></div>
       <div><label class="lbl">Docente</label><input id="actaDocente" placeholder="Docente" value="${editActa?editActa.docente||'':sesion.n}"></div>
       <div><label class="lbl">Año</label><input id="actaAnio" value="${db.anio}" readonly></div>
     </div>
+    <div id="_actaTipoEspecialPanel" style="margin-bottom:10px"></div>
     <div style="margin-bottom:10px"><label class="lbl">Título</label><input id="actaTitulo" placeholder="Título del acta" value="${editActa?editActa.titulo||'':''}"></div>
     <div style="margin-bottom:10px"><label class="lbl">Contenido</label>
       <textarea id="actaContenido" style="height:120px;resize:vertical">${editActa?editActa.contenido||'':''}</textarea></div>
@@ -7748,6 +7751,7 @@ function htmlActasPanel(){
     <div class="flex-gap">
       <button class="btn btn-green" onclick="guardarActa()">💾 Guardar</button>
       <button class="btn btn-blue" onclick="guardarActaYPdf()">📥 Guardar y PDF</button>
+      <button class="btn" style="background:#27ae60;color:#fff" onclick="guardarActaYWord()">📝 Guardar y Word</button>
       ${editActa?`<button class="btn btn-gray" onclick="actaEditId=null;renderActaTab()">✕ Cancelar</button>`:''}
     </div>
   </div>
@@ -7882,6 +7886,8 @@ function guardarActa(){
       compromisos:document.getElementById('actaCompromisos')?.value||'',
       acudientes:document.getElementById('actaAcudientes')?.value||'',
       firmasAcudientes:document.getElementById('actaFirmasAcudientes')?.value||'',
+      actaPeriodo:document.getElementById('actaPeriodoEsp')?.value||'',
+      actaGradoEsp:document.getElementById('actaGradoEsp')?.value||'',
       createdBy:sesion.u,anio:db.anio,id:Date.now()};
     if(actaEditId!==null&&actaEditId<d.actas.length) d.actas[actaEditId]={...d.actas[actaEditId],...acta};
     else d.actas.push(acta);
@@ -7899,6 +7905,373 @@ function editarActa(idx){
     navTo('actas');
     setTimeout(()=>{const c=document.getElementById('contenido');if(c)c.scrollTop=0;},80);
   }
+}
+
+// ── Calcula el porcentaje de inasistencias de un estudiante en todos sus registros ──
+function _calcInasistenciasPct(estId,grado,per){
+  var regs=(db.asistencia||[]).filter(function(a){return a.grado===grado;});
+  if(!regs.length) return 0;
+  var aus=regs.filter(function(a){return (a.ausentes||[]).some(function(x){return String(x)===String(estId);})}).length;
+  return Math.round(aus/regs.length*100);
+}
+// ── Genera encabezado Word (HTML) institucional ──
+function _wordHdr(){
+  var logo=db.logo?('<img src="'+db.logo+'" style="height:50px;float:left;margin-right:10px">'):'';
+  var escCol=db.escudoColombia?('<img src="'+db.escudoColombia+'" style="height:50px;float:right;margin-left:10px">'):'';
+  var dep=db.depto?('<div style="font-size:9pt">DEPARTAMENTO DE '+db.depto.toUpperCase()+'</div>'):'';
+  return '<div style="text-align:center;border-bottom:2px solid #003366;padding-bottom:6px;margin-bottom:10px">'+
+    logo+escCol+
+    '<div style="font-size:8pt;font-weight:bold">REPÚBLICA DE COLOMBIA</div>'+
+    dep+
+    '<div style="font-size:11pt;font-weight:bold;color:#003366">'+getROT3()+'</div>'+
+    (getROT4()?'<div style="font-size:8pt">'+getROT4()+'</div>':'')+
+    (getROT5()?'<div style="font-size:8pt">'+getROT5()+'</div>':'')+
+    '<div style="font-size:7pt">DANE: '+(db.dane||'')+'&nbsp;&nbsp;NIT: '+(db.nit||'')+'</div>'+
+    '</div>';
+}
+function _wordFtr(){
+  return '<div style="text-align:center;border-top:1px solid #ccc;padding-top:4px;font-size:7pt;color:#666;margin-top:20px">'+
+    (db.corregimiento||db.municipio||'')+' &nbsp;|&nbsp; '+(db.telInst||'')+' &nbsp;|&nbsp; '+(db.emailInst||'')+'</div>';
+}
+function _triggerWordDownload(html,filename){
+  var blob=new Blob(['\ufeff'+html],{type:'application/msword'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();
+}
+
+// ── Genera Word para acta de boletines ──
+function wordActaBoletines(acta){
+  var grado=acta.grado||'';
+  var per=acta.periodo||acta.actaPeriodo||'1';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):(db.ests||[]).sort(function(a,b){return a.n.localeCompare(b.n);});
+  var dirGrupo=acta.docente||'________________________________';
+  var periodos=['I','II','III','IV'];
+  var header=_wordHdr();
+  var filas=ests.map(function(e,i){
+    return '<tr>'+
+      '<td style="border:1px solid #000;padding:4px;text-align:center">'+(i+1)+'</td>'+
+      '<td style="border:1px solid #000;padding:4px">'+(e.n||'')+'</td>'+
+      '<td style="border:1px solid #000;padding:4px;text-align:center">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>'+
+      '<td style="border:1px solid #000;padding:4px;text-align:center">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>'+
+      '<td style="border:1px solid #000;padding:4px;text-align:center">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>'+
+      '<td style="border:1px solid #000;padding:4px;text-align:center">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>'+
+    '</tr>';
+  }).join('');
+  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:10pt;margin:20mm 15mm}table{border-collapse:collapse;width:100%}th,td{font-size:9pt}</style></head><body>'+
+    header+
+    '<h2 style="text-align:center;font-size:12pt;color:#003366">RELACIÓN DE ESTUDIANTES PARA ENTREGA DE BOLETINES</h2>'+
+    '<p style="font-size:9pt"><b>AÑO:</b> '+db.anio+'&nbsp;&nbsp;&nbsp;<b>GRADO:</b> '+(grado||'_______')+'&nbsp;&nbsp;&nbsp;<b>DIRECTOR(A) DE GRUPO:</b> '+dirGrupo+'</p>'+
+    '<p style="font-size:9pt"><b>SEDE:</b> '+(db.corregimiento||'_____________')+'&nbsp;&nbsp;&nbsp;<b>JORNADA:</b> '+(db.jornada||'_____________')+'</p>'+
+    '<table><thead><tr>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px;text-align:center">No.</th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">NOMBRE DEL ESTUDIANTE</th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px;text-align:center">FIRMA P.I<br><small>FECHA:___/___/___</small></th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px;text-align:center">FIRMA P.II<br><small>FECHA:___/___/___</small></th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px;text-align:center">FIRMA P.III<br><small>FECHA:___/___/___</small></th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px;text-align:center">FIRMA P.IV<br><small>FECHA:___/___/___</small></th>'+
+    '</tr></thead><tbody>'+filas+'</tbody></table>'+
+    '<br><p style="font-size:8pt"><i>Número de estudiantes: '+ests.length+'</i></p>'+
+    _wordFtr()+'</body></html>';
+  _triggerWordDownload(html,'Acta_Entrega_Boletines_'+grado+'_'+db.anio+'.doc');
+}
+
+// ── Genera PDF para acta de boletines ──
+function pdfActaBoletines(acta){
+  var grado=acta.grado||'';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):(db.ests||[]).sort(function(a,b){return a.n.localeCompare(b.n);});
+  var doc=getPDF('l','a4');
+  var W=doc.internal.pageSize.width;
+  var startY=addHeaderRot(doc,'RELACIÓN DE ESTUDIANTES PARA ENTREGA DE BOLETINES','Año: '+db.anio+' | Grado: '+(grado||'General')+' | Director(a): '+(acta.docente||'_________________________'),8);
+  var y=startY+3;
+  doc.setFontSize(8);doc.setFont('helvetica','normal');
+  doc.text('Sede: '+(db.corregimiento||'____________')+'   Jornada: '+(db.jornada||'____________')+'   N° Estudiantes: '+ests.length,14,y);
+  y+=7;
+  var head=[['#','Nombre del Estudiante','Firma Periodo I\n___/___/___','Firma Periodo II\n___/___/___','Firma Periodo III\n___/___/___','Firma Periodo IV\n___/___/___']];
+  var body=ests.map(function(e,i){return [i+1,e.n||'','','','',''];});
+  doc.autoTable({head:head,body:body,startY:y,
+    styles:{fontSize:7.5,cellPadding:3,overflow:'linebreak'},
+    headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold',fontSize:7.5},
+    columnStyles:{0:{cellWidth:10,halign:'center'},1:{cellWidth:70},2:{cellWidth:36,halign:'center',minCellHeight:12},3:{cellWidth:36,halign:'center',minCellHeight:12},4:{cellWidth:36,halign:'center',minCellHeight:12},5:{cellWidth:36,halign:'center',minCellHeight:12}},
+    margin:{left:14,right:14}
+  });
+  addFooterPDF(doc);
+  doc.save('Acta_Entrega_Boletines_'+(grado||'General')+'_'+db.anio+'.pdf');
+}
+
+// ── Genera Word para acta de comisión ──
+function wordActaComision(acta){
+  var per=String(acta.actaPeriodo||acta.periodo||'1');
+  var grado=acta.grado||'';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):db.ests.sort(function(a,b){return (a.g||'').localeCompare(b.g||'')||a.n.localeCompare(b.n);});
+  var docentes=(db.users||[]).filter(function(u){return u.r==='docente';});
+  // Estudiantes bajo rendimiento
+  var bajosRows=ests.filter(function(e){
+    var areas=getAreasPerdidasPeriodo?getAreasPerdidasPeriodo(e.id,e.g,per):[];
+    return areas&&areas.length>0;
+  }).map(function(e){
+    var areas=getAreasPerdidasPeriodo?getAreasPerdidasPeriodo(e.id,e.g,per).join(', '):'—';
+    return '<tr><td style="border:1px solid #000;padding:4px">'+per+'</td><td style="border:1px solid #000;padding:4px">'+areas+'</td><td style="border:1px solid #000;padding:4px">'+(e.g||'')+'</td><td style="border:1px solid #000;padding:4px">'+(e.n||'')+'</td><td style="border:1px solid #000;padding:4px">Se recomienda refuerzo y acompañamiento</td></tr>';
+  }).join('');
+  // Estudiantes inasistencia >25%
+  var inasRows=ests.filter(function(e){return _calcInasistenciasPct(e.id,e.g,per)>=25;}).map(function(e){
+    return '<tr><td style="border:1px solid #000;padding:4px">'+per+'</td><td style="border:1px solid #000;padding:4px">—</td><td style="border:1px solid #000;padding:4px">'+(e.g||'')+'</td><td style="border:1px solid #000;padding:4px">'+(e.n||'')+'</td><td style="border:1px solid #000;padding:4px">'+_calcInasistenciasPct(e.id,e.g,per)+'%</td></tr>';
+  }).join('');
+  // Mejores estudiantes
+  var gradosAna=grado?[{n:grado}]:db.grados;
+  var mejoresRows='';
+  var posGlobal=1;
+  gradosAna.forEach(function(gObj){
+    var g=gObj.n;
+    var ranking=db.ests.filter(function(e){return e.g===g;})
+      .map(function(e){return{n:e.n,g:g,prom:calcPromedioEstPer(e.id,g,Number(per))};})
+      .filter(function(e){return e.prom>0;})
+      .sort(function(a,b){return b.prom-a.prom;})
+      .slice(0,3);
+    ranking.forEach(function(e){
+      mejoresRows+='<tr><td style="border:1px solid #000;padding:4px;text-align:center">'+posGlobal+'</td><td style="border:1px solid #000;padding:4px">'+(e.n||'')+'</td></tr>';
+      posGlobal++;
+    });
+  });
+  // Docentes asistentes
+  var docRows=docentes.map(function(u,i){
+    return '<tr><td style="border:1px solid #000;padding:4px">'+(u.cargo||'Docente')+'</td><td style="border:1px solid #000;padding:4px">'+(u.n||'')+'</td><td style="border:1px solid #000;padding:4px">'+(u.cedula||u.u||'')+'</td></tr>';
+  }).join('');
+  var header=_wordHdr();
+  var fechaHoy=acta.fecha||new Date().toLocaleDateString('es-CO');
+  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:10pt;margin:20mm 15mm}h2,h3{color:#003366}table{border-collapse:collapse;width:100%}th,td{font-size:9pt}p{text-align:justify}</style></head><body>'+
+    header+
+    '<h2 style="text-align:center;font-size:12pt">ACTA DE COMISIÓN DE EVALUACIÓN Y PROMOCIÓN</h2>'+
+    '<p>Siendo las ___ del día '+fechaHoy+' del año '+db.anio+', se reunieron en la sede principal de la '+getROT3()+', los docentes integrantes de la comisión de evaluación y promoción, convocados por el rector(a) para analizar los resultados de la evaluación del rendimiento escolar, comportamiento e inasistencia de los estudiantes en los grados '+(grado||'XXXXX')+' correspondiente al '+per+' Periodo '+db.anio+'.</p>'+
+    '<h3>AGENDA</h3><ol>'+
+      '<li>Oración a Dios</li><li>Saludo de bienvenida</li><li>Verificación del Quorum</li>'+
+      '<li>Análisis de desempeño académico</li><li>Identificar casos de bajo rendimiento</li>'+
+      '<li>Análisis de casos de comportamiento</li><li>Selección de mejores estudiantes</li>'+
+    '</ol>'+
+    '<h3>VERIFICACIÓN DE ASISTENCIA</h3>'+
+    '<table><thead><tr><th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">CARGO</th><th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">APELLIDO Y NOMBRE</th><th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">IDENTIFICACIÓN</th></tr></thead><tbody>'+
+    '<tr><td style="border:1px solid #000;padding:4px">Rector(a)</td><td style="border:1px solid #000;padding:4px">'+(db.rectora||'')+'</td><td style="border:1px solid #000;padding:4px"></td></tr>'+
+    docRows+'</tbody></table>'+
+    '<h3>ANÁLISIS DE CASOS DE MUY BAJO RENDIMIENTO</h3>'+
+    (bajosRows?
+      '<table><thead><tr>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">PERIODO</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">ÁREA / ASIGNATURA</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">GRADO</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">ESTUDIANTE</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">RECOMENDACIONES</th>'+
+      '</tr></thead><tbody>'+bajosRows+'</tbody></table>':
+      '<p><i>No se registraron casos de bajo rendimiento para el periodo seleccionado.</i></p>')+
+    '<br><h3>RECOMENDACIONES GENERALES</h3>'+
+    '<p><b>A ESTUDIANTES:</b> ______________________________________________________________________</p>'+
+    '<p><b>A DOCENTES:</b> ________________________________________________________________________</p>'+
+    '<p><b>A PADRES DE FAMILIA:</b> _______________________________________________________________</p>'+
+    '<h3>ESTUDIANTES CON EXCESO DE INASISTENCIAS (&gt;25%)</h3>'+
+    (inasRows?
+      '<table><thead><tr>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">PERIODO</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">ÁREA</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">GRADO</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">ESTUDIANTE</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">% INASISTENCIAS</th>'+
+      '</tr></thead><tbody>'+inasRows+'</tbody></table>':
+      '<p><i>No se registraron estudiantes con inasistencias superiores al 25% en el periodo seleccionado.</i></p>')+
+    '<h3>MEJORES ESTUDIANTES DEL PERIODO</h3>'+
+    (mejoresRows?
+      '<table><thead><tr>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">N°</th>'+
+        '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">ESTUDIANTE</th>'+
+      '</tr></thead><tbody>'+mejoresRows+'</tbody></table>':
+      '<p><i>No hay datos de notas registrados para el periodo.</i></p>')+
+    '<br><h3>CIERRE Y FIRMAS</h3>'+
+    '<p>Siendo las (___) del mes de '+fechaHoy+' del '+db.anio+', se terminó la reunión y en constancia firman:</p>'+
+    '<table><thead><tr>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">CARGO</th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">APELLIDO Y NOMBRE</th>'+
+      '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px">FIRMA</th>'+
+    '</tr></thead><tbody>'+
+    '<tr><td style="border:1px solid #000;padding:15px">Rector(a)</td><td style="border:1px solid #000;padding:15px">'+(db.rectora||'')+'</td><td style="border:1px solid #000;padding:15px">&nbsp;</td></tr>'+
+    docentes.map(function(u){return '<tr><td style="border:1px solid #000;padding:15px">'+(u.cargo||'Docente')+'</td><td style="border:1px solid #000;padding:15px">'+(u.n||'')+'</td><td style="border:1px solid #000;padding:15px">&nbsp;</td></tr>';}).join('')+
+    '</tbody></table>'+
+    _wordFtr()+'</body></html>';
+  _triggerWordDownload(html,'Acta_Comision_Evaluacion_P'+per+'_'+db.anio+'.doc');
+}
+
+// ── Genera PDF para acta de comisión ──
+function pdfActaComision(acta){
+  var per=Number(acta.actaPeriodo||acta.periodo||1);
+  var grado=acta.grado||'';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):db.ests.sort(function(a,b){return(a.g||'').localeCompare(b.g||'')||a.n.localeCompare(b.n);});
+  var docentes=(db.users||[]).filter(function(u){return u.r==='docente';});
+  var doc=getPDF('p','a4');var PW=doc.internal.pageSize.width;
+  var startY=addHeaderRot(doc,'ACTA DE COMISIÓN DE EVALUACIÓN Y PROMOCIÓN',
+    'Periodo: '+per+' | Año: '+db.anio+(grado?' | Grado: '+grado:''),8);
+  var y=startY+3;
+  // Fecha / intro
+  doc.setFontSize(8.5);doc.setFont('helvetica','normal');
+  var introTxt='Siendo las ___ del día '+(acta.fecha||new Date().toLocaleDateString('es-CO'))+' del año '+db.anio+', se reunieron en la sede principal de '+getROT3()+' los docentes integrantes de la comisión de evaluación y promoción, convocados por el rector(a) para analizar los resultados del '+per+'er Periodo '+db.anio+'.';
+  var introL=doc.splitTextToSize(introTxt,175);doc.text(introL,14,y);y+=introL.length*5+4;
+  // Verificación asistencia
+  doc.setFont('helvetica','bold');doc.text('VERIFICACIÓN DE ASISTENCIA:',14,y);y+=5;
+  var headA=[['CARGO','APELLIDO Y NOMBRE','IDENTIFICACIÓN']];
+  var bodyA=[['Rector(a)',db.rectora||'','']].concat(docentes.map(function(u){return[u.cargo||'Docente',u.n||'',u.cedula||u.u||''];}));
+  doc.autoTable({head:headA,body:bodyA,startY:y,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:[0,51,102],textColor:255},margin:{left:14,right:14}});
+  y=doc.lastAutoTable.finalY+5;
+  // Bajo rendimiento
+  doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.text('ANÁLISIS DE CASOS DE BAJO RENDIMIENTO:',14,y);y+=5;
+  var bajosBody=ests.filter(function(e){var ar=typeof getAreasPerdidasPeriodo==='function'?getAreasPerdidasPeriodo(e.id,e.g,per):[];return ar&&ar.length;}).map(function(e){var ar=typeof getAreasPerdidasPeriodo==='function'?getAreasPerdidasPeriodo(e.id,e.g,per).join(', '):'—';return[per,ar,e.g||'',e.n||'','Refuerzo y seguimiento'];});
+  if(bajosBody.length){
+    doc.autoTable({head:[['Periodo','Área/Asig.','Grado','Estudiante','Recomendación']],body:bajosBody,startY:y,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:[0,51,102],textColor:255},margin:{left:14,right:14}});
+    y=doc.lastAutoTable.finalY+4;
+  }else{doc.setFont('helvetica','italic');doc.setFontSize(7.5);doc.text('No se registraron casos de bajo rendimiento.',18,y);y+=7;}
+  // Inasistencias
+  if(y>240){doc.addPage();y=18;}
+  doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.text('ESTUDIANTES CON INASISTENCIAS SUPERIORES AL 25%:',14,y);y+=5;
+  var inasBody=ests.filter(function(e){return _calcInasistenciasPct(e.id,e.g,per)>=25;}).map(function(e){return[per,'—',e.g||'',e.n||'',_calcInasistenciasPct(e.id,e.g,per)+'%'];});
+  if(inasBody.length){
+    doc.autoTable({head:[['Per.','Área','Grado','Estudiante','% Inas.']],body:inasBody,startY:y,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:[0,51,102],textColor:255},margin:{left:14,right:14}});
+    y=doc.lastAutoTable.finalY+4;
+  }else{doc.setFont('helvetica','italic');doc.setFontSize(7.5);doc.text('No se registraron estudiantes con más del 25% de inasistencias.',18,y);y+=7;}
+  // Mejores estudiantes
+  if(y>230){doc.addPage();y=18;}
+  doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.text('MEJORES ESTUDIANTES DEL PERIODO:',14,y);y+=5;
+  var gradosAna=grado?[{n:grado}]:db.grados;
+  var mejBody=[];
+  gradosAna.forEach(function(gObj){
+    var ranking=db.ests.filter(function(e){return e.g===gObj.n;})
+      .map(function(e){return{n:e.n,g:gObj.n,prom:calcPromedioEstPer(e.id,gObj.n,per)};})
+      .filter(function(e){return e.prom>0;})
+      .sort(function(a,b){return b.prom-a.prom;})
+      .slice(0,3);
+    ranking.forEach(function(e,i){mejBody.push([i+1+'°',e.n,e.g,e.prom.toFixed(2)]);});
+  });
+  if(mejBody.length){
+    doc.autoTable({head:[['Puesto','Estudiante','Grado','Promedio']],body:mejBody,startY:y,styles:{fontSize:7,cellPadding:2},headStyles:{fillColor:[0,51,102],textColor:255},margin:{left:14,right:14}});
+    y=doc.lastAutoTable.finalY+4;
+  }else{doc.setFont('helvetica','italic');doc.setFontSize(7.5);doc.text('No hay datos de notas para el periodo.',18,y);y+=7;}
+  // Firmas
+  if(y>230){doc.addPage();y=18;}
+  doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.text('FIRMAS:',14,y);y+=6;
+  var firmaW=170/(Math.min(docentes.length+1,3));
+  var firmas=[{n:db.rectora||'RECTOR(A)',c:'Rector(a)'}].concat(docentes.map(function(u){return{n:u.n,c:u.cargo||'Docente'};}));
+  var col=0,row=0;
+  firmas.forEach(function(f,i){
+    if(y+(row+1)*22>270){doc.addPage();y=18;row=0;}
+    var fx=14+col*firmaW;var fy=y+row*22;
+    doc.setLineWidth(0.4);doc.line(fx,fy+12,fx+firmaW-4,fy+12);
+    doc.setFontSize(7);doc.setFont('helvetica','bold');
+    doc.text((f.n||'').toUpperCase().slice(0,22),fx+(firmaW-4)/2,fy+16,{align:'center'});
+    doc.setFont('helvetica','normal');doc.text(f.c,fx+(firmaW-4)/2,fy+20,{align:'center'});
+    col++;if(col>=3){col=0;row++;}
+  });
+  addFooterPDF(doc);
+  doc.save('Acta_Comision_Evaluacion_P'+per+'_'+db.anio+'.pdf');
+}
+
+// ── Renderiza campos especiales según tipo de acta seleccionado ──
+function renderActaTipoEspecial(){
+  var tipo=document.getElementById('actaTipo')?.value||'';
+  var panel=document.getElementById('_actaTipoEspecialPanel');
+  if(!panel) return;
+  var isAdmin=sesion&&sesion.r==='admin';
+  var gradosDisp=isAdmin?db.grados:db.grados.filter(function(g){return db.carga.some(function(c){return c.d===sesion.u&&c.g===g.n;});});
+  var gradOpts=gradosDisp.map(function(g){return '<option value="'+g.n+'">'+g.n+'</option>';}).join('');
+  // Auto-fill actaGrado from panel if exists
+  var gradoSelEl=document.getElementById('actaGrado');
+  var gradoSel=gradoSelEl?gradoSelEl.value:'';
+  if(tipo==='Acta de Entrega de Boletines por Periodo'){
+    panel.innerHTML=
+      '<div style="background:#eaf4fb;border:1px solid #aed6f1;border-radius:8px;padding:12px 14px;margin-bottom:6px">'+
+      '<b style="color:#1a5276;font-size:0.85rem">📋 Acta de Entrega de Boletines — Campos automáticos</b>'+
+      '<div class="grid3" style="margin-top:10px">'+
+        '<div><label class="lbl">Periodo del Boletín</label><select id="actaPeriodoEsp" onchange="autoLlenarActaBoletines()"><option value="1">Periodo I</option><option value="2">Periodo II</option><option value="3">Periodo III</option><option value="4">Periodo IV</option></select></div>'+
+        '<div><label class="lbl">Grado</label><select id="actaGradoEsp" onchange="autoLlenarActaBoletines()"><option value="">Seleccione grado</option>'+gradOpts+'</select></div>'+
+        '<div style="display:flex;align-items:flex-end"><button class="btn btn-blue" style="font-size:0.82rem" onclick="autoLlenarActaBoletines()">🔄 Cargar Estudiantes</button></div>'+
+      '</div>'+
+      '<div id="_boletinesEstsStatus" style="font-size:0.8rem;color:#1a5276;margin-top:8px"></div>'+
+      '</div>';
+    autoLlenarActaBoletines();
+  } else if(tipo==='Acta de Comisión de Evaluación y Promoción'){
+    panel.innerHTML=
+      '<div style="background:#fef9e7;border:1px solid #f1c40f;border-radius:8px;padding:12px 14px;margin-bottom:6px">'+
+      '<b style="color:#856404;font-size:0.85rem">🧑‍🏫 Acta de Comisión — El sistema detecta automáticamente los datos</b>'+
+      '<div class="grid3" style="margin-top:10px">'+
+        '<div><label class="lbl">Periodo a analizar</label><select id="actaPeriodoEsp" onchange="autoLlenarActaComision()"><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option><option value="4">Periodo 4</option></select></div>'+
+        '<div><label class="lbl">Grado (opcional)</label><select id="actaGradoEsp" onchange="autoLlenarActaComision()"><option value="">Todos los grados</option>'+gradOpts+'</select></div>'+
+        '<div style="display:flex;align-items:flex-end"><button class="btn btn-blue" style="font-size:0.82rem" onclick="autoLlenarActaComision()">🔄 Cargar Datos</button></div>'+
+      '</div>'+
+      '<div id="_comisionStatus" style="font-size:0.8rem;color:#856404;margin-top:8px"></div>'+
+      '</div>';
+    autoLlenarActaComision();
+  } else {
+    panel.innerHTML='';
+  }
+}
+function autoLlenarActaBoletines(){
+  var per=document.getElementById('actaPeriodoEsp')?.value||'1';
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  if(!grado){var st=document.getElementById('_boletinesEstsStatus');if(st)st.textContent='Seleccione un grado para cargar los estudiantes.';return;}
+  var ests=db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
+  var tituloEl=document.getElementById('actaTitulo');
+  if(tituloEl) tituloEl.value='ACTA DE ENTREGA DE BOLETINES - GRADO '+grado+' - PERIODO '+per+' - AÑO '+db.anio;
+  var docEl=document.getElementById('actaDocente');
+  if(docEl&&!docEl.value) docEl.value=sesion.n||'';
+  var estEl=document.getElementById('actaEstudiantes');
+  if(estEl) estEl.value=ests.map(function(e){return e.n;}).join('\n');
+  var contEl=document.getElementById('actaContenido');
+  if(contEl) contEl.value='Relación de estudiantes del grado '+grado+' para entrega de boletín correspondiente al Periodo '+per+' del año escolar '+db.anio+'. Director(a) de grupo: '+(sesion.n||'_________________________')+'. Sede: '+(db.corregimiento||'____________')+'. Jornada: '+(db.jornada||'____________')+'.';
+  var gradoEl=document.getElementById('actaGrado');if(gradoEl) gradoEl.value=grado;
+  // Store periodo for PDF/Word
+  var perHid=document.getElementById('actaPeriodoEsp');if(perHid) perHid.setAttribute('data-per',per);
+  var st=document.getElementById('_boletinesEstsStatus');
+  if(st) st.textContent='✅ Cargados '+ests.length+' estudiantes del grado '+grado+' para el Periodo '+per+'.';
+}
+function autoLlenarActaComision(){
+  var per=document.getElementById('actaPeriodoEsp')?.value||'1';
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}):db.ests;
+  var docentes=(db.users||[]).filter(function(u){return u.r==='docente';});
+  var tituloEl=document.getElementById('actaTitulo');
+  if(tituloEl) tituloEl.value='ACTA DE COMISIÓN DE EVALUACIÓN Y PROMOCIÓN - PERIODO '+per+' - AÑO '+db.anio+(grado?' - GRADO '+grado:'');
+  var gradoEl=document.getElementById('actaGrado');if(gradoEl&&grado) gradoEl.value=grado;
+  // Contenido general
+  var contEl=document.getElementById('actaContenido');
+  if(contEl) contEl.value='Comisión de evaluación y promoción - Periodo '+per+' - Año '+db.anio+'. Docentes participantes: '+docentes.map(function(u){return u.n;}).join(', ')+'.';
+  // Bajo rendimiento
+  var bajos=ests.filter(function(e){var ar=typeof getAreasPerdidasPeriodo==='function'?getAreasPerdidasPeriodo(e.id,e.g,Number(per)):[];return ar&&ar.length>0;});
+  var estEl=document.getElementById('actaEstudiantes');
+  if(estEl) estEl.value=bajos.length?bajos.map(function(e){var ar=typeof getAreasPerdidasPeriodo==='function'?getAreasPerdidasPeriodo(e.id,e.g,Number(per)).join(', '):'';return e.n+' ('+e.g+'): Áreas con dificultad: '+ar;}).join('\n'):'Sin estudiantes con bajo rendimiento en el periodo.';
+  // Inasistencias >25%
+  var inas=ests.filter(function(e){return _calcInasistenciasPct(e.id,e.g,Number(per))>=25;});
+  var compEl=document.getElementById('actaCompromisos');
+  if(compEl) compEl.value=(inas.length?'ESTUDIANTES CON INASISTENCIAS >25%:\n'+inas.map(function(e){return e.n+' ('+e.g+'): '+_calcInasistenciasPct(e.id,e.g,Number(per))+'%';}).join('\n'):'')+'\n\nRECOMENDACIONES:\nA estudiantes: \nA docentes: \nA padres de familia: ';
+  var st=document.getElementById('_comisionStatus');
+  if(st) st.textContent='✅ Detectados '+bajos.length+' estudiantes con bajo rendimiento y '+inas.length+' con inasistencias >25%. Datos cargados automáticamente.';
+}
+function guardarActaYWord(){
+  guardarActa();
+  setTimeout(function(){wordActa(db.actas.length-1);},500);
+}
+function wordActa(idx){
+  var acta=db.actas[idx];if(!acta) return;
+  var tipo=acta.tipo||'';
+  if(tipo==='Acta de Entrega de Boletines por Periodo'){wordActaBoletines(acta);return;}
+  if(tipo==='Acta de Comisión de Evaluación y Promoción'){wordActaComision(acta);return;}
+  // Genérico para otros tipos
+  var header=_wordHdr();
+  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;margin:20mm 15mm}p{text-align:justify}</style></head><body>'+
+    header+
+    '<h2 style="text-align:center;font-size:13pt;color:#003366">'+(acta.titulo||acta.tipo||'ACTA').toUpperCase()+'</h2>'+
+    '<p><b>Fecha:</b> '+(acta.fecha||'')+' &nbsp;&nbsp; <b>Año:</b> '+(acta.anio||db.anio)+'</p>'+
+    (acta.grado?'<p><b>Grado:</b> '+(acta.grado)+' &nbsp;&nbsp; <b>Área:</b> '+(acta.area||'—')+' &nbsp;&nbsp; <b>Docente:</b> '+(acta.docente||'—')+'</p>':'')+
+    '<h3>Contenido</h3><p>'+(acta.contenido||'').replace(/\n/g,'<br>')+'</p>'+
+    (acta.estudiantes?'<h3>Estudiantes</h3><p>'+(acta.estudiantes||'').replace(/\n/g,'<br>')+'</p>':'')+
+    (acta.compromisos?'<h3>Compromisos</h3><p>'+(acta.compromisos||'').replace(/\n/g,'<br>')+'</p>':'')+
+    '<br><br>'+
+    '<table style="width:100%"><tr>'+
+      '<td style="text-align:center;width:50%"><div style="border-top:1px solid #000;padding-top:4px;margin:0 20px">'+(db.rectora||'RECTOR(A)').toUpperCase()+'<br>RECTOR(A)</div></td>'+
+      '<td style="text-align:center;width:50%"><div style="border-top:1px solid #000;padding-top:4px;margin:0 20px">'+(acta.docente||'DOCENTE').toUpperCase()+'<br>DOCENTE / DIRECTOR(A) DE GRUPO</div></td>'+
+    '</tr></table>'+
+    _wordFtr()+'</body></html>';
+  _triggerWordDownload(html,'Acta_'+(tipo.replace(/ /g,'_'))+'_'+(acta.fecha||db.anio)+'.doc');
 }
 function eliminarActa(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.actas.splice(idx,1);return d;});navTo('actas');}
 function cargarActaPdfArchivo(inp){
@@ -7991,6 +8364,8 @@ function pdfActaCitacion(acta){
 function pdfActa(idx){
   const acta=db.actas[idx];if(!acta) return;
   if(acta.tipo==='Citación a Padres / Cuidador(a)'){pdfActaCitacion(acta);return;}
+  if(acta.tipo==='Acta de Entrega de Boletines por Periodo'){pdfActaBoletines(acta);return;}
+  if(acta.tipo==='Acta de Comisión de Evaluación y Promoción'){pdfActaComision(acta);return;}
   const doc=getPDF();const startY=addHeaderRot(doc,(acta.titulo||acta.tipo).toUpperCase(),`Fecha: ${acta.fecha} | Año: ${acta.anio||db.anio}`,8);
   let y=startY+5;
   if(acta.grado){doc.setFontSize(9);doc.text(`Grado: ${acta.grado}   Área: ${acta.area||'—'}   Docente: ${acta.docente||'—'}`,14,y);y+=8;}
@@ -15808,19 +16183,36 @@ const CATEGORIAS_MENCIONES={
 };
 function htmlMencionesHonor(){
   const menciones=db.menciones||[];
-  const gradOpts=db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
-  const estOpts=db.ests.map(e=>`<option value="${e.id}">${e.n} (${e.g})</option>`).join('');
+  const _isMencAdmin=sesion.r==='admin';
+  const _gradosMenc=_isMencAdmin
+    ?db.grados
+    :db.grados.filter(g=>db.carga.some(c=>c.d===sesion.u&&c.g===g.n));
+  const gradOpts=_gradosMenc.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
+  const _estsMenc=_isMencAdmin?db.ests:db.ests.filter(e=>_gradosMenc.some(g=>g.n===e.g));
+  const estOpts=_estsMenc.map(e=>`<option value="${e.id}">${e.n} (${e.g})</option>`).join('');
   const catOpts=Object.entries(CATEGORIAS_MENCIONES).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
-  const rowsMenciones=menciones.map(m=>`<tr>
+  const rowsMenciones=menciones.filter(m=>_isMencAdmin||_gradosMenc.some(g=>g.n===m.grado)).map(m=>`<tr>
     <td style="text-align:left">${m.estNombre||''}</td><td>${m.grado||''}</td><td>${m.periodo||''}</td>
     <td style="text-align:left">${m.categoria||''}</td><td style="text-align:left">${m.tipo||''}</td>
     <td><button class="btn-sm" style="background:#1a5276" onclick="generarDiplomaPDF(${m.id})">📄 Diploma</button>
     <button class="btn-sm" style="background:#c0392b" onclick="eliminarMencion(${m.id})">🗑</button></td>
   </tr>`).join('');
+  const filtMencCount=menciones.filter(m=>_isMencAdmin||_gradosMenc.some(g=>g.n===m.grado)).length;
   return `<h3 class="sec-title">🏅 Menciones de Honor</h3>
-  <div class="card">
-    <h4 class="card-title">➕ Crear Mención de Honor</h4>
+  <div class="card" style="border-left:4px solid #f1c40f">
+    <h4 class="card-title">🏆 Generar Menciones Automáticas — 1er y 2do Puesto por Rendimiento</h4>
+    <p style="color:#666;font-size:0.84rem;margin-bottom:10px">El sistema detecta automáticamente los estudiantes con mayor promedio por grado y periodo, generando menciones de honor para 1er y 2do puesto académico.</p>
     <div class="grid3" style="margin-bottom:10px">
+      <div><label class="lbl">Periodo</label><select id="mencAutoPer"><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option><option value="4">Periodo 4</option></select></div>
+      <div><label class="lbl">Grado</label><select id="mencAutoGrado"><option value="">Todos los grados</option>${gradOpts}</select></div>
+      <div style="display:flex;align-items:flex-end"><button class="btn btn-blue" onclick="generarMencionesAutoPuesto()">🏆 Generar Automáticamente</button></div>
+    </div>
+    <div id="mencAutoStatus" style="font-size:0.83rem;color:#27ae60;margin-top:4px"></div>
+  </div>
+  <div class="card">
+    <h4 class="card-title">➕ Crear Mención de Honor Manual</h4>
+    <div class="grid3" style="margin-bottom:10px">
+      <div><label class="lbl">Grado (filtrar)</label><select id="mencGradoFil" onchange="filtrarEstsMencion()">${_isMencAdmin?'<option value="">Todos</option>':''}${gradOpts}</select></div>
       <div><label class="lbl">Estudiante</label><select id="mencEst">${estOpts}</select></div>
       <div><label class="lbl">Periodo</label><select id="mencPer"><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option><option value="4">Periodo 4</option><option value="Anual">Anual</option></select></div>
       <div><label class="lbl">Categoría</label><select id="mencCat" onchange="actualizarTiposMencion()">${catOpts}</select></div>
@@ -15832,7 +16224,7 @@ function htmlMencionesHonor(){
       <button class="btn btn-green" onclick="guardarMencion()">💾 Guardar Mención</button>
     </div>
   </div>
-  ${menciones.length?`<div class="card"><h4 class="card-title">📋 Menciones Registradas (${menciones.length})</h4>
+  ${filtMencCount?`<div class="card"><h4 class="card-title">📋 Menciones Registradas (${filtMencCount})</h4>
     <div class="over"><table><thead><tr><th>Estudiante</th><th>Grado</th><th>Periodo</th><th>Categoría</th><th>Tipo</th><th>Acción</th></tr></thead><tbody>${rowsMenciones}</tbody></table></div>
   </div>`:''}`;
 }
@@ -15867,6 +16259,53 @@ function guardarMencion(){
   });
   renderApp();
   setTimeout(()=>actualizarTiposMencion(),100);
+}
+function filtrarEstsMencion(){
+  const grado=document.getElementById('mencGradoFil')?.value||'';
+  const sel=document.getElementById('mencEst');
+  if(!sel) return;
+  const ests=grado?db.ests.filter(e=>e.g===grado):db.ests;
+  sel.innerHTML=ests.map(e=>`<option value="${e.id}">${e.n} (${e.g})</option>`).join('');
+}
+function generarMencionesAutoPuesto(){
+  const per=Number(document.getElementById('mencAutoPer')?.value||1);
+  const gradoSel=document.getElementById('mencAutoGrado')?.value||'';
+  const _isMencAdmin=sesion.r==='admin';
+  const gradosFil=_isMencAdmin
+    ?db.grados
+    :db.grados.filter(g=>db.carga.some(c=>c.d===sesion.u&&c.g===g.n));
+  const gradosAUsar=gradoSel?gradosFil.filter(g=>g.n===gradoSel):gradosFil;
+  if(!gradosAUsar.length){alert('No hay grados asignados para generar menciones.');return;}
+  let creadas=0;
+  updDB(d=>{
+    if(!d.menciones) d.menciones=[];
+    gradosAUsar.forEach(gObj=>{
+      const grado=gObj.n;
+      const ests=db.ests.filter(e=>e.g===grado);
+      if(!ests.length) return;
+      const ranking=ests.map(e=>({id:e.id,n:e.n,prom:calcPromedioEstPer(e.id,grado,per)}))
+        .filter(e=>e.prom>0)
+        .sort((a,b)=>b.prom-a.prom);
+      [0,1].forEach((idx)=>{
+        if(!ranking[idx]) return;
+        const est=ranking[idx];
+        const puesto=idx===0?'1er Puesto':'2do Puesto';
+        const yaTiene=d.menciones.some(m=>String(m.estId)===String(est.id)&&String(m.periodo)===String(per)&&m.tipo===puesto);
+        if(yaTiene) return;
+        d.menciones.push({
+          id:Date.now()+Math.random(),estId:est.id,estNombre:est.n,grado,
+          periodo:per,categoria:'🏆 Excelencia Académica',tipo:puesto,
+          texto:`Por obtener el ${puesto} en rendimiento académico del grado ${grado} durante el Periodo ${per}, con un promedio de ${est.prom.toFixed(2)}, demostrando dedicación, disciplina y compromiso con su formación integral.`,
+          creadoPor:sesion.n,fecha:new Date().toISOString().slice(0,10)
+        });
+        creadas++;
+      });
+    });
+    return d;
+  });
+  const st=document.getElementById('mencAutoStatus');
+  if(st) st.textContent=creadas>0?`✅ Se generaron ${creadas} mención(es) automáticamente.`:'ℹ️ Ya existen menciones para los puestos seleccionados o no hay notas registradas.';
+  renderApp();
 }
 function eliminarMencion(id){
   if(!confirm('¿Eliminar esta mención?')) return;
