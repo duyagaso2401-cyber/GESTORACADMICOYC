@@ -8247,6 +8247,7 @@ function cargarListaObservador(){
         <td style="text-align:left;font-size:0.8rem;min-width:280px">${obsHtml}</td>
         <td>
           <button class="btn-sm" style="background:#003366" onclick="agregarObservacion('${e.id}','${per}')">+ Obs.</button>
+          <button class="btn-sm" style="background:#16a085" onclick="generarObsAutomatica('${String(e.id)}','${per}')" title="Genera observaciones y sugerencias según las notas del período">🤖 Auto</button>
           <button class="btn-sm" style="background:#27ae60" onclick="pdfObservador('${String(e.id)}')">📥 PDF</button>
           <button class="btn-sm" style="background:#6c3483" onclick="analizarObsAdan('${String(e.id)}','${per}')" title="Adán analiza las observaciones psicopedagógicamente">🧠 Adán</button>
         </td></tr>`;
@@ -8284,6 +8285,57 @@ function eliminarObservacion(estId,obsIdx){
   if(!confirm('¿Eliminar?')) return;
   updDB(d=>{const idx=d.ests.findIndex(x=>String(x.id)===String(estId));if(idx!==-1) d.ests[idx].observaciones.splice(obsIdx,1);return d;});
   cargarListaObservador();
+}
+
+// ── GENERACIÓN AUTOMÁTICA DE OBSERVACIONES SEGÚN NOTAS ──────────────────────
+// Recorre las asignaturas del grado del estudiante, calcula la definitiva
+// del período seleccionado y, si es BÁSICO (cercano a 3.0) o BAJO (<3.0),
+// genera una observación inteligente con sugerencia de mejora.
+function generarObsAutomatica(estId,per){
+  estId=String(estId);
+  per=Number(per)||1;
+  const e=db.ests.find(x=>String(x.id)===estId);
+  if(!e){alert('Estudiante no encontrado.');return;}
+  const grado=e.g;
+  const mats=db.carga.filter(c=>c.g===grado);
+  if(!mats.length){alert('El grado '+grado+' no tiene asignaturas asignadas en la carga académica.');return;}
+  const fecha=new Date().toLocaleDateString('es-CO');
+  let generadas=0;
+  const nuevasObs=[];
+  mats.forEach(m=>{
+    const def=calcNotaDef(e.nts,m.id,per);
+    if(def<=0) return;
+    const nivel=esc(def);
+    if(nivel==='BÁSICO'||nivel==='BAJO'){
+      const nombreAsig=m.m||m.a||'la asignatura';
+      const nombreEst=e.n.split(' ')[0]||e.n;
+      let txt,sug;
+      if(nivel==='BAJO'){
+        txt=nombreEst+' presenta desempeño BAJO en '+nombreAsig+' (definitiva '+def.toFixed(1)+' en el P'+per+'). No alcanza los aprendizajes mínimos esperados; se requiere atención inmediata para evitar la reprobación del área.';
+        sug='Implementar plan de apoyo y nivelación en '+nombreAsig+': refuerzo en saberes, saberes-hacer y hacer; acompañamiento del docente y la familia; seguimiento semanal al progreso; dedicar al menos 30 min diarios de estudio dirigido en casa.';
+      } else {
+        txt=nombreEst+' alcanza el nivel BÁSICO en '+nombreAsig+' (definitiva '+def.toFixed(1)+' en el P'+per+'). Cumple los aprendizajes mínimos, pero su rendimiento está cercano al límite inferior (3.0); conviene reforzar para evitar descensos.';
+        sug='Fortalecer el desempeño en '+nombreAsig+': reforzar los temas con mayor dificultad del período, participar activamente en clase y dedicar tiempo de estudio adicional en casa. Con esfuerzo sostenido puede ascender al nivel ALTO.';
+      }
+      nuevasObs.push({per:per,txt:txt,sug:sug,tipo:'Académica',asig:nombreAsig,doc:'Sistema (Auto)',fecha:fecha,anio:db.anio,auto:true});
+      generadas++;
+    }
+  });
+  if(generadas===0){
+    alert('No se generaron observaciones: el estudiante no tiene notas en nivel BÁSICO o BAJO en el P'+per+', o no hay notas registradas aún.');
+    return;
+  }
+  if(!confirm('Se generarán '+generadas+' observación(es) automática(s) para '+e.n+' en el P'+per+'.\n\nLas observaciones automáticas previas del sistema en este período serán reemplazadas. ¿Continuar?')) return;
+  updDB(d=>{
+    const idx=d.ests.findIndex(x=>String(x.id)===estId);if(idx===-1) return d;
+    if(!d.ests[idx].observaciones) d.ests[idx].observaciones=[];
+    d.ests[idx].observaciones=d.ests[idx].observaciones.filter(o=>!(o.auto&&String(o.per)===String(per)));
+    nuevasObs.forEach(o=>{d.ests[idx].observaciones.push({per:o.per,txt:o.txt+'\n\nSugerencia de mejora: '+o.sug,doc:o.doc,fecha:o.fecha,anio:o.anio,tipo:o.tipo,auto:true});});
+    return d;
+  });
+  cargarListaObservador();
+  setTimeout(cargarListaObservador,150);
+  alert('✅ Se generaron '+generadas+' observación(es) automática(s) con sugerencias de mejora para '+e.n+'.');
 }
 
 // ── ANÁLISIS PSICOPEDAGÓGICO CON ADÁN ──────────────────────────────────────
