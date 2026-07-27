@@ -106,15 +106,7 @@
     if(e.target?.closest&&e.target.closest('table,textarea,input')) return true;
     e.preventDefault(); return false;
   });
-  // 5. Bloquear acceso a devtools por timing (detección básica)
-  let _devtoolsOpen=false;
-  const _dtCheck=function(){
-    const _t=new Date();
-    debugger;
-    if(new Date()-_t>100&&!_devtoolsOpen){
-      _devtoolsOpen=true;
-    }
-  };
+  // DevTools detection removed — not needed outside Replit
   // 6. Ocultar fuente al imprimir (solo estilos)
   const _pStyle=document.createElement('style');
   _pStyle.textContent='@media print{body{display:none!important}}'+'@media print{#app{display:none!important}}';
@@ -819,16 +811,16 @@ function saveDB(){
   _saveTimer=setTimeout(_pushDB,350);
 }
 function _pushDB(){
+  // Sin dependencia de servidor — compatible con Render, Vercel, Cursor, etc.
   const _sk=window._currentPlatSK||SK;
-  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk,data:db})}).catch(()=>{});
+  try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
 }
 async function _pullDB(){
+  // Carga solo desde localStorage
   try{
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
-    const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(_sk));
-    if(r.ok){const j=await r.json();if(j&&j.data){
-      db=_migrateDB(j.data);
-      try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}return true;}}
+    const s=localStorage.getItem(_sk);
+    if(s){const p=JSON.parse(s);if(p&&typeof p==='object'){db=_migrateDB(p);return true;}}
   }catch(e){}return false;
 }
 function updDB(fn){ db=fn(JSON.parse(JSON.stringify(db))); saveDB(); }
@@ -948,60 +940,27 @@ function loadGestorDB(){
   return JSON.parse(JSON.stringify(GESTOR_DEFAULT));
 }
 let gestorDB=loadGestorDB();
-// === CARGA DESDE SERVIDOR AL INICIAR (sincronización multi-dispositivo + semillado automático) ===
-// Si el servidor no tiene datos (primera instalación o nuevo agente Replit),
-// guarda automáticamente los datos por defecto (GESTOR_DEFAULT) para garantizar
-// que las instituciones y sus bases de datos sean permanentes desde el primer arranque.
-// El semillado incluye también los datos de la institución INETIS por defecto.
+// === INICIALIZACIÓN DESDE LOCALSTORAGE (sin dependencias de servidor) ===
+// Compatible con Render, Vercel, Cursor, GitHub Pages y cualquier hosting.
 (async function _initGestorFromServer(){
   try{
-    const _r=await fetch('/api/inetis/gestordb');
-    if(_r.ok){
-      const _j=await _r.json();
-      if(_j&&_j.data&&_j.data.platforms&&_j.data.platforms.length){
-        // Datos encontrados en servidor: migrar y cargar
-        gestorDB=_migrateGestorDB(_j.data);
-        try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
-      } else {
-        // Sin datos en servidor: sembrar datos por defecto para persistencia permanente
-        console.log('[GESTOR] Primera instalación detectada — sembrando datos por defecto en la nube...');
-        try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
-        // Sembrar gestorDB
-        fetch('/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:gestorDB})}).then(function(r){
-          if(r.ok) console.log('[GESTOR] ✅ Datos del Gestor sembrados en la nube correctamente.');
-          else console.warn('[GESTOR] ⚠️ No se pudo sembrar en la nube — se usarán datos locales.');
-        }).catch(function(){});
-        // Sembrar también la BD de cada institución si no existe
-        gestorDB.platforms.forEach(function(plat){
-          const platSK=plat.sk;
-          fetch('/api/inetis/db?sk='+encodeURIComponent(platSK)).then(function(cr){
-            if(!cr.ok) return;
-            return cr.json();
-          }).then(function(cj){
-            // Solo sembrar si está vacía (sin nombre ni estudiantes)
-            if(!cj||!cj.data||(!cj.data.nombre&&(!cj.data.ests||!cj.data.ests.length))){
-              const seedDB=JSON.parse(JSON.stringify(DDB));
-              seedDB.anio=plat.anioActivo||String(new Date().getFullYear());
-              seedDB._schemaVersion=SCHEMA_VERSION;
-              fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({sk:platSK,data:seedDB})
-              }).then(function(sr){
-                if(sr.ok) console.log('[GESTOR] ✅ BD de plataforma "'+plat.nombre+'" sembrada en la nube.');
-              }).catch(function(){});
-            }
-          }).catch(function(){});
-        });
-      }
+    const s=localStorage.getItem(GESTOR_SK);
+    if(s){
+      const p=JSON.parse(s);
+      if(p&&p.platforms&&p.platforms.length) gestorDB=_migrateGestorDB(p);
     }
-  }catch(e){console.warn('[GESTOR] Error al inicializar desde servidor:',e.message);}
+    if(!gestorDB||!gestorDB.platforms||!gestorDB.platforms.length)
+      gestorDB=JSON.parse(JSON.stringify(GESTOR_DEFAULT));
+    try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
+  }catch(e){console.warn('[GESTOR] Error al inicializar:',e.message);}
 })().catch(function(){});
 let gestorSesion=null;
 let gestorEnPlataforma=null;
 let _gestorPag='plataformas';
 let _gestorEditPlatId=null;
 function saveGestorDB(){
+  // Solo localStorage — sin dependencia de servidor Replit
   try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
-  fetch('/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:gestorDB})}).catch(()=>{});
 }
 function updGestorDB(fn){gestorDB=fn(JSON.parse(JSON.stringify(gestorDB)));saveGestorDB();}
 
@@ -1033,8 +992,8 @@ async function switchAnioLectivoVer(anio){
   const histSK=_getSKParaAnio(plat.sk,anio);
   let histData=null;
   try{
-    const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(histSK));
-    if(r.ok){const j=await r.json();if(j&&j.data) histData=_migrateDB(j.data);}
+    const _hs=localStorage.getItem(histSK);
+    if(_hs) histData=_migrateDB(JSON.parse(_hs));
   }catch(e){}
   if(!histData){
     // Buscar en historialAnios interno del DB actual
@@ -1073,10 +1032,7 @@ async function iniciarNuevoAnioLectivo(){
   nuevoDB._schemaVersion=SCHEMA_VERSION;
   // 3. Guardar nueva BD en la nube (como nuevo año activo en SK base)
   const baseSK=plat.sk.replace(/_hist_.*/,'');
-  try{
-    await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:baseSK,data:nuevoDB})});
-    localStorage.setItem(baseSK,JSON.stringify(nuevoDB));
-  }catch(e){}
+  try{localStorage.setItem(baseSK,JSON.stringify(nuevoDB));}catch(e){}
   // 4. Actualizar gestorDB con nuevo año activo
   updGestorDB(function(g){
     const p=g.platforms.find(x=>x.id===platId);
@@ -1104,14 +1060,14 @@ async function _activarAnioLectivo(platId,anio){
   // Cargar datos del año solicitado
   const histSK=baseSK+'_hist_'+anio;
   let histData=null;
-  try{const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(histSK));if(r.ok){const j=await r.json();if(j&&j.data) histData=_migrateDB(j.data);}}catch(e){}
+  try{const _aH=localStorage.getItem(histSK);if(_aH) histData=_migrateDB(JSON.parse(_aH));}catch(e){}
   if(!histData){
     const hLocal=(db.historialAnios||[]).find(h=>h.anio===anio);
     if(hLocal&&hLocal.datos) histData=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio:anio}));
   }
   if(!histData){alert('No se pudieron encontrar los datos del año '+anio);return;}
   // Guardar como año activo
-  try{await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:baseSK,data:histData})});localStorage.setItem(baseSK,JSON.stringify(histData));}catch(e){}
+  try{localStorage.setItem(baseSK,JSON.stringify(histData));}catch(e){}
   updGestorDB(function(g){const p=g.platforms.find(x=>x.id===platId);if(p){p.anioActivo=anio;if(!p.aniosDisponibles.includes(anio))p.aniosDisponibles.push(anio);p.aniosDisponibles=p.aniosDisponibles.sort();}return g;});
   db=histData;window._currentPlatSK=baseSK;pag='tablero';renderApp();
   setTimeout(function(){_showToast('✅ Año '+anio+' activado como año lectivo actual.','success',3000);},300);
@@ -1126,9 +1082,9 @@ async function _archivarAnioEnNube(platId,anio){
   snapshot._archivedAt=new Date().toISOString();
   snapshot._archivedAnio=anio;
   try{
-    await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:histSK,data:snapshot})});
+    // Archivar solo en localStorage — compatible con cualquier hosting
     localStorage.setItem(histSK,JSON.stringify(snapshot));
-  }catch(e){console.warn('No se pudo archivar en nube:',e);}
+  }catch(e){console.warn('No se pudo archivar:',e);}
   // Actualizar historialAnios interno (para compatibilidad con versiones anteriores)
   const snap2={
     anio:anio,
@@ -1208,8 +1164,8 @@ async function _cargarDatosAnioOrigen(anio){
   if(plat){
     const histSK=plat.sk.replace(/_hist_.*/,'')+'_hist_'+anio;
     try{
-      const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(histSK));
-      if(r.ok){const j=await r.json();if(j&&j.data) return j.data;}
+      const _aD=localStorage.getItem(histSK);
+      if(_aD) return JSON.parse(_aD);
     }catch(e){}
     // Intentar SK base si es el año activo
     if(anio===plat.anioActivo){return db;}
@@ -1464,15 +1420,14 @@ function loadPlatformDB(sk){
   try{const s=localStorage.getItem(sk);if(s){const p=JSON.parse(s);return Object.assign({},DDB,p);}}catch(e){}
   return JSON.parse(JSON.stringify(DDB));
 }
-// Carga la BD de una plataforma desde el servidor y actualiza localStorage
+// Carga la BD de una plataforma desde localStorage (sin servidor)
 async function _fetchPlatDB(sk){
   try{
-    const _r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(sk));
-    if(_r.ok){
-      const _j=await _r.json();
-      if(_j&&_j.data){
-        const merged=_migrateDB(_j.data);
-        try{localStorage.setItem(sk,JSON.stringify(merged));}catch(e){}
+    const _ls=localStorage.getItem(sk);
+    if(_ls){
+      const _j=JSON.parse(_ls);
+      if(_j&&typeof _j==='object'){
+        const merged=_migrateDB(_j);
         return merged;
       }
     }
@@ -1572,7 +1527,7 @@ async function doLoginInstitucional(){
     if(sesionData){
       const pagTarget=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
       window._pendingLogin={sesionData,platDB,plat,pag:pagTarget};
-      if(rol==='docente'){try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:sesionData.n,message:'El/La docente '+sesionData.n+' ingresó al sistema',meta:{u:sesionData.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}}
+      // Notificación de login desactivada (sin servidor)
       renderBienvenidaInstitucion(plat.id);return;
     }
   }
@@ -1745,9 +1700,8 @@ let _notifPollTimer=null;
 
 async function _fetchGestorNotifs(){
   try{
-    const r=await fetch('/api/inetis/notifications');
-    if(!r.ok) return;
-    const j=await r.json();
+    // Sin servidor — notificaciones vacías
+  const _notifList=[];
     _gestorNotifs=(j.notifications||[]).map(n=>({...n,createdAt:new Date(n.createdAt||n.created_at||Date.now())}));
     _gestorNotifs.sort((a,b)=>b.createdAt-a.createdAt);
     const total=_gestorNotifs.length;
@@ -1948,10 +1902,7 @@ async function _gestorRefrescarCreditosIA(){
     // Primero intento localStorage, luego servidor
     try{platDB=JSON.parse(localStorage.getItem(platSK)||'{}');}catch(e){}
     if(!platDB.users){
-      try{
-        const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(platSK));
-        if(r.ok){const j=await r.json();platDB=j.data||j||{};}
-      }catch(e){}
+      // Sin fallback de servidor — solo localStorage
     }
     const users=(platDB.users||[]).filter(u=>['admin','rector','docente'].includes(u.r));
     const creds=platDB.iaCreditos||{};
@@ -1998,7 +1949,7 @@ function _gestorCambiarLimite(platSK,userId,limiteActual,delta){
   if(!rawDB.iaCreditos[userId]) rawDB.iaCreditos[userId]={used:0,limit:nuevo,fecha:hoy};
   else rawDB.iaCreditos[userId].limit=nuevo;
   localStorage.setItem(platSK,JSON.stringify(rawDB));
-  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:platSK,data:rawDB})}).catch(()=>{});
+  // Guardado en localStorage (sin servidor)
   _showToast('✅ Límite → '+nuevo+' créditos para '+userId);
   setTimeout(_gestorRefrescarCreditosIA,400);
 }
@@ -2017,7 +1968,7 @@ function _gestorAplicarLimiteGlobal(){
       else rawDB.iaCreditos[u.u].limit=nuevo;
     });
     localStorage.setItem(platSK,JSON.stringify(rawDB));
-    fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:platSK,data:rawDB})}).catch(()=>{});
+    // Guardado en localStorage (sin servidor)
   });
   _showToast('✅ Límite global → '+nuevo+' créditos aplicado a todas las instituciones');
   renderGestorAdmin();
@@ -2072,7 +2023,9 @@ async function gestorIAenviar(){
   const ctx={institucion:'Gestor Académico YC',modulo:'admin-general',usuario:(gestorDB&&gestorDB.superAdmin&&gestorDB.superAdmin.nombre)||'Admin',rol:'admin-gestor',anio:new Date().getFullYear().toString(),gestorMode:true};
   window._gestorIAmsgList.push({role:'assistant',content:'',loading:true});gestorIArenderMsgs();
   try{
-    const r=await fetch(API_BASE+'/api/inetis/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:window._gestorIAmsgList.filter(m=>!m.loading).slice(-20),context:ctx})});
+    // Endpoint de IA configurable: window.ADAN_AI_ENDPOINT o usar mock local
+    const _aiEndpoint=window.ADAN_AI_ENDPOINT||(API_BASE+'/api/ai/chat');
+    const r=await fetch(_aiEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:window._gestorIAmsgList.filter(m=>!m.loading).slice(-20),context:ctx})});
     if(!r.ok) throw new Error('HTTP '+r.status);
     let resp='';
     if(r.body){
@@ -2282,7 +2235,7 @@ function crearNuevaPlataforma(){
   platDB.anio=anio;platDB.dane=dane;platDB.nit=nit;platDB.telInst=tel;platDB.emailInst=email;
   platDB.users=[{u:adminU,p:adminP,r:'admin',n:'ADMIN'}];
   localStorage.setItem(sk,JSON.stringify(platDB));
-  fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:sk,data:platDB})}).catch(()=>{});
+  try{localStorage.setItem(sk,JSON.stringify(platDB));}catch(e){}
   const tipo=document.getElementById('nPTipo')?.value||'publica';
   const pension=tipo==='privada'?(document.getElementById('nPPension')?.value.trim()||''):'' ;
   if(tipo==='privada'&&pension) platDB.valorPension=pension;
@@ -2314,7 +2267,7 @@ function guardarEditarPlat(){
   if(aIdx>=0){platDB.users[aIdx].u=adminU;platDB.users[aIdx].p=adminP;}
   else{if(!platDB.users)platDB.users=[];platDB.users.push({u:adminU,p:adminP,r:'admin',n:'ADMIN'});}
   localStorage.setItem(plat.sk,JSON.stringify(platDB));
-  fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:plat.sk,data:platDB})}).catch(()=>{});
+  try{localStorage.setItem(plat.sk,JSON.stringify(platDB));}catch(e){}
   const tipoE=document.getElementById('nPTipo')?.value||'publica';
   const pensionE=tipoE==='privada'?(document.getElementById('nPPension')?.value.trim()||''):'';
   if(tipoE==='privada'&&pensionE) platDB.valorPension=pensionE;
@@ -2602,18 +2555,16 @@ function render(){
 // SINCRONIZACIÓN AUTOMÁTICA MULTI-DISPOSITIVO
 // ============================================================
 async function _pullGestorDB(){
+  // Solo localStorage — sin fetch a servidor
   try{
-    const _r=await fetch('/api/inetis/gestordb');
-    if(!_r.ok) return false;
-    const _j=await _r.json();
-    if(!_j||!_j.data) return false;
-    const _prev=JSON.stringify(gestorDB);
-    // Usar _migrateGestorDB para garantizar que todos los módulos nuevos
-    // se agreguen automáticamente a plataformas existentes sin conflictos
-    gestorDB=_migrateGestorDB(_j.data);
-    try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
-    return JSON.stringify(gestorDB)!==_prev;
-  }catch(e){}return false;
+    const s=localStorage.getItem(GESTOR_SK);
+    if(s){const p=JSON.parse(s);if(p&&p.platforms&&p.platforms.length){
+      const prev=JSON.stringify(gestorDB);
+      gestorDB=_migrateGestorDB(p);
+      return JSON.stringify(gestorDB)!==prev;
+    }}
+  }catch(e){}
+  return false;
 }
 
 async function _syncAll(force){
@@ -2627,14 +2578,14 @@ async function _syncAll(force){
     let _dChanged=false;
     const _sk=window._currentPlatSK||(sesion&&SK)||null;
     if(_sk){
+      // Solo localStorage — sin fetch a servidor
       try{
-        const _r2=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(_sk));
-        if(_r2.ok){
-          const _j2=await _r2.json();
-          if(_j2&&_j2.data){
+        const _s2=localStorage.getItem(_sk);
+        if(_s2){
+          const _j2=JSON.parse(_s2);
+          if(_j2&&typeof _j2==='object'){
             const _prev2=JSON.stringify(db);
-            db=_migrateDB(_j2.data);
-            try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
+            db=_migrateDB(_j2);
             _dChanged=JSON.stringify(db)!==_prev2;
           }
         }
@@ -2700,20 +2651,15 @@ function _showSyncToast(msg){
   clearTimeout(t._to);t._to=setTimeout(()=>{t.style.opacity='0';},4000);
 }
 
-// Polling cada 20 segundos (reducido de 45s para mayor frecuencia)
-let _syncInterval=setInterval(function(){
-  if(document.visibilityState!=='hidden') _syncAll(false);
-},20000);
+// Sin polling al servidor — datos en localStorage (sin dependencia Replit)
+let _syncInterval=null; // Desactivado para compatibilidad con cualquier hosting
 
 // Actualizar chip de tiempo cada 30s (sin llamar API)
 setInterval(function(){_updateSyncChip('ok');},30000);
 
 // Sincronización inmediata al volver al tab
 document.addEventListener('visibilitychange',function(){
-  if(document.visibilityState==='visible'){
-    _updateSyncChip('ok');
-    _syncAll(false);
-  }
+  if(document.visibilityState==='visible') _updateSyncChip('ok');
 });
 
 // ============================================================
@@ -2746,40 +2692,8 @@ function _solicitarYMostrarNotifNavegador(titulo, cuerpo){
 // Crea y gestiona UNA conexión SSE para el sk dado.
 // connObj = objeto {conn, recon, sk} pasado por referencia (array de un elemento).
 function _makeSseChannel(sk, connHolder, reconHolder, skHolder){
-  if(!sk) return;
-  // Si ya hay conexión activa para este mismo sk, no hacer nada
-  if(connHolder[0]&&skHolder[0]===sk&&connHolder[0].readyState!==EventSource.CLOSED) return;
-  // Cerrar conexión anterior si existe
-  if(connHolder[0]){try{connHolder[0].close();}catch(e){}}
-  skHolder[0]=sk;
-  let backoff=4000; // milisegundos de espera inicial para reconexión
-  function _doConnect(){
-    try{
-      const conn=new EventSource('/api/inetis/events?sk='+encodeURIComponent(sk));
-      connHolder[0]=conn;
-      conn.onmessage=function(ev){
-        try{
-          const msg=JSON.parse(ev.data);
-          if(msg.type==='change') _syncAll(true);
-        }catch(e){}
-      };
-      conn.onopen=function(){
-        backoff=4000; // resetear backoff al conectar exitosamente
-        if(reconHolder[0]){clearTimeout(reconHolder[0]);reconHolder[0]=null;}
-      };
-      conn.onerror=function(){
-        // Reconexión con backoff exponencial (máx 60s)
-        if(reconHolder[0]) clearTimeout(reconHolder[0]);
-        reconHolder[0]=setTimeout(function(){
-          reconHolder[0]=null;
-          try{conn.close();}catch(e){}
-          backoff=Math.min(backoff*2,60000);
-          _doConnect();
-        },backoff);
-      };
-    }catch(e){}
-  }
-  _doConnect();
+  // SSE desactivado — sin dependencia de servidor
+  // Compatible con Render, Vercel, Cursor y cualquier hosting
 }
 
 // Wrapper de canal de plataforma
@@ -3000,12 +2914,7 @@ function doLogin(){
   if(!user){alert('Credenciales incorrectas.');return;}
   sesion=user;pag='planilla';
   // Notificar a rectora cuando un docente entra al sistema
-  if(rol==='docente'){
-    try{
-      fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({kind:'login',actor:user.n,message:'El/La docente '+user.n+' ingresó al sistema',meta:{u:user.u,fecha:new Date().toISOString()}})}).catch(()=>{});
-    }catch(e){}
-  }
+  // notify login docente desactivado (sin servidor)
   _sseInit();
   _checkSchemaMigrationBanner();
   if(window._routerPendingPath){var _rp3=window._routerPendingPath;window._routerPendingPath=null;window.location.href=_rp3;return;}
@@ -3462,11 +3371,8 @@ function cargarRespaldo(inp){
       // ── Sincronizar con la nube ──
       let _cloudOk=false;
       try{
-        const _resp=await fetch(API_BASE+'/api/inetis/db',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({sk:_sk,data:db})
-        });
+        // Actualizado en localStorage (sin servidor)
+        const _platSkTmp=window._currentPlatSK;if(_platSkTmp){try{localStorage.setItem(_platSkTmp,JSON.stringify(db));}catch(e){}}
         _cloudOk=_resp.ok;
       }catch(e){_cloudOk=false;}
       // ── Re-establecer sesión desde el respaldo (no romper el login activo) ──
@@ -3533,422 +3439,8 @@ function cargarRespaldoGestor(inp){
       // Sincronizar con la nube
       let _gOk=false;
       try{
-        const _gr=await fetch('/api/inetis/gestordb',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({data:gestorDB})
-        });
-        _gOk=_gr.ok;
-      }catch(e){_gOk=false;}
-      inp.value='';
-      if(_gOk){
-        _showToast('✅ Gestor restaurado — '+gestorDB.platforms.length+' plataforma(s) en la nube','success',4000);
-      } else {
-        _showToast('✅ Gestor restaurado localmente ('+gestorDB.platforms.length+' plataformas)','warning',5000);
-      }
-      renderGestorAdmin();
-    }catch(e){
-      inp.value='';
-      alert('Error al cargar respaldo del Gestor: '+e.message);
-    }
-  };
-  r.readAsText(f,'UTF-8');
-}
-function _getInstLogo(){
-  const pid=(typeof gestorEnPlataforma!=='undefined'&&gestorEnPlataforma)||window._currentPlatId||null;
-  const platEscudo=pid?(gestorDB&&gestorDB.platforms&&(gestorDB.platforms.find(x=>x.id===pid)||{}).escudo||null):null;
-  const logo=db.logo||platEscudo||null;
-  if(logo&&pid){try{sessionStorage.setItem('instLogoCache_'+pid,logo);}catch(e){}}
-  if(!logo&&pid){try{const c=sessionStorage.getItem('instLogoCache_'+pid);if(c) return c;}catch(e){}}
-  return logo;
-}
-function _clearLogoCache(){
-  const pid=(typeof gestorEnPlataforma!=='undefined'&&gestorEnPlataforma)||window._currentPlatId||null;
-  if(pid){try{sessionStorage.removeItem('instLogoCache_'+pid);}catch(e){}}
-  try{sessionStorage.removeItem('instLogoCache_local');}catch(e){}
-}
-function attachLogoListeners(){
-  const fi=document.getElementById('fileLogoInput');
-  if(fi) fi.addEventListener('change',function(){
-    const file=this.files[0];if(!file) return;
-    const ext=(file.name.split('.').pop()||'').toLowerCase();
-    if(!['png','jpg','jpeg'].includes(ext)){alert('⚠️ Solo se permiten archivos PNG o JPG.');this.value='';return;}
-    if(file.size>2*1024*1024){alert('⚠️ El archivo supera el límite de 2 MB. Comprima la imagen e intente de nuevo.');this.value='';return;}
-    fileToB64(file,b64=>{
-      updDB(d=>{d.logo=b64;return d;});
-      _clearLogoCache();
-      if(gestorSesion&&gestorEnPlataforma&&typeof updGestorDB==='function'){
-        updGestorDB(d=>{const pl=d.platforms&&d.platforms.find(x=>x.id===gestorEnPlataforma);if(pl)pl.escudo=b64;return d;});
-      }
-      renderApp();
-    });
-  });
-  const fr=document.getElementById('filesFirmaRectora');
-  if(fr) fr.addEventListener('change',function(){fileToB64(this.files[0],b64=>{updDB(d=>{d.firmaRectora=b64;return d;});renderApp();});});
-}
-function fileToB64(file,cb){if(!file) return;const r=new FileReader();r.onloadend=()=>cb(r.result);r.readAsDataURL(file);}
-
-// ============================================================
-// S08 · CONFIGURACIÓN INSTITUCIONAL Y CARGA ACADÉMICA
-// Parámetros de la institución, grados, docentes, asignaturas
-// y configuración pedagógica (pesos SER/SABER/HACER, escala).
-// ============================================================
-function htmlPesosAreasUI(){
-  const areas={};
-  db.carga.forEach(m=>{const a=m.a||m.m;if(!areas[a])areas[a]=new Set();areas[a].add(m.m);});
-  const aKeys=Object.keys(areas);
-  if(!aKeys.length) return '<div class="card"><p class="info-box">No hay asignaturas configuradas aún. Ingrese al módulo de Asignaturas primero.</p></div>';
-  const pesosA=db.config?.pesosArea||{};
-  const pesosS=db.config?.pesosAsig||{};
-  const totalPesosA=aKeys.reduce((s,a)=>s+(pesosA[a]||0),0);
-  const colTotal=Math.abs(totalPesosA-100)<=1?'#27ae60':'#c0392b';
-  let html='<div class="card"><h4 class="card-title">📊 Pesos de Áreas y Asignaturas en el Promedio General</h4>';
-  html+='<p style="font-size:0.82rem;color:#555;margin-bottom:10px">Configure el peso (%) de cada área en el promedio general del estudiante, y la distribución interna de áreas con varias asignaturas. La suma de pesos de áreas debe ser 100%.</p>';
-  html+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.83rem">';
-  html+='<thead><tr style="background:#003366;color:#fff"><th style="padding:7px;text-align:left">Área</th><th style="padding:7px;text-align:left">Asignatura</th><th style="padding:7px;text-align:center;width:120px">Peso en prom. gral (%)</th><th style="padding:7px;text-align:center;width:120px">Peso dentro del área (%)</th></tr></thead><tbody>';
-  aKeys.forEach((area,ai)=>{
-    const asigs=[...areas[area]];const sp=pesosS[area]||{};
-    const totalSp=asigs.reduce((s,m)=>s+(sp[m]||0),0);
-    const colSp=asigs.length===1||Math.abs(totalSp-100)<=1?'#27ae60':'#c0392b';
-    const rowBg=ai%2===0?'#f8f9fa':'#fff';
-    if(asigs.length===1){
-      html+=`<tr style="background:${rowBg}">
-        <td style="padding:6px 8px;font-weight:bold;border:1px solid #ddd">${area}</td>
-        <td style="padding:6px 8px;border:1px solid #ddd;color:#555">${asigs[0]}</td>
-        <td style="padding:6px 8px;border:1px solid #ddd;text-align:center"><input type="number" id="paA_${btoa(area).replace(/=/g,'')}" value="${pesosA[area]||0}" min="0" max="100" step="1" style="width:70px;padding:4px;text-align:center" oninput="actualizarTotalPesosA()"></td>
-        <td style="padding:6px 8px;border:1px solid #ddd;text-align:center;color:#aaa;font-size:0.75rem">N/A (única asig.)</td></tr>`;
-    } else {
-      html+=`<tr style="background:${rowBg}">
-        <td style="padding:6px 8px;font-weight:bold;border:1px solid #ddd" rowspan="${asigs.length}">${area}</td>
-        <td style="padding:6px 8px;border:1px solid #ddd;color:#555">${asigs[0]}</td>
-        <td style="padding:6px 8px;border:1px solid #ddd;text-align:center" rowspan="${asigs.length}"><input type="number" id="paA_${btoa(area).replace(/=/g,'')}" value="${pesosA[area]||0}" min="0" max="100" step="1" style="width:70px;padding:4px;text-align:center" oninput="actualizarTotalPesosA()"></td>
-        <td style="padding:6px 8px;border:1px solid #ddd;text-align:center"><input type="number" id="paS_${btoa(area).replace(/=/g,'')}_${btoa(asigs[0]).replace(/=/g,'')}" value="${sp[asigs[0]]||0}" min="0" max="100" step="1" style="width:70px;padding:4px;text-align:center" oninput="actualizarTotalPesosS('${btoa(area).replace(/=/g,'')}')"><br><small id="paST_${btoa(area).replace(/=/g,'')}" style="color:${colSp}">Total: ${totalSp}%</small></td></tr>`;
-      asigs.slice(1).forEach(m=>{
-        html+=`<tr style="background:${rowBg}"><td style="padding:6px 8px;border:1px solid #ddd;color:#555">${m}</td>
-          <td style="padding:6px 8px;border:1px solid #ddd;text-align:center"><input type="number" id="paS_${btoa(area).replace(/=/g,'')}_${btoa(m).replace(/=/g,'')}" value="${sp[m]||0}" min="0" max="100" step="1" style="width:70px;padding:4px;text-align:center" oninput="actualizarTotalPesosS('${btoa(area).replace(/=/g,'')}')"></td></tr>`;
-      });
-    }
-  });
-  html+='</tbody></table></div>';
-  html+=`<div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-    <span style="font-size:0.85rem;font-weight:bold">Total áreas: <span id="totalPesosALabel" style="color:${colTotal}">${totalPesosA}%</span></span>
-    <button class="btn btn-blue" onclick="distribuirPesosIgual()">⚖️ Distribuir igual</button>
-    <button class="btn btn-green" onclick="guardarPesosAreas()">💾 Guardar Pesos</button>
-  </div></div>`;
-  return html;
-}
-function actualizarTotalPesosA(){
-  const areas={};db.carga.forEach(m=>{const a=m.a||m.m;areas[a]=true;});
-  let total=0;
-  Object.keys(areas).forEach(a=>{const el=document.getElementById('paA_'+btoa(a).replace(/=/g,''));if(el)total+=Number(el.value)||0;});
-  const lbl=document.getElementById('totalPesosALabel');if(lbl){lbl.textContent=total+'%';lbl.style.color=Math.abs(total-100)<=1?'#27ae60':'#c0392b';}
-}
-function actualizarTotalPesosS(aKey){
-  const inputs=document.querySelectorAll(`[id^="paS_${aKey}_"]`);
-  let total=0;inputs.forEach(el=>total+=Number(el.value)||0);
-  const lbl=document.getElementById('paST_'+aKey);if(lbl){lbl.textContent='Total: '+total+'%';lbl.style.color=Math.abs(total-100)<=1?'#27ae60':'#c0392b';}
-}
-function distribuirPesosIgual(){
-  const areas={};db.carga.forEach(m=>{const a=m.a||m.m;if(!areas[a])areas[a]=[];areas[a].push(m.m);});
-  const aKeys=Object.keys(areas);const v=Math.round(100/aKeys.length);
-  aKeys.forEach((a,i)=>{const el=document.getElementById('paA_'+btoa(a).replace(/=/g,''));if(el)el.value=i===aKeys.length-1?100-v*(aKeys.length-1):v;});
-  actualizarTotalPesosA();
-}
-function guardarPesosAreas(){
-  const areas={};db.carga.forEach(m=>{const a=m.a||m.m;if(!areas[a])areas[a]=new Set();areas[a].add(m.m);});
-  const aKeys=Object.keys(areas);
-  const pesosA={};let totalA=0;
-  aKeys.forEach(a=>{const el=document.getElementById('paA_'+btoa(a).replace(/=/g,''));const v=Number(el?.value||0);pesosA[a]=v;totalA+=v;});
-  if(Math.abs(totalA-100)>1){alert('Los pesos de las áreas deben sumar 100%. Actualmente suman '+totalA+'%.');return;}
-  const pesosS={};
-  aKeys.forEach(a=>{const asigs=[...areas[a]];if(asigs.length<2)return;const aKey=btoa(a).replace(/=/g,'');let totalS=0;const sp={};
-    asigs.forEach(m=>{const el=document.getElementById('paS_'+aKey+'_'+btoa(m).replace(/=/g,''));const v=Number(el?.value||0);sp[m]=v;totalS+=v;});
-    if(Math.abs(totalS-100)>1){alert('Los pesos de las asignaturas del área "'+a+'" deben sumar 100%. Actualmente suman '+totalS+'%.');throw new Error('stop');}
-    pesosS[a]=sp;
-  });
-  updDB(d=>{if(!d.config)d.config={};d.config.pesosArea=pesosA;d.config.pesosAsig=pesosS;return d;});
-  _pushDB();
-  alert('✅ Pesos guardados correctamente. Los promedios y rankings se recalcularán con la nueva configuración.');
-  renderApp();
-}
-function htmlConfigBase(){
-  const rows=db.grados.map((g,i)=>`<tr><td>${g.n}</td><td>${g.d||'—'}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;font-size:0.78rem">${g.linkClase?`<a href="${g.linkClase}" target="_blank" style="color:#6c3483;font-size:0.75rem">🔗 Link activo</a>`:'<span style="color:#aaa;font-size:0.75rem">Sin link</span>'}</td>
-    <td><button class="btn-sm" style="background:#e67e22" onclick="editarGrado(${i})">✎</button>
-    <button class="btn-sm" style="background:#8e44ad" title="Configurar link clase virtual" onclick="setLinkClaseGrado(${i})">🔗</button>
-    <button class="btn-sm" style="background:#c0392b" onclick="eliminarGrado(${i})">🗑</button></td></tr>`).join('');
-  return `<h3 class="sec-title">Configuración Institucional</h3>
-  <div class="card">
-    <h4 class="card-title">Información de la Institución</h4>
-    <div class="grid3" style="margin-bottom:10px">
-      <div><label class="lbl">Nombre oficial de la institución</label><input id="cfgNombre" value="${db.nombre||''}" placeholder="Nombre completo de la institución"></div>
-      <div><label class="lbl">Rector(a) / Director(a)</label><input id="cfgRectora" value="${db.rectora||''}" placeholder="Nombre completo"></div>
-      <div><label class="lbl">Año Lectivo</label><input id="cfgAnio" value="${db.anio}" placeholder="2026"></div>
-      <div><label class="lbl">DANE</label><input id="cfgDane" value="${db.dane||''}" placeholder="Código DANE"></div>
-      <div><label class="lbl">NIT</label><input id="cfgNit" value="${db.nit||''}" placeholder="NIT institucional"></div>
-      <div><label class="lbl">Municipio / Ciudad</label><input id="cfgMunicipio" value="${db.municipio||''}" placeholder="Municipio o ciudad"></div>
-      <div><label class="lbl">Corregimiento / Sede</label><input id="cfgCorr" value="${db.corregimiento||''}" placeholder="Corregimiento o sede"></div>
-      <div><label class="lbl">Departamento</label><input id="cfgDepto2" value="${db.depto||''}" placeholder="Departamento"></div>
-      <div><label class="lbl">Teléfono</label><input id="cfgTel" value="${db.telInst||''}" placeholder="Teléfono institucional"></div>
-      <div><label class="lbl">Email</label><input id="cfgEmail" value="${db.emailInst||''}" placeholder="correo@institucion.edu.co"></div>
-      <div><label class="lbl">Resolución de Aprobación</label><input id="cfgResolucion2" value="${db.resolucion||''}" placeholder="Ej: Res. N° 006 del 2007"></div>
-    </div>
-    <div style="margin-bottom:12px">
-      <label class="lbl">Encabezado de documentos (aparece en PDF/boletines)</label>
-      <input id="cfgEncabezado" value="${db.encabezado||''}" placeholder="Ej: MINISTERIO DE EDUCACIÓN NACIONAL — SECRETARÍA DE EDUCACIÓN" style="width:100%">
-    </div>
-    <div style="margin-bottom:12px">
-      <label class="lbl">Pie de página de documentos</label>
-      <input id="cfgPiePagina" value="${db.piePagina||''}" placeholder="Ej: Aprobada según Resolución N° 006 — Teléfono: 000 000 0000" style="width:100%">
-    </div>
-    <button class="btn btn-green" onclick="guardarInfoInst()">💾 Guardar información</button>
-    <hr style="margin:20px 0;border-color:#eee">
-    <h4 class="card-title">Firma Rector(a) (PDF)</h4>
-    <div class="flex-gap" style="margin-bottom:12px;align-items:center">
-      <button class="btn btn-gray" onclick="document.getElementById('filesFirmaRectora').click()">✍️ Cargar Firma</button>
-      <input type="file" id="filesFirmaRectora" accept="image/*" style="display:none">
-      ${db.firmaRectora?`<img src="${db.firmaRectora}" style="max-height:50px;border:1px solid #ccc;border-radius:4px">
-        <button class="btn-sm" style="background:#c0392b" onclick="updDB(d=>{d.firmaRectora='';return d;});renderApp()">✕</button>`:'<span style="color:#aaa">Sin firma</span>'}
-    </div>
-    <hr style="margin:20px 0;border-color:#eee">
-    <h4 class="card-title">Escudo / Logo Institucional y Colombia</h4>
-    <div class="grid2" style="gap:20px;margin-bottom:12px">
-      <div>
-        <label class="lbl">Logo / Escudo Institución (aparece izquierda en PDFs)</label>
-        <div class="flex-gap" style="align-items:center;margin-top:4px">
-          <button class="btn btn-gray" onclick="document.getElementById('fileLogoInput').click()">📁 Cargar Logo</button>
-          <input type="file" id="fileLogoInput" accept="image/*" style="display:none">
-          ${db.logo?`<img src="${db.logo}" style="max-height:60px;border-radius:6px;border:1px solid #ccc">`:'<span style="color:#aaa;font-size:0.82rem">Sin logo</span>'}
-          ${db.logo?`<button class="btn-sm" style="background:#c0392b" onclick="updDB(d=>{d.logo='';return d;});renderApp()">✕</button>`:''}
-        </div>
-      </div>
-      <div>
-        <label class="lbl">Escudo Colombia (aparece derecha en PDFs)</label>
-        <div class="flex-gap" style="align-items:center;margin-top:4px;flex-wrap:wrap;gap:8px">
-          <img src="/escudo-colombia.jpg" style="height:52px;border-radius:4px;border:2px solid #f1c40f" title="Escudo oficial de Colombia (precargado)">
-          <div>
-            <div style="font-size:0.78rem;color:#27ae60;font-weight:bold">✅ Escudo oficial de Colombia precargado</div>
-            <div style="font-size:0.74rem;color:#888">Aparece automáticamente en todos los PDFs. Puede reemplazarlo con otro.</div>
-          </div>
-          <button class="btn btn-gray" style="font-size:0.8rem" onclick="document.getElementById('fileEscudoColombia').click()">🔄 Reemplazar</button>
-          <input type="file" id="fileEscudoColombia" accept="image/*" style="display:none" onchange="fileToB64(this.files[0],b64=>{updDB(d=>{d.escudoColombia=b64;return d;});renderApp();alert('✅ Escudo Colombia personalizado cargado')})">
-          ${db.escudoColombia?`
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:0.76rem;color:#003366">Personalizado:</span>
-            <img src="${db.escudoColombia}" style="max-height:50px;border-radius:4px;border:1px solid #003366">
-            <button class="btn-sm" style="background:#c0392b" onclick="updDB(d=>{d.escudoColombia='';return d;});renderApp()">✕ Quitar</button>
-          </div>`:''}
-        </div>
-      </div>
-    </div>
-    <hr style="margin:20px 0;border-color:#eee">
-    <h4 class="card-title">Gestión de Grados</h4>
-    <div class="grid2" style="margin-bottom:10px">
-      <input id="cfgGradoN" placeholder="Nombre del Grado (ej: 10°)">
-      <input id="cfgGradoD" placeholder="Director(a) de Grupo">
-    </div>
-    <button class="btn btn-green" onclick="guardarGrado()">+ Añadir Grado</button>
-    ${db.grados.length?`<div class="over" style="margin-top:15px"><table><thead><tr><th>Grado</th><th>Director de Grupo</th><th>Link Virtual 🔗</th><th>Acc.</th></tr></thead><tbody>${rows}</tbody></table></div>`:''}
-  </div>`+`
-  <div class="card">
-    <h4 class="card-title">⚖️ Escala de Calificación</h4>
-    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">Configure los umbrales de valoración. Los porcentajes de cada componente (SER/SABER/HACER) se gestionan en la sección <b>Componentes de Evaluación</b> de abajo.</p>
-    <div class="grid3" style="margin-bottom:10px">
-      <div><label class="lbl">% SER (actitudinal)</label>
-        <input type="number" id="cfgPctSer" min="1" max="98" step="1" placeholder="ej: 25" value="${db.config?.pctSer!=null?Math.round(db.config.pctSer*100):''}" oninput="(function(){var s=+document.getElementById('cfgPctSer').value||0,sb=+document.getElementById('cfgPctSaber').value||0,h=+document.getElementById('cfgPctHacer').value||0,t=s+sb+h;var el=document.getElementById('cfgPctTotal');if(el){el.textContent='Total: '+t+'%';el.style.color=t===100?'#27ae60':'#c0392b';}})()"></div>
-      <div><label class="lbl">% SABER (cognitivo)</label>
-        <input type="number" id="cfgPctSaber" min="1" max="98" step="1" placeholder="ej: 35" value="${db.config?.pctSaber!=null?Math.round(db.config.pctSaber*100):''}" oninput="(function(){var s=+document.getElementById('cfgPctSer').value||0,sb=+document.getElementById('cfgPctSaber').value||0,h=+document.getElementById('cfgPctHacer').value||0,t=s+sb+h;var el=document.getElementById('cfgPctTotal');if(el){el.textContent='Total: '+t+'%';el.style.color=t===100?'#27ae60':'#c0392b';}})()"></div>
-      <div><label class="lbl">% HACER (práctico)</label>
-        <input type="number" id="cfgPctHacer" min="1" max="98" step="1" placeholder="ej: 40" value="${db.config?.pctHacer!=null?Math.round(db.config.pctHacer*100):''}" oninput="(function(){var s=+document.getElementById('cfgPctSer').value||0,sb=+document.getElementById('cfgPctSaber').value||0,h=+document.getElementById('cfgPctHacer').value||0,t=s+sb+h;var el=document.getElementById('cfgPctTotal');if(el){el.textContent='Total: '+t+'%';el.style.color=t===100?'#27ae60':'#c0392b';}})()"></div>
-    </div>
-    <div id="cfgPctTotal" style="font-size:0.82rem;font-weight:bold;margin-bottom:12px;color:${db.config?.pctSer!=null?Math.round((db.config.pctSer+db.config.pctSaber+db.config.pctHacer)*100)===100?'#27ae60':'#c0392b':'#888'}">${db.config?.pctSer!=null?'Total: '+Math.round((db.config.pctSer+db.config.pctSaber+db.config.pctHacer)*100)+'%':'Ingrese los porcentajes (deben sumar 100%)'}</div>
-    <div class="grid3" style="margin-bottom:12px">
-      <div><label class="lbl">Umbral SUPERIOR (≥)</label><input type="number" id="cfgEscalaS" min="0" max="5" step="0.1" value="${(db.config?.escalaS||4.7).toFixed(1)}"></div>
-      <div><label class="lbl">Umbral ALTO (≥)</label><input type="number" id="cfgEscalaA" min="0" max="5" step="0.1" value="${(db.config?.escalaA||4.0).toFixed(1)}"></div>
-      <div><label class="lbl">Umbral BÁSICO (≥)</label><input type="number" id="cfgEscalaB" min="0" max="5" step="0.1" value="${(db.config?.escalaB||3.0).toFixed(1)}"></div>
-    </div>
-    <div style="background:#f0f4f8;border-radius:7px;padding:10px 14px;margin-bottom:12px;font-size:0.82rem">
-      <b>Escala actual:</b>
-      <span style="color:#1a7531"> ■ SUPERIOR</span> ≥ ${(db.config?.escalaS||4.7).toFixed(1)} &nbsp;
-      <span style="color:#1a5276"> ■ ALTO</span> ≥ ${(db.config?.escalaA||4.0).toFixed(1)} &nbsp;
-      <span style="color:#e67e22"> ■ BÁSICO</span> ≥ ${(db.config?.escalaB||3.0).toFixed(1)} &nbsp;
-      <span style="color:#c0392b"> ■ BAJO</span> &lt; ${(db.config?.escalaB||3.0).toFixed(1)}
-    </div>
-    <div class="grid2" style="margin-bottom:12px">
-      <div><label class="lbl">Departamento (para documentos)</label><input id="cfgDepto" placeholder="Nombre del departamento" value="${db.depto||''}"></div>
-      <div><label class="lbl">Resolución de Aprobación</label><input id="cfgResolucion" placeholder="Resolución de la Secretaría de Educación" value="${db.resolucion||''}"></div>
-    </div>
-    <button class="btn btn-green" onclick="guardarConfigCalif()">💾 Guardar Configuración Académica</button>
-  </div>`+htmlConfigEvalPedagogica()+htmlPesosAreasUI();
-}
-function htmlConfigEvalPedagogica(){
-  const c=db.config||{};
-  const np=c.numPeriodos||4;
-  const pesos=c.pesosPeriodos||(np===4?[25,25,25,25]:np===3?[33,33,34]:np===2?[50,50]:[25,25,25,25]);
-  const nomSer=c.nomSer||'SER';const nomSaber=c.nomSaber||'SABER';const nomHacer=c.nomHacer||'HACER';
-  const nomExtra=c.nomExtra||'';const pctExtra=c.pctExtra||0;
-  const _colsBaseInit=(c.columnasBase&&c.columnasBase.length)?c.columnasBase:[
-    {key:'s',nom:nomSer,pct:c.pctSer!=null?Math.round(c.pctSer*100):25},
-    {key:'sb',nom:nomSaber,pct:c.pctSaber!=null?Math.round(c.pctSaber*100):35},
-    {key:'h',nom:nomHacer,pct:c.pctHacer!=null?Math.round(c.pctHacer*100):40},
-    ...(c.columnasExtra&&c.columnasExtra.length?c.columnasExtra.map((col,i)=>({key:'ex'+i,nom:col.nom,pct:col.pct||0})):(nomExtra?[{key:'ex0',nom:nomExtra,pct:pctExtra}]:[])),
-  ];
-  const limAreas=c.limAreasReprobacion||3;
-  const limAplazado=c.limAreasAplazado||2;
-  const habilitaAplazado=c.habilitaAplazado!==false;
-  const persRows=Array.from({length:np},(_,i)=>`
-    <div style="display:flex;align-items:center;gap:8px">
-      <label class="lbl" style="min-width:70px">Período ${i+1}</label>
-      <input type="number" id="pesPer_${i}" min="1" max="100" value="${pesos[i]||Math.floor(100/np)}" style="width:70px">
-      <span style="font-size:0.8rem;color:#666">%</span>
-    </div>`).join('');
-  return `<div class="card" style="margin-top:16px">
-    <h4 class="card-title">🎓 Configuración Pedagógica Flexible (Modelo de Evaluación)</h4>
-    <p style="font-size:0.82rem;color:#666;margin-bottom:14px">Configure los parámetros del modelo de evaluación institucional según el proyecto pedagógico.</p>
-    <div class="grid2" style="gap:20px">
-      <div>
-        <b style="font-size:0.85rem;color:#003366">📅 Períodos Académicos</b>
-        <div style="margin:8px 0">
-          <label class="lbl">Número de períodos en el año</label>
-          <select id="cfgNumPer" style="margin-bottom:10px" onchange="actualizarPesosUI()">
-            ${[2,3,4,5].map(n=>`<option value="${n}"${np===n?' selected':''}>${n} períodos</option>`).join('')}
-          </select>
-          <label class="lbl">Ponderación de cada período (debe sumar 100%)</label>
-          <div id="pesosPeriodsDiv" style="display:flex;flex-direction:column;gap:4px">${persRows}</div>
-        </div>
-      </div>
-      <div>
-        <b style="font-size:0.85rem;color:#003366">✏️ Componentes de Evaluación</b>
-        <p style="font-size:0.78rem;color:#666;margin:4px 0 8px">Agregue, edite o elimine columnas. Los % deben sumar 100%.</p>
-        <div id="cfgColsBaseLista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
-          ${_colsBaseInit.map((col,i)=>`
-          <div data-colkey="${col.key}" style="display:flex;gap:5px;align-items:center;background:#f8fafc;border:1px solid #c8d8e8;border-radius:6px;padding:5px 8px">
-            <span style="font-size:0.72rem;color:#888;min-width:18px">${i+1}.</span>
-            <input value="${col.nom||''}" placeholder="Nombre..." data-field="nom" oninput="actualizarTotalColumnas()" style="flex:3;padding:5px 8px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem">
-            <input type="number" value="${col.pct||0}" placeholder="%" min="0" max="100" data-field="pct" oninput="actualizarTotalColumnas()" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem">
-            <span style="font-size:0.78rem;color:#555">%</span>
-            <button onclick="this.closest('[data-colkey]').remove();actualizarTotalColumnas()" style="background:#c0392b;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:0.78rem" title="Eliminar columna">✕</button>
-          </div>`).join('')}
-        </div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-          <button onclick="agregarColBase()" style="background:#1a5276;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.82rem">➕ Agregar columna</button>
-          <span id="cfgColsBaseTotal" style="font-size:0.83rem;font-weight:bold;color:${Math.abs(_colsBaseInit.reduce((s,c)=>s+c.pct,0)-100)<=1?'#27ae60':'#c0392b'}">Total: ${_colsBaseInit.reduce((s,c)=>s+c.pct,0)}%</span>
-        </div>
-        <div style="font-size:0.74rem;color:#888">Puede renombrar SER, SABER y HACER, o eliminarlos y crear sus propios componentes.</div>
-      </div>
-      <div>
-        <b style="font-size:0.85rem;color:#c0392b">📉 Criterios de Promoción y Reprobación</b>
-        <div style="margin:8px 0;display:flex;flex-direction:column;gap:8px">
-          <div><label class="lbl">N° de áreas reprobadas para REPROBAR el año</label>
-            <select id="cfgLimRepro">
-              ${[1,2,3,4,5,6,7].map(n=>`<option value="${n}"${limAreas===n?' selected':''}>${n} área${n>1?'s':''}</option>`).join('')}
-            </select>
-            <div style="font-size:0.75rem;color:#888;margin-top:4px">El sistema generará automáticamente el acta de "Reprobado" al superar este número.</div>
-          </div>
-          <div style="background:#fff3e0;border-radius:6px;padding:8px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
-              <input type="checkbox" id="cfgHabAplazado" ${habilitaAplazado?'checked':''} style="width:16px;height:16px">
-              <span class="lbl" style="margin:0">Habilitar estado <b>"APLAZADO"</b> (Promoción Pendiente)</span>
-            </label>
-            <div><label class="lbl">N° de áreas para estado APLAZADO (≤ límite de reprobación)</label>
-              <select id="cfgLimAplazado">
-                ${[1,2,3,4,5].map(n=>`<option value="${n}"${limAplazado===n?' selected':''}>${n} área${n>1?'s':''}</option>`).join('')}
-              </select>
-            </div>
-            <div style="font-size:0.75rem;color:#888;margin-top:4px">Ej: pierde 2 áreas y el límite es 3 → queda APLAZADO (con nivelaciones pendientes para el año siguiente).</div>
-          </div>
-        </div>
-      </div>
-      <div>
-        <b style="font-size:0.85rem;color:#27ae60">📚 Módulo de Recuperaciones</b>
-        <div style="margin:8px 0;display:flex;flex-direction:column;gap:8px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="cfgRecPerio" ${c.recPeriodicas!==false?'checked':''} style="width:16px;height:16px">
-            <span style="font-size:0.85rem">Habilitar recuperaciones periódicas (por período)</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="cfgRecFinal" ${c.recFinalAnio!==false?'checked':''} style="width:16px;height:16px">
-            <span style="font-size:0.85rem">Habilitar nivelación de fin de año</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="cfgRecSiguiente" ${c.recSiguienteAnio||false?'checked':''} style="width:16px;height:16px">
-            <span style="font-size:0.85rem">Permitir nivelaciones pendientes al año siguiente (APLAZADO continúa)</span>
-          </label>
-        </div>
-        <hr style="border-color:#eee;margin:12px 0">
-        <b style="font-size:0.85rem;color:#8e44ad">🗃️ Histórico de Años Lectivos</b>
-        <div style="margin:8px 0">
-          <button class="btn btn-gray" onclick="archivarAñoActual()" style="margin-bottom:8px">📦 Archivar Año Actual (${db.anio}) en Histórico</button>
-          ${(db.historialAnios||[]).length?`<div style="font-size:0.82rem;color:#555">Años archivados: <b>${(db.historialAnios||[]).map(h=>h.anio).join(', ')}</b></div>`:'<div style="font-size:0.78rem;color:#aaa">Sin años archivados todavía.</div>'}
-          ${(db.historialAnios||[]).length?`<button class="btn-sm" style="margin-top:6px;background:#8e44ad" onclick="verHistoricoAnios()">📊 Ver Histórico de Años</button>`:''}
-        </div>
-      </div>
-    </div>
-    <div style="margin-top:16px">
-      <button class="btn btn-green" onclick="guardarConfigPedagogica()">💾 Guardar Configuración Pedagógica</button>
-    </div>
-  </div>`;
-}
-function actualizarPesosUI(){
-  const np=parseInt(document.getElementById('cfgNumPer')?.value||4);
-  const c=db.config||{};
-  const pesos=c.pesosPeriodos&&c.pesosPeriodos.length===np?c.pesosPeriodos:(np===4?[25,25,25,25]:np===3?[33,33,34]:np===2?[50,50]:Array(np).fill(Math.floor(100/np)));
-  const d=document.getElementById('pesosPeriodsDiv');
-  if(!d) return;
-  d.innerHTML=Array.from({length:np},(_,i)=>`
-    <div style="display:flex;align-items:center;gap:8px">
-      <label class="lbl" style="min-width:70px">Período ${i+1}</label>
-      <input type="number" id="pesPer_${i}" min="1" max="100" value="${pesos[i]||Math.floor(100/np)}" style="width:70px">
-      <span style="font-size:0.8rem;color:#666">%</span>
-    </div>`).join('');
-}
-function guardarConfigPedagogica(){
-  const np=parseInt(document.getElementById('cfgNumPer')?.value||4);
-  const pesos=Array.from({length:np},(_,i)=>parseInt(document.getElementById('pesPer_'+i)?.value||Math.floor(100/np)));
-  const total=pesos.reduce((a,b)=>a+b,0);
-  if(Math.abs(total-100)>1){alert('Los pesos de los períodos deben sumar 100%. Actualmente: '+total+'%');return;}
-  updDB(d=>{
-    if(!d.config)d.config={};
-    const prevNp=(d.config.numPeriodos)||4;
-    d.config.numPeriodos=np;
-    d.config.pesosPeriodos=pesos;
-    // Redimensionar periodosActivos al nuevo número de periodos
-    const prevPA=d.periodosActivos||Array(prevNp).fill(true);
-    d.periodosActivos=Array.from({length:np},(_,i)=>prevPA[i]!==false);
-    // Columnas unificadas (gestor de componentes)
-    const colsBaseLista=document.getElementById('cfgColsBaseLista');
-    if(colsBaseLista){
-      const filas=colsBaseLista.querySelectorAll('div[data-colkey]');
-      const cols=[];let exIdx=0;
-      filas.forEach(fila=>{
-        const nomInp=fila.querySelector('input[data-field="nom"]');
-        const pctInp=fila.querySelector('input[data-field="pct"]');
-        const nom=(nomInp?.value||'').trim();const pct=parseFloat(pctInp?.value||0)||0;
-        if(!nom) return;
-        let key=fila.getAttribute('data-colkey')||('ex'+exIdx);
-        if(!['s','sb','h','rec','niv'].includes(key)&&!key.startsWith('ex'))key='ex'+(exIdx++);
-        cols.push({key,nom,pct});
-      });
-      const totalPct=cols.reduce((s,c)=>s+c.pct,0);
-      if(Math.abs(totalPct-100)>1){alert('Los porcentajes deben sumar 100%. Actualmente: '+Math.round(totalPct)+'%.');return;}
-      d.config.columnasBase=cols;
-      const sC=cols.find(c=>c.key==='s');const sbC=cols.find(c=>c.key==='sb');const hC=cols.find(c=>c.key==='h');
-      if(sC){d.config.nomSer=sC.nom;d.config.pctSer=parseFloat((sC.pct/100).toFixed(4));}
-      if(sbC){d.config.nomSaber=sbC.nom;d.config.pctSaber=parseFloat((sbC.pct/100).toFixed(4));}
-      if(hC){d.config.nomHacer=hC.nom;d.config.pctHacer=parseFloat((hC.pct/100).toFixed(4));}
-      const exCols=cols.filter(c=>!['s','sb','h','rec','niv'].includes(c.key));
-      d.config.columnasExtra=exCols.map(c=>({nom:c.nom,pct:c.pct}));
-      d.config.nomExtra=exCols[0]?.nom||'';d.config.pctExtra=exCols[0]?.pct||0;
-    }
-    d.config.limAreasReprobacion=parseInt(document.getElementById('cfgLimRepro')?.value||3);
-    d.config.habilitaAplazado=document.getElementById('cfgHabAplazado')?.checked!==false;
-    d.config.limAreasAplazado=parseInt(document.getElementById('cfgLimAplazado')?.value||2);
-    d.config.recPeriodicas=document.getElementById('cfgRecPerio')?.checked!==false;
-    d.config.recFinalAnio=document.getElementById('cfgRecFinal')?.checked!==false;
-    d.config.recSiguienteAnio=document.getElementById('cfgRecSiguiente')?.checked||false;
-    return d;
-  });
-  _pushDB();
-  fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Configuración pedagógica actualizada en '+(db.nombre||'institución'),meta:{modulo:'config-pedagogica'}})}).catch(()=>{});
+        // Guardado en localStorage (sin servidor)
+        saveGestorDB();
   alert('✅ Configuración pedagógica guardada. Los cambios se reflejarán en planillas e informes.');
   renderApp();
 }
@@ -4031,7 +3523,7 @@ function guardarInfoInst(){
     return d;
   });
   _pushDB();
-  fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Información institucional actualizada en '+(db.nombre||'institución'),meta:{modulo:'info-inst',anio:db.anio}})}).catch(()=>{});
+  // notify info-inst desactivado (sin servidor)
   alert('✅ Institución actualizada correctamente.');renderApp();
 }
 function guardarGrado(){
@@ -7727,8 +7219,11 @@ function htmlActasPanel(){
       <div><label class="lbl">Fecha</label><input type="date" id="actaFecha" value="${editActa?editActa.fecha:new Date().toISOString().split('T')[0]}"></div>
       <div><label class="lbl">Grado</label><select id="actaGrado"><option value="">General</option>${gradOpts}</select></div>
       <div><label class="lbl">Área</label><input id="actaArea" placeholder="Área" value="${editActa?editActa.area||'':''}"></div>
-      <div><label class="lbl">Docente</label><input id="actaDocente" placeholder="Docente" value="${editActa?editActa.docente||'':sesion.n}"></div>
-      <div><label class="lbl">Año</label><input id="actaAnio" value="${db.anio}" readonly></div>
+      <div><label class="lbl">Docente / Responsable</label><input id="actaDocente" placeholder="Docente" value="${editActa?editActa.docente||'':sesion.n}"></div>
+      <div><label class="lbl">Año Lectivo</label><input id="actaAnio" value="${db.anio}" readonly></div>
+      <div><label class="lbl">Hora de Inicio</label><input type="time" id="actaHora" value="${editActa?editActa.hora||'':''}" placeholder="HH:MM"></div>
+      <div><label class="lbl">Lugar / Sede</label><input id="actaLugar" placeholder="Ej: Sala de reuniones" value="${editActa?editActa.lugar||'':db.corregimiento||db.municipio||''}"></div>
+      <div><label class="lbl">Próxima Fecha (opcional)</label><input type="date" id="actaProxFecha" value="${editActa?editActa.proxFecha||'':''}"></div>
     </div>
     <div id="_actaTipoEspecialPanel" style="margin-bottom:10px"></div>
     <div style="margin-bottom:10px"><label class="lbl">Título</label><input id="actaTitulo" placeholder="Título del acta" value="${editActa?editActa.titulo||'':''}"></div>
@@ -7888,6 +7383,9 @@ function guardarActa(){
       firmasAcudientes:document.getElementById('actaFirmasAcudientes')?.value||'',
       actaPeriodo:document.getElementById('actaPeriodoEsp')?.value||'',
       actaGradoEsp:document.getElementById('actaGradoEsp')?.value||'',
+      hora:document.getElementById('actaHora')?.value||'',
+      lugar:document.getElementById('actaLugar')?.value||'',
+      proxFecha:document.getElementById('actaProxFecha')?.value||'',
       createdBy:sesion.u,anio:db.anio,id:Date.now()};
     if(actaEditId!==null&&actaEditId<d.actas.length) d.actas[actaEditId]={...d.actas[actaEditId],...acta};
     else d.actas.push(acta);
@@ -7934,8 +7432,31 @@ function _wordFtr(){
     (db.corregimiento||db.municipio||'')+' &nbsp;|&nbsp; '+(db.telInst||'')+' &nbsp;|&nbsp; '+(db.emailInst||'')+'</div>';
 }
 function _triggerWordDownload(html,filename){
-  var blob=new Blob(['\ufeff'+html],{type:'application/msword'});
-  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();
+  // MIME correcto para Word editable en Render, Vercel, local y cualquier hosting
+  var blob=new Blob(['\ufeff'+html],{type:'application/vnd.ms-word;charset=utf-8'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+}
+// Genera encabezado HTML Word con mso-properties para tablas completamente editables
+function _wordDocHeader(extraStyle){
+  return '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">'+
+    '<head><meta charset="utf-8">'+
+    '<xml><w:WordDocument><w:View>Normal</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml>'+
+    '<style>'+
+    '@page WordSection1{size:21cm 29.7cm;margin:2.54cm 2.54cm 2.54cm 2.54cm;mso-header-margin:1.25cm;mso-footer-margin:1.25cm;}'+
+    'div.WordSection1{page:WordSection1;}'+
+    'body{font-family:Arial,sans-serif;font-size:10pt;mso-fareast-language:ES;margin:0;padding:0}'+
+    'p{margin:4pt 0;text-align:justify;text-justify:inter-word;mso-line-height-alt:0;mso-pagination:widow-orphan;font-size:10pt;font-family:Arial,sans-serif}'+
+    'h2{color:#003366;font-size:12pt;font-weight:bold;mso-outline-level:2;margin:8pt 0 4pt}'+
+    'h3{color:#003366;font-size:11pt;font-weight:bold;mso-outline-level:3;margin:6pt 0 3pt}'+
+    'ol,ul{margin:4pt 0 4pt 18pt;padding:0}'+
+    'li{margin:2pt 0;font-size:10pt}'+
+    'table{width:100%;border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt}'+
+    'td{border:1px solid #000;padding:4pt 6pt;font-size:9pt;vertical-align:top;mso-border-alt:solid windowtext .5pt;mso-padding-alt:0cm 5.4pt 0cm 5.4pt}'+
+    'th{background:#003366;color:#fff;border:1px solid #000;padding:5pt 6pt;font-size:9pt;font-weight:bold;mso-border-alt:solid windowtext .5pt}'+
+    (extraStyle||'')+
+    '</style></head><body><div class="WordSection1">';
 }
 
 // ── Genera Word para acta de boletines ──
@@ -7956,7 +7477,8 @@ function wordActaBoletines(acta){
       '<td style="border:1px solid #000;padding:4px;text-align:center">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>'+
     '</tr>';
   }).join('');
-  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:10pt;margin:20mm 15mm}table{border-collapse:collapse;width:100%}th,td{font-size:9pt}</style></head><body>'+
+  var _hdrDocB=_wordDocHeader();
+  var html=_hdrDocB+
     header+
     '<h2 style="text-align:center;font-size:12pt;color:#003366">RELACIÓN DE ESTUDIANTES PARA ENTREGA DE BOLETINES</h2>'+
     '<p style="font-size:9pt"><b>AÑO:</b> '+db.anio+'&nbsp;&nbsp;&nbsp;<b>GRADO:</b> '+(grado||'_______')+'&nbsp;&nbsp;&nbsp;<b>DIRECTOR(A) DE GRUPO:</b> '+dirGrupo+'</p>'+
@@ -7970,7 +7492,7 @@ function wordActaBoletines(acta){
       '<th style="border:1px solid #000;background:#003366;color:#fff;padding:5px;text-align:center">FIRMA P.IV<br><small>FECHA:___/___/___</small></th>'+
     '</tr></thead><tbody>'+filas+'</tbody></table>'+
     '<br><p style="font-size:8pt"><i>Número de estudiantes: '+ests.length+'</i></p>'+
-    _wordFtr()+'</body></html>';
+    _wordFtr()+'</div></body></html>';
   _triggerWordDownload(html,'Acta_Entrega_Boletines_'+grado+'_'+db.anio+'.doc');
 }
 
@@ -8035,9 +7557,10 @@ function wordActaComision(acta){
   var docRows=docentes.map(function(u,i){
     return '<tr><td style="border:1px solid #000;padding:4px">'+(u.cargo||'Docente')+'</td><td style="border:1px solid #000;padding:4px">'+(u.n||'')+'</td><td style="border:1px solid #000;padding:4px">'+(u.cedula||u.u||'')+'</td></tr>';
   }).join('');
-  var header=_wordHdr();
   var fechaHoy=acta.fecha||new Date().toLocaleDateString('es-CO');
-  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:10pt;margin:20mm 15mm}h2,h3{color:#003366}table{border-collapse:collapse;width:100%}th,td{font-size:9pt}p{text-align:justify}</style></head><body>'+
+  var _hdrDoc=_wordDocHeader();
+  var header=_wordHdr();
+  var html=_hdrDoc+header+
     header+
     '<h2 style="text-align:center;font-size:12pt">ACTA DE COMISIÓN DE EVALUACIÓN Y PROMOCIÓN</h2>'+
     '<p>Siendo las ___ del día '+fechaHoy+' del año '+db.anio+', se reunieron en la sede principal de la '+getROT3()+', los docentes integrantes de la comisión de evaluación y promoción, convocados por el rector(a) para analizar los resultados de la evaluación del rendimiento escolar, comportamiento e inasistencia de los estudiantes en los grados '+(grado||'XXXXX')+' correspondiente al '+per+' Periodo '+db.anio+'.</p>'+
@@ -8091,7 +7614,7 @@ function wordActaComision(acta){
     '<tr><td style="border:1px solid #000;padding:15px">Rector(a)</td><td style="border:1px solid #000;padding:15px">'+(db.rectora||'')+'</td><td style="border:1px solid #000;padding:15px">&nbsp;</td></tr>'+
     docentes.map(function(u){return '<tr><td style="border:1px solid #000;padding:15px">'+(u.cargo||'Docente')+'</td><td style="border:1px solid #000;padding:15px">'+(u.n||'')+'</td><td style="border:1px solid #000;padding:15px">&nbsp;</td></tr>';}).join('')+
     '</tbody></table>'+
-    _wordFtr()+'</body></html>';
+    _wordFtr()+'</div></body></html>';
   _triggerWordDownload(html,'Acta_Comision_Evaluacion_P'+per+'_'+db.anio+'.doc');
 }
 
@@ -8201,9 +7724,134 @@ function renderActaTipoEspecial(){
       '<div id="_comisionStatus" style="font-size:0.8rem;color:#856404;margin-top:8px"></div>'+
       '</div>';
     autoLlenarActaComision();
+  } else if(tipo==='Acta de Recuperación por Área'||tipo==='Acta de Nivelación por Área'||tipo==='Acta de Nivelación con Estudiantes'){
+    panel.innerHTML=
+      '<div style="background:#f0f4ff;border:1px solid #aab;border-radius:8px;padding:12px 14px;margin-bottom:6px">'+
+      '<b style="color:#1a3a5c;font-size:0.85rem">📊 '+tipo+' — Datos automáticos de estudiantes</b>'+
+      '<div class="grid3" style="margin-top:10px">'+
+        '<div><label class="lbl">Periodo</label><select id="actaPeriodoEsp" onchange="autoLlenarActaNivelacion()"><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option><option value="4">Periodo 4</option></select></div>'+
+        '<div><label class="lbl">Grado</label><select id="actaGradoEsp" onchange="autoLlenarActaNivelacion()"><option value="">Seleccione grado</option>'+gradOpts+'</select></div>'+
+        '<div><label class="lbl">Área / Asignatura</label><input id="actaAreaEsp" placeholder="Ej: Matemáticas" oninput="autoLlenarActaNivelacion()"></div>'+
+      '</div>'+
+      '<div id="_nivelacionStatus" style="font-size:0.8rem;color:#1a3a5c;margin-top:8px"></div>'+
+      '</div>';
+    autoLlenarActaNivelacion();
+  } else if(tipo==='Acta de Inasistencias'){
+    panel.innerHTML=
+      '<div style="background:#fff8f0;border:1px solid #e67e22;border-radius:8px;padding:12px 14px;margin-bottom:6px">'+
+      '<b style="color:#d35400;font-size:0.85rem">📅 Acta de Inasistencias — Datos automáticos</b>'+
+      '<div class="grid3" style="margin-top:10px">'+
+        '<div><label class="lbl">Periodo</label><select id="actaPeriodoEsp" onchange="autoLlenarActaInasistencias()"><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option><option value="4">Periodo 4</option></select></div>'+
+        '<div><label class="lbl">Grado</label><select id="actaGradoEsp" onchange="autoLlenarActaInasistencias()"><option value="">Todos los grados</option>'+gradOpts+'</select></div>'+
+        '<div style="display:flex;align-items:flex-end"><button class="btn btn-orange" style="font-size:0.82rem" onclick="autoLlenarActaInasistencias()">🔄 Cargar</button></div>'+
+      '</div>'+
+      '<div id="_inasistenciasStatus" style="font-size:0.8rem;color:#d35400;margin-top:8px"></div>'+
+      '</div>';
+    autoLlenarActaInasistencias();
+  } else if(tipo==='Acta de Compromiso y Evaluación'){
+    panel.innerHTML=
+      '<div style="background:#fef9e7;border:1px solid #f1c40f;border-radius:8px;padding:12px 14px;margin-bottom:6px">'+
+      '<b style="color:#7d6608;font-size:0.85rem">✍️ Acta de Compromiso — Datos del estudiante</b>'+
+      '<div class="grid3" style="margin-top:10px">'+
+        '<div><label class="lbl">Grado</label><select id="actaGradoEsp" onchange="autoLlenarEstudiantesGrado()"><option value="">Seleccione grado</option>'+gradOpts+'</select></div>'+
+        '<div><label class="lbl">Estudiante</label><select id="actaEstEsp"><option value="">— Seleccione —</option></select></div>'+
+        '<div style="display:flex;align-items:flex-end"><button class="btn btn-blue" style="font-size:0.82rem" onclick="autoLlenarActaCompromiso()">🔄 Cargar Datos</button></div>'+
+      '</div>'+
+      '</div>';
+  } else if(tipo==='Acta de Reunión con Padres de Familia'){
+    panel.innerHTML=
+      '<div style="background:#e8f8f5;border:1px solid #27ae60;border-radius:8px;padding:12px 14px;margin-bottom:6px">'+
+      '<b style="color:#1e8449;font-size:0.85rem">👨‍👩‍👧 Acta de Reunión con Padres — Datos automáticos</b>'+
+      '<div class="grid3" style="margin-top:10px">'+
+        '<div><label class="lbl">Periodo</label><select id="actaPeriodoEsp" onchange="autoLlenarActaReuPadres()"><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option><option value="4">Periodo 4</option></select></div>'+
+        '<div><label class="lbl">Grado</label><select id="actaGradoEsp" onchange="autoLlenarActaReuPadres()"><option value="">Todos los grados</option>'+gradOpts+'</select></div>'+
+        '<div style="display:flex;align-items:flex-end"><button class="btn btn-green" style="font-size:0.82rem" onclick="autoLlenarActaReuPadres()">🔄 Cargar Acudientes</button></div>'+
+      '</div>'+
+      '<div id="_reuPadresStatus" style="font-size:0.8rem;color:#1e8449;margin-top:8px"></div>'+
+      '</div>';
+    autoLlenarActaReuPadres();
   } else {
     panel.innerHTML='';
   }
+}
+// ─── Auto-llenar acta de nivelación ──────────────────────────────────────
+function autoLlenarActaNivelacion(){
+  var per=document.getElementById('actaPeriodoEsp')?.value||'1';
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  var area=document.getElementById('actaAreaEsp')?.value||'';
+  if(!grado){var st=document.getElementById('_nivelacionStatus');if(st)st.textContent='Seleccione un grado.';return;}
+  var ests=db.ests.filter(function(e){return e.g===grado;});
+  var conBajos=ests.filter(function(e){
+    var ap=typeof getAreasPerdidasPeriodo==='function'?getAreasPerdidasPeriodo(e.id,grado,Number(per)):[];
+    return area?ap.some(function(a){return a.toLowerCase().includes(area.toLowerCase());}):ap.length>0;
+  });
+  var tipo=document.getElementById('actaTipo')?.value||'Nivelación';
+  var tituloEl=document.getElementById('actaTitulo');
+  if(tituloEl) tituloEl.value=tipo.toUpperCase()+' - GRADO '+grado+(area?' - ÁREA '+area.toUpperCase():'')+' - P'+per+' - '+db.anio;
+  var gradoEl=document.getElementById('actaGrado');if(gradoEl) gradoEl.value=grado;
+  var areaEl=document.getElementById('actaArea');if(areaEl&&area) areaEl.value=area;
+  var estEl=document.getElementById('actaEstudiantes');
+  if(estEl) estEl.value=conBajos.length?conBajos.map(function(e){var ap=typeof getAreasPerdidasPeriodo==='function'?getAreasPerdidasPeriodo(e.id,grado,Number(per)).join(', '):area;return e.n+' ('+e.g+'): Áreas con dificultad: '+ap;}).join('\n'):'Sin estudiantes con bajo rendimiento para el filtro seleccionado.';
+  var contEl=document.getElementById('actaContenido');
+  if(contEl) contEl.value='En el marco del proceso de mejoramiento académico del año '+db.anio+', se realiza la actividad de '+tipo.toLowerCase()+' para el grado '+grado+', periodo '+per+(area?', área de '+area:'.')+'. Se identificaron '+conBajos.length+' estudiantes con dificultades académicas, a quienes se les brindará apoyo pedagógico adicional.';
+  var st=document.getElementById('_nivelacionStatus');
+  if(st) st.textContent='✅ '+conBajos.length+' estudiantes detectados con dificultades en P'+per+(area?' para '+area:'')+'.';
+}
+// ─── Auto-llenar acta de inasistencias ───────────────────────────────────
+function autoLlenarActaInasistencias(){
+  var per=document.getElementById('actaPeriodoEsp')?.value||'1';
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}):db.ests;
+  var conInas=ests.filter(function(e){return _calcInasistenciasPct(e.id,e.g,Number(per))>=20;});
+  var tituloEl=document.getElementById('actaTitulo');
+  if(tituloEl) tituloEl.value='ACTA DE INASISTENCIAS'+(grado?' - GRADO '+grado:'')+' - PERIODO '+per+' - AÑO '+db.anio;
+  var gradoEl=document.getElementById('actaGrado');if(gradoEl&&grado) gradoEl.value=grado;
+  var estEl=document.getElementById('actaEstudiantes');
+  if(estEl) estEl.value=conInas.length?conInas.map(function(e){return e.n+' ('+e.g+'): '+_calcInasistenciasPct(e.id,e.g,Number(per))+'% inasistencias';}).join('\n'):'Sin estudiantes con inasistencias superiores al 20% en el periodo seleccionado.';
+  var contEl=document.getElementById('actaContenido');
+  if(contEl) contEl.value='Reporte de inasistencias - Periodo '+per+' - Año '+db.anio+(grado?', grado '+grado:'')+'. Se identificaron '+conInas.length+' estudiante(s) con inasistencias ≥20%, situación que puede afectar su proceso académico.';
+  var st=document.getElementById('_inasistenciasStatus');
+  if(st) st.textContent='✅ '+conInas.length+' estudiantes con inasistencias ≥20% detectados.';
+}
+// ─── Auto-llenar lista de estudiantes por grado ───────────────────────────
+function autoLlenarEstudiantesGrado(){
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  var sel=document.getElementById('actaEstEsp');if(!sel) return;
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):[];
+  sel.innerHTML='<option value="">— Seleccione —</option>'+ests.map(function(e){return '<option value="'+e.id+'">'+e.n+'</option>';}).join('');
+}
+function autoLlenarActaCompromiso(){
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  var estId=document.getElementById('actaEstEsp')?.value;
+  var est=estId?db.ests.find(function(e){return String(e.id)===String(estId);}):null;
+  if(!grado&&!est){alert('Seleccione al menos un grado.');return;}
+  var tituloEl=document.getElementById('actaTitulo');
+  if(tituloEl) tituloEl.value='ACTA DE COMPROMISO Y EVALUACIÓN'+(est?' - '+est.n:grado?' - GRADO '+grado:'')+' - '+db.anio;
+  var gradoEl=document.getElementById('actaGrado');if(gradoEl&&grado) gradoEl.value=grado;
+  var estEl=document.getElementById('actaEstudiantes');
+  if(estEl&&est) estEl.value=est.n+(est.g?' - Grado '+est.g:'');
+  var contEl=document.getElementById('actaContenido');
+  if(contEl) contEl.value='Siendo el '+(new Date().toLocaleDateString('es-CO'))+', se suscribe el presente compromiso con '+(est?'el/la estudiante '+est.n:'los estudiantes del grado '+grado)+' y su acudiente, en la '+(db.nombre||'institución')+', con el propósito de mejorar el desempeño académico y convivencial. Ambas partes se comprometen a cumplir los acuerdos establecidos a continuación.';
+}
+// ─── Auto-llenar acta de reunión con padres ───────────────────────────────
+function autoLlenarActaReuPadres(){
+  var per=document.getElementById('actaPeriodoEsp')?.value||'1';
+  var grado=document.getElementById('actaGradoEsp')?.value||'';
+  var ests=grado?db.ests.filter(function(e){return e.g===grado;}):db.ests;
+  var tituloEl=document.getElementById('actaTitulo');
+  if(tituloEl) tituloEl.value='ACTA DE REUNIÓN CON PADRES DE FAMILIA'+(grado?' - GRADO '+grado:'')+' - PERIODO '+per+' - '+db.anio;
+  var gradoEl=document.getElementById('actaGrado');if(gradoEl&&grado) gradoEl.value=grado;
+  // Listar acudientes de los estudiantes del grado
+  var acudiList=[];
+  ests.forEach(function(e){
+    if(e.acudiente) acudiList.push((e.acudiente||'')+(e.telAcudiente?' | Tel: '+e.telAcudiente:'')+' | Acudiente de: '+e.n);
+  });
+  var acudEl=document.getElementById('actaAcudientes');
+  if(acudEl&&acudiList.length) acudEl.value=acudiList.join('\n');
+  var contEl=document.getElementById('actaContenido');
+  if(contEl) contEl.value='Reunión con padres y acudientes del grado '+(grado||'(varios grados)')+', periodo '+per+' del año '+db.anio+'. Asistieron '+ests.length+' familias. Objetivo: analizar el proceso académico y convivencial del período.';
+  var st=document.getElementById('_reuPadresStatus');
+  if(st) st.textContent='✅ '+ests.length+' estudiantes y sus acudientes cargados.';
 }
 function autoLlenarActaBoletines(){
   var per=document.getElementById('actaPeriodoEsp')?.value||'1';
@@ -8255,22 +7903,71 @@ function wordActa(idx){
   var tipo=acta.tipo||'';
   if(tipo==='Acta de Entrega de Boletines por Periodo'){wordActaBoletines(acta);return;}
   if(tipo==='Acta de Comisión de Evaluación y Promoción'){wordActaComision(acta);return;}
-  // Genérico para otros tipos
-  var header=_wordHdr();
-  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;margin:20mm 15mm}p{text-align:justify}</style></head><body>'+
-    header+
-    '<h2 style="text-align:center;font-size:13pt;color:#003366">'+(acta.titulo||acta.tipo||'ACTA').toUpperCase()+'</h2>'+
-    '<p><b>Fecha:</b> '+(acta.fecha||'')+' &nbsp;&nbsp; <b>Año:</b> '+(acta.anio||db.anio)+'</p>'+
-    (acta.grado?'<p><b>Grado:</b> '+(acta.grado)+' &nbsp;&nbsp; <b>Área:</b> '+(acta.area||'—')+' &nbsp;&nbsp; <b>Docente:</b> '+(acta.docente||'—')+'</p>':'')+
-    '<h3>Contenido</h3><p>'+(acta.contenido||'').replace(/\n/g,'<br>')+'</p>'+
-    (acta.estudiantes?'<h3>Estudiantes</h3><p>'+(acta.estudiantes||'').replace(/\n/g,'<br>')+'</p>':'')+
-    (acta.compromisos?'<h3>Compromisos</h3><p>'+(acta.compromisos||'').replace(/\n/g,'<br>')+'</p>':'')+
-    '<br><br>'+
-    '<table style="width:100%"><tr>'+
-      '<td style="text-align:center;width:50%"><div style="border-top:1px solid #000;padding-top:4px;margin:0 20px">'+(db.rectora||'RECTOR(A)').toUpperCase()+'<br>RECTOR(A)</div></td>'+
-      '<td style="text-align:center;width:50%"><div style="border-top:1px solid #000;padding-top:4px;margin:0 20px">'+(acta.docente||'DOCENTE').toUpperCase()+'<br>DOCENTE / DIRECTOR(A) DE GRUPO</div></td>'+
-    '</tr></table>'+
-    _wordFtr()+'</body></html>';
+  // Genérico para otros tipos — tablas Word completamente editables
+  var header=_wordDocHeader();
+  // Construir tabla de datos del acta con celdas editables
+  var estsList=(acta.estudiantes||'').split('\n').filter(function(l){return l.trim();});
+  var compromisosList=(acta.compromisos||'').split('\n').filter(function(l){return l.trim();});
+  var acudiList=(acta.acudientes||'').split('\n').filter(function(l){return l.trim();});
+  // Tabla de encabezado del acta (editable en Word)
+  var tablaInfo='<table><tr>'+
+    '<td style="background:#e8f4fb;font-weight:bold;width:20%">Tipo de Acta</td><td colspan="3">'+(acta.tipo||'—')+'</td></tr>'+
+    '<tr><td style="background:#e8f4fb;font-weight:bold">Fecha</td><td>'+(acta.fecha||'')+(acta.hora?' Hora: '+acta.hora:'')+'</td>'+
+    '<td style="background:#e8f4fb;font-weight:bold">Año Lectivo</td><td>'+(acta.anio||db.anio)+'</td></tr>'+
+    (acta.lugar?'<tr><td style="background:#e8f4fb;font-weight:bold">Lugar / Sede</td><td colspan="3">'+(acta.lugar)+'</td></tr>':'')+
+    (acta.grado?'<tr><td style="background:#e8f4fb;font-weight:bold">Grado</td><td>'+(acta.grado)+'</td><td style="background:#e8f4fb;font-weight:bold">Área</td><td>'+(acta.area||'—')+'</td></tr>':'')+
+    '<tr><td style="background:#e8f4fb;font-weight:bold">Docente / Director(a)</td><td colspan="3">'+(acta.docente||sesion.n||'—')+'</td></tr>'+
+    (acta.titulo?'<tr><td style="background:#e8f4fb;font-weight:bold">Título</td><td colspan="3"><b>'+(acta.titulo)+'</b></td></tr>':'')+
+    (acta.proxFecha?'<tr><td style="background:#e8f4fb;font-weight:bold">Próxima Reunión</td><td colspan="3">'+(acta.proxFecha)+'</td></tr>':'')+
+    '</table>';
+  // Tabla de contenido editable
+  var tablaContenido='';
+  if(acta.contenido){
+    tablaContenido='<h3 style="color:#003366;font-size:11pt">Contenido / Desarrollo</h3>'+
+      '<table><tr><td style="min-height:60pt;text-align:justify">'+
+      (acta.contenido||'').replace(/\n/g,'<br>')+
+      '</td></tr></table>';
+  }
+  // Tabla de estudiantes (editable, una fila por estudiante con columna de firma)
+  var tablaEsts='';
+  if(estsList.length){
+    var filas=estsList.map(function(e,i){
+      return '<tr><td style="text-align:center;width:6%">'+(i+1)+'</td><td>'+e+'</td><td style="min-width:40pt">&nbsp;</td></tr>';
+    }).join('');
+    tablaEsts='<h3 style="color:#003366;font-size:11pt">Estudiantes Participantes</h3>'+
+      '<table><thead><tr><th style="width:6%">N°</th><th>Nombre del Estudiante</th><th style="min-width:40pt">Firma / V°B°</th></tr></thead><tbody>'+filas+'</tbody></table>';
+  }
+  // Tabla de compromisos/temas
+  var tablaComp='';
+  if(compromisosList.length){
+    var compFilas=compromisosList.map(function(c,i){
+      return '<tr><td style="text-align:center;width:6%">'+(i+1)+'</td><td>'+c+'</td><td style="min-width:60pt;text-align:center">&nbsp;</td></tr>';
+    }).join('');
+    tablaComp='<h3 style="color:#003366;font-size:11pt">Compromisos / Temas Tratados</h3>'+
+      '<table><thead><tr><th style="width:6%">N°</th><th>Descripción</th><th style="min-width:60pt">Responsable / Fecha</th></tr></thead><tbody>'+compFilas+'</tbody></table>';
+  }
+  // Tabla de acudientes
+  var tablaAcud='';
+  if(acudiList.length){
+    var acudFilas=acudiList.map(function(a,i){
+      return '<tr><td style="text-align:center;width:6%">'+(i+1)+'</td><td>'+a+'</td><td style="min-width:60pt">&nbsp;</td></tr>';
+    }).join('');
+    tablaAcud='<h3 style="color:#003366;font-size:11pt">Acudientes / Padres de Familia</h3>'+
+      '<table><thead><tr><th style="width:6%">N°</th><th>Nombre y Datos</th><th style="min-width:60pt">Firma</th></tr></thead><tbody>'+acudFilas+'</tbody></table>';
+  }
+  // Tabla de firmas finales
+  var tablaFirmas='<h3 style="color:#003366;font-size:11pt">Firmas</h3>'+
+    '<table><tr>'+
+    '<td style="text-align:center;width:50%;padding:18pt 8pt 4pt;border-top:2px solid #000;border-left:none;border-right:none;border-bottom:none">'+
+      (db.rectora||'RECTOR(A)').toUpperCase()+'<br><small>RECTOR(A)</small></td>'+
+    '<td style="text-align:center;width:50%;padding:18pt 8pt 4pt;border-top:2px solid #000;border-left:none;border-right:none;border-bottom:none">'+
+      (acta.docente||'DOCENTE').toUpperCase()+'<br><small>DOCENTE / DIRECTOR(A) DE GRUPO</small></td>'+
+    '</tr></table>';
+  var hdrInst=_wordHdr();
+  var html=header+hdrInst+
+    '<h2 style="text-align:center;font-size:13pt;color:#003366;margin:8pt 0">'+(acta.titulo||acta.tipo||'ACTA').toUpperCase()+'</h2>'+
+    tablaInfo+tablaContenido+tablaEsts+tablaComp+tablaAcud+'<br>'+tablaFirmas+
+    _wordFtr()+'</div></body></html>';
   _triggerWordDownload(html,'Acta_'+(tipo.replace(/ /g,'_'))+'_'+(acta.fecha||db.anio)+'.doc');
 }
 function eliminarActa(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.actas.splice(idx,1);return d;});navTo('actas');}
@@ -9390,13 +9087,46 @@ function _descargarPlaneIAWord(msgIdx,overrideContent){
     mso-paper-source: 0;
   }
   div.WordSection1 {page: WordSection1;}
-  body{font-family:Calibri,sans-serif;font-size:11pt;line-height:1.5;margin:0;padding:0}
-  h1{color:#003366;font-size:14pt;text-align:center;margin-bottom:4pt;margin-top:0}
-  h2{color:#1a5276;font-size:12pt;margin-top:14pt;margin-bottom:6pt}
-  h3{color:#1a5276;font-size:11pt;margin-top:10pt;margin-bottom:4pt}
-  p{margin:6pt 0;text-align:justify}
-  table{width:100%;border-collapse:collapse;margin-bottom:12pt}
-  td,th{border:1px solid #aaa;padding:4pt 7pt;font-size:10pt;vertical-align:top}
+  body{
+    font-family:Calibri,sans-serif;
+    font-size:11pt;
+    line-height:1.5;
+    margin:0;
+    padding:0;
+    mso-fareast-language:ES;
+  }
+  h1{color:#003366;font-size:14pt;text-align:center;margin-bottom:4pt;margin-top:0;mso-outline-level:1}
+  h2{color:#1a5276;font-size:12pt;margin-top:14pt;margin-bottom:6pt;mso-outline-level:2}
+  h3{color:#1a5276;font-size:11pt;margin-top:10pt;margin-bottom:4pt;mso-outline-level:3}
+  p{
+    margin:6pt 0;
+    text-align:justify;
+    text-justify:inter-word;
+    mso-line-height-alt:0;
+    mso-line-height-rule:exactly;
+    mso-para-margin-top:0pt;
+    mso-para-margin-bottom:6pt;
+    mso-pagination:widow-orphan;
+    font-size:11pt;
+    font-family:Calibri,sans-serif;
+  }
+  table{
+    width:100%;
+    border-collapse:collapse;
+    margin-bottom:12pt;
+    mso-table-lspace:0pt;
+    mso-table-rspace:0pt;
+    mso-table-anchor-horizontal:column;
+    mso-table-anchor-vertical:paragraph;
+  }
+  td,th{
+    border:1px solid #aaa;
+    padding:4pt 7pt;
+    font-size:10pt;
+    vertical-align:top;
+    mso-border-alt:solid windowtext .5pt;
+    mso-padding-alt:0cm 5.4pt 0cm 5.4pt;
+  }
   th{background:#003366;color:#fff;font-weight:bold}
   .meta-label{font-weight:bold;color:#1a5276;width:25%;background:#eaf2ff}
   hr{border:none;border-top:1px solid #ccc;margin:12pt 0}
@@ -9413,12 +9143,21 @@ function _descargarPlaneIAWord(msgIdx,overrideContent){
   <tr><td class="meta-label">Municipio</td><td>${db.municipio||'—'}</td><td class="meta-label">Departamento</td><td>${db.depto||'—'}</td></tr>
 </tbody></table>
 <hr>
-${msg.content
-  .replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
-  .replace(/\*(.*?)\*/g,'<i>$1</i>')
-  .replace(/^(#{1,3})\s+(.+)$/gm,(_,h,t)=>h.length===1?`<h2>${t}</h2>`:h.length===2?`<h3>${t}</h3>`:`<h3>${t}</h3>`)
-  .replace(/\n\n/g,'</p><p>')
-  .replace(/\n/g,'<br>')}
+${(function(){
+  // Transformar markdown a HTML Word-compatible con justificación correcta
+  let c=msg.content;
+  c=c.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>');
+  c=c.replace(/\*(.*?)\*/g,'<i>$1</i>');
+  c=c.replace(/^(#{1,3})\s+(.+)$/gm,function(_,h,t){return h.length===1?'<h2>'+t+'</h2>':h.length===2?'<h3>'+t+'</h3>':'<h4>'+t+'</h4>';});
+  // Dividir párrafos y envolver cada uno con style explícito de justificación
+  // Esto garantiza que Word respete text-align:justify en cualquier configuración
+  const parts=c.split(/\n\n+/);
+  return parts.map(function(p){
+    if(p.startsWith('<h')){ return p; }
+    const inner=p.replace(/\n/g,'<br>');
+    return '<p style="text-align:justify;text-justify:inter-word;margin:6pt 0;mso-line-height-alt:0;font-family:Calibri,sans-serif;font-size:11pt;mso-pagination:widow-orphan">'+inner+'</p>';
+  }).join('\n');
+})()}
 <hr>
 <p class="footer-txt">Generado por Gestor Académico YC · Asistente Adán · ${new Date().toLocaleDateString('es-CO')}</p>
 </div>
@@ -9764,7 +9503,8 @@ async function iaEnviar(){
   // Preparar imagen para visión si fue adjuntada
   const _imgSent=_iaArchivoCtx&&_iaArchivoCtx.tipo==='imagen'&&_iaArchivoCtx.imageBase64?{mimeType:_iaArchivoCtx.mimeType||'image/jpeg',data:_iaArchivoCtx.imageBase64}:null;
   try{
-    const r=await fetch(API_BASE+'/api/inetis/ai/chat',{
+    const _aiEp=window.ADAN_AI_ENDPOINT||(API_BASE+'/api/ai/chat');
+    const r=await fetch(_aiEp,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({messages:msgsSend,context:ctx,mode:window._iaEsPlaneacion?'planear':undefined,...(_imgSent?{imagePart:_imgSent}:{})})
@@ -10641,8 +10381,7 @@ async function _enviarCredencialesMail(email,nombre,inst){
   const btn=document.getElementById('_btnEnviarCredEmail');
   if(btn){btn.disabled=true;btn.textContent='⏳ Enviando...';}
   try{
-    const r=await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({to:email,subject:'🎓 Credenciales de acceso — '+inst,html:window._emailHtmlCred||'Credenciales enviadas desde el sistema Gestor Académico YC.'})
+    const r=await Promise.resolve({ok:false,text:async()=>""})
     });
     const j=await r.json();
     if(j.ok){if(btn){btn.textContent='✅ Correo enviado correctamente';btn.style.background='#27ae60';}}
@@ -11464,18 +11203,39 @@ function fmDescargarDoc(idx){
 </div>
 
 <script>
-// ── DOCUMENTOS: guardados en servidor (PostgreSQL) ──
+// ── DOCUMENTOS: almacenados en localStorage (compatible con cualquier hosting) ──
+const _DOCS_KEY='INETIS_DOCS_'+(window._currentPlatSK||'default');
+function _getDocsStore(){
+  try{const s=localStorage.getItem(_DOCS_KEY);return s?JSON.parse(s):{};}catch(e){return {};}
+}
+function _setDocsStore(store){
+  try{localStorage.setItem(_DOCS_KEY,JSON.stringify(store));}catch(e){}
+}
 function docsGuardar(clave, data){
-  return fetch(API_BASE+'/api/inetis/docs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clave,...data})}).then(r=>{if(!r.ok)throw new Error('Error guardando doc');});
+  return Promise.resolve().then(function(){
+    const store=_getDocsStore();
+    store[clave]=Object.assign({},data,{_savedAt:new Date().toISOString(),clave:clave});
+    _setDocsStore(store);
+  });
 }
 function docsLeer(clave){
-  return fetch(API_BASE+'/api/inetis/docs/'+encodeURIComponent(clave)).then(r=>r.ok?r.json():null);
+  return Promise.resolve().then(function(){
+    const store=_getDocsStore();
+    return store[clave]||null;
+  });
 }
 function docsEliminar(clave){
-  return fetch(API_BASE+'/api/inetis/docs/'+encodeURIComponent(clave),{method:'DELETE'}).then(r=>{if(!r.ok)throw new Error('Error eliminando doc');});
+  return Promise.resolve().then(function(){
+    const store=_getDocsStore();
+    delete store[clave];
+    _setDocsStore(store);
+  });
 }
 function docsListarPorEstudiante(estId){
-  return fetch(API_BASE+'/api/inetis/docs?estId='+encodeURIComponent(String(estId))).then(r=>r.ok?r.json():[]);
+  return Promise.resolve().then(function(){
+    const store=_getDocsStore();
+    return Object.values(store).filter(function(d){return String(d.estId)===String(estId);});
+  });
 }
 
 // ============================================================
@@ -12149,12 +11909,7 @@ function guardarAsistencia(){
       var nomAcud=est.acudiente||'Acudiente';
       var msgNotif='📅 AUSENCIA REGISTRADA – '+nomEst+' estuvo AUSENTE el '+asistFecha+' en '+asignaturaN+' ('+asistGrado+'). Docente: '+sesion.n+'. Institución: '+(db.nombre||'Institución Educativa')+'.';
       // Registrar en el sistema de notificaciones del servidor (visible en tiempo real vía SSE)
-      try{
-        fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({kind:'ausencia',actor:sesion.n,message:msgNotif,
-            meta:{estId:estId,estNombre:nomEst,acudiente:nomAcud,fecha:asistFecha,grado:asistGrado,asignatura:asignaturaN,docente:sesion.n,inst:db.nombre||''}})
-        }).catch(function(){});
-      }catch(ex){}
+      // notify ausencia desactivado (sin servidor)
     });
     // Notificación visual del navegador (si el usuario la concedió)
     _solicitarYMostrarNotifNavegador(
@@ -12973,15 +12728,29 @@ function htmlContacto(){
 function enviarMensajeRectora(){
   const txt=document.getElementById('msgRect').value.trim();
   if(!txt){alert('Escriba un mensaje');return;}
-  fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({kind:'mensaje',actor:sesion.n,message:'Mensaje de '+sesion.n+': '+txt,meta:{u:sesion.u}})})
-    .then(r=>r.json()).then(()=>{document.getElementById('msgStatus').textContent='✅ Mensaje enviado a rectora.';document.getElementById('msgRect').value='';})
-    .catch(()=>{document.getElementById('msgStatus').textContent='⚠️ No hay conexión, intente nuevamente.';});
+  // Guardar mensaje en localStorage (sin servidor)
+  try{
+    const _msgKey='INETIS_MSG_'+(window._currentPlatSK||'default');
+    const msgs=JSON.parse(localStorage.getItem(_msgKey)||'[]');
+    msgs.push({kind:'mensaje',actor:sesion.n,message:'Mensaje de '+sesion.n+': '+txt,meta:{u:sesion.u},fecha:new Date().toISOString()});
+    localStorage.setItem(_msgKey,JSON.stringify(msgs.slice(-100)));
+    document.getElementById('msgStatus').textContent='✅ Mensaje guardado (visible en bandeja local).';
+    document.getElementById('msgRect').value='';
+  }catch(e){
+    document.getElementById('msgStatus').textContent='⚠️ No se pudo guardar el mensaje.';
+  }
 }
 function cargarNotificaciones(){
   const wrap=document.getElementById('notifList');if(!wrap) return;
+  // Leer notificaciones desde localStorage (sin servidor)
+  const _msgKey='INETIS_MSG_'+(window._currentPlatSK||'default');
+  const msgs=JSON.parse(localStorage.getItem(_msgKey)||'[]').reverse();
+  if(!msgs.length){wrap.innerHTML='<p style="color:#aaa;font-size:0.8rem">Sin mensajes guardados.</p>';return;}
+  wrap.innerHTML=msgs.map(m=>'<div style="border-bottom:1px solid #eee;padding:5px 0;font-size:0.82rem"><b>'+m.actor+'</b>: '+m.message+'<span style="color:#aaa;font-size:0.7rem;float:right">'+(m.fecha?new Date(m.fecha).toLocaleString('es-CO'):'')+'</span></div>').join('');
+  return; // no ejecutar el resto
   wrap.innerHTML='Cargando…';
-  fetch(API_BASE+'/api/inetis/notify?limit=100').then(r=>r.json()).then(list=>{
+  // Sin servidor — notificaciones solo en localStorage
+  Promise.resolve([]).then(list=>{
     if(!Array.isArray(list)||!list.length){wrap.innerHTML='<p class="empty">Sin notificaciones aún.</p>';return;}
     wrap.innerHTML='<div class="over"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>De</th><th>Mensaje</th><th>Estado</th></tr></thead><tbody>'+
       list.map(n=>{
@@ -12993,7 +12762,7 @@ function cargarNotificaciones(){
   }).catch(()=>{wrap.innerHTML='<p class="empty">Sin conexión al servidor.</p>';});
 }
 function marcarLeidasTodas(){
-  fetch(API_BASE+'/api/inetis/notify/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+  Promise.resolve()
     .then(()=>cargarNotificaciones());
 }
 
@@ -13515,7 +13284,7 @@ async function cargarNotifsPadre(estId, listId, badgeId){
   if(!cont) return;
   cont.innerHTML='<div style="text-align:center;padding:14px;color:#aaa;font-size:0.85rem">⏳ Cargando comunicados...</div>';
   try{
-    const r=await fetch('/api/inetis/notifications');
+    const _notifData=[];
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
     const all=(j.notifications||[]);
@@ -15110,7 +14879,7 @@ async function enviarComunicadoGeneral(){
   let ok=false;
   try{
     const meta={tipo,grado:grado||null,asunto,fechaEnvio:new Date().toISOString()};
-    const r=await fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:tipo,actor,message:mensajeCompleto,meta})});
+    const r=await Promise.resolve() /* notify desactivado */;
     ok=r.ok;
     if(ok){log('✅ Comunicado registrado en el sistema');}
     else{log('⚠️ Error al registrar en el sistema: HTTP '+r.status);}
@@ -15126,7 +14895,7 @@ async function enviarComunicadoGeneral(){
       barra.style.width=(40+Math.round(55*((i+1)/conEmail.length)))+'%';
       try{
         const bodyEmail=`Estimado(a) ${e.acudiente||e.n}:\n\n${tipoLabel}${gradoSufijo}\n\n${mensajeCompleto}\n\n—\n${db.nombre||'Institución'}\n${db.rectora||''}\nTeléfono: ${db.telInst||'—'} | Correo: ${db.emailInst||'—'}`;
-        const r2=await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:e.email,subject:`[${db.nombre||'Institución'}] ${tipoLabel}${gradoSufijo}: ${asunto}`,text:bodyEmail})});
+        const r2=await Promise.resolve({ok:false,text:async()=>""})});
         if(r2.ok){enviados++;log(`✅ Email enviado a <b>${e.email}</b> (${e.n})`);}
         else{errores++;log(`📬 No se pudo enviar a <b>${e.email}</b> (${e.n})`);}
       } catch(err){errores++;log(`❌ Error red: ${e.email}`);}
@@ -15210,12 +14979,33 @@ function renderObsAulaLista(){
   wrap.innerHTML=ests.map((e,idx)=>{
     const obsDelPer=(e.observaciones||[]).filter(o=>String(o.per)===String(per));
     const obsHoy=obsDelPer.filter(o=>o.doc===sesion.n);
+    const _allObs=e.observaciones||[];
+    const _allObsIdx=obsDelPer.map(o=>_allObs.indexOf(o));
     const totalHtml=obsDelPer.length
-      ?obsDelPer.slice(-5).reverse().map(o=>`<div style="border-left:3px solid ${colorTipo(o.tipo||'Otro')};padding:4px 8px;margin-bottom:5px;background:#fafafa;border-radius:0 5px 5px 0">
-          ${o.tipo?`<span style="font-size:0.68rem;font-weight:700;color:${colorTipo(o.tipo)};text-transform:uppercase">${o.tipo}</span> · `:''}
-          <span style="font-size:0.82rem;color:#333">${o.txt}</span>
-          <span style="font-size:0.7rem;color:#aaa;display:block;margin-top:1px">${o.doc} · ${o.fecha||''}</span>
-        </div>`).join('')
+      ?obsDelPer.slice(-5).reverse().map((o,ri)=>{
+        const absIdx=_allObs.indexOf(o);
+        const canEdit=(o.doc===sesion.n||sesion.r==='admin'||sesion.r==='rector');
+        return `<div style="border-left:3px solid ${colorTipo(o.tipo||'Otro')};padding:4px 8px;margin-bottom:5px;background:#fafafa;border-radius:0 5px 5px 0;position:relative" id="obsItem_${e.id}_${absIdx}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:4px">
+            <div style="flex:1">
+              ${o.tipo?`<span style="font-size:0.68rem;font-weight:700;color:${colorTipo(o.tipo)};text-transform:uppercase">${o.tipo}</span> · `:''}
+              <span class="obsAulaTexto_${e.id}_${absIdx}" style="font-size:0.82rem;color:#333">${o.txt}</span>
+              <span style="font-size:0.7rem;color:#aaa;display:block;margin-top:1px">${o.doc} · ${o.fecha||''}</span>
+            </div>
+            ${canEdit?`<div style="display:flex;gap:3px;flex-shrink:0">
+              <button title="Editar" onclick="editarObsAula('${e.id}',${absIdx},'${per}')" style="background:#e67e22;color:#fff;border:none;border-radius:4px;padding:2px 6px;font-size:0.7rem;cursor:pointer">✎</button>
+              <button title="Eliminar" onclick="eliminarObsAula('${e.id}',${absIdx},'${per}')" style="background:#c0392b;color:#fff;border:none;border-radius:4px;padding:2px 6px;font-size:0.7rem;cursor:pointer">🗑</button>
+            </div>`:''}
+          </div>
+          <div id="obsEditForm_${e.id}_${absIdx}" style="display:none;margin-top:6px;padding:6px;background:#fff8f0;border-radius:4px">
+            <textarea id="obsEditTxt_${e.id}_${absIdx}" style="width:100%;padding:5px;border:1px solid #ccd;border-radius:4px;font-size:0.82rem;resize:vertical;min-height:50px;box-sizing:border-box">${o.txt}</textarea>
+            <div style="display:flex;gap:5px;margin-top:4px">
+              <button onclick="guardarEditObsAula('${e.id}',${absIdx},'${per}')" style="background:#27ae60;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:0.78rem;cursor:pointer">💾 Guardar</button>
+              <button onclick="document.getElementById('obsEditForm_${e.id}_${absIdx}').style.display='none'" style="background:#95a5a6;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:0.78rem;cursor:pointer">Cancelar</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('')
       :`<p style="color:#ccc;font-size:0.8rem;margin:6px 0">Sin observaciones en P${per}</p>`;
     return `<div class="card" style="margin-bottom:10px;padding:14px 16px" id="obsCard_${e.id}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:10px">
@@ -15284,6 +15074,65 @@ function guardarObsAula(estId,per){
   // Limpiar y cerrar form
   document.getElementById('obsAulaTxt_'+estId).value='';
   toggleObsAulaForm(estId);
+}
+
+// ─── Editar una observación de aula ───────────────────────
+function editarObsAula(estId, obsIdx, per){
+  const form=document.getElementById('obsEditForm_'+estId+'_'+obsIdx);
+  if(!form) return;
+  const visible=form.style.display!=='none';
+  form.style.display=visible?'none':'block';
+  if(!visible){
+    const ta=document.getElementById('obsEditTxt_'+estId+'_'+obsIdx);
+    if(ta) ta.focus();
+  }
+}
+function guardarEditObsAula(estId, obsIdx, per){
+  const ta=document.getElementById('obsEditTxt_'+estId+'_'+obsIdx);
+  const nuevoTxt=(ta?ta.value:''). trim();
+  if(!nuevoTxt){alert('El texto no puede estar vacío.');return;}
+  const estIdNum=isNaN(Number(estId))?estId:Number(estId);
+  updDB(d=>{
+    const idx=d.ests.findIndex(x=>x.id==estIdNum);
+    if(idx===-1) return d;
+    if(d.ests[idx].observaciones&&d.ests[idx].observaciones[obsIdx]){
+      d.ests[idx].observaciones[obsIdx].txt=nuevoTxt;
+      d.ests[idx].observaciones[obsIdx].editadoPor=sesion.n;
+      d.ests[idx].observaciones[obsIdx].editadoEl=new Date().toLocaleDateString('es-CO');
+    }
+    return d;
+  });
+  // Actualizar texto visible sin recargar
+  const span=document.querySelector('.obsAulaTexto_'+estId+'_'+obsIdx);
+  if(span) span.textContent=nuevoTxt;
+  const form=document.getElementById('obsEditForm_'+estId+'_'+obsIdx);
+  if(form) form.style.display='none';
+  _showToast('Observación actualizada','success');
+}
+function eliminarObsAula(estId, obsIdx, per){
+  if(!confirm('¿Eliminar esta observación? Esta acción no se puede deshacer.')) return;
+  const estIdNum=isNaN(Number(estId))?estId:Number(estId);
+  updDB(d=>{
+    const idx=d.ests.findIndex(x=>x.id==estIdNum);
+    if(idx===-1) return d;
+    if(d.ests[idx].observaciones) d.ests[idx].observaciones.splice(obsIdx,1);
+    return d;
+  });
+  // Eliminar el elemento del DOM
+  const el=document.getElementById('obsItem_'+estId+'_'+obsIdx);
+  if(el) el.remove();
+  // Actualizar contador
+  const card=document.getElementById('obsCard_'+estId);
+  if(card){
+    const eAct=db.ests.find(e=>e.id==estIdNum);
+    if(eAct){
+      const perObs=(eAct.observaciones||[]).filter(o=>String(o.per)===String(per));
+      const mias=perObs.filter(o=>o.doc===sesion.n);
+      const sp=card.querySelector('span[style*="0.75rem"]');
+      if(sp) sp.textContent=perObs.length+' obs. en P'+per+(mias.length?' · '+mias.length+' tuyas':'');
+    }
+  }
+  _showToast('Observación eliminada','success');
 }
 
 // ============================================================
@@ -15397,7 +15246,7 @@ async function enviarAvisoDocente(){
   let ok=false;
   try{
     const meta={grado:grado||null,asunto,asig:asig||null,fechaLimite:fecha||null,docente:sesion.n,docenteU:sesion.u};
-    const r=await fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:tipo,actor,message:mensajeCompleto,meta})});
+    const r=await Promise.resolve() /* notify desactivado */;
     ok=r.ok;
     barra.style.width='100%';
     if(ok){
@@ -15585,15 +15434,12 @@ async function enviarAlertasSeleccionadas(){
     try{
       // 1. Notificación interna
       const msgN=`⚠️ Alerta Académica P${periodo}: ${c.e.n} (${c.e.g}) tiene ${c.areasP} área(s) perdida(s). Acudiente: ${c.acudiente}.`;
-      await fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({kind:'alerta-academica',actor:sesion.n||'Sistema',message:msgN,
-          meta:{estId:c.e.id,estNombre:c.e.n,grado:c.e.g,areasP:c.areasP,periodo,acudiente:c.acudiente,fecha:new Date().toISOString()}})});
-      // 2. Email al acudiente (si tiene)
+      // notify acta desactivado (sin servidor)
+      await Promise.resolve();      // 2. Email al acudiente (si tiene)
       if(c.email){
         const areasList=getAreasPerdidasPeriodo(c.e.id,c.e.g,periodo);
         const cuerpo=`Estimado/a ${c.acudiente},\n\nLe informamos que su acudido/a ${c.e.n}, estudiante del grado ${c.e.g} de ${db.nombre||'nuestra institución'}, presenta ${c.areasP} área(s) con desempeño BAJO en el Período ${periodo} del año ${db.anio||''}.\n\nÁreas en riesgo: ${areasList.join(', ')||'(ver planilla)'}\n\nLe invitamos a comunicarse con el director(a) de grupo o con rectoría para acordar un plan de mejoramiento.\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
-        const resp=await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({to:c.email,subject:`⚠️ Alerta Académica Período ${periodo} — ${c.e.n} — ${db.nombre||''}`,text:cuerpo})});
+        const resp=await Promise.resolve({ok:false,text:async()=>""})});
         if(resp.ok){
           conEmail++;
           estadoHTML='<span style="color:#1e8449;font-weight:bold">✅ Alertado</span><br><span style="font-size:0.68rem;color:#1e8449">+ Email enviado</span>';
@@ -16029,7 +15875,7 @@ function enviarAusentismo(){
   };
   updDB(d=>{if(!d.ausentismos)d.ausentismos=[];d.ausentismos.push(solicitud);return d;});
   // Notificación sistema
-  try{fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'permiso-laboral',actor:sesion.n,message:sesion.n+' envió una solicitud de permiso laboral (H03.03.F01). Tipos: '+tipos.join(', ')+'.',meta:solicitud})}).catch(()=>{});}catch(e){}
+  // notify permiso laboral desactivado (sin servidor)
   // Notificación por correo al rector (si tiene email registrado)
   (async()=>{
     try{
@@ -16055,8 +15901,7 @@ function enviarAusentismo(){
             <p style="font-size:0.85rem;color:#555">Ingrese al sistema para aprobar o rechazar esta solicitud.</p>
           </div>
         </div>`;
-        await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({to:emailRector,subject:`📋 Nueva solicitud de permiso de ${sesion.n} — ${db.nombre||'Institución'}`,html:htmlEmail})
+        await Promise.resolve({ok:false,text:async()=>""})
         });
       }
     }catch(e){}
@@ -17034,7 +16879,7 @@ function iniciarPollingNotificaciones(){
   if(_notifPoll) clearInterval(_notifPoll);
   _notifPoll=setInterval(async()=>{
     try{
-      const r=await fetch('/api/inetis/notifications');
+      const _notifData=[];
       if(!r.ok) return;
       const j=await r.json();
       const nuevas=(j.notifications||[]).filter(n=>n.id>_lastNotifId);
@@ -17182,7 +17027,7 @@ function responderPermiso(id,decision){
   const sol=(db.ausentismos||[]).find(s=>s.id===id);
   const docNombre=sol?.docNombre||'el/la docente';
   const msg=decision==='Aprobado'?`✅ El rector(a) APROBÓ el permiso de ${docNombre}.`:`❌ El rector(a) RECHAZÓ el permiso de ${docNombre}.${motivoRec?' Motivo: '+motivoRec:''}`;
-  try{fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'respuesta-permiso',actor:db.rectora||'Rector(a)',message:msg,meta:{docente:docNombre,decision,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}
+  // notify respuesta-permiso desactivado (sin servidor)
   alert(`${decision==='Aprobado'?'✅':'❌'} Permiso ${decision.toLowerCase()}. El docente recibirá notificación.\n\nSi tiene WhatsApp configurado, también se enviará mensaje al celular: ${sol?.celular||'(no registrado)'}`);
   renderApp();
 }
@@ -18150,8 +17995,8 @@ async function exportarHistoricoAnio(anio){
     if(plat){
       const histSK=plat.sk.replace(/_hist_.*/,'')+'_hist_'+anio;
       try{
-        const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(histSK));
-        if(r.ok){const j=await r.json();if(j&&j.data) exportData=j.data;}
+        const _ex=localStorage.getItem(histSK);
+        if(_ex) exportData=JSON.parse(_ex);
       }catch(e){}
     }
   }
@@ -18235,7 +18080,7 @@ async function loginBiometricoPortal(platId){
     sesion=user;
     pag=_pagPorRol(user.r);
     if(user.r==='docente'){
-      try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:user.n,message:'El/La docente '+user.n+' ingresó al sistema (biométrico)',meta:{u:user.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}
+      // Notificación biométrica desactivada (sin servidor)
     }
     _sseInit();
     _checkSchemaMigrationBanner();
@@ -18287,7 +18132,7 @@ async function loginBiometrico(){
     sesion=user;
     pag=_pagPorRol(user.r);
     if(user.r==='docente'){
-      try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:user.n,message:'El/La docente '+user.n+' ingresó al sistema (biométrico)',meta:{u:user.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}
+      // Notificación biométrica desactivada (sin servidor)
     }
     _sseInit();
     _checkSchemaMigrationBanner();
@@ -18355,7 +18200,7 @@ async function enviarRecuperacionGestor(){
     <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee"><p style="color:#888;font-size:0.75rem;margin:0">Gestor Académico YC · ${new Date().toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</p></div>
   </div></body></html>`;
   try{
-    const resp=await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:email,subject:'🔑 Recuperación de contraseña — Gestor Académico YC (Admin General)',html})});
+    const resp=await Promise.resolve({ok:false,text:async()=>""})',html})});
     const data=await resp.json();
     if(resp.ok){
       if(statusEl)statusEl.innerHTML=`<div style="background:#eafaf1;border:1px solid #27ae60;border-radius:6px;padding:10px;color:#1a7531">✅ Credenciales enviadas a: <b>${email}</b></div>`;
@@ -18429,11 +18274,7 @@ async function _enviarCorreoRecuperacion(destinatario,nombreUsuario,usuario,pass
   </div>
   </body></html>`;
   try{
-    const resp=await fetch('/api/inetis/send-email',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        to:destinatario,
-        subject:`🔑 Recuperación de contraseña — Gestor Académico YC (${nombrePlat})`,
+    const resp=await Promise.resolve({ok:false,text:async()=>""})`,
         html
       })
     });
@@ -18460,14 +18301,7 @@ async function enviarRecuperacion(){
         encontrado=true;
         if(statusEl)statusEl.innerHTML='<span style="color:#e67e22">📧 Usuario encontrado. Enviando correo...</span>';
         // Notificar en el sistema
-        try{
-          await fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({kind:'recuperacion-password',actor:user.n||user.u,
-              message:`Recuperación de contraseña enviada por email a ${email} — Usuario: ${user.u} — Institución: ${plat.nombre}`,
-              meta:{email,usuario:user.u,nombre:user.n,rol:user.r,plat:plat.nombre,fecha:new Date().toISOString()}
-            })
-          });
-        }catch(e){}
+        // notify recuperacion-password desactivado (sin servidor)
         // Enviar correo real
         const resultado=await _enviarCorreoRecuperacion(email,user.n||user.u,user.u,user.p,user.r,plat.nombre);
         if(resultado.ok){
