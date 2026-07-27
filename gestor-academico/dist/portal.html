@@ -2020,7 +2020,7 @@ async function gestorIAenviar(){
   window._gestorIAmsgList.push({role:'assistant',content:'',loading:true});gestorIArenderMsgs();
   try{
     // Endpoint de IA configurable: window.ADAN_AI_ENDPOINT o usar mock local
-    const _aiEndpoint=window.ADAN_AI_ENDPOINT||(API_BASE+'/api/ai/chat');
+    const _aiEndpoint=window.ADAN_AI_ENDPOINT||(API_BASE+'/api/inetis/ai/chat');
     const r=await fetch(_aiEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:window._gestorIAmsgList.filter(m=>!m.loading).slice(-20),context:ctx})});
     if(!r.ok) throw new Error('HTTP '+r.status);
     let resp='';
@@ -8257,28 +8257,32 @@ function cargarListaObservador(){
 function agregarObservacion(estId,per){
   const txt=prompt('Observación:');if(!txt) return;
   updDB(d=>{
-    const idx=d.ests.findIndex(x=>x.id===estId);if(idx===-1) return d;
+    // Comparación robusta: convertir ambos a String para evitar fallo número vs cadena
+    const idx=d.ests.findIndex(x=>String(x.id)===String(estId));if(idx===-1) return d;
     if(!d.ests[idx].observaciones) d.ests[idx].observaciones=[];
     d.ests[idx].observaciones.push({per,txt,doc:sesion.n,fecha:new Date().toLocaleDateString('es-CO'),anio:db.anio});
     return d;
   });
+  // Refrescar inmediatamente + timeout de seguridad para garantizar que
+  // los botones Editar/Eliminar aparezcan sin necesidad de recargar la página
   cargarListaObservador();
+  setTimeout(cargarListaObservador, 150);
 }
 function editarObservacion(estId,obsIdx){
-  const e=db.ests.find(x=>x.id===estId);if(!e) return;
+  const e=db.ests.find(x=>String(x.id)===String(estId));if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];if(!obs) return;
   // Solo puede editar si es el mismo docente o admin
   if(sesion.r!=='admin'&&obs.doc!==sesion.n){alert('Solo puede editar sus propias observaciones.');return;}
   const nt=prompt('Editar:',obs.txt);if(nt===null) return;
-  updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones[obsIdx].txt=nt.trim();return d;});
+  updDB(d=>{const idx=d.ests.findIndex(x=>String(x.id)===String(estId));if(idx!==-1) d.ests[idx].observaciones[obsIdx].txt=nt.trim();return d;});
   cargarListaObservador();
 }
 function eliminarObservacion(estId,obsIdx){
-  const e=db.ests.find(x=>x.id===estId);if(!e) return;
+  const e=db.ests.find(x=>String(x.id)===String(estId));if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];
   if(sesion.r!=='admin'&&obs&&obs.doc!==sesion.n){alert('Solo puede eliminar sus propias observaciones.');return;}
   if(!confirm('¿Eliminar?')) return;
-  updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones.splice(obsIdx,1);return d;});
+  updDB(d=>{const idx=d.ests.findIndex(x=>String(x.id)===String(estId));if(idx!==-1) d.ests[idx].observaciones.splice(obsIdx,1);return d;});
   cargarListaObservador();
 }
 
@@ -8303,7 +8307,7 @@ function analizarObsAdan(estId, per){
     +'\n\nGenera un dictamen psicopedagógico estructurado con: (1) Resumen del perfil conductual, '
     +'(2) Patrones identificados, (3) Fortalezas detectadas, (4) Áreas de oportunidad y riesgo, '
     +'(5) Recomendaciones pedagógicas y de acompañamiento. Usa lenguaje técnico apropiado para docentes.';
-  iaAbrirConPrompt(prompt);
+  iaEnviarPromptDirecto(prompt);
 }
 
 function pdfObservador(estId){
@@ -8937,6 +8941,28 @@ function iaToggle(){
   if(_iaOpen) setTimeout(()=>{const ta=document.getElementById('iaInput');if(ta)ta.focus();},100);
 }
 
+// ── Abre el panel IA, pre-carga un prompt Y lo envía automáticamente ──
+function iaEnviarPromptDirecto(texto){
+  // 1. Asegurarse de que el panel esté abierto
+  if(!_iaOpen){
+    iaToggle();
+  } else {
+    const panel=document.getElementById('iaPanel');
+    if(panel) panel.classList.add('open');
+  }
+  // 2. Poner el texto en el input y disparar iaEnviar con un pequeño delay
+  //    para que el panel esté completamente renderizado
+  setTimeout(function(){
+    const ta=document.getElementById('iaInput');
+    if(ta){
+      ta.value=texto;
+      ta.style.height='auto';
+      ta.style.height=Math.min(ta.scrollHeight,120)+'px';
+    }
+    iaEnviar();
+  }, 350);
+}
+
 // Abrir IA y pre-cargar un prompt en el textarea
 function _abrirPlanificadorAdan(){
   const asig=(document.getElementById('lecAsig')?.value||'').trim()||'[asignatura]';
@@ -8965,7 +8991,7 @@ La planeación debe incluir obligatoriamente:
 Formato: usa negrillas, listas organizadas y una presentación clara y profesional.`;
   window._iaEsPlaneacion=true;
   window._iaPlaneacionMeta={asig,grado,tema,docente:sesion?.n||'',fecha:new Date().toLocaleDateString('es-CO')};
-  iaAbrirConPrompt(prompt);
+  iaEnviarPromptDirecto(prompt);
 }
 
 function _guardarPlaneacionIA(silent){
@@ -9507,7 +9533,7 @@ async function iaEnviar(){
   // Preparar imagen para visión si fue adjuntada
   const _imgSent=_iaArchivoCtx&&_iaArchivoCtx.tipo==='imagen'&&_iaArchivoCtx.imageBase64?{mimeType:_iaArchivoCtx.mimeType||'image/jpeg',data:_iaArchivoCtx.imageBase64}:null;
   try{
-    const _aiEp=window.ADAN_AI_ENDPOINT||(API_BASE+'/api/ai/chat');
+    const _aiEp=window.ADAN_AI_ENDPOINT||(API_BASE+'/api/inetis/ai/chat');
     const r=await fetch(_aiEp,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
