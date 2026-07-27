@@ -1700,14 +1700,10 @@ let _notifPollTimer=null;
 
 async function _fetchGestorNotifs(){
   try{
-    // Sin servidor — notificaciones vacías
-  const _notifList=[];
-    _gestorNotifs=(j.notifications||[]).map(n=>({...n,createdAt:new Date(n.createdAt||n.created_at||Date.now())}));
-    _gestorNotifs.sort((a,b)=>b.createdAt-a.createdAt);
-    const total=_gestorNotifs.length;
-    const nuevas=Math.max(0,total-_gestorNotifsLeidas);
+    // Sin servidor — notificaciones locales únicamente
+    _gestorNotifs=[];
     const badge=document.getElementById('notifBadge');
-    if(badge){badge.textContent=nuevas>9?'9+':String(nuevas);badge.style.display=nuevas>0?'inline':'none';}
+    if(badge){badge.style.display='none';}
   }catch(e){}
 }
 function _initGestorNotifPoll(){
@@ -1889,7 +1885,7 @@ function _gestorResetLimiteInst(platSK){
 async function _gestorRefrescarCreditosIA(){
   const box=document.getElementById('creditosIATabla');
   if(!box) return;
-  box.innerHTML='<div style="text-align:center;padding:16px;color:#888">⏳ Consultando servidor...</div>';
+  box.innerHTML='<div style="text-align:center;padding:16px;color:#888">⏳ Cargando datos...</div>';
   const hoy=new Date().toISOString().slice(0,10);
   const defLimit=(gestorDB.iaLimiteDefault)||30;
   const instLimits=gestorDB.iaLimitePorInst||{};
@@ -3441,8 +3437,16 @@ function cargarRespaldoGestor(inp){
       try{
         // Guardado en localStorage (sin servidor)
         saveGestorDB();
-  alert('✅ Configuración pedagógica guardada. Los cambios se reflejarán en planillas e informes.');
-  renderApp();
+        _gOk=true;
+      }catch(e){_gOk=false;}
+      _showToast(_gOk?'✅ Respaldo del Gestor cargado correctamente':'✅ Respaldo cargado localmente','success',4000);
+      renderGestorAdmin();
+    }catch(e){
+      inp.value='';
+      alert('Error al cargar el respaldo del Gestor: '+e.message);
+    }
+  };
+  r.readAsText(f,'UTF-8');
 }
 
 function guardarConfigCalif(){
@@ -10381,11 +10385,10 @@ async function _enviarCredencialesMail(email,nombre,inst){
   const btn=document.getElementById('_btnEnviarCredEmail');
   if(btn){btn.disabled=true;btn.textContent='⏳ Enviando...';}
   try{
-    const r=await Promise.resolve({ok:false,text:async()=>""})
-    });
-    const j=await r.json();
-    if(j.ok){if(btn){btn.textContent='✅ Correo enviado correctamente';btn.style.background='#27ae60';}}
-    else{if(btn){btn.disabled=false;btn.textContent='❌ Error: '+j.error+' — Configure EMAIL_USER y EMAIL_PASS';btn.style.background='#c0392b';}}
+    const r={ok:false};
+    if(r.ok){}
+    if(r.ok){if(btn){btn.textContent='✅ Correo enviado correctamente';btn.style.background='#27ae60';}}
+    else{if(btn){btn.disabled=false;btn.textContent='❌ Servicio de correo no configurado — descargue o copie las credenciales manualmente';btn.style.background='#e67e22';}}
   }catch(e){if(btn){btn.disabled=false;btn.textContent='❌ Sin conexión al servidor de correo';btn.style.background='#c0392b';}}
 }
 
@@ -13284,10 +13287,7 @@ async function cargarNotifsPadre(estId, listId, badgeId){
   if(!cont) return;
   cont.innerHTML='<div style="text-align:center;padding:14px;color:#aaa;font-size:0.85rem">⏳ Cargando comunicados...</div>';
   try{
-    const _notifData=[];
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const j=await r.json();
-    const all=(j.notifications||[]);
+    const all=[];
     const estObj=(db.ests||[]).find(e=>e.id===estId);
     const estGrado=estObj?estObj.g:null;
     // Filtra: alertas/ausencias para este estudiante + comunicados generales
@@ -14895,7 +14895,7 @@ async function enviarComunicadoGeneral(){
       barra.style.width=(40+Math.round(55*((i+1)/conEmail.length)))+'%';
       try{
         const bodyEmail=`Estimado(a) ${e.acudiente||e.n}:\n\n${tipoLabel}${gradoSufijo}\n\n${mensajeCompleto}\n\n—\n${db.nombre||'Institución'}\n${db.rectora||''}\nTeléfono: ${db.telInst||'—'} | Correo: ${db.emailInst||'—'}`;
-        const r2=await Promise.resolve({ok:false,text:async()=>""})});
+        const r2=await Promise.resolve({ok:false,text:async()=>""});
         if(r2.ok){enviados++;log(`✅ Email enviado a <b>${e.email}</b> (${e.n})`);}
         else{errores++;log(`📬 No se pudo enviar a <b>${e.email}</b> (${e.n})`);}
       } catch(err){errores++;log(`❌ Error red: ${e.email}`);}
@@ -15439,7 +15439,7 @@ async function enviarAlertasSeleccionadas(){
       if(c.email){
         const areasList=getAreasPerdidasPeriodo(c.e.id,c.e.g,periodo);
         const cuerpo=`Estimado/a ${c.acudiente},\n\nLe informamos que su acudido/a ${c.e.n}, estudiante del grado ${c.e.g} de ${db.nombre||'nuestra institución'}, presenta ${c.areasP} área(s) con desempeño BAJO en el Período ${periodo} del año ${db.anio||''}.\n\nÁreas en riesgo: ${areasList.join(', ')||'(ver planilla)'}\n\nLe invitamos a comunicarse con el director(a) de grupo o con rectoría para acordar un plan de mejoramiento.\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
-        const resp=await Promise.resolve({ok:false,text:async()=>""})});
+        const resp={ok:false,json:async()=>({})};
         if(resp.ok){
           conEmail++;
           estadoHTML='<span style="color:#1e8449;font-weight:bold">✅ Alertado</span><br><span style="font-size:0.68rem;color:#1e8449">+ Email enviado</span>';
@@ -15901,8 +15901,7 @@ function enviarAusentismo(){
             <p style="font-size:0.85rem;color:#555">Ingrese al sistema para aprobar o rechazar esta solicitud.</p>
           </div>
         </div>`;
-        await Promise.resolve({ok:false,text:async()=>""})
-        });
+        await Promise.resolve({ok:false,text:async()=>""});
       }
     }catch(e){}
   })();
@@ -16879,10 +16878,7 @@ function iniciarPollingNotificaciones(){
   if(_notifPoll) clearInterval(_notifPoll);
   _notifPoll=setInterval(async()=>{
     try{
-      const _notifData=[];
-      if(!r.ok) return;
-      const j=await r.json();
-      const nuevas=(j.notifications||[]).filter(n=>n.id>_lastNotifId);
+      const nuevas=[];
       if(nuevas.length){
         _lastNotifId=Math.max(...nuevas.map(n=>n.id));
         _notifBadge+=nuevas.length;
@@ -18200,7 +18196,7 @@ async function enviarRecuperacionGestor(){
     <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee"><p style="color:#888;font-size:0.75rem;margin:0">Gestor Académico YC · ${new Date().toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</p></div>
   </div></body></html>`;
   try{
-    const resp=await Promise.resolve({ok:false,text:async()=>""})',html})});
+    const resp={ok:false,json:async()=>({})};
     const data=await resp.json();
     if(resp.ok){
       if(statusEl)statusEl.innerHTML=`<div style="background:#eafaf1;border:1px solid #27ae60;border-radius:6px;padding:10px;color:#1a7531">✅ Credenciales enviadas a: <b>${email}</b></div>`;
@@ -18264,7 +18260,7 @@ async function _enviarCorreoRecuperacion(destinatario,nombreUsuario,usuario,pass
         ⚠️ <b>Importante:</b> Por seguridad, cambie su contraseña después de ingresar. No comparta estas credenciales con nadie.
       </div>
       <p style="margin-top:20px;text-align:center">
-        <a href="${location.origin||'https://gestoracademicoyc.replit.app'}/portal.html" style="background:#003366;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:0.9rem">🚀 Ir a la Plataforma</a>
+        <a href="${location.origin}/portal.html" style="background:#003366;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:0.9rem">🚀 Ir a la Plataforma</a>
       </p>
     </div>
     <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee">
@@ -18274,10 +18270,7 @@ async function _enviarCorreoRecuperacion(destinatario,nombreUsuario,usuario,pass
   </div>
   </body></html>`;
   try{
-    const resp=await Promise.resolve({ok:false,text:async()=>""})`,
-        html
-      })
-    });
+    const resp={ok:false,json:async()=>({})};
     const data=await resp.json();
     return{ok:resp.ok,data};
   }catch(e){return{ok:false,data:{error:String(e)}};}
