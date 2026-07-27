@@ -9093,112 +9093,62 @@ function _descargarPlaneIAPDF(msgIdx,overrideContent){
   doc.save('Planeacion_'+(meta.asig||'clase').replace(/[^a-zA-Z0-9]/g,'_')+'_'+(meta.grado||'').replace(/[^a-zA-Z0-9]/g,'_')+'.pdf');
 }
 
+function _toWordEntidades(str){
+  // Convierte caracteres no-ASCII a entidades HTML numéricas para Word
+  // Esto garantiza que tildes, ñ y todos los caracteres especiales se lean
+  // correctamente sin importar cómo interprete Word el encoding del archivo.
+  return str.replace(/[^\x00-\x7F]/g,function(ch){return '&#'+ch.charCodeAt(0)+';';});
+}
 function _descargarPlaneIAWord(msgIdx,overrideContent){
   const content=overrideContent||(msgIdx>=0?(_iaMsgs[msgIdx]||{}).content:null);
   if(!content) return;
-  const msg={content};
   const meta=window._iaPlaneacionMeta||{};
-  const inst=db.nombre||'INSTITUCIÓN EDUCATIVA';
+  const inst=_toWordEntidades(db.nombre||'INSTITUCIÓN EDUCATIVA');
+  // Procesar markdown a HTML; convertir caracteres no-ASCII a entidades antes de insertar en Word
+  const cuerpo=_toWordEntidades(content)
+    .replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
+    .replace(/\*(.*?)\*/g,'<i>$1</i>')
+    .replace(/^(#{1,3})\s+(.+)$/gm,(_,h,t)=>h.length===1?`<h2>${t}</h2>`:h.length===2?`<h3>${t}</h3>`:`<h3>${t}</h3>`)
+    .replace(/\n\n/g,'</p><p style="margin:6pt 0;text-align:justify;font-family:Calibri,sans-serif;font-size:11pt">')
+    .replace(/\n/g,'<br>');
   const html=`<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-<head><meta charset='utf-8'><title>Planeación</title>
-<xml>
-  <w:WordDocument>
-    <w:View>Normal</w:View>
-    <w:Zoom>100</w:Zoom>
-    <w:DoNotOptimizeForBrowser/>
-  </w:WordDocument>
-</xml>
+<head><meta charset='utf-8'><title>Planeacion</title>
+<xml><w:WordDocument><w:View>Normal</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml>
 <style>
-  @page WordSection1 {
-    size: 21cm 29.7cm;
-    margin: 2.54cm 2.54cm 2.54cm 2.54cm;
-    mso-header-margin: 1.25cm;
-    mso-footer-margin: 1.25cm;
-    mso-paper-source: 0;
-  }
-  div.WordSection1 {page: WordSection1;}
-  body{
-    font-family:Calibri,sans-serif;
-    font-size:11pt;
-    line-height:1.5;
-    margin:0;
-    padding:0;
-    mso-fareast-language:ES;
-  }
-  h1{color:#003366;font-size:14pt;text-align:center;margin-bottom:4pt;margin-top:0;mso-outline-level:1}
-  h2{color:#1a5276;font-size:12pt;margin-top:14pt;margin-bottom:6pt;mso-outline-level:2}
-  h3{color:#1a5276;font-size:11pt;margin-top:10pt;margin-bottom:4pt;mso-outline-level:3}
-  p{
-    margin:6pt 0;
-    text-align:justify;
-    text-justify:inter-word;
-    mso-line-height-alt:0;
-    mso-line-height-rule:exactly;
-    mso-para-margin-top:0pt;
-    mso-para-margin-bottom:6pt;
-    mso-pagination:widow-orphan;
-    font-size:11pt;
-    font-family:Calibri,sans-serif;
-  }
-  table{
-    width:100%;
-    border-collapse:collapse;
-    margin-bottom:12pt;
-    mso-table-lspace:0pt;
-    mso-table-rspace:0pt;
-    mso-table-anchor-horizontal:column;
-    mso-table-anchor-vertical:paragraph;
-  }
-  td,th{
-    border:1px solid #aaa;
-    padding:4pt 7pt;
-    font-size:10pt;
-    vertical-align:top;
-    mso-border-alt:solid windowtext .5pt;
-    mso-padding-alt:0cm 5.4pt 0cm 5.4pt;
-  }
-  th{background:#003366;color:#fff;font-weight:bold}
-  .meta-label{font-weight:bold;color:#1a5276;width:25%;background:#eaf2ff}
-  hr{border:none;border-top:1px solid #ccc;margin:12pt 0}
-  .footer-txt{font-size:8pt;color:#999;text-align:center;margin-top:18pt;border-top:1px solid #e0e0e0;padding-top:6pt}
+  @page WordSection1{size:21cm 29.7cm;margin:2.54cm 2.54cm 2.54cm 2.54cm;mso-header-margin:1.25cm;mso-footer-margin:1.25cm;}
+  div.WordSection1{page:WordSection1;}
+  body{font-family:Calibri,sans-serif;font-size:11pt;line-height:1.5;margin:0;padding:0;}
+  h1{color:#003366;font-size:14pt;text-align:center;margin-bottom:4pt;margin-top:0;}
+  h2{color:#1a5276;font-size:12pt;margin-top:14pt;margin-bottom:6pt;}
+  h3{color:#1a5276;font-size:11pt;margin-top:10pt;margin-bottom:4pt;}
+  p{margin:6pt 0;text-align:justify;font-family:Calibri,sans-serif;font-size:11pt;}
+  table{width:100%;border-collapse:collapse;margin-bottom:12pt;}
+  td,th{border:1px solid #aaa;padding:4pt 7pt;font-size:10pt;vertical-align:top;}
+  th{background:#003366;color:#fff;font-weight:bold;}
+  .meta-label{font-weight:bold;color:#1a5276;width:25%;background:#eaf2ff;}
+  hr{border:none;border-top:1px solid #ccc;margin:12pt 0;}
+  .footer-txt{font-size:8pt;color:#999;text-align:center;margin-top:18pt;border-top:1px solid #e0e0e0;padding-top:6pt;}
 </style>
-</head><body>
-<div class="WordSection1">
+</head><body><div class="WordSection1">
 <h1>${inst}</h1>
-<h2 style="text-align:center">PLANEACIÓN DE CLASE</h2>
+<h2 style="text-align:center">PLANEACI&#211;N DE CLASE</h2>
 <table><tbody>
-  <tr><td class="meta-label">Asignatura</td><td>${meta.asig||'—'}</td><td class="meta-label">Grado</td><td>${meta.grado||'—'}</td></tr>
-  <tr><td class="meta-label">Tema</td><td colspan="3">${meta.tema||'—'}</td></tr>
-  <tr><td class="meta-label">Docente</td><td>${meta.docente||sesion?.n||'—'}</td><td class="meta-label">Fecha</td><td>${meta.fecha||new Date().toLocaleDateString('es-CO')}</td></tr>
-  <tr><td class="meta-label">Municipio</td><td>${db.municipio||'—'}</td><td class="meta-label">Departamento</td><td>${db.depto||'—'}</td></tr>
+  <tr><td class="meta-label">Asignatura</td><td>${_toWordEntidades(meta.asig||'&#8212;')}</td><td class="meta-label">Grado</td><td>${_toWordEntidades(meta.grado||'&#8212;')}</td></tr>
+  <tr><td class="meta-label">Tema</td><td colspan="3">${_toWordEntidades(meta.tema||'&#8212;')}</td></tr>
+  <tr><td class="meta-label">Docente</td><td>${_toWordEntidades(meta.docente||sesion?.n||'&#8212;')}</td><td class="meta-label">Fecha</td><td>${meta.fecha||new Date().toLocaleDateString('es-CO')}</td></tr>
+  <tr><td class="meta-label">Municipio</td><td>${_toWordEntidades(db.municipio||'&#8212;')}</td><td class="meta-label">Departamento</td><td>${_toWordEntidades(db.depto||'&#8212;')}</td></tr>
 </tbody></table>
 <hr>
-${(function(){
-  // Transformar markdown a HTML Word-compatible con justificación correcta
-  let c=msg.content;
-  // Escapar caracteres HTML especiales ANTES de procesar markdown para evitar corrupción del Word
-  c=c.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  c=c.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>');
-  c=c.replace(/\*(.*?)\*/g,'<i>$1</i>');
-  c=c.replace(/^(#{1,3})\s+(.+)$/gm,function(_,h,t){return h.length===1?'<h2>'+t+'</h2>':h.length===2?'<h3>'+t+'</h3>':'<h4>'+t+'</h4>';});
-  // Dividir párrafos y envolver cada uno con style explícito de justificación
-  // Esto garantiza que Word respete text-align:justify en cualquier configuración
-  const parts=c.split(/\n\n+/);
-  return parts.map(function(p){
-    if(p.startsWith('<h')){ return p; }
-    const inner=p.replace(/\n/g,'<br>');
-    return '<p style="text-align:justify;text-justify:inter-word;margin:6pt 0;mso-line-height-alt:0;font-family:Calibri,sans-serif;font-size:11pt;mso-pagination:widow-orphan">'+inner+'</p>';
-  }).join('\n');
-})()}
+<p style="margin:6pt 0;text-align:justify;font-family:Calibri,sans-serif;font-size:11pt">${cuerpo}</p>
 <hr>
-<p class="footer-txt">Generado por Gestor Académico YC · Asistente Adán · ${new Date().toLocaleDateString('es-CO')}</p>
-</div>
-</body></html>`;
-  const blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
+<p class="footer-txt">Generado por Gestor Acad&#233;mico YC &middot; Asistente Ad&#225;n &middot; ${new Date().toLocaleDateString('es-CO')}</p>
+</div></body></html>`;
+  const blob=new Blob([html],{type:'application/msword;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;
   a.download='Planeacion_'+(meta.asig||'clase').replace(/[^a-zA-Z0-9]/g,'_')+'_'+(meta.grado||'').replace(/[^a-zA-Z0-9]/g,'_')+'.doc';
-  a.click();URL.revokeObjectURL(url);
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
 function _verPlaneacionIA(id){
