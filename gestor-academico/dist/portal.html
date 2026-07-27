@@ -9176,6 +9176,8 @@ function _descargarPlaneIAWord(msgIdx,overrideContent){
 ${(function(){
   // Transformar markdown a HTML Word-compatible con justificación correcta
   let c=msg.content;
+  // Escapar caracteres HTML especiales ANTES de procesar markdown para evitar corrupción del Word
+  c=c.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   c=c.replace(/\*\*(.*?)\*\*/g,'<b>$1</b>');
   c=c.replace(/\*(.*?)\*/g,'<i>$1</i>');
   c=c.replace(/^(#{1,3})\s+(.+)$/gm,function(_,h,t){return h.length===1?'<h2>'+t+'</h2>':h.length===2?'<h3>'+t+'</h3>':'<h4>'+t+'</h4>';});
@@ -15079,27 +15081,9 @@ function guardarObsAula(estId,per){
     d.ests[idx].observaciones.push({per:String(per),txt,tipo,doc:sesion.n,fecha,anio:d.anio});
     return d;
   });
-  // Feedback visual inmediato
-  const colorTipo={'Comportamental':'#e67e22','Académica':'#2980b9','Logro':'#27ae60','Asistencia':'#8e44ad','Otro':'#7f8c8d'}[tipo]||'#555';
-  const hist=document.getElementById('obsAulaHistorial_'+estId);
-  if(hist){
-    const div=document.createElement('div');
-    div.style.cssText=`border-left:3px solid ${colorTipo};padding:4px 8px;margin-bottom:5px;background:#f0faf4;border-radius:0 5px 5px 0;animation:fadeIn 0.3s ease`;
-    div.innerHTML=`<span style="font-size:0.68rem;font-weight:700;color:${colorTipo};text-transform:uppercase">${tipo}</span> · <span style="font-size:0.82rem;color:#333">${txt}</span><span style="font-size:0.7rem;color:#aaa;display:block;margin-top:1px">${sesion.n} · ${fecha}</span>`;
-    hist.insertBefore(div,hist.firstChild);
-  }
-  // Actualizar contador
-  const eAct=db.ests.find(e=>e.id==estIdNum);
-  const card=document.getElementById('obsCard_'+estId);
-  if(card&&eAct){
-    const perObs=(eAct.observaciones||[]).filter(o=>String(o.per)===String(per));
-    const mias=perObs.filter(o=>o.doc===sesion.n);
-    const span=card.querySelector('span[style*="0.75rem"]');
-    if(span) span.textContent=perObs.length+' obs. en P'+per+' · '+mias.length+' tuyas';
-  }
-  // Limpiar y cerrar form
-  document.getElementById('obsAulaTxt_'+estId).value='';
-  toggleObsAulaForm(estId);
+  // Re-renderizar la lista completa para que los formularios de edición estén disponibles
+  renderObsAulaLista();
+  _showToast('Observación guardada','success');
 }
 
 // ─── Editar una observación de aula ───────────────────────
@@ -15128,11 +15112,8 @@ function guardarEditObsAula(estId, obsIdx, per){
     }
     return d;
   });
-  // Actualizar texto visible sin recargar
-  const span=document.querySelector('.obsAulaTexto_'+estId+'_'+obsIdx);
-  if(span) span.textContent=nuevoTxt;
-  const form=document.getElementById('obsEditForm_'+estId+'_'+obsIdx);
-  if(form) form.style.display='none';
+  // Re-renderizar la lista para reflejar cambios correctamente
+  renderObsAulaLista();
   _showToast('Observación actualizada','success');
 }
 function eliminarObsAula(estId, obsIdx, per){
@@ -15144,20 +15125,8 @@ function eliminarObsAula(estId, obsIdx, per){
     if(d.ests[idx].observaciones) d.ests[idx].observaciones.splice(obsIdx,1);
     return d;
   });
-  // Eliminar el elemento del DOM
-  const el=document.getElementById('obsItem_'+estId+'_'+obsIdx);
-  if(el) el.remove();
-  // Actualizar contador
-  const card=document.getElementById('obsCard_'+estId);
-  if(card){
-    const eAct=db.ests.find(e=>e.id==estIdNum);
-    if(eAct){
-      const perObs=(eAct.observaciones||[]).filter(o=>String(o.per)===String(per));
-      const mias=perObs.filter(o=>o.doc===sesion.n);
-      const sp=card.querySelector('span[style*="0.75rem"]');
-      if(sp) sp.textContent=perObs.length+' obs. en P'+per+(mias.length?' · '+mias.length+' tuyas':'');
-    }
-  }
+  // Re-renderizar la lista para mantener índices correctos y formularios de edición
+  renderObsAulaLista();
   _showToast('Observación eliminada','success');
 }
 
