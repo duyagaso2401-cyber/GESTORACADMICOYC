@@ -25,7 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Esta es la ruta corregida basada en tu estructura de carpetas:
 const STATIC_DIR = path.resolve(__dirname, '../gestor-academico/dist');
 
-app.use(cors({ origin: true, credentials: true }));
+// Configuración robusta de CORS para soportar Live Server, Replit y Render sin bloqueos
+app.use(cors({
+  origin: '*', // Permite peticiones desde Live Server (127.0.0.1:5500), Replit y Render
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200
+}));
+
 app.use(express.json({ limit: '50mb' }));
 
 // ============================================================
@@ -160,8 +167,6 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ── SSE — suscripción por canal (sk) ─────────────────────────────────────────
-// El frontend se suscribe aquí; recibe un evento 'change' cada vez que
-// otro dispositivo guarda datos en el mismo sk, permitiendo sync instantánea.
 
 app.get('/api/inetis/events', (req, res) => {
   const sk = String(req.query.sk || '');
@@ -196,8 +201,6 @@ app.get('/api/inetis/events', (req, res) => {
 // ============================================================
 // A04 · RUTAS — BASE DE DATOS POR INSTITUCIÓN (KV STORE)
 // ============================================================
-// Cada institución (plataforma) guarda su estado completo bajo una clave `sk`
-// única. El Gestor YC tiene su propia clave especial (GESTOR_SK).
 
 const GESTOR_SK = '__gestor_academico_yc__';
 
@@ -377,10 +380,6 @@ app.post('/api/inetis/notify/seen', async (_req, res) => {
 // A06 · RUTAS — ASISTENTE IA ADÁN (GEMINI)
 // ============================================================
 
-// ── Chat con streaming (SSE) — módulo principal de Adán ──────────────────────
-// Soporta visión multimodal: si `imagePart` viene en el cuerpo, se envía
-// la imagen como inlineData a Gemini para análisis visual.
-
 app.post('/api/inetis/ai/chat', async (req, res) => {
   try {
     const { messages, context, mode, imagePart } = req.body as {
@@ -453,8 +452,6 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
   }
 });
 
-// ── Consulta simple sin streaming — para análisis de observador, sugerencias ─
-
 app.post('/api/inetis/ai/general', async (req, res) => {
   try {
     const { messages, context, prompt } = req.body as {
@@ -497,12 +494,7 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
 app.use('/api/repositorio', repositorioRouter);
 
-// El GET explícito de /repositorio DEBE ir ANTES del express.static
-// porque static envía un 301 al detectar el directorio.
 app.get('/repositorio', (req, res) => {
-  // Inyectar identidad visual directamente en el HTML antes de enviarlo al navegador.
-  // Así el título y el logo aparecen desde el primer frame, sin depender de JS async.
-  // Decodificar con fallback: algunos clientes envían caracteres sin percent-encodear
   function _safeDecodeQP(raw: unknown): string {
     const s = String(raw || '').trim();
     if (!s) return '';
@@ -516,7 +508,6 @@ app.get('/repositorio', (req, res) => {
 
     if (instNombre) {
       const title = `REPOSITORIO RECURSOS · ${instNombre}`;
-      // Reemplazar texto del <title> y del encabezado
       html = html
         .replace(/<title id="site-title-tag">.*?<\/title>/,
           `<title id="site-title-tag">${title}</title>`)
@@ -525,7 +516,6 @@ app.get('/repositorio', (req, res) => {
     }
 
     if (instEscudo) {
-      // Mostrar logo desde el primer frame
       html = html.replace(
         /<img id="hdr-logo"[^>]*>/,
         `<img id="hdr-logo" class="hdr-logo" src="${instEscudo}" alt="" style="">`
@@ -538,34 +528,25 @@ app.get('/repositorio', (req, res) => {
     res.removeHeader('ETag');
     res.send(html);
   } catch (_e) {
-    // Fallback: enviar el archivo sin modificar
     res.sendFile(path.resolve(__dirname, '../modulo-repositorio/index.html'));
   }
 });
 
-// Archivos estáticos del módulo repositorio (CSS, imágenes, JS externos si los hubiera).
-// Va DESPUÉS del GET /repositorio para que el handler explícito no sea tapado por el 301.
 app.use('/repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio'), { index: false }));
-// Compatibilidad con el path alternativo /modulo-repositorio
 app.use('/modulo-repositorio', express.static(path.resolve(__dirname, '../modulo-repositorio')));
 
 // ============================================================
 // A07 · RUTAS — FRONTEND ESTÁTICO (PRODUCCIÓN)
 // ============================================================
-// En producción el API server sirve también el build de Vite.
-// El archivo principal es portal.html (SPA monolítica de un solo archivo).
 
 if (fs.existsSync(STATIC_DIR)) {
   app.use(express.static(STATIC_DIR, { index: false }));
 }
 
 app.get('/', servePortal);
-// Rutas ocultas del Admin General
 app.get('/admin-ycgestor',      servePortal);
 app.get('/admin-portal-secure', servePortal);
 
-// Fallback SPA: cualquier ruta no-API devuelve portal.html
-// NOTA: Se usa '*' (Express 4) — NO '/{*path}' que es sintaxis de Express 5.
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
   return servePortal(req, res);
