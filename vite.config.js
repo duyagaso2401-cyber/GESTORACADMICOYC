@@ -6,6 +6,10 @@ export default defineConfig({
     port: 5000,
     host: true
   },
+  preview: {
+    host: true,
+    allowedHosts: ['gestoracemicoyc.onrender.com', true]
+  },
   build: {
     outDir: 'dist'
   }
