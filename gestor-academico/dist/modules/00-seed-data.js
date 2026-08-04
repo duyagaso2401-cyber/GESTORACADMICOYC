@@ -231,12 +231,12 @@ const SEED_DATA = {
   ]
 };
 
-// Función que integra los datos de prueba en la BD si está vacía
+// Función desactivada — seed data no debe sobreescribir datos reales
 function _seedDBIfEmpty(data){
+  // DESACTIVADO: nunca inyectar datos de prueba en una BD real
+  return data;
+  /* eslint-disable no-unreachable */
   if(!data) return data;
-  // Solo sembrar si la BD está vacía (sin estudiantes ni nombre)
-  if(data.ests&&data.ests.length>0) return data;
-  if(data.nombre&&data.nombre.length>5) return data;
 
   // Copiar campos de SEED_DATA
   var seed=SEED_DATA;

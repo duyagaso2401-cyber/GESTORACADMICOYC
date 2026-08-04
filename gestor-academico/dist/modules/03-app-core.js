@@ -340,7 +340,7 @@ function loadDB(sk){
   sk=sk||SK;
   try{const s=localStorage.getItem(sk);if(s){const p=JSON.parse(s);return _migrateDB(p);}}catch(e){}
   let _d=JSON.parse(JSON.stringify(DDB));
-  if(typeof _seedDBIfEmpty==='function') _d=_seedDBIfEmpty(_d);
+  // Seed data desactivado — nunca sobreescribir con datos de prueba
   return _d;
 }
 let _saveTimer=null;
@@ -528,10 +528,9 @@ let gestorDB=loadGestorDB();
             if(!cr.ok) return;
             return cr.json();
           }).then(function(cj){
-            // Solo sembrar si está vacía (sin nombre ni estudiantes)
-            if(!cj||!cj.data||(!cj.data.nombre&&(!cj.data.ests||!cj.data.ests.length))){
+            // Seed data desactivado — no sobreescribir con datos de prueba
+            if(false && !cj||!cj.data||(!cj.data.nombre&&(!cj.data.ests||!cj.data.ests.length))){
               const seedDB=JSON.parse(JSON.stringify(DDB));
-              if(typeof _seedDBIfEmpty==='function') _seedDBIfEmpty(seedDB);
               seedDB.anio=plat.anioActivo||String(new Date().getFullYear());
               seedDB._schemaVersion=SCHEMA_VERSION;
               fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -4977,10 +4976,10 @@ function _toInfinitive(word){
     [/gua$/,'guar'],[/cea$/,'cear'],[/nea$/,'near'],
     [/ria$/,'riar'],[/cia$/,'ciar'],[/tua$/,'tuar'],
     [/aba$/,'abar'],[/eba$/,'ebar'],[/oba$/,'obar'],
-    [/da$/,'dar'],[/ta$/,'tar'],[/ra$/,'rar'],[/la$/,'lar'],[/sa$/,'sar'],[/za$/,'zar'],[/na$/,'nar'],[/ma$/,'mar'],[/pa$/,'par'],[/va$/,'var'],[/ca$/,'car'],[/ga$/,'gar'],[/ba$/['b','ar'].join('')],
-    [/ee$/,'eer'],[/ie$/,'iar'],[/ae$/['a','er'].join('')],
-    [/a$/,'ar'],[/e$/,'er'],[/o$/['o','ar'].join('')],
-    [/ió$/['i','ar'].join('')],[/ó$/['ar'].join('')]
+    [/da$/,'dar'],[/ta$/,'tar'],[/ra$/,'rar'],[/la$/,'lar'],[/sa$/,'sar'],[/za$/,'zar'],[/na$/,'nar'],[/ma$/,'mar'],[/pa$/,'par'],[/va$/,'var'],[/ca$/,'car'],[/ga$/,'gar'],[/ba$/,'bar'],
+    [/ee$/,'eer'],[/ie$/,'iar'],[/ae$/,'aer'],
+    [/a$/,'ar'],[/e$/,'er'],[/o$/,'ar'],
+    [/ió$/,'iar'],[/ó$/,'ar']
   ];
   for(var i=0;i<rules.length;i++){
     if(rules[i][0].test(w)){
