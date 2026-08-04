@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  root: 'gestor-academico/dist',
+  //root: 'gestor-academico/dist',
   server: {
     port: 5000,
     host: true
@@ -14,5 +14,6 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist'
+    emptyOutDir: true
   }
 });
