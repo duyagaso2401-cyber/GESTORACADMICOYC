@@ -348,11 +348,18 @@ function saveDB(){
   const _sk=window._currentPlatSK||SK;
   try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
   if(_saveTimer) clearTimeout(_saveTimer);
-  _saveTimer=setTimeout(_pushDB,350);
+  // Background auto-save: swallow errors silently (fire-and-forget)
+  _saveTimer=setTimeout(function(){_pushDB().catch(function(){});},350);
 }
 function _pushDB(){
+  // Returns a Promise that REJECTS on network failure OR non-OK HTTP status.
+  // Callers are responsible for handling errors — no internal .catch() here.
   const _sk=window._currentPlatSK||SK;
-  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk,data:db})}).catch(()=>{});
+  return fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk,data:db})})
+    .then(function(r){
+      if(!r.ok) throw new Error('HTTP '+r.status+' '+r.statusText);
+      return r;
+    });
 }
 async function _pullDB(){
   try{
@@ -5059,84 +5066,131 @@ function limpiarCamposVaciosDesc(){
 function _actualizarBtnGuardarDesc(){
     var btn=document.getElementById('btnGuardarDesc');
     if(!btn) return;
+    var gra=document.getElementById('descGra')?.value||'';
     var mat=document.getElementById('descMat')?.value||'';
     var hasText=false;
     document.querySelectorAll('.descTxtInput').forEach(function(ta){if(ta.value.trim()) hasText=true;});
-    var matOk=mat&&mat!=='Sin asignaturas disponibles';
-    if(matOk&&hasText){btn.disabled=false;btn.style.opacity='1';btn.style.cursor='pointer';btn.textContent='+ Guardar Descriptor(es)';}
-    else if(!matOk){btn.disabled=false;btn.style.opacity='0.6';btn.style.cursor='pointer';btn.textContent='⚠ Seleccione asignatura';}
-    else if(!hasText){btn.disabled=false;btn.style.opacity='0.6';btn.style.cursor='pointer';btn.textContent='⚠ Escriba un indicador';}
-    else{btn.disabled=false;btn.style.opacity='0.85';btn.style.cursor='pointer';btn.textContent='+ Guardar Descriptor(es)';}
+    var graOk=!!gra;
+    var matOk=mat&&mat!=='Sin asignaturas disponibles'&&mat!=='';
+    btn.disabled=false;
+    btn.style.cursor='pointer';
+    if(graOk&&matOk&&hasText){
+      btn.style.opacity='1';
+      btn.textContent='💾 Guardar Descriptor(es)';
+    } else if(!graOk){
+      btn.style.opacity='0.55';
+      btn.textContent='⚠ Seleccione un grado';
+    } else if(!matOk){
+      btn.style.opacity='0.55';
+      btn.textContent='⚠ Seleccione asignatura';
+    } else {
+      btn.style.opacity='0.55';
+      btn.textContent='⚠ Escriba al menos un indicador';
+    }
   }
-function guardarDesc(){
+async function guardarDesc(){
     const doc=document.getElementById('descDoc')?.value||sesion.u;
-    const per=document.getElementById('descPer').value;
-    const gra=document.getElementById('descGra').value;
-    const mat=document.getElementById('descMat').value;
+    const per=document.getElementById('descPer')?.value||'';
+    const gra=document.getElementById('descGra')?.value||'';
+    const mat=document.getElementById('descMat')?.value||'';
+    // ── Validación previa (mismos mensajes de siempre) ──
     if(!gra){alert('⚠️ No hay grado seleccionado.\n\nEsto ocurre cuando la carga académica aún no se ha cargado desde el servidor.\nSolución: espere unos segundos a que la sincronización termine, o recargue la página.');return;}
-    if(!mat||mat==='Sin asignaturas disponibles'){alert('⚠️ No hay asignatura seleccionada para el grado '+gra+'.\n\nVerifique que el docente tenga carga académica asignada para este grado.');return;}
+    if(!mat||mat==='Sin asignaturas disponibles'||mat===''){alert('⚠️ No hay asignatura seleccionada para el grado '+gra+'.\n\nVerifique que el docente tenga carga académica asignada para este grado.');return;}
     var textareas=document.querySelectorAll('.descTxtInput');
     var descsText=[];
-    textareas.forEach(function(ta){var v=ta.value.trim();if(v) descsText.push(v);});
+    textareas.forEach(function(ta){var v=(ta.value||'').trim();if(v) descsText.push(v);});
     if(!descsText.length){alert('Escriba al menos un indicador/descriptor en el campo de texto.');return;}
     var btn=document.getElementById('btnGuardarDesc');
-    if(btn){btn.disabled=true;btn.textContent='⏳ Guardando...';}
-    const prefijos={bajo:'Se le dificulta ',basico:'Algunas veces ',alto:'Casi siempre ',superior:'Siempre '};
-    const niveles=['bajo','basico','alto','superior'];
-    const base=Date.now();
-    const auto=document.getElementById('autoReplicaChk');
-    const replicar=!auto || auto.checked;
-    let gradosDestino=[gra];
-    if(replicar){
-      const baseDe=g=>String(g).split(/[°\-\s]/)[0];
-      const baseSrc=baseDe(gra);
-      const otros=db.carga
-        .filter(c=>c.d===doc && c.m===mat && baseDe(c.g)===baseSrc && c.g!==gra)
-        .map(c=>c.g);
-      gradosDestino=[...new Set([gra,...otros])];
-    }
-    let totalGuardados=0;
-    updDB(d=>{
-      if(!d.descriptores) d.descriptores=[];
-      gradosDestino.forEach((gDest,gi)=>{
-        d.descriptores=d.descriptores.filter(x=>!(x.doc===doc&&String(x.per)===String(per)&&x.mat===mat&&x.gra===gDest));
-        descsText.forEach((txRaw,di)=>{
-          niveles.forEach((niv,i)=>{
-            var txtFinal=txRaw;
-            if(niv==='bajo'){txtFinal=_descToInfinitivePrefix(txRaw);}
-            d.descriptores.push({id:base+gi*100+di*10+i,per,mat,niv,gra:gDest,txt:prefijos[niv]+txtFinal,doc});
-            totalGuardados++;
+    if(btn){btn.disabled=true;btn.style.opacity='0.7';btn.textContent='⏳ Guardando...';}
+    try {
+      const prefijos={bajo:'Se le dificulta ',basico:'Algunas veces ',alto:'Casi siempre ',superior:'Siempre '};
+      const niveles=['bajo','basico','alto','superior'];
+      const base=Date.now();
+      const auto=document.getElementById('autoReplicaChk');
+      const replicar=!auto || auto.checked;
+      let gradosDestino=[gra];
+      if(replicar){
+        const baseDe=function(g){return String(g).split(/[°\-\s]/)[0];};
+        const baseSrc=baseDe(gra);
+        const otros=(db.carga||[])
+          .filter(function(c){return c.d===doc && c.m===mat && baseDe(c.g)===baseSrc && c.g!==gra;})
+          .map(function(c){return c.g;});
+        gradosDestino=[...new Set([gra,...otros])];
+      }
+      let totalGuardados=0;
+      // ── Insertar en la estructura de datos local ──
+      updDB(function(d){
+        if(!Array.isArray(d.descriptores)) d.descriptores=[];
+        gradosDestino.forEach(function(gDest,gi){
+          // Eliminar descriptores anteriores de la misma combinación
+          d.descriptores=d.descriptores.filter(function(x){
+            return !(x.doc===doc && String(x.per)===String(per) && x.mat===mat && x.gra===gDest);
+          });
+          // Insertar un descriptor por cada indicador × cada nivel
+          descsText.forEach(function(txRaw,di){
+            niveles.forEach(function(niv,i){
+              var txtFinal=txRaw;
+              if(niv==='bajo') txtFinal=_descToInfinitivePrefix(txRaw);
+              d.descriptores.push({
+                id: base + gi*100 + di*10 + i,
+                per: per,
+                mat: mat,
+                niv: niv,
+                gra: gDest,
+                txt: prefijos[niv] + txtFinal,
+                doc: doc
+              });
+              totalGuardados++;
+            });
           });
         });
+        return d;
       });
-      return d;
-    });
-    _pushDB();
-    var container=document.getElementById('descTxtContainer');
-    if(container) container.innerHTML='<div class="descTxtRow" style="display:flex;gap:6px;margin-bottom:6px;align-items:flex-start"><textarea class="descTxtInput" style="height:70px;resize:vertical;flex:1;padding:9px 12px;border:1px solid #c8d4e8;border-radius:7px;font-size:0.88rem;font-family:inherit" placeholder="Ej: reconoce la diferencia entre célula animal y vegetal..." oninput="_actualizarBtnGuardarDesc()"></textarea><button type="button" class="btn-sm descDelBtn" style="background:#c0392b;flex-shrink:0;width:36px;height:70px;font-size:1.1rem" onclick="eliminarCampoDesc(this)" title="Eliminar este indicador">✕</button></div>';
-    _actualizarBtnGuardarDesc();
-    const st=document.getElementById('replicaStatus');
-    if(st && gradosDestino.length>1){
-      st.textContent='✅ '+descsText.length+' descriptor(es) guardado(s) y auto-replicado(s) a: '+gradosDestino.join(', ');
-    } else if(st){
-      st.textContent='✅ '+descsText.length+' descriptor(es) guardado(s) para '+gra;
+      // ── Sincronizar con el servidor (PostgreSQL / Neon) ──
+      // Awaited so we can tell the teacher whether the server confirmed the save.
+      var serverOk=false;
+      try {
+        await _pushDB();
+        serverOk=true;
+      } catch(syncErr) {
+        console.warn('[GESTOR] guardarDesc: error al sincronizar con el servidor:', syncErr);
+      }
+      // ── Limpiar formulario ──
+      var container=document.getElementById('descTxtContainer');
+      if(container) container.innerHTML='<div class="descTxtRow" style="display:flex;gap:6px;margin-bottom:6px;align-items:flex-start"><textarea class="descTxtInput" style="height:70px;resize:vertical;flex:1;padding:9px 12px;border:1px solid #c8d4e8;border-radius:7px;font-size:0.88rem;font-family:inherit" placeholder="Ej: reconoce la diferencia entre célula animal y vegetal..." oninput="_actualizarBtnGuardarDesc()"></textarea><button type="button" class="btn-sm descDelBtn" style="background:#c0392b;flex-shrink:0;width:36px;height:70px;font-size:1.1rem" onclick="eliminarCampoDesc(this)" title="Eliminar este indicador">✕</button></div>';
+      // ── Mostrar estado de réplica ──
+      const st=document.getElementById('replicaStatus');
+      var replicaLabel=gradosDestino.length>1?' y auto-replicado(s) a: '+gradosDestino.join(', '):'  para '+gra;
+      if(st) st.textContent=(serverOk?'✅':'⚠️ (local) ')+descsText.length+' descriptor(es) guardado(s)'+replicaLabel;
+      // ── Confirmación con estado de servidor claramente indicado ──
+      var serverMsg=serverOk
+        ? '✅ Sincronizado con el servidor (PostgreSQL).'
+        : '⚠️ SOLO guardado localmente.\nNo se pudo conectar con el servidor en este momento.\nLos datos están seguros en este dispositivo y se sincronizarán cuando haya conexión.';
+      var msg=(serverOk?'✅':'⚠️')+' '+totalGuardados+' descriptores guardados.\n\n';
+      msg+='Período: '+per+'\nGrado: '+gra+'\nAsignatura: '+mat+'\nIndicadores: '+descsText.length+'\n\n';
+      msg+=serverMsg;
+      if(gradosDestino.length>1) msg+='\n\nReplicado a: '+gradosDestino.join(', ');
+      alert(msg);
+      renderApp();
+      setTimeout(function(){
+        var fPer=document.getElementById('_descFiltRegistPer');
+        var fGra=document.getElementById('_descFiltRegistGra');
+        var fMat=document.getElementById('_descFiltRegistMat');
+        var fDoc=document.getElementById('_descFiltRegistDoc');
+        if(fPer){fPer.value=String(per);fPer.onchange&&fPer.onchange();}
+        if(fGra){fGra.value=gra;fGra.onchange&&fGra.onchange();}
+        if(fMat){fMat.value=mat;fMat.onchange&&fMat.onchange();}
+        if(fDoc&&doc){fDoc.value=doc;fDoc.onchange&&fDoc.onchange();}
+        if(typeof _filtrarDescReg==='function') _filtrarDescReg();
+      },80);
+    } catch(err) {
+      console.error('[GESTOR] guardarDesc: error inesperado:', err);
+      alert('❌ Error al guardar el descriptor: '+err.message+'\n\nRevise la consola para más detalles.');
+    } finally {
+      // Siempre re-habilitar el botón al terminar, sin importar si hubo error
+      if(btn){btn.disabled=false;}
+      _actualizarBtnGuardarDesc();
     }
-    var msg='✅ '+totalGuardados+' descriptores guardados correctamente.\n\n';
-    msg+='Período: '+per+'\nGrado: '+gra+'\nAsignatura: '+mat+'\nIndicadores: '+descsText.length;
-    if(gradosDestino.length>1) msg+='\n\nReplicado a: '+gradosDestino.join(', ');
-    alert(msg);
-    renderApp();
-    setTimeout(function(){
-      var fPer=document.getElementById('_descFiltRegistPer');
-      var fGra=document.getElementById('_descFiltRegistGra');
-      var fMat=document.getElementById('_descFiltRegistMat');
-      var fDoc=document.getElementById('_descFiltRegistDoc');
-      if(fPer){fPer.value=String(per);fPer.onchange&&fPer.onchange();}
-      if(fGra){fGra.value=gra;fGra.onchange&&fGra.onchange();}
-      if(fMat){fMat.value=mat;fMat.onchange&&fMat.onchange();}
-      if(fDoc&&doc){fDoc.value=doc;fDoc.onchange&&fDoc.onchange();}
-      if(typeof _filtrarDescReg==='function') _filtrarDescReg();
-    },80);
   }
 function generarPlanAccionDesc(){
     var doc=document.getElementById('descDoc')?.value||sesion.u;
