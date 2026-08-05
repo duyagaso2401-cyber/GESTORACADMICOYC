@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
+import { resolve } from 'path';
 
 export default defineConfig({
- // root: 'gestor-academico/dist',
   server: {
     port: 5000,
     host: true
@@ -9,11 +9,13 @@ export default defineConfig({
   preview: {
     port: 5000,
     host: true,
-    //allowedHosts: ['gestoracadmicoyc.onrender.com', true]
     allowedHosts: true,
   },
   build: {
     outDir: 'dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      input: resolve(__dirname, 'index.html'),
+    },
   }
 });
