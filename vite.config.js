@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
 
 export default defineConfig({
   server: {
@@ -14,8 +13,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    rollupOptions: {
-      input: resolve(__dirname, 'index.html'),
-    },
+    // Esto desactiva el empaquetado estricto de assets y respeta la estructura limpia
+    assetsDir: '',
   }
 });
