@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export default defineConfig({
   server: {
@@ -13,7 +14,13 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // Esto desactiva el empaquetado estricto de assets y respeta la estructura limpia
-    assetsDir: '',
-  }
+  },
+  plugins: [
+    viteStaticCopy({
+      targets: [
+        { src: 'modules', dest: '' },
+        { src: 'config.js', dest: '' }
+      ]
+    })
+  ]
 });
