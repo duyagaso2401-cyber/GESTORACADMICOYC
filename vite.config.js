@@ -1,24 +1,22 @@
 import { defineConfig } from 'vite';
 
-const LEGACY_BACKEND = 'https://gestoracadmicoyc.onrender.com';
+// En desarrollo: Vite (puerto 5000) proxía /api/* al servidor Express local (4173)
+// En producción: Express sirve todo (dist/ + API)
+const EXPRESS_DEV = 'http://localhost:4173';
 
 export default defineConfig({
-  // Servidor de desarrollo local (npm run dev)
   server: {
     port: 5000,
     host: true,
     allowedHosts: true,
-    // En dev, /api/inetis/* → backend legacy (eventos y notify aún no existen
-    // allá, pero el error en dev es esperado; en prod lo maneja server.js).
     proxy: {
-      '/api/inetis': {
-        target: LEGACY_BACKEND,
+      '/api': {
+        target: EXPRESS_DEV,
         changeOrigin: true,
-        secure: true,
+        secure: false,
       },
     },
   },
-  // Build de producción → carpeta dist/
   build: {
     outDir: 'dist',
     emptyOutDir: true,

@@ -1,84 +1,54 @@
 # Gestor Académico YC v2.6
 
-Sistema de gestión académica para instituciones educativas (Colombia). Frontend 100 % estático construido con Vite + Vanilla JS. Se conecta a un backend REST en Render (`https://gestoracadmicoyc.onrender.com/`) y usa Neon PostgreSQL **en el backend** (no aquí).
-
----
+App web de gestión académica (instituciones educativas colombianas). SPA con vanilla JS servida por Express + Vite. Persistencia en PostgreSQL (Neon) via `DATABASE_URL`.
 
 ## Stack
+- **Frontend:** HTML/CSS/JS vanilla, Bootstrap 5, Chart.js, jsPDF, SheetJS
+- **Backend:** Node.js + Express (`server.js`)
+- **Base de datos:** PostgreSQL — tabla `inetis_storage (sk TEXT PK, data JSONB, updated_at TIMESTAMPTZ)`
+- **Dev server:** Vite (puerto 5000)
+- **Producción:** `npm run build` + `npm start` (puerto 4173 o `$PORT`)
 
-| Capa | Tecnología |
-|------|-----------|
-| Frontend | Vanilla JS, Bootstrap 5.3, Chart.js 4, jsPDF |
-| Bundler | Vite 5 |
-| Backend (externo) | API REST en Render |
-| Base de datos | Neon PostgreSQL (gestionada en el backend) |
+## Cómo ejecutar
 
----
-
-## Estructura de archivos
-
-```
-index.html          ← punto de entrada (fuente de Vite)
-public/
-  config.js         ← CONFIG.API_URL apunta al backend en Render
-  modules/
-    00-seed-data.js
-    01-proteccion.js
-    02-sheetjs-loader.js
-    03-app-core.js
-    04-ficha-matricula.js
-    05-pdf-ficha-blanco.js
-    06-documentos-y-resto.js
-vite.config.js
-render.yaml         ← configuración de despliegue en Render
-```
-
-Los archivos en `public/` se sirven tal cual en `/` tanto en dev como en producción (no los procesa Vite).
-
----
-
-## Scripts
-
-| Comando | Uso |
-|---------|-----|
-| `npm run dev` | Servidor de desarrollo local (puerto 5000) |
-| `npm run build` | Genera la carpeta `dist/` lista para producción |
-| `npm start` | Sirve `dist/` con `vite preview` (usa `$PORT` de Render) |
-
----
-
-## Desarrollo local (VS Code)
-
+### Desarrollo
 ```bash
-npm install
-npm run dev
-# → http://localhost:5000
+npm run dev   # Vite dev server en puerto 5000
 ```
 
-Para probar el build de producción localmente:
-
+### Producción (Render / Replit Deploy)
 ```bash
-npm run build
-npm start
-# → http://localhost:4173
+npm run build  # genera dist/
+npm start      # Express sirve dist/ + API en $PORT
 ```
 
----
+## Variables de entorno requeridas
+- `DATABASE_URL` — cadena de conexión PostgreSQL (Neon). Gestionada automáticamente por Replit.
+- `SESSION_SECRET` — secreto para sesiones (ya configurado).
+- `PORT` — puerto del servidor (opcional, default 4173 en producción).
 
-## Despliegue en Render
+## Arquitectura API (`/api/inetis/*`)
+Todos los endpoints son manejados **localmente** por `server.js` — no hay proxy externo (se eliminó para evitar bucles 502).
 
-El archivo `render.yaml` define:
-- **Build Command:** `npm install && npm run build`
-- **Start Command:** `npm start` (usa la variable `PORT` que inyecta Render)
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/api/inetis/db?sk=<clave>` | Leer dato JSON de la BD |
+| POST | `/api/inetis/db` | Guardar `{ sk, data }` en la BD |
+| GET | `/api/inetis/gestordb` | Leer base gestora global |
+| POST | `/api/inetis/gestordb` | Guardar base gestora `{ data }` |
+| GET | `/api/inetis/events` | SSE tiempo real |
+| POST | `/api/inetis/notify` | Registrar notificación |
+| GET | `/api/inetis/notify` | Listar notificaciones |
+| POST | `/api/inetis/notify/seen` | Marcar notificaciones leídas |
 
-En el dashboard de Render también puedes configurarlo manualmente con esos mismos comandos.
-
-> **Importante:** La variable de entorno `PORT` la inyecta Render automáticamente. No es necesario definirla.
-
----
+## Módulos del frontend (`public/modules/`)
+- `00-seed-data.js` — datos semilla
+- `01-proteccion.js` — protección/autenticación
+- `02-sheetjs-loader.js` — carga de SheetJS
+- `03-app-core.js` — núcleo principal de la app
+- `04-ficha-matricula.js` — ficha de matrícula
+- `05-pdf-ficha-blanco.js` — generación PDF
+- `06-documentos-y-resto.js` — documentos y módulos adicionales
 
 ## User preferences
-
-- Mantener la lógica de conexión al backend y a Neon intacta.
-- No restructurar el stack ni migrar a otras herramientas sin solicitud explícita.
-- Mantener compatibilidad con desarrollo local en VS Code mediante Git + push a GitHub.
+- Todo debe comunicarse en español.
