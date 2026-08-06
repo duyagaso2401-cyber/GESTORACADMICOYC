@@ -501,52 +501,30 @@ function loadGestorDB(){
 }
 let gestorDB=loadGestorDB();
 // === CARGA DESDE SERVIDOR AL INICIAR (sincronización multi-dispositivo + semillado automático) ===
-// Si el servidor no tiene datos (primera instalación o nuevo agente Replit),
-// guarda automáticamente los datos por defecto (GESTOR_DEFAULT) para garantizar
-// que las instituciones y sus bases de datos sean permanentes desde el primer arranque.
-// El semillado incluye también los datos de la institución INETIS por defecto.
-(async function _initGestorFromServer(){
+// Función nombrada (no IIFE) para poder ser awaited desde el arranque asíncrono.
+// Si el servidor no tiene datos (primera instalación), siembra GESTOR_DEFAULT para
+// garantizar que las plataformas configuradas sean permanentes desde el primer arranque.
+async function _initGestorFromServer(){
   try{
     const _r=await fetch(API_BASE+'/api/inetis/gestordb');
     if(_r.ok){
       const _j=await _r.json();
       if(_j&&_j.data&&_j.data.platforms&&_j.data.platforms.length){
-        // Datos encontrados en servidor: migrar y cargar
+        // Datos reales encontrados en el servidor Neon: migrar y cargar
         gestorDB=_migrateGestorDB(_j.data);
         try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
       } else {
-        // Sin datos en servidor: sembrar datos por defecto para persistencia permanente
-        console.log('[GESTOR] Primera instalación detectada — sembrando datos por defecto en la nube...');
+        // Sin datos en servidor (primera instalación): sembrar GESTOR_DEFAULT
+        console.log('[GESTOR] Primera instalación detectada — sembrando datos por defecto en Neon...');
         try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
-        // Sembrar gestorDB
         fetch(API_BASE+'/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:gestorDB})}).then(function(r){
-          if(r.ok) console.log('[GESTOR] ✅ Datos del Gestor sembrados en la nube correctamente.');
-          else console.warn('[GESTOR] ⚠️ No se pudo sembrar en la nube — se usarán datos locales.');
+          if(r.ok) console.log('[GESTOR] ✅ Datos del Gestor sembrados en Neon correctamente.');
+          else console.warn('[GESTOR] ⚠️ No se pudo sembrar en Neon — revise la conexión del backend.');
         }).catch(function(){});
-        // Sembrar también la BD de cada institución si no existe
-        gestorDB.platforms.forEach(function(plat){
-          const platSK=plat.sk;
-          fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(platSK)).then(function(cr){
-            if(!cr.ok) return;
-            return cr.json();
-          }).then(function(cj){
-            // Seed data desactivado — no sobreescribir con datos de prueba
-            if(false && !cj||!cj.data||(!cj.data.nombre&&(!cj.data.ests||!cj.data.ests.length))){
-              const seedDB=JSON.parse(JSON.stringify(DDB));
-              seedDB.anio=plat.anioActivo||String(new Date().getFullYear());
-              seedDB._schemaVersion=SCHEMA_VERSION;
-              fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({sk:platSK,data:seedDB})
-              }).then(function(sr){
-                if(sr.ok) console.log('[GESTOR] ✅ BD de plataforma "'+plat.nombre+'" sembrada en la nube.');
-              }).catch(function(){});
-            }
-          }).catch(function(){});
-        });
       }
     }
   }catch(e){console.warn('[GESTOR] Error al inicializar desde servidor:',e.message);}
-})().catch(function(){});
+}
 let gestorSesion=null;
 let gestorEnPlataforma=null;
 let _gestorPag='plataformas';
@@ -2148,10 +2126,20 @@ function render(){
   if(sesion){renderApp();return;}
   iaRemoveWidget();renderGestorLanding();
 }
-// Sincronizar con servidor al cargar la página
-(async()=>{
-  // Restaurar sesión persistida antes de renderizar
+// ── ARRANQUE ASÍNCRONO SERVIDOR-PRIMERO ──────────────────────────────────────
+// Garantiza que gestorDB y la BD de plataforma se cargan desde Neon ANTES de
+// mostrar cualquier dato al usuario. El spinner de index.html permanece visible
+// hasta que esta función completa, evitando que aparezcan datos locales o de
+// semilla mientras llega la respuesta real del servidor.
+(async function _bootApp(){
+  // 1. Restaurar sesión del mismo tab (sessionStorage)
   const _hadSess=_restoreSessState();
+  // 2. Obtener gestorDB real desde Neon (plataformas, superAdmin, config)
+  //    ANTES de renderizar — evita que GESTOR_DEFAULT aparezca como datos reales.
+  await _initGestorFromServer().catch(function(e){
+    console.warn('[GESTOR] No se pudo contactar el servidor en el arranque:',e&&e.message);
+  });
+  // 3. Obtener la BD de la plataforma activa desde Neon
   try{
     const ok=await _pullDB();
     // Si había sesión guardada, re-cargar la DB de la institución correcta
@@ -2161,6 +2149,7 @@ function render(){
         if(_r.ok){const _j=await _r.json();if(_j&&_j.data){db=_migrateDB(_j.data);try{localStorage.setItem(window._currentPlatSK,JSON.stringify(db));}catch(e){}}}
       }catch(e){}
     }
+    // 4. Renderizar con datos reales del servidor
     if(ok||_hadSess){
       if(sesion){renderApp();}
       else if(window._adminPortalMode)renderAdminPortal();
@@ -2173,7 +2162,14 @@ function render(){
     else if(window._adminPortalMode)renderAdminPortal();
     else{iaRemoveWidget();renderGestorLanding();}
   }
-})().catch(function(){});
+  // 5. Inyectar widget IA una vez que el DOM está listo con datos reales
+  setTimeout(function(){if(typeof iaInjectWidget==='function')iaInjectWidget();},120);
+})().catch(function(e){
+  // Fallback de último recurso: si el arranque async falla totalmente, renderizar
+  console.error('[GESTOR] Error crítico en arranque — usando datos locales:',e&&e.message);
+  render();
+  setTimeout(function(){if(typeof iaInjectWidget==='function')iaInjectWidget();},200);
+});
 
 // ============================================================
 // SINCRONIZACIÓN AUTOMÁTICA MULTI-DISPOSITIVO
@@ -10622,6 +10618,6 @@ function renderPortalInstitucion(platId,rolPre){
   }catch(e){}
 })();
 
-render();
-// Inyectar widget IA después del render inicial
-setTimeout(function(){if(typeof iaInjectWidget==='function')iaInjectWidget();},100);
+// El renderizado inicial es manejado por _bootApp() (función async definida arriba).
+// _bootApp espera la respuesta de Neon antes de renderizar, evitando que aparezcan
+// datos locales o de semilla. No llamar render() aquí de forma sincrónica.
