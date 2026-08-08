@@ -506,12 +506,12 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
         ? context 
         : JSON.stringify(context || {});
     const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC...`;
-//Hasta acá hice el cambio
+/*//Hasta acá hice el cambio
   const contextText = typeof context === 'string'
     ? context
     : JSON.stringify(context || {});
   const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC. Ayudas a docentes y directivos de instituciones educativas colombianas. Responde siempre en español, de forma clara y concisa.${contextText ? '\n\nContexto del sistema:\n' + contextText : ''}`;
-
+*/
   // Gemini usa "user"/"model" en lugar de "user"/"assistant".
   // La imagen se conserva como inline_data para mantener la función de adjuntos.
   const rawGeminiContents = messages
