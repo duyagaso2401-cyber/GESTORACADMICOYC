@@ -484,54 +484,80 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
 });
 
 // ============================================================
-// AI/CHAT — streaming SSE con OpenAI; rate limit estricto
+// AI/CHAT — streaming SSE con Google Gemini; rate limit estricto
 //   POST { messages, context, mode?, imagePart? }
-//   Variable: OPENAI_API_KEY
+//   Variable: GEMINI_API_KEY
 // ============================================================
-async function _streamOpenAI(res, messages, context, imagePart) {
-  const apiKey = process.env.OPENAI_API_KEY;
+async function _streamGemini(res, messages, context, imagePart) {
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    const stub = 'Hola 👋 Soy Adán, el asistente de Gestor Académico YC. Para activar la inteligencia artificial, configura la variable OPENAI_API_KEY en el servidor.';
+    const stub = 'Hola 👋 Soy Adán, el asistente de Gestor Académico YC. Para activar la inteligencia artificial, configura la variable GEMINI_API_KEY en los Secretos del servidor.';
     res.write(`data: ${JSON.stringify({ content: stub })}\n\n`);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     return res.end();
   }
 
-  const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC. Ayudas a docentes y directivos de instituciones educativas colombianas. Responde siempre en español, de forma clara y concisa.${context ? '\n\nContexto del sistema:\n' + context : ''}`;
+  const contextText = typeof context === 'string'
+    ? context
+    : JSON.stringify(context || {});
+  const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC. Ayudas a docentes y directivos de instituciones educativas colombianas. Responde siempre en español, de forma clara y concisa.${contextText ? '\n\nContexto del sistema:\n' + contextText : ''}`;
 
-  const oaiMessages = [
-    { role: 'system', content: systemPrompt },
-    ...messages.map(m => {
-      if (m.role === 'user' && imagePart) {
-        return {
-          role: 'user',
-          content: [
-            { type: 'text', text: m.content },
-            { type: 'image_url', image_url: { url: `data:${imagePart.mimeType};base64,${imagePart.data}` } },
-          ],
-        };
+  // Gemini usa "user"/"model" en lugar de "user"/"assistant".
+  // La imagen se conserva como inline_data para mantener la función de adjuntos.
+  const rawGeminiContents = messages
+    .filter(m => m && (m.role === 'user' || m.role === 'assistant' || m.role === 'model'))
+    .map(m => {
+      const parts = [{ text: String(m.content ?? '') }];
+      if (m.role === 'user' && imagePart?.data) {
+        parts.push({
+          inline_data: {
+            mime_type: imagePart.mimeType || 'image/jpeg',
+            data: imagePart.data,
+          },
+        });
       }
-      return { role: m.role, content: m.content };
-    }),
-  ];
+      return {
+        role: m.role === 'assistant' ? 'model' : (m.role === 'model' ? 'model' : 'user'),
+        parts,
+      };
+    })
+    .filter(m => m.parts.some(part => part.text || part.inline_data));
+
+  // Gemini requiere una conversación válida: comienza con user y alterna
+  // user/model. El saludo inicial de Adán puede llegar como primer assistant.
+  if (rawGeminiContents[0]?.role === 'model') rawGeminiContents.shift();
+  const geminiContents = [];
+  for (const item of rawGeminiContents) {
+    const previous = geminiContents[geminiContents.length - 1];
+    if (previous?.role === item.role) {
+      previous.parts.push(...item.parts);
+    } else {
+      geminiContents.push(item);
+    }
+  }
+
+  // Modelo Flash ligero compatible con el nivel gratuito de Gemini API.
+  const model = 'gemini-1.5-flash';
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
 
   try {
-    const upstream = await fetch('https://api.openai.com/v1/chat/completions', {
+    const upstream = await fetch(endpoint, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model:       imagePart ? 'gpt-4o' : 'gpt-4o-mini',
-        messages:    oaiMessages,
-        stream:      true,
-        max_tokens:  1024,
-        temperature: 0.7,
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: geminiContents,
+        generationConfig: {
+          maxOutputTokens: 1024,
+          temperature: 0.7,
+        },
       }),
     });
 
     if (!upstream.ok) {
       const err = await upstream.text();
-      console.error('[AI] OpenAI error:', err);
-      res.write(`data: ${JSON.stringify({ error: 'Error del servicio IA' })}\n\n`);
+      console.error('[AI] Gemini error:', err);
+      res.write(`data: ${JSON.stringify({ error: 'Error del servicio IA (Gemini)' })}\n\n`);
       return res.end();
     }
 
@@ -549,13 +575,11 @@ async function _streamOpenAI(res, messages, context, imagePart) {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6).trim();
-        if (raw === '[DONE]') {
-          res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-          return res.end();
-        }
         try {
           const chunk   = JSON.parse(raw);
-          const content = chunk.choices?.[0]?.delta?.content;
+          const content = chunk.candidates?.[0]?.content?.parts
+            ?.map(part => part.text || '')
+            .join('');
           if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
         } catch (_) {}
       }
@@ -576,7 +600,7 @@ app.post('/api/inetis/ai/chat', aiLimiter, (req, res) => {
   res.setHeader('Connection',        'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-  _streamOpenAI(res, messages, context, imagePart).catch(err => {
+  _streamGemini(res, messages, context, imagePart).catch(err => {
     console.error('[AI] stream fatal:', err.message);
     try { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); } catch (_) {}
   });
@@ -594,6 +618,13 @@ app.use('/api', (req, res) => {
 // ============================================================
 if (!IS_DEV) {
   const DIST = join(__dirname, 'dist');
+  // El HTML fuente usa /avatar-adan.jpg, mientras el build puede usar
+  // /assets/avatar-adan-*.jpg. Servir el archivo raíz evita un 404 inicial
+  // del avatar sin exponer el resto del proyecto.
+  app.get('/avatar-adan.jpg', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(join(__dirname, 'avatar-adan.jpg'));
+  });
   app.use(express.static(DIST, {
     maxAge: '1d',
     etag: true,
@@ -623,7 +654,7 @@ initDB()
     server.listen(PORT, '0.0.0.0', () => {
       console.log(`[GESTOR] API lista en http://0.0.0.0:${PORT} [${IS_DEV ? 'dev' : 'producción'}]`);
       console.log(`[GESTOR] DB:   ${process.env.DATABASE_URL ? 'PostgreSQL conectado' : 'SIN DATABASE_URL'}`);
-      console.log(`[GESTOR] IA:   ${process.env.OPENAI_API_KEY ? 'OpenAI activo' : 'stub (sin OPENAI_API_KEY)'}`);
+      console.log(`[GESTOR] IA:   ${process.env.GEMINI_API_KEY ? 'Gemini Flash activo' : 'stub (sin GEMINI_API_KEY)'}`);
       console.log(`[GESTOR] Mail: ${process.env.SMTP_HOST ? 'SMTP configurado' : 'stub (sin SMTP_HOST)'}`);
       console.log(`[GESTOR] CORS: ${ALLOWED_ORIGINS ? ALLOWED_ORIGINS.join(', ') : '*'}`);
     });
