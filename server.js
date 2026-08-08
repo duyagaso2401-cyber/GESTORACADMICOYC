@@ -621,7 +621,7 @@ app.post('/api/inetis/ai/chat', aiLimiter, (req, res) => {
 /*  const model = 'gemini-1.5-flash';
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;*/
 // Modelo Flash estable con endpoint directo v1
-  const model = 'gemini-flash';
+  const model = 'gemini-1.5-flash-latest';
   const endpoint = `https://generativelanguage.googleapis.com/v1/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
   try {
     const upstream = await fetch(endpoint, {
