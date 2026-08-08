@@ -545,7 +545,7 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
       geminiContents.push(item);
     }
   }
-
+/*
   // Modelo Flash ligero compatible con el nivel gratuito de Gemini API.
   const model = 'gemini-1.5-flash';
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
@@ -615,7 +615,76 @@ app.post('/api/inetis/ai/chat', aiLimiter, (req, res) => {
     try { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); } catch (_) {}
   });
 });
+*/
+// Modelo Flash ligero compatible con el nivel gratuito de Gemini API.
+  const model = 'gemini-1.5-flash';
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
 
+  try {
+    const upstream = await fetch(endpoint, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        contents: geminiContents,
+        generationConfig: {
+          maxOutputTokens: 1024,
+          temperature: 0.7,
+        },
+      }),
+    });
+
+    if (!upstream.ok) {
+      const err = await upstream.text();
+      console.error('[AI] Gemini error:', err);
+      res.write(`data: ${JSON.stringify({ error: 'Error del servicio IA (Gemini)' })}\n\n`);
+      return res.end();
+    }
+
+    const reader = upstream.body.getReader();
+    const dec    = new TextDecoder();
+    let   buf    = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        try {
+          const chunk   = JSON.parse(raw);
+          const content = chunk.candidates?.[0]?.content?.parts
+            ?.map(part => part.text || '')
+            .join('');
+          if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        } catch (_) {}
+      }
+    }
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
+  } catch (err) {
+    console.error('[AI] fetch error:', err.message);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
+  }
+}
+
+app.post('/api/inetis/ai/chat', aiLimiter, (req, res) => {
+  const { messages = [], context = '', imagePart } = req.body || {};
+  res.setHeader('Content-Type',      'text/event-stream');
+  res.setHeader('Cache-Control',     'no-cache');
+  res.setHeader('Connection',        'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  _streamGemini(res, messages, context, imagePart).catch(err => {
+    console.error('[AI] stream fatal:', err.message);
+    try { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); } catch (_) {}
+  });
+});
 // ============================================================
 // Catch-all API: JSON 404 (antes del fallback SPA)
 // ============================================================
