@@ -488,15 +488,25 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
 //   POST { messages, context, mode?, imagePart? }
 //   Variable: GEMINI_API_KEY
 // ============================================================
-async function _streamGemini(res, messages, context, imagePart) {
+/*async function _streamGemini(res, messages, context, imagePart) {
   const apiKey = process.env.GEMINI_API_KEY;
+  
   if (!apiKey) {
     const stub = 'Hola 👋 Soy Adán, el asistente de Gestor Académico YC. Para activar la inteligencia artificial, configura la variable GEMINI_API_KEY en los Secretos del servidor.';
     res.write(`data: ${JSON.stringify({ content: stub })}\n\n`);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     return res.end();
-  }
-
+  }*/
+//Desde acá hice el cambio
+    async function _streamGemini(res, messages, context, imagePart) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    
+    // Eliminamos el 'if (!apiKey)' restrictivo para forzar la llamada directa a la API
+    const contextText = typeof context === 'string' 
+        ? context 
+        : JSON.stringify(context || {});
+    const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC...`;
+//Hasta acá hice el cambio
   const contextText = typeof context === 'string'
     ? context
     : JSON.stringify(context || {});
