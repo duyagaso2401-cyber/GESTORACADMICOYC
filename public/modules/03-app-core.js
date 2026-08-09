@@ -1593,6 +1593,40 @@ function gestorIAVoz(){
   rec.onerror=function(){window._gestorIAVozRec=null;if(btn){btn.textContent='🎙️ Voz';btn.style.background='#6c3483';}};
   try{rec.start();}catch(e){window._gestorIAVozRec=null;}
 }
+
+// Consume el SSE de Adán sin asumir que cada read() contiene un evento
+// completo. ReadableStream puede fragmentar una línea JSON entre varios
+// chunks y también puede usar saltos LF o CRLF.
+async function _iaConsumeSSE(response,onEvent){
+  const processLine=(line)=>{
+    const normalized=line.replace(/\r$/,'');
+    if(!normalized.startsWith('data:')) return true;
+    const raw=normalized.slice(5).trim();
+    if(!raw||raw==='[DONE]') return true;
+    try{return onEvent(JSON.parse(raw))!==false;}catch(e){return true;}
+  };
+  if(!response.body){
+    const raw=await response.text();
+    return raw.split(/\r?\n/).every(processLine);
+  }
+  const reader=response.body.getReader();
+  const dec=new TextDecoder();
+  let buf='';
+  let continuar=true;
+  while(continuar){
+    const {done,value}=await reader.read();
+    buf+=dec.decode(value||new Uint8Array(),{stream:!done});
+    const lines=buf.split(/\r?\n/);
+    buf=lines.pop()||'';
+    for(const line of lines){
+      if(!processLine(line)){continuar=false;break;}
+    }
+    if(done) break;
+  }
+  if(continuar&&buf.trim()) processLine(buf);
+  reader.releaseLock();
+}
+
 async function gestorIAenviar(){
   if(window._gestorIAstreaming) return;
   const ta=document.getElementById('gestorIAinput');const txt=(ta?ta.value.trim():'');if(!txt) return;
@@ -1605,22 +1639,17 @@ async function gestorIAenviar(){
   try{
     const r=await fetch(API_BASE+'/api/inetis/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:window._gestorIAmsgList.filter(m=>!m.loading).slice(-20),context:ctx})});
     if(!r.ok) throw new Error('HTTP '+r.status);
-    let resp='';
-    if(r.body){
-      const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
-      while(true){const {done,value}=await reader.read();if(done) break;
-        buf+=dec.decode(value,{stream:true});const parts=buf.split('\n\n');buf=parts.pop()||'';
-        for(const part of parts){if(!part.startsWith('data:')) continue;
-          try{const d=JSON.parse(part.slice(5).trim());
-            if(d.done){break;}
-            if(d.error){resp='❌ '+d.error;break;}
-            if(d.content){resp+=d.content;window._gestorIAmsgList[window._gestorIAmsgList.length-1]={role:'assistant',content:resp,loading:false};gestorIArenderMsgs();}}catch(e){}}}
-    } else {
-      const txt2=await r.text();
-      const lines=txt2.split('\n');
-      for(const line of lines){if(!line.startsWith('data:')) continue;
-        try{const d=JSON.parse(line.slice(5).trim());if(d.content) resp+=d.content;}catch(e){}}
-    }
+     let resp='';
+     await _iaConsumeSSE(r,(d)=>{
+       if(d.done) return false;
+       if(d.error){resp='❌ '+d.error;return false;}
+       if(d.content){
+         resp+=d.content;
+         window._gestorIAmsgList[window._gestorIAmsgList.length-1]={role:'assistant',content:resp,loading:false};
+         gestorIArenderMsgs();
+       }
+       return true;
+     });
     window._gestorIAmsgList[window._gestorIAmsgList.length-1]={role:'assistant',content:resp||'(sin respuesta)',loading:false};
     _iaSpeakText(resp||'');
   }catch(e){
@@ -9457,9 +9486,10 @@ async function iaEnviar(){
   ta.value='';
   ta.style.height='40px';
   // Construir mensaje del usuario incluyendo contenido de archivo si existe
-  let userContent=txt||'';
-  if(_iaArchivoCtx){
-    userContent+=(userContent?'\n\n':'')+`📎 **Archivo adjunto: ${_iaArchivoCtx.nombre}** (${_iaArchivoCtx.tipo})\n\`\`\`\n${_iaArchivoCtx.contenido}\n\`\`\``;
+   const _archivoEnviado=_iaArchivoCtx;
+   let userContent=txt||'';
+   if(_archivoEnviado){
+     userContent+=(userContent?'\n\n':'')+`📎 **Archivo adjunto: ${_archivoEnviado.nombre}** (${_archivoEnviado.tipo})\n\`\`\`\n${_archivoEnviado.contenido}\n\`\`\``;
     _iaArchivoCtx=null;
     const badgeEl=document.getElementById('iaFileBadge');
     if(badgeEl)badgeEl.style.display='none';
@@ -9474,7 +9504,7 @@ async function iaEnviar(){
   const ctx=_iaGetCtx();
   const msgsSend=_iaMsgs.slice(0,-1).filter(m=>!m.loading);
   // Preparar imagen para visión si fue adjuntada
-  const _imgSent=_iaArchivoCtx&&_iaArchivoCtx.tipo==='imagen'&&_iaArchivoCtx.imageBase64?{mimeType:_iaArchivoCtx.mimeType||'image/jpeg',data:_iaArchivoCtx.imageBase64}:null;
+   const _imgSent=_archivoEnviado&&_archivoEnviado.tipo==='imagen'&&_archivoEnviado.imageBase64?{mimeType:_archivoEnviado.mimeType||'image/jpeg',data:_archivoEnviado.imageBase64}:null;
   try{
     const r=await fetch(API_BASE+'/api/inetis/ai/chat',{
       method:'POST',
@@ -9484,32 +9514,16 @@ async function iaEnviar(){
     if(!r.ok) throw new Error('HTTP '+r.status);
     let resp='';
     _iaMsgs[_iaMsgs.length-1]={role:'assistant',content:'',loading:false};
-    if(r.body){
-      const reader=r.body.getReader();const dec=new TextDecoder();
-      let buf='';
-      while(true){
-        const {done,value}=await reader.read();
-        if(done) break;
-        buf+=dec.decode(value,{stream:true});
-        const parts=buf.split('\n\n');
-        buf=parts.pop()||'';
-        for(const part of parts){
-          if(!part.startsWith('data:')) continue;
-          try{
-            const d=JSON.parse(part.slice(5).trim());
-            if(d.done) break;
-            if(d.error){resp='❌ '+d.error;break;}
-            if(d.content){resp+=d.content;_iaMsgs[_iaMsgs.length-1].content=resp;iaRenderMsgs();}
-          }catch(e){}
-        }
-      }
-    } else {
-      const raw=await r.text();
-      for(const line of raw.split('\n')){
-        if(!line.startsWith('data:')) continue;
-        try{const d=JSON.parse(line.slice(5).trim());if(d.content) resp+=d.content;}catch(e){}
-      }
-    }
+     await _iaConsumeSSE(r,(d)=>{
+       if(d.done) return false;
+       if(d.error){resp='❌ '+d.error;return false;}
+       if(d.content){
+         resp+=d.content;
+         _iaMsgs[_iaMsgs.length-1].content=resp;
+         iaRenderMsgs();
+       }
+       return true;
+     });
     _iaMsgs[_iaMsgs.length-1]={role:'assistant',content:resp||'(sin respuesta)',loading:false};
     _iaSpeakText(resp||'');
     // Auto-guardar planeación cuando se genera completamente

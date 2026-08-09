@@ -488,30 +488,20 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
 //   POST { messages, context, mode?, imagePart? }
 //   Variable: GEMINI_API_KEY
 // ============================================================
-/*async function _streamGemini(res, messages, context, imagePart) {
+async function _streamGemini(res, messages, context, imagePart) {
   const apiKey = process.env.GEMINI_API_KEY;
-  
   if (!apiKey) {
     const stub = 'Hola 👋 Soy Adán, el asistente de Gestor Académico YC. Para activar la inteligencia artificial, configura la variable GEMINI_API_KEY en los Secretos del servidor.';
     res.write(`data: ${JSON.stringify({ content: stub })}\n\n`);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     return res.end();
-  }*/
-//Desde acá hice el cambio
-    async function _streamGemini(res, messages, context, imagePart) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    
-    // Eliminamos el 'if (!apiKey)' restrictivo para forzar la llamada directa a la API
-    const contextText = typeof context === 'string' 
-        ? context 
-        : JSON.stringify(context || {});
-    const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC...`;
-/*//Hasta acá hice el cambio
+  }
+
   const contextText = typeof context === 'string'
     ? context
     : JSON.stringify(context || {});
   const systemPrompt = `Eres Adán, asistente IA del Gestor Académico YC. Ayudas a docentes y directivos de instituciones educativas colombianas. Responde siempre en español, de forma clara y concisa.${contextText ? '\n\nContexto del sistema:\n' + contextText : ''}`;
-*/
+
   // Gemini usa "user"/"model" en lugar de "user"/"assistant".
   // La imagen se conserva como inline_data para mantener la función de adjuntos.
   const rawGeminiContents = messages
@@ -545,8 +535,8 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
       geminiContents.push(item);
     }
   }
-/*
-  // Modelo Flash ligero compatible con el nivel gratuito de Gemini API.
+
+  // Modelo solicitado por el sistema: Gemini 1.5 Flash.
   const model = 'gemini-1.5-flash';
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
 
@@ -571,29 +561,44 @@ app.post('/api/inetis/send-email', emailLimiter, async (req, res) => {
       return res.end();
     }
 
+    if (!upstream.body) throw new Error('Gemini no devolvió un cuerpo de respuesta');
+
     const reader = upstream.body.getReader();
     const dec    = new TextDecoder();
     let   buf    = '';
+    let   stopped = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
+    // El transporte puede cortar cualquier chunk en mitad de una línea.
+    // Solo se procesa una línea cuando ya terminó con salto de línea; así
+    // nunca se intenta hacer JSON.parse sobre JSON incompleto.
+    const processLine = (line) => {
+      const normalized = line.replace(/\r$/, '');
+      if (!normalized.startsWith('data:')) return;
+      const raw = normalized.slice(5).trim();
+      if (!raw || raw === '[DONE]') return;
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6).trim();
-        try {
-          const chunk   = JSON.parse(raw);
-          const content = chunk.candidates?.[0]?.content?.parts
-            ?.map(part => part.text || '')
-            .join('');
-          if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
-        } catch (_) {}
+      try {
+        const chunk = JSON.parse(raw);
+        const content = chunk.candidates?.[0]?.content?.parts
+          ?.map(part => part.text || '')
+          .join('');
+        if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      } catch (parseError) {
+        console.error('[AI] Chunk SSE inválido:', parseError.message);
       }
+    };
+
+    while (!stopped) {
+      const { done, value } = await reader.read();
+      buf += dec.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() || '';
+      lines.forEach(processLine);
+      if (done) break;
     }
+
+    // Procesar la última línea si el proveedor cerró sin salto final.
+    if (buf.trim()) processLine(buf);
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     res.end();
   } catch (err) {
@@ -615,79 +620,7 @@ app.post('/api/inetis/ai/chat', aiLimiter, (req, res) => {
     try { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); } catch (_) {}
   });
 });
-*/
-// Modelo Flash ligero compatible con el nivel gratuito de Gemini API.
 
-/*  const model = 'gemini-1.5-flash';
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;*/
-// Modelo Flash estable con endpoint directo v1
-  const model = 'gemini-1.5-flash-latest';
-  const endpoint = `https://generativelanguage.googleapis.com/v1/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-  try {
-    const upstream = await fetch(endpoint, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: geminiContents,
-        generationConfig: {
-          maxOutputTokens: 1024,
-          temperature: 0.7,
-        },
-      }),
-    });
-
-    if (!upstream.ok) {
-      const err = await upstream.text();
-      console.error('[AI] Gemini error:', err);
-      res.write(`data: ${JSON.stringify({ error: 'Error del servicio IA (Gemini)' })}\n\n`);
-      return res.end();
-    }
-
-    const reader = upstream.body.getReader();
-    const dec    = new TextDecoder();
-    let   buf    = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6).trim();
-        try {
-          const chunk   = JSON.parse(raw);
-          const content = chunk.candidates?.[0]?.content?.parts
-            ?.map(part => part.text || '')
-            .join('');
-          if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
-        } catch (_) {}
-      }
-    }
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-    res.end();
-  } catch (err) {
-    console.error('[AI] fetch error:', err.message);
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
-  }
-}
-
-app.post('/api/inetis/ai/chat', aiLimiter, (req, res) => {
-  const { messages = [], context = '', imagePart } = req.body || {};
-  res.setHeader('Content-Type',      'text/event-stream');
-  res.setHeader('Cache-Control',     'no-cache');
-  res.setHeader('Connection',        'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
-  _streamGemini(res, messages, context, imagePart).catch(err => {
-    console.error('[AI] stream fatal:', err.message);
-    try { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); } catch (_) {}
-  });
-});
 // ============================================================
 // Catch-all API: JSON 404 (antes del fallback SPA)
 // ============================================================
@@ -700,13 +633,6 @@ app.use('/api', (req, res) => {
 // ============================================================
 if (!IS_DEV) {
   const DIST = join(__dirname, 'dist');
-  // El HTML fuente usa /avatar-adan.jpg, mientras el build puede usar
-  // /assets/avatar-adan-*.jpg. Servir el archivo raíz evita un 404 inicial
-  // del avatar sin exponer el resto del proyecto.
-  app.get('/avatar-adan.jpg', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.sendFile(join(__dirname, 'avatar-adan.jpg'));
-  });
   app.use(express.static(DIST, {
     maxAge: '1d',
     etag: true,
