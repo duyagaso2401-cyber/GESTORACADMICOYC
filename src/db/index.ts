@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
-import * as schema from './schema';
+import * as schema from './schema.js';
 
 const { Pool } = pg;
 
@@ -103,3 +103,6 @@ async function initDb() {
 }
 
 initDb();
+
+// Exportar las tablas declaradas en el esquema
+export * from './schema.js';
