@@ -1,0 +1,314 @@
+const express = require('express');
+const { MongoClient, ObjectId } = require('mongodb');
+const path = require('path');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Middlewares base
+app.use(express.static(path.join(__dirname)));
+app.use(express.json({ limit: '50mb' }));
+
+// Cadena de conexión parametrizada por entorno (Seguridad)
+const uri = process.env.MONGODB_URI;
+if (!uri) {
+    console.warn("⚠️ ADVERTENCIA: La variable MONGODB_URI no está definida en las variables de entorno.");
+}
+
+const client = new MongoClient(uri);
+let db;
+
+// Estructuras por defecto
+const defaultAreas = [
+    { id: "ingles", name: "Inglés / Idiomas Extranjeros" },
+    { id: "informatica", name: "Tecnología e Informática" },
+    { id: "matematicas", name: "Matemáticas" },
+    { id: "lenguaje", name: "Lengua Castellana" },
+    { id: "ciencias", name: "Ciencias Naturales" },
+    { id: "sociales", name: "Ciencias Sociales" }
+];
+
+const defaultGrados = [
+    { id: "sexto", name: "Grado 6°" },
+    { id: "septimo", name: "Grado 7°" },
+    { id: "octavo", name: "Grado 8°" },
+    { id: "noveno", name: "Grado 9°" },
+    { id: "decimo", name: "Grado 10°" },
+    { id: "once", name: "Grado 11°" }
+];
+
+const defaultTipos = [
+    { id: "guia", name: "Guía de Aprendizaje" },
+    { id: "taller", name: "Taller / Actividad" },
+    { id: "evaluacion", name: "Evaluación / Examen" },
+    { id: "presentacion", name: "Presentación / Diapositivas" },
+    { id: "lectura", name: "Lectura / Documento" },
+    { id: "audio_video", name: "Audio / Video Didáctico" }
+];
+
+// Institución desde query param
+function getInst(req) {
+    return String(req.query.inst || 'default').trim();
+}
+
+/** Catálogo (áreas/grados/tipos): filtra por inst; si vacío, devuelve todos los registros */
+async function findCatalogByInstOrAll(collectionName, inst) {
+    const col = db.collection(collectionName);
+    let docs = await col.find({ institucion_id: inst }).toArray();
+    if (!docs.length) {
+        docs = await col.find({}).toArray();
+    }
+    return docs;
+}
+
+// Conexión inicial e inicialización de colecciones
+async function connectDB() {
+    try {
+        await client.connect();
+        db = client.db('repositorio_ingles_violo');
+        console.log("¡Conexión segura establecida con MongoDB Atlas!");
+
+        // Inicializaciones base
+        const statsCount = await db.collection('platform_stats').countDocuments();
+        if (statsCount === 0) {
+            await db.collection('platform_stats').insertOne({ views: 0, uploads: 0, downloads: 0, logs: [] });
+        }
+
+        const configCount = await db.collection('institution_config').countDocuments();
+        if (configCount === 0) {
+            await db.collection('institution_config').insertOne({
+                name: "REPOSITORIO DE RECURSOS - INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+                logo: ""
+            });
+        }
+
+        const areasCount = await db.collection('areas').countDocuments();
+        if (areasCount === 0) await db.collection('areas').insertMany(defaultAreas);
+
+        const gradosCount = await db.collection('grados').countDocuments();
+        if (gradosCount === 0) await db.collection('grados').insertMany(defaultGrados);
+
+        const tiposCount = await db.collection('tipos').countDocuments();
+        if (tiposCount === 0) await db.collection('tipos').insertMany(defaultTipos);
+
+        const adminExists = await db.collection('users').findOne({ username: 'admin' });
+        if (!adminExists) {
+            await db.collection('users').insertOne({
+                username: 'admin',
+                fullname: 'Administrador General',
+                role: 'Administrador',
+                pass: 'admin123'
+            });
+        }
+    } catch (e) {
+        console.error("Error grave de conexión a MongoDB Atlas:", e.message);
+    }
+}
+
+// Middleware para asegurar que la BD está lista antes de atender solicitudes
+app.use((req, res, next) => {
+    // Si la petición es para archivos estáticos o context con fallback, continuar
+    if (!db && !req.path.includes('/inst-context')) {
+        return res.status(503).json({ error: "Servicio temporalmente no disponible: Conectando a la base de datos..." });
+    }
+    next();
+});
+
+// --- RUTAS DE ESTRUCTURA INSTITUCIONAL ---
+const handleContext = async (req, res) => {
+    try {
+        const config = db ? await db.collection('institution_config').findOne({}) : null;
+        res.json({
+            institution: (config && config.name) ? config.name : "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+            areas: defaultAreas,
+            grados: defaultGrados,
+            tipos: defaultTipos
+        });
+    } catch (e) {
+        res.json({
+            institution: "INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO",
+            areas: defaultAreas,
+            grados: defaultGrados,
+            tipos: defaultTipos
+        });
+    }
+};
+
+const handleAreas = async (req, res) => {
+    try {
+        const inst = getInst(req);
+        const areas = await findCatalogByInstOrAll('areas', inst);
+        if (areas && areas.length > 0) return res.json(areas);
+    } catch (e) {}
+    res.json(defaultAreas);
+};
+
+const handleGrados = async (req, res) => {
+    try {
+        const inst = getInst(req);
+        const grados = await findCatalogByInstOrAll('grados', inst);
+        if (grados && grados.length > 0) return res.json(grados);
+    } catch (e) {}
+    res.json(defaultGrados);
+};
+
+const handleTipos = async (req, res) => {
+    try {
+        const inst = getInst(req);
+        const tipos = await findCatalogByInstOrAll('tipos', inst);
+        if (tipos && tipos.length > 0) return res.json(tipos);
+    } catch (e) {}
+    res.json(defaultTipos);
+};
+
+// Rutas flexibles
+app.get(['/inst-context', '/api/inst-context', '/api/inetis/inst-context'], handleContext);
+app.get(['/areas', '/api/areas', '/api/inetis/areas'], handleAreas);
+app.get(['/grados', '/api/grados', '/api/inetis/grados'], handleGrados);
+app.get(['/tipos', '/api/tipos', '/api/inetis/tipos'], handleTipos);
+
+// --- AUTENTICACIÓN ---
+app.post(['/login', '/api/login', '/api/inetis/login'], async (req, res) => {
+    const { userIn, passIn, selectedRole } = req.body;
+    try {
+        const found = await db.collection('users').findOne({ username: userIn, pass: passIn, role: selectedRole });
+        if (found) {
+            const now = new Date();
+            const logEntry = {
+                user: found.fullname,
+                role: found.role,
+                action: 'Ingresó a la plataforma',
+                timestamp: `${now.toLocaleDateString()} ${now.toLocaleTimeString()}`
+            };
+            await db.collection('platform_stats').updateOne({}, { $push: { logs: { $each: [logEntry], $position: 0 } }, $inc: { views: 1 } });
+            res.json({ success: true, user: found });
+        } else {
+            res.json({ success: false });
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// --- GESTIÓN DE USUARIOS ---
+app.get(['/users', '/api/users', '/api/inetis/users'], async (req, res) => {
+    try {
+        const users = await db.collection('users').find({ username: { $ne: 'admin' } }).toArray();
+        res.json(users);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/users', '/api/users', '/api/inetis/users'], async (req, res) => {
+    const { user, name, role, pass } = req.body;
+    try {
+        const result = await db.collection('users').insertOne({ username: user, fullname: name, role, pass });
+        res.json({ success: true, id: result.insertedId });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete(['/users/:username', '/api/users/:username', '/api/inetis/users/:username'], async (req, res) => {
+    try {
+        await db.collection('users').deleteOne({ username: req.params.username });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- RECURSOS DIDÁCTICOS ---
+app.get(['/resources', '/api/resources', '/api/inetis/resources'], async (req, res) => {
+    try {
+        const inst = getInst(req);
+        const items = await db.collection('resources').find({ institucion_id: inst }).toArray();
+        res.json(items);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/resources', '/api/resources', '/api/inetis/resources'], async (req, res) => {
+    try {
+        const resource = { ...req.body, ratingSum: 0, ratingCount: 0, comments: [] };
+        const result = await db.collection('resources').insertOne(resource);
+        await db.collection('platform_stats').updateOne({}, { $inc: { uploads: 1 } });
+        res.json({ success: true, id: result.insertedId });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put(['/resources/:id', '/api/resources/:id', '/api/inetis/resources/:id'], async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updateData = { ...req.body };
+        delete updateData._id; // Eliminar el ID para evitar error de inmutabilidad en MongoDB
+        
+        await db.collection('resources').updateOne({ _id: new ObjectId(id) }, { $set: updateData });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete(['/resources/:id', '/api/resources/:id', '/api/inetis/resources/:id'], async (req, res) => {
+    try {
+        await db.collection('resources').deleteOne({ _id: new ObjectId(req.params.id) });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/resources/:id/rate', '/api/resources/:id/rate', '/api/inetis/resources/:id/rate'], async (req, res) => {
+    const { rating } = req.body;
+    try {
+        await db.collection('resources').updateOne(
+            { _id: new ObjectId(req.params.id) },
+            { $inc: { ratingSum: Number(rating), ratingCount: 1 } }
+        );
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/resources/:id/comment', '/api/resources/:id/comment', '/api/inetis/resources/:id/comment'], async (req, res) => {
+    const { user, text, date } = req.body;
+    try {
+        await db.collection('resources').updateOne(
+            { _id: new ObjectId(req.params.id) },
+            { $push: { comments: { user, text, date } } }
+        );
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- ESTADÍSTICAS Y CONFIGURACIÓN ---
+app.get(['/stats', '/api/stats', '/api/inetis/stats'], async (req, res) => {
+    try {
+        const stats = await db.collection('platform_stats').findOne({});
+        res.json(stats);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/stats/download', '/api/stats/download', '/api/inetis/stats/download'], async (req, res) => {
+    try {
+        await db.collection('platform_stats').updateOne({}, { $inc: { downloads: 1 } });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get(['/config', '/api/config', '/api/inetis/config'], async (req, res) => {
+    try {
+        const cfg = await db.collection('institution_config').findOne({});
+        res.json(cfg);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/config', '/api/config', '/api/inetis/config'], async (req, res) => {
+    const { name, logo } = req.body;
+    try {
+        await db.collection('institution_config').updateOne({}, { $set: { name, logo } });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Single Page Application Fallback
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// Iniciar servidor tras conectar
+connectDB().then(() => {
+    app.listen(port, () => {
+        console.log(`Servidor de Repositorio corriendo en el puerto: ${port}`);
+    });
+});

@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title id="site-title-tag">Repositorio Institucional</title>
+  <style>
+    :root {
+      --primary: #1e6091;
+      --primary-dark: #16476b;
+      --secondary: #1a75ff;
+      --bg: #f4f6f9;
+      --white: #ffffff;
+      --text: #2b2d42;
+      --text-muted: #6c757d;
+      --danger: #e63946;
+      --success: #2a9d8f;
+      --warn: #f1a545;
+      --border-color: #e2e8f0;
+      --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      --card-shadow-hover: 0 8px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── HEADER ── */
+    header {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      color: white; padding: 12px 24px;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; box-shadow: 0 2px 10px rgba(0,0,0,0.12); z-index: 10;
+    }
+    .hdr-left { display: flex; align-items: center; gap: 12px; }
+    .hdr-logo { max-height: 46px; max-width: 46px; object-fit: contain; border-radius: 6px; background: rgba(255,255,255,.2); padding: 2px; }
+    .hdr-title { font-size: 14px; font-weight: 700; line-height: 1.3; letter-spacing: .5px; text-transform: uppercase; }
+    .hdr-right { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
+    .hdr-session { background: rgba(255,255,255,.18); backdrop-filter: blur(4px); padding: 6px 12px; border-radius: 20px; white-space: nowrap; font-weight: 500; }
+
+    /* ── NAV TABS ── */
+    nav.tabs { background: var(--primary-dark); display: flex; gap: 4px; padding: 0 16px; border-bottom: 2px solid rgba(255,255,255,.1); }
+    nav.tabs button {
+      color: rgba(255,255,255,.75); background: none; border: none; padding: 12px 18px;
+      font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent;
+      transition: all .2s ease; white-space: nowrap;
+    }
+    nav.tabs button.active { color: white; border-bottom-color: var(--warn); background: rgba(255,255,255,.08); }
+    nav.tabs button:hover { color: white; background: rgba(255,255,255,.12); }
+    nav.tabs button.hidden { display: none; }
+
+    /* ── LAYOUT CENTRAL ── */
+    .main-container { display: grid; grid-template-columns: 260px 1fr 340px; gap: 16px; padding: 16px; flex: 1; }
+    @media(max-width:1100px){ .main-container { grid-template-columns: 240px 1fr; } .sidebar-details { grid-column: 1/-1; } }
+    @media(max-width:768px){ .main-container { grid-template-columns: 1fr; padding:12px; } }
+
+    /* ── PANEL GENÉRICO ── */
+    .panel { background: white; border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+
+    /* ── FILTROS ── */
+    .filter-section { margin-bottom: 16px; }
+    .filter-section h4 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; border-bottom: 1px solid #edf2f7; padding-bottom: 4px; font-weight: 700; }
+    .filter-option { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; cursor: pointer; color: #4a5568; transition: color 0.15s; }
+    .filter-option:hover { color: var(--primary); }
+    .filter-option input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: var(--primary); }
+    
+    .filter-select-all { font-weight: 600; color: var(--primary); border-bottom: 1px dashed #cbd5e1; padding-bottom: 4px; margin-bottom: 6px; }
+
+    /* Contenedor deslizante para listas largas de filtros */
+    .filter-options-container {
+      max-height: 160px;
+      overflow-y: auto;
+      padding-right: 4px;
+      margin-bottom: 4px;
+    }
+    .filter-options-container::-webkit-scrollbar {
+      width: 5px;
+    }
+    .filter-options-container::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+
+    input.search-box { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; margin-bottom: 14px; transition: border 0.2s; outline: none; }
+    input.search-box:focus { border-color: var(--secondary); box-shadow: 0 0 0 3px rgba(26,117,255,0.15); }
+
+    /* ── RECURSOS ── */
+    .dash-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 2px solid var(--primary); padding-bottom: 8px; gap: 8px; flex-wrap: wrap; }
+    .dash-hdr h2 { font-size: 16px; color: var(--primary); font-weight: 700; }
+    .resources-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px,1fr)); gap: 14px; }
+    .card {
+      background: white; border-radius: 10px; border: 1px solid var(--border-color); padding: 14px;
+      display: flex; flex-direction: column; justify-content: space-between;
+      position: relative; cursor: pointer; min-height: 190px;
+      transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+    }
+    .card:hover { transform: translateY(-3px); box-shadow: var(--card-shadow-hover); border-color: var(--secondary); }
+    .card.selected { border: 2px solid var(--secondary); background: #f8fafc; }
+    .card-badge { position: absolute; top: 10px; right: 10px; background: #e0f2fe; color: #0369a1; padding: 3px 8px; border-radius: 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .card-title { font-size: 13.5px; font-weight: 700; margin: 16px 0 6px; color: #1e293b; line-height: 1.35; word-break: break-word; }
+    .card-meta { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+    .card-tag { display: inline-block; background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin: 2px 2px 0 0; font-weight: 500; }
+    .card-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 4px; flex-wrap: wrap; border-top: 1px solid #f1f5f9; padding-top: 8px; }
+    .card-rating { color: #f59e0b; font-size: 12px; font-weight: 600; }
+    .card-actions { display: flex; gap: 4px; }
+    .empty-msg { text-align: center; color: var(--danger); padding: 40px 0; font-weight: 600; font-size: 14px; }
+
+    /* ── PAGINACIÓN ── */
+    .pagination { display: flex; justify-content: center; gap: 6px; margin-top: 20px; flex-wrap: wrap; }
+    .btn-page { padding: 6px 12px; border: 1px solid var(--border-color); background: white; cursor: pointer; font-size: 12px; border-radius: 6px; font-weight: 600; transition: all 0.15s; }
+    .btn-page.active { background: var(--primary); color: white; border-color: var(--primary); }
+    .btn-page:hover:not(.active) { background: #f1f5f9; }
+
+    /* ── DETALLES ── */
+    .detail-placeholder { text-align: center; color: #94a3b8; padding: 40px 10px; font-size: 13px; line-height: 1.5; }
+    .detail-title { font-size: 16px; font-weight: 700; color: var(--primary); margin-bottom: 8px; line-height: 1.3; }
+    .detail-meta { font-size: 12px; line-height: 1.6; background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border-color); }
+    .detail-meta strong { color: #334155; }
+    
+    .rating-stars { display: flex; gap: 6px; font-size: 22px; color: #cbd5e1; cursor: pointer; margin: 8px 0; }
+    .rating-stars span:hover, .rating-stars span.lit { color: #f59e0b; }
+    
+    .comment-area { border-top: 1px solid var(--border-color); padding-top: 12px; margin-top: 12px; }
+    .comment-area textarea { width: 100%; height: 60px; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; font-size: 12px; resize: vertical; margin-top: 6px; outline: none; }
+    .comment-area textarea:focus { border-color: var(--secondary); }
+
+    .action-btn-group { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+    .btn-dl { background: var(--success); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s, transform 0.1s; }
+    .btn-dl:hover { background: #238579; transform: translateY(-1px); }
+
+    /* ── ESTADÍSTICAS ── */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 12px; margin-bottom: 16px; }
+    .stat-box { background: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid var(--primary); text-align: center; border: 1px solid var(--border-color); }
+    .stat-box h4 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; }
+    .stat-box p { font-size: 24px; font-weight: 800; color: var(--primary); margin-top: 4px; }
+    
+    /* ── PANEL DE CONTROL ── */
+    .ctrl-section { margin-bottom: 22px; border-bottom: 1px solid var(--border-color); padding-bottom: 18px; }
+    .ctrl-section h3 { font-size: 14px; color: var(--primary); margin-bottom: 12px; font-weight: 700; }
+    .ctrl-list { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .ctrl-chip { background: #e0f2fe; color: var(--primary); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .ctrl-chip button { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--danger); font-weight: bold; padding: 0 2px; }
+    .ctrl-add { display: flex; gap: 8px; margin-top: 8px; max-width: 400px; }
+    .ctrl-add input { flex: 1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; outline: none; }
+
+    /* ── BOTONES ── */
+    .btn { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: opacity 0.2s; }
+    .btn:hover { opacity: 0.95; }
+    .btn.danger { background: var(--danger); }
+    .btn.success { background: var(--success); }
+    .btn.warn { background: var(--warn); }
+    .btn.sm { padding: 4px 8px; font-size: 11px; border-radius: 4px; }
+
+    /* ── TABLAS ── */
+    .table-wrap { overflow-x: auto; margin-top: 10px; border-radius: 8px; border: 1px solid var(--border-color); }
+    table.tbl { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 500px; background: white; }
+    table.tbl th, table.tbl td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
+    table.tbl th { background: #f8fafc; font-weight: 700; color: #475569; }
+    table.tbl tr:hover { background: #f1f5f9; }
+
+    /* ── MODALES ── */
+    .modal-bg { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); backdrop-filter: blur(3px); display: none; justify-content: center; align-items: center; z-index: 200; padding: 15px; }
+    .modal-bg.open { display: flex; }
+    .modal { background: white; padding: 24px; border-radius: 12px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); }
+    .modal h3 { font-size: 16px; color: var(--primary); margin-bottom: 16px; font-weight: 700; }
+    .fg { margin-bottom: 12px; }
+    .fg label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px; color: #334155; }
+    .fg input, .fg select, .fg textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; outline: none; }
+    .fg input:focus, .fg select:focus, .fg textarea:focus { border-color: var(--secondary); }
+    .fg textarea { height: 70px; resize: vertical; }
+    .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+    /* ── UTILS ── */
+    .hidden { display: none !important; }
+    .section { display: none; }
+    .section.active { display: block; }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+  <div class="hdr-left">
+    <img id="hdr-logo" class="hdr-logo" src="" alt="" onerror="this.style.display='none'">
+    <div class="hdr-title" id="hdr-inst-name">REPOSITORIO INSTITUCIONAL</div>
+  </div>
+  <div class="hdr-right">
+    <div class="hdr-session">👤 <span id="hdr-user">—</span> · <span id="hdr-role">—</span></div>
+  </div>
+</header>
+
+<!-- NAV TABS -->
+<nav class="tabs">
+  <button id="tab-recursos" class="active" onclick="showTab('recursos')">📚 Recursos</button>
+  <button id="tab-stats" onclick="showTab('stats')">📊 Estadísticas</button>
+  <button id="tab-ctrl" class="hidden" onclick="showTab('ctrl')">⚙️ Panel de Control</button>
+</nav>
+
+<!-- SECCIÓN RECURSOS -->
+<div id="sec-recursos" class="section active">
+  <div class="main-container">
+    <aside class="panel" id="sidebar-filters">
+      <input class="search-box" id="search-input" placeholder="🔍 Buscar recursos…" oninput="applyFilters()">
+      
+      <div class="filter-section">
+        <h4>Área / Asignatura</h4>
+        <label class="filter-option filter-select-all">
+          <input type="checkbox" id="chk-all-areas" onchange="toggleSelectAll('area', this.checked)"> (Seleccionar / Deseleccionar todos)
+        </label>
+        <div id="filter-areas"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
+      </div>
+
+      <div class="filter-section">
+        <h4>Grado / Nivel</h4>
+        <label class="filter-option filter-select-all">
+          <input type="checkbox" id="chk-all-grados" onchange="toggleSelectAll('grado', this.checked)"> (Seleccionar / Deseleccionar todos)
+        </label>
+        <div id="filter-grados"><em style="font-size:12px;color:#aaa">Cargando contexto…</em></div>
+      </div>
+
+      <div class="filter-section">
+        <h4>Tipo de Recurso</h4>
+        <label class="filter-option filter-select-all">
+          <input type="checkbox" id="chk-all-tipos" onchange="toggleSelectAll('tipo', this.checked)"> (Seleccionar / Deseleccionar todos)
+        </label>
+        <div id="filter-tipos"><em style="font-size:12px;color:#aaa">Cargando tipos…</em></div>
+      </div>
+
+      <div class="filter-section">
+        <h4>Periodo Académico</h4>
+        <select id="filter-periodo" onchange="applyFilters()" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ccc;">
+          <option value="">-- Todos los Periodos --</option>
+          <option value="Periodo I">Periodo I</option>
+          <option value="Periodo II">Periodo II</option>
+          <option value="Periodo III">Periodo III</option>
+          <option value="Periodo IV">Periodo IV</option>
+        </select>
+      </div>
+    </aside>
+
+    <div class="panel">
+      <div class="dash-hdr">
+        <h2>📁 Materiales Didácticos</h2>
+        <button id="btn-add-res" class="btn hidden" onclick="openAddModal()">+ Cargar Material</button>
+      </div>
+      <div id="resources-grid" class="resources-grid"></div>
+      <div id="empty-msg" class="empty-msg hidden">No se encontraron recursos registrados para esta selección.</div>
+      <div id="pagination" class="pagination"></div>
+    </div>
+
+    <aside class="panel sidebar-details" id="sidebar-details">
+      <div id="detail-content">
+        <div class="detail-placeholder">
+          <p style="font-size:24px; margin-bottom:8px;">📌</p>
+          Selecciona un recurso o material didáctico para visualizar sus detalles, acceder a los archivos y ver sus metadatos.
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- SECCIÓN ESTADÍSTICAS -->
+<div id="sec-stats" class="section" style="padding:16px">
+  <div class="panel">
+    <h2 style="font-size:16px;color:var(--primary);margin-bottom:14px">📊 Estadísticas de Uso y Descargas</h2>
+    <div class="stats-grid">
+      <div class="stat-box"><h4>Vistas Totales</h4><p id="st-views">0</p></div>
+      <div class="stat-box"><h4>Descargas</h4><p id="st-dl">0</p></div>
+      <div class="stat-box"><h4>Total Recursos</h4><p id="st-res">0</p></div>
+    </div>
+    <h4 style="font-size:12px;color:#555;margin-bottom:8px">Registro de Actividad Reciente</h4>
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead><tr><th>Fecha/Hora</th><th>Usuario</th><th>Rol</th><th>Acción Realizada</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="4" style="text-align:center;color:#aaa">Sin registros recientes</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SECCIÓN PANEL DE CONTROL -->
+<div id="sec-ctrl" class="section" style="padding:16px">
+  <div class="panel">
+    <h2 style="font-size:16px;color:var(--primary);margin-bottom:16px">⚙️ Panel de Control e Identidad Institucional</h2>
+
+    <div class="ctrl-section">
+      <h3>🏫 Configuración de la Institución</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="fg" style="margin:0"><label>Nombre del Repositorio</label><input id="cfg-name" placeholder="Ej: REPOSITORIO DIDÁCTICO..."></div>
+        <div class="fg" style="margin:0"><label>Logo / Escudo (URL o base64)</label><input id="cfg-logo" placeholder="https://…"></div>
+      </div>
+      <button class="btn success" onclick="saveConfig()">💾 Guardar Configuración</button>
+    </div>
+
+    <div class="ctrl-section">
+      <h3>📚 Áreas / Asignaturas Registradas</h3>
+      <ul class="ctrl-list" id="admin-areas-list"></ul>
+      <div class="ctrl-add">
+        <input id="new-area" placeholder="Ej: Matemáticas, Lenguaje…" onkeydown="if(event.key==='Enter')addArea()">
+        <button class="btn" onclick="addArea()">+ Agregar</button>
+      </div>
+    </div>
+
+    <div class="ctrl-section">
+      <h3>🎓 Grados / Niveles Educativos</h3>
+      <ul class="ctrl-list" id="admin-grados-list"></ul>
+      <div class="ctrl-add">
+        <input id="new-grado" placeholder="Ej: Primero, Sexto, 11°…" onkeydown="if(event.key==='Enter')addGrado()">
+        <button class="btn" onclick="addGrado()">+ Agregar</button>
+      </div>
+    </div>
+
+    <div class="ctrl-section">
+      <h3>📄 Tipos de Recurso</h3>
+      <ul class="ctrl-list" id="admin-tipos-list"></ul>
+      <div class="ctrl-add">
+        <input id="new-tipo" placeholder="Ej: Guía, Taller, Evaluación…" onkeydown="if(event.key==='Enter')addTipo()">
+        <button class="btn" onclick="addTipo()">+ Agregar</button>
+      </div>
+    </div>
+
+    <div class="ctrl-section">
+      <h3>📋 Todos los Recursos Registrados</h3>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>ID</th><th>Título</th><th>Área</th><th>Grado</th><th>Tipo</th><th>Autor</th><th>Acciones</th></tr></thead>
+          <tbody id="admin-res-body"><tr><td colspan="7" style="text-align:center;color:#aaa">Cargando elementos…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL RECURSO -->
+<div class="modal-bg" id="modal-res">
+  <div class="modal">
+    <h3 id="modal-res-title">Cargar Nuevo Material Didáctico</h3>
+    <input type="hidden" id="modal-res-id">
+    <div class="fg"><label>Título del Material *</label><input id="form-title" required placeholder="Ej: Guía de Aprendizaje"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label>Área / Asignatura</label><select id="form-area"><option value="">— Seleccionar —</option></select></div>
+      <div class="fg"><label>Grado / Nivel</label><select id="form-grado"><option value="">— Seleccionar —</option></select></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg">
+        <label>Tipo de Recurso</label>
+        <select id="form-tipo" required>
+          <option value="">-- Selecciona el tipo de recurso --</option>
+          <optgroup label="📄 Documentos y Archivos">
+            <option value="Documento (PDF, Word, PPT)">Documento (PDF, Word, PowerPoint)</option>
+            <option value="Hoja de Cálculo (Excel, CSV)">Hoja de Cálculo (Excel, CSV)</option>
+            <option value="Imagen / Infografía (JPG, PNG)">Imagen / Infografía (JPG, PNG)</option>
+          </optgroup>
+          <optgroup label="🎵 Audio y Multimedia">
+            <option value="Audio / Podcast (MP3, WAV)">Audio / Podcast (MP3, WAV)</option>
+            <option value="Video (Archivo MP4, AVI)">Video (Archivo MP4, AVI)</option>
+          </optgroup>
+          <optgroup label="🌐 Enlaces y Plataformas Externas">
+            <option value="Enlace / URL Web">Enlace / URL Web general</option>
+            <option value="Video YouTube / Vimeo">Video YouTube / Vimeo</option>
+            <option value="Almacenamiento (Google Drive, OneDrive)">Almacenamiento (Google Drive, OneDrive)</option>
+          </optgroup>
+        </select>
+      </div>
+      <div class="fg">
+        <label>Periodo Académico *</label>
+        <select id="form-periodo" required>
+          <option value="">-- Selecciona el Periodo --</option>
+          <option value="Periodo I">Periodo I</option>
+          <option value="Periodo II">Periodo II</option>
+          <option value="Periodo III">Periodo III</option>
+          <option value="Periodo IV">Periodo IV</option>
+        </select>
+      </div>
+    </div>
+    <div class="fg"><label>Autor del Documento</label><input id="form-author" placeholder="Nombre del docente o creador"></div>
+    <div class="fg"><label>Descripción Pedagógica</label><textarea id="form-desc" placeholder="Resumen o propósito pedagógico del material…"></textarea></div>
+    <div class="fg"><label>Enlace / URL de Descarga o Archivo *</label><input id="form-link" placeholder="https://... o enlace directo"></div>
+    <div class="fg"><label>Metadatos / Etiquetas (Separados por coma)</label><input id="form-meta" placeholder="Ej: PDF, 2026, 2.5MB"></div>
+    <div class="modal-btns">
+      <button class="btn" style="background:#94a3b8" onclick="closeModal('modal-res')">Cancelar</button>
+      <button class="btn success" onclick="saveResource()">💾 Guardar Material</button>
+    </div>
+  </div>
+</div>
+
+<!-- SCRIPTS DE FUNCIONAMIENTO -->
+<script>
+const INST        = new URLSearchParams(location.search).get('inst') || 'default';
+const API         = '/api/repositorio';
+
+const _qpInst     = new URLSearchParams(location.search);
+const _instNombre = decodeURIComponent(_qpInst.get('_instNombre') || '');
+const _instEscudo = decodeURIComponent(_qpInst.get('_instEscudo') || '');
+
+let currentPage = 1;
+const PER_PAGE  = 8;
+let allResources = [];
+let filteredResources = [];
+let allAreas  = [];
+let allGrados = [];
+let allTipos  = [];
+let selectedRes = null;
+
+const _qp       = new URLSearchParams(location.search);
+const _pRole    = (_qp.get('_portalRole') || '').toLowerCase();
+const _pUser    = decodeURIComponent(_qp.get('_portalUser') || 'Visitante');
+
+const EDIT_ROLES  = ['admin','rector','gestor','directivo','docente'];
+const ADMIN_ROLES = ['admin','rector','gestor','directivo'];
+
+const canEdit  = EDIT_ROLES.includes(_pRole);
+const canAdmin = ADMIN_ROLES.includes(_pRole);
+
+const SESSION_ROLE_LABEL = {
+  admin:'Administrador', rector:'Rector/a', gestor:'Gestor Institucional', directivo:'Directivo Docente',
+  docente:'Docente', estudiante:'Estudiante', padre:'Acudiente'
+}[_pRole] || _pRole || 'Visitante';
+
+async function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `${API}${path}${sep}inst=${encodeURIComponent(INST)}`;
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return r.json();
+}
+
+async function init() {
+  document.getElementById('hdr-user').textContent = _pUser;
+  document.getElementById('hdr-role').textContent  = SESSION_ROLE_LABEL;
+
+  if (canEdit)  document.getElementById('btn-add-res').classList.remove('hidden');
+  if (canAdmin) document.getElementById('tab-ctrl').classList.remove('hidden');
+
+  let instCtx = { nombre: '', escudo: '', grados: [], asignaturas: [] };
+  try { instCtx = await apiFetch('/inst-context'); } catch(e) {}
+
+  let repoCfg = { name: '', logo: '' };
+  try { repoCfg = await apiFetch('/config'); } catch(e) {}
+
+  const NOMBRES_GENERICOS = ['REPOSITORIO INSTITUCIONAL', 'Repositorio Institucional'];
+  const cfgNameReal   = NOMBRES_GENERICOS.includes((repoCfg.name || '').trim()) ? '' : (repoCfg.name || '');
+  const instNombreReal = instCtx.nombre || _instNombre || '';
+  const tituloBase     = cfgNameReal   || instNombreReal;
+
+  const displayName = tituloBase ? `REPOSITORIO DE RECURSOS - ${tituloBase}` : 'REPOSITORIO DE RECURSOS';
+  const displayLogo = repoCfg.logo || instCtx.escudo || _instEscudo || '';
+
+  document.getElementById('site-title-tag').textContent = displayName;
+  document.getElementById('hdr-inst-name').textContent  = displayName;
+
+  const logoImg = document.getElementById('hdr-logo');
+  if (displayLogo) {
+    logoImg.src = displayLogo;
+    logoImg.style.display = '';
+  } else {
+    logoImg.style.display = 'none';
+  }
+
+  if (canAdmin) {
+    document.getElementById('cfg-name').value = repoCfg.name || instNombreReal;
+    document.getElementById('cfg-logo').value = repoCfg.logo || displayLogo;
+  }
+
+  await Promise.all([loadAreas(), loadGrados(), loadTipos(), loadResources()]);
+
+  if (canAdmin && (instCtx.asignaturas?.length || instCtx.grados?.length)) {
+    if (allAreas.length === 0 || allGrados.length === 0) {
+      try {
+        await apiFetch('/seed-areas-grados', {
+          method: 'POST',
+          body: JSON.stringify({ asignaturas: instCtx.asignaturas || [], grados: instCtx.grados || [] }),
+        });
+        await Promise.all([loadAreas(), loadGrados()]);
+      } catch(e) {}
+    }
+  }
+
+  if (canAdmin) {
+    loadStats();
+    renderAdminResTable();
+  }
+}
+
+function showTab(tab) {
+  ['recursos','stats','ctrl'].forEach(t => {
+    document.getElementById('sec-'+t).classList.toggle('active', t===tab);
+    document.getElementById('tab-'+t).classList.toggle('active', t===tab);
+  });
+  if (tab === 'stats')  loadStats();
+  if (tab === 'ctrl')   { renderAdminAreas(); renderAdminGrados(); renderAdminTipos(); renderAdminResTable(); }
+}
+
+async function loadAreas() {
+  try { allAreas = await apiFetch('/areas'); } catch(e) { allAreas = []; }
+  renderFilterAreas();
+  renderFormSelect('form-area', allAreas);
+  if (canAdmin) renderAdminAreas();
+}
+
+function renderFilterAreas() {
+  const el = document.getElementById('filter-areas');
+  if (!allAreas.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin asignaturas registradas</em>'; return; }
+  const content = allAreas.map(a =>
+    `<label class="filter-option"><input type="checkbox" class="chk-area" value="${escH(a.nombre)}" onchange="applyFilters()"> ${escH(a.nombre)}</label>`
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-area" value="" onchange="applyFilters()"> General</label>`;
+  el.innerHTML = `<div class="filter-options-container">${content}</div>`;
+}
+
+function renderAdminAreas() {
+  const el = document.getElementById('admin-areas-list');
+  el.innerHTML = allAreas.map(a =>
+    `<li class="ctrl-chip">${escH(a.nombre)} <button onclick="deleteArea(${a.id})" title="Eliminar">✕</button></li>`
+  ).join('') || '<li style="font-size:12px;color:#aaa">Sin áreas</li>';
+}
+
+async function addArea() {
+  const inp = document.getElementById('new-area');
+  const nombre = inp.value.trim();
+  if (!nombre) return;
+  try {
+    await apiFetch('/areas', { method:'POST', body: JSON.stringify({ nombre }) });
+    inp.value = '';
+    await loadAreas();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteArea(id) {
+  if (!confirm('¿Eliminar esta área/asignatura?')) return;
+  try { await apiFetch('/areas/'+id, { method:'DELETE' }); await loadAreas(); }
+  catch(e) { alert('Error: ' + e.message); }
+}
+
+async function loadGrados() {
+  try { allGrados = await apiFetch('/grados'); } catch(e) { allGrados = []; }
+  renderFilterGrados();
+  renderFormSelect('form-grado', allGrados);
+  if (canAdmin) renderAdminGrados();
+}
+
+function renderFilterGrados() {
+  const el = document.getElementById('filter-grados');
+  if (!allGrados.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin grados registrados</em>'; return; }
+  const content = allGrados.map(g =>
+    `<label class="filter-option"><input type="checkbox" class="chk-grado" value="${escH(g.nombre)}" onchange="applyFilters()"> ${escH(g.nombre)}</label>`
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-grado" value="" onchange="applyFilters()"> General</label>`;
+  el.innerHTML = `<div class="filter-options-container">${content}</div>`;
+}
+
+function renderAdminGrados() {
+  const el = document.getElementById('admin-grados-list');
+  el.innerHTML = allGrados.map(g =>
+    `<li class="ctrl-chip">${escH(g.nombre)} <button onclick="deleteGrado(${g.id})" title="Eliminar">✕</button></li>`
+  ).join('') || '<li style="font-size:12px;color:#aaa">Sin grados</li>';
+}
+
+async function addGrado() {
+  const inp = document.getElementById('new-grado');
+  const nombre = inp.value.trim();
+  if (!nombre) return;
+  try {
+    await apiFetch('/grados', { method:'POST', body: JSON.stringify({ nombre }) });
+    inp.value = '';
+    await loadGrados();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteGrado(id) {
+  if (!confirm('¿Eliminar este grado?')) return;
+  try { await apiFetch('/grados/'+id, { method:'DELETE' }); await loadGrados(); }
+  catch(e) { alert('Error: ' + e.message); }
+}
+
+async function loadTipos() {
+  try { allTipos = await apiFetch('/tipos'); } catch(e) { allTipos = []; }
+  renderFilterTipos();
+  if (canAdmin) renderAdminTipos();
+}
+
+function renderFilterTipos() {
+  const el = document.getElementById('filter-tipos');
+  if (!allTipos.length) { el.innerHTML = '<em style="font-size:12px;color:#aaa">Sin tipos registrados</em>'; return; }
+  const content = allTipos.map(t =>
+    `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="${escH(t.nombre)}" onchange="applyFilters()"> ${escH(t.nombre)}</label>`
+  ).join('') + `<label class="filter-option"><input type="checkbox" class="chk-tipo" value="" onchange="applyFilters()"> Sin clasificar</label>`;
+  el.innerHTML = `<div class="filter-options-container">${content}</div>`;
+}
+
+function renderAdminTipos() {
+  const el = document.getElementById('admin-tipos-list');
+  el.innerHTML = allTipos.map(t =>
+    `<li class="ctrl-chip">${escH(t.nombre)} <button onclick="deleteTipo(${t.id})" title="Eliminar">✕</button></li>`
+  ).join('') || '<li style="font-size:12px;color:#aaa">Sin tipos</li>';
+}
+
+async function addTipo() {
+  const inp = document.getElementById('new-tipo');
+  const nombre = inp.value.trim();
+  if (!nombre) return;
+  try {
+    await apiFetch('/tipos', { method:'POST', body: JSON.stringify({ nombre }) });
+    inp.value = '';
+    await loadTipos();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteTipo(id) {
+  if (!confirm('¿Eliminar este tipo de recurso?')) return;
+  try { await apiFetch('/tipos/'+id, { method:'DELETE' }); await loadTipos(); }
+  catch(e) { alert('Error: ' + e.message); }
+}
+
+function toggleSelectAll(type, checked) {
+  const checkboxes = document.querySelectorAll(`.chk-${type}`);
+  checkboxes.forEach(chk => { chk.checked = checked; });
+  applyFilters();
+}
+
+async function loadResources() {
+  try { allResources = await apiFetch('/resources'); } catch(e) { allResources = []; }
+  applyFilters();
+}
+
+function applyFilters() {
+  const q = (document.getElementById('search-input')?.value || '').toLowerCase();
+  const selAreas  = [...document.querySelectorAll('.chk-area:checked')].map(c => c.value);
+  const selGrados = [...document.querySelectorAll('.chk-grado:checked')].map(c => c.value);
+  const selTipos  = [...document.querySelectorAll('.chk-tipo:checked')].map(c => c.value);
+  const selPeriodo = document.getElementById('filter-periodo')?.value || '';
+
+  filteredResources = allResources.filter(r => {
+    const area = r.skill || '';
+    const grado = r.level || '';
+    const tipo = r.type  || '';
+    const periodo = r.periodo || '';
+    
+    const matchArea = !selAreas.length  || selAreas.includes(area);
+    const matchGrado = !selGrados.length || selGrados.includes(grado);
+    const matchTipo = !selTipos.length  || selTipos.includes(tipo);
+    const matchPeriodo = !selPeriodo       || periodo === selPeriodo;
+    const matchQ = !q || [r.title, r.author, area, grado, tipo, periodo, r.description, r.metadata].join(' ').toLowerCase().includes(q);
+    
+    return matchArea && matchGrado && matchTipo && matchPeriodo && matchQ;
+  });
+
+  currentPage = 1;
+  renderResourcesPage();
+}
+
+function renderResourcesPage() {
+  const grid  = document.getElementById('resources-grid');
+  const empty = document.getElementById('empty-msg');
+  const pag   = document.getElementById('pagination');
+  const total = filteredResources.length;
+  const pages = Math.ceil(total / PER_PAGE) || 1;
+  if (currentPage > pages) currentPage = pages;
+
+  const slice = filteredResources.slice((currentPage-1)*PER_PAGE, currentPage*PER_PAGE);
+
+  if (!slice.length) {
+    grid.innerHTML = ''; empty.classList.remove('hidden'); pag.innerHTML = ''; return;
+  }
+  empty.classList.add('hidden');
+
+  grid.innerHTML = slice.map(r => {
+    const avg = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '-';
+    const stars = r.rating_count ? '★'.repeat(Math.round(r.rating_sum / r.rating_count)) : '';
+    const area = r.skill || 'General';
+    const grado = r.level || 'General';
+    const tipo = r.type || '';
+    const periodo = r.periodo || '';
+    const metadata = r.metadata && r.metadata !== 'Ninguno' ? r.metadata : '';
+    const isSelected = selectedRes?.id === r.id;
+
+    let actionBtn = '';
+    if (r.link) {
+      const linkUrl = r.link.startsWith('http') ? r.link : `https://${r.link}`;
+      actionBtn = `<a href="${linkUrl}" target="_blank" rel="noopener noreferrer" onclick="trackDownload(${r.id})" class="btn-page active" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px;">🔗 Abrir Enlace</a>`;
+    }
+
+    return `
+      <div class="card ${isSelected ? 'selected' : ''}" onclick="selectResource(${r.id})">
+        ${tipo ? `<span class="card-badge">📁 ${tipo}</span>` : ''}
+        <h3 class="card-title">${r.title}</h3>
+        <p class="card-meta">Por: <strong>${r.author || r.uploader || 'Docente'}</strong></p>
+        <div style="display:flex; gap:4px; flex-wrap:wrap; margin: 6px 0;">
+          <span class="card-tag">📚 ${area}</span>
+          <span class="card-tag">🎓 ${grado}</span>
+          ${periodo ? `<span class="card-tag" style="background:#e6fffa; color:#234e52;">📅 ${periodo}</span>` : ''}
+        </div>
+        <div class="card-footer">
+          <div class="card-rating"><span style="color:#f59e0b;">${stars}</span> <span>${avg}</span></div>
+          <div class="card-actions" onclick="event.stopPropagation()">${actionBtn}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  renderPagination(pages);
+}
+
+function renderPagination(pages) {
+  const pag = document.getElementById('pagination');
+  if (pages <= 1) { pag.innerHTML = ''; return; }
+  let html = '';
+  for (let i = 1; i <= pages; i++) {
+    html += `<button class="btn-page ${i === currentPage ? 'active' : ''}" onclick="gotoPage(${i})">${i}</button>`;
+  }
+  pag.innerHTML = html;
+}
+
+function trackDownload(id) {
+  fetch(`${API}/resources/${id}/download`, { method: 'POST' }).catch(console.error);
+}
+
+function gotoPage(n) { currentPage = n; renderResourcesPage(); }
+
+function selectResource(id) {
+  selectedRes = allResources.find(r => r.id === id);
+  renderResourcesPage();
+
+  if (!selectedRes) return;
+  const r = selectedRes;
+  const avg = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '—';
+  const ratingCount = r.rating_count || 0;
+  const ratingSum = r.rating_sum || 0;
+
+  const starsHtml = [1,2,3,4,5].map(s =>
+    `<span class="${s<=Math.round(ratingCount ? ratingSum/ratingCount : 0)?'lit':''}" onclick="rateResource(${r.id},${s})" title="${s} estrella(s)">★</span>`
+  ).join('');
+
+  const comments = (r.comments || []).slice(-5).reverse().map(c =>
+    `<div style="border-bottom:1px solid #edf2f7;padding:6px 0;font-size:11px"><strong>${escH(c.user||'—')}</strong>: ${escH(c.text)}</div>`
+  ).join('') || '<div style="font-size:11px;color:#aaa">Sin comentarios registrados.</div>';
+
+  document.getElementById('detail-content').innerHTML = `
+    <div class="detail-title">${escH(r.title)}</div>
+    <div class="detail-meta">
+      <strong>Área / Asignatura:</strong> ${escH(r.skill||'General')}<br>
+      <strong>Grado / Nivel:</strong> ${escH(r.level||'General')}<br>
+      <strong>Tipo de Recurso:</strong> ${escH(r.type||'Sin especificar')}<br>
+      <strong>Periodo Académico:</strong> ${escH(r.periodo||'No especificado')}<br>
+      <strong>Autor/Creador:</strong> ${escH(r.author||'—')}<br>
+      ${r.description ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;"><strong>Propósito:</strong><br>${escH(r.description)}</div>` : ''}
+    </div>
+    <div style="font-size:12px;margin-bottom:4px"><strong>Valoración:</strong> ${avg} / 5 (${ratingCount} votos)</div>
+    <div class="rating-stars">${starsHtml}</div>
+    <div class="action-btn-group">
+      <a class="btn-dl" href="${escH(r.link||'#')}" target="_blank" onclick="trackDownload(${r.id})">📥 Acceder al Recurso</a>
+    </div>
+    <div class="comment-area">
+      <strong style="font-size:12px;color:var(--primary)">Comentarios</strong>
+      <div style="margin:8px 0;max-height:150px;overflow-y:auto">${comments}</div>
+      <textarea id="comment-txt" placeholder="Escribe un comentario…"></textarea>
+      <button class="btn" style="margin-top:6px;width:100%" onclick="sendComment(${r.id})">Enviar comentario</button>
+    </div>`;
+}
+
+async function rateResource(id, stars) {
+  try {
+    await apiFetch('/resources/'+id+'/rate', { method:'POST', body: JSON.stringify({ rating: stars }) });
+    await loadResources();
+    selectResource(id);
+  } catch(e) {}
+}
+
+async function sendComment(id) {
+  const txt = document.getElementById('comment-txt')?.value.trim();
+  if (!txt) return;
+  try {
+    await apiFetch('/resources/'+id+'/comment', {
+      method:'POST',
+      body: JSON.stringify({ user: _pUser, text: txt, date: new Date().toLocaleDateString('es-CO') })
+    });
+    await loadResources();
+    selectResource(id);
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteResource(id) {
+  if (!confirm('¿Eliminar este material pedagógico?')) return;
+  try {
+    await apiFetch('/resources/'+id, { method:'DELETE' });
+    await loadResources();
+    renderAdminResTable();
+    document.getElementById('detail-content').innerHTML='<div class="detail-placeholder">← Selecciona un material para visualizar sus detalles.</div>';
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+function openAddModal() {
+  document.getElementById('modal-res-title').textContent = 'Cargar Nuevo Material Didáctico';
+  document.getElementById('modal-res-id').value = '';
+  ['form-title','form-author','form-desc','form-link','form-meta'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('form-area').value = '';
+  document.getElementById('form-grado').value = '';
+  document.getElementById('form-tipo').value = '';
+  document.getElementById('form-periodo').value = '';
+  openModal('modal-res');
+}
+
+function openEditModal(id) {
+  const r = allResources.find(x => x.id===id);
+  if (!r) return;
+  document.getElementById('modal-res-title').textContent = 'Editar Material Didáctico';
+  document.getElementById('modal-res-id').value = r.id;
+  document.getElementById('form-title').value = r.title || '';
+  document.getElementById('form-author').value = r.author || '';
+  document.getElementById('form-desc').value = r.description || '';
+  document.getElementById('form-link').value = r.link || '';
+  document.getElementById('form-meta').value = r.metadata || '';
+  document.getElementById('form-area').value = r.skill || '';
+  document.getElementById('form-grado').value = r.level || '';
+  document.getElementById('form-tipo').value = r.type  || '';
+  document.getElementById('form-periodo').value = r.periodo || '';
+  openModal('modal-res');
+}
+
+async function saveResource() {
+  const id = document.getElementById('modal-res-id').value;
+  const title = document.getElementById('form-title').value.trim();
+  const link = document.getElementById('form-link').value.trim();
+  const periodo = document.getElementById('form-periodo').value;
+
+  if (!title || !link || !periodo) { alert('Por favor completa los campos obligatorios (*).'); return; }
+
+  const body = {
+    title,
+    author: document.getElementById('form-author').value.trim(),
+    skill: document.getElementById('form-area').value,
+    level: document.getElementById('form-grado').value,
+    type: document.getElementById('form-tipo').value,
+    periodo: periodo,
+    desc: document.getElementById('form-desc').value.trim(),
+    link: link,
+    metadata: document.getElementById('form-meta').value.trim(),
+    uploader: _pUser,
+  };
+
+  try {
+    if (id) {
+      await apiFetch('/resources/'+id, { method:'PUT', body: JSON.stringify(body) });
+    } else {
+      await apiFetch('/resources', { method:'POST', body: JSON.stringify(body) });
+    }
+    closeModal('modal-res');
+    await loadResources();
+    renderAdminResTable();
+  } catch(e) { alert('Error al guardar: ' + e.message); }
+}
+
+function renderAdminResTable() {
+  const tbody = document.getElementById('admin-res-body');
+  if (!tbody) return;
+  if (!allResources.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#aaa">Sin recursos cargados</td></tr>'; return; }
+  tbody.innerHTML = allResources.map(r =>
+    `<tr>
+      <td>${r.id}</td>
+      <td><strong>${escH(r.title)}</strong></td>
+      <td>${escH(r.skill||'—')}</td>
+      <td>${escH(r.level||'—')}</td>
+      <td>${escH(r.type||'—')}</td>
+      <td>${escH(r.author||'—')}</td>
+      <td>
+        <button class="btn sm warn" onclick="openEditModal(${r.id})">✏️ Edit</button> 
+        <button class="btn sm danger" onclick="deleteResource(${r.id})">🗑 Del</button>
+      </td>
+    </tr>`
+  ).join('');
+}
+
+async function loadStats() {
+  try {
+    const st = await apiFetch('/stats');
+    document.getElementById('st-views').textContent = st.views || 0;
+    document.getElementById('st-dl').textContent = st.downloads || 0;
+    document.getElementById('st-res').textContent = allResources.length;
+    const logs = (st.logs || []).slice(-20).reverse();
+    const tbody = document.getElementById('log-body');
+    if (!logs.length) return;
+    tbody.innerHTML = logs.map(l =>
+      `<tr><td>${escH(l.timestamp||'')}</td><td>${escH(l.user||'—')}</td><td>${escH(l.role||'—')}</td><td>${escH(l.action||'—')}</td></tr>`
+    ).join('');
+  } catch(e) {}
+}
+
+async function saveConfig() {
+  const name = document.getElementById('cfg-name').value.trim();
+  const logo = document.getElementById('cfg-logo').value.trim();
+  if (!name) { alert('El nombre no puede estar vacío.'); return; }
+  try {
+    await apiFetch('/config', { method:'POST', body: JSON.stringify({ name, logo }) });
+    document.getElementById('hdr-inst-name').textContent = name;
+    document.getElementById('site-title-tag').textContent = name;
+    if (logo) { const img = document.getElementById('hdr-logo'); img.src=logo; img.style.display=''; }
+    alert('✅ Configuración guardada exitosamente.');
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+function renderFormSelect(selectId, items) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— Seleccionar —</option>' + items.map(it => `<option value="${escH(it.nombre)}">${escH(it.nombre)}</option>`).join('');
+  sel.value = cur;
+}
+
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function escH(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+init();
+</script>
+</body>
+</html>
