@@ -8334,12 +8334,54 @@ function editarObservacion(estId,obsIdx){
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones[obsIdx].txt=nt.trim();return d;});
   cargarListaObservador();
 }
-function eliminarObservacion(estId,obsIdx){
+//DESDE ACÁ SE HIZO EL CAMBIO
+/*function eliminarObservacion(estId,obsIdx){
   const e=db.ests.find(x=>x.id===estId);if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];
   if(sesion.r!=='admin'&&obs&&obs.doc!==sesion.n){alert('Solo puede eliminar sus propias observaciones.');return;}
   if(!confirm('¿Eliminar?')) return;
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones.splice(obsIdx,1);return d;});
+  cargarListaObservador();
+}*/
+//HASTA ACÁ SE HIZO EL CAMBIO
+
+//ACÁ COMIENZA EL CAMBIO HECHO
+function eliminarObservacion(estId, obsIdx){
+  const e = db.ests.find(x => x.id === estId);
+  if(!e) return;
+  const obs = (e.observaciones || [])[obsIdx];
+  if(sesion.r !== 'admin' && obs && obs.doc !== sesion.n){
+    alert('Solo puede eliminar sus propias observaciones.');
+    return;
+  }
+  if(!confirm('¿Desea enviar esta observación a la papelera de reciclaje?')) return;
+
+  // 1. Guardar copia en la papelera del sistema antes de eliminar
+  if (typeof moverAPapelera === 'function') {
+    moverAPapelera('observaciones', { ...obs, estId: estId, estudiante: e.nombre });
+  } else if (Array.isArray(db.papelera)) {
+    db.papelera.push({
+      tipo: 'observacion',
+      fechaEliminado: new Date().toISOString(),
+      data: { ...obs, estId: estId }
+    });
+  }
+//ACÁ COMIENZA EL CAMBIO HECHO
+
+  // 2. Eliminar del arreglo principal
+  updDB(d => {
+    const idx = d.ests.findIndex(x => x.id === estId);
+    if(idx !== -1 && d.ests[idx].observaciones) {
+      d.ests[idx].observaciones.splice(obsIdx, 1);
+    }
+    return d;
+  });
+
+  // 3. Forzar sincronización/guardado directo en la nube (Neon)
+  if (typeof syncData === 'function') syncData();
+  if (typeof guardarEnNube === 'function') guardarEnNube();
+
+  // 4. Recargar la interfaz
   cargarListaObservador();
 }
 
