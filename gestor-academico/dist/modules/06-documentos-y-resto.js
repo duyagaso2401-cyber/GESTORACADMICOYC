@@ -391,6 +391,7 @@ let asistHoraFin=new Date(new Date().getTime() + 60*60000).toTimeString().slice(
 let asistPeriodo='P1';
 let asistGrado='';
 let asistCId='';
+let asistTabActivo='reg';
 
 function htmlAsistencia(){
   var isAdmin=sesion.r==='admin';
@@ -399,39 +400,71 @@ function htmlAsistencia(){
   if(!asistGrado&&gradosDisp.length) asistGrado=gradosDisp[0];
   var cargasGrado=misCargas.filter(function(c){return c.g===asistGrado;});
   if(!asistCId&&cargasGrado.length) asistCId=String(cargasGrado[0].id);
-  var ests=asistGrado?db.ests.filter(function(e){return e.g===asistGrado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):[];
+
+  var pctCrit = Number(db.config?.pctInasistenciaCritica || 25);
+  var pctPrev = Number(db.config?.pctInasistenciaPreventiva || 20);
+
+  var ests=asistGrado?db.ests.filter(function(e){return !e.deletedAt && e.g===asistGrado;}).sort(function(a,b){return a.n.localeCompare(b.n);}):[];
+
+  // Clases registradas válidas (no eliminadas) para el grado y materia seleccionados
+  var clasesAcum=(db.asistencia||[]).filter(function(a){
+    return !a.deletedAt && a.grado===asistGrado && String(a.cargaId)===String(asistCId);
+  });
+  var totalClasesAcum=clasesAcum.length;
+
   var historial=(db.asistencia||[]).filter(function(a){
-    return (isAdmin||a.docente===sesion.u)&&(!asistGrado||a.grado===asistGrado)&&(!asistCId||String(a.cargaId)===String(asistCId));
+    return !a.deletedAt && (isAdmin||a.docente===sesion.u)&&(!asistGrado||a.grado===asistGrado)&&(!asistCId||String(a.cargaId)===String(asistCId));
   }).sort(function(a,b){return b.fecha.localeCompare(a.fecha)||b.hora.localeCompare(a.hora);});
+
   var gradoOpts=gradosDisp.map(function(g){return '<option value="'+g+'"'+(g===asistGrado?' selected':'')+'>'+g+'</option>';}).join('');
   var cargaOpts=cargasGrado.map(function(c){return '<option value="'+c.id+'"'+(String(c.id)===asistCId?' selected':'')+'>'+c.m+' ('+c.a+')</option>';}).join('');
-  var perOpts=['P1','P2','P3','P4'].map(p=>'<option value="'+p+'"'+(p===asistPeriodo?' selected':'')+'>'+p+'</option>').join('');
-  // Buscar registro existente para esta fecha/cargaId/grado — para pre-cargar estados
+  var perOpts=['P1','P2','P3','P4'].map(function(p){return '<option value="'+p+'"'+(p===asistPeriodo?' selected':'')+'>'+p+'</option>';}).join('');
+
+  // Buscar registro existente para esta fecha/cargaId/grado
   var existingReg=(db.asistencia||[]).find(function(a){
-    return a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
+    return !a.deletedAt && a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
   });
+
+  // Cálculo individual para la planilla de registro
   var estRows=ests.map(function(e){
     var eid=String(e.id);
-    var st='P'; // default Presente
+    var st='P';
     if(existingReg){
       if((existingReg.ausentes||[]).some(function(x){return String(x)===eid;})) st='A';
       else if((existingReg.justificados||[]).some(function(x){return String(x)===eid;})) st='J';
     }
+
+    var ausenciasAcum=clasesAcum.filter(function(r){return (r.ausentes||[]).some(function(x){return String(x)===eid;});}).length;
+    var pctEst=totalClasesAcum>0?((ausenciasAcum/totalClasesAcum)*100):0;
+    var badgeAlerta='';
+
+    if(totalClasesAcum>0){
+      if(pctEst>=pctCrit){
+        badgeAlerta='<span style="background:#fde8e8;color:#c0392b;border:1px solid #f5c6cb;border-radius:4px;padding:2px 6px;font-size:0.7rem;font-weight:bold;display:inline-flex;align-items:center;gap:3px" title="Riesgo crítico de reprobación por inasistencia (≥'+pctCrit+'%)">🔴 '+pctEst.toFixed(1)+'% Crítico ('+ausenciasAcum+'/'+totalClasesAcum+')</span>';
+      } else if(pctEst>=pctPrev){
+        badgeAlerta='<span style="background:#fef9e7;color:#d35400;border:1px solid #ffeeba;border-radius:4px;padding:2px 6px;font-size:0.7rem;font-weight:bold;display:inline-flex;align-items:center;gap:3px" title="Alerta temprana preventiva (≥'+pctPrev+'%)">🟡 '+pctEst.toFixed(1)+'% Preventivo ('+ausenciasAcum+'/'+totalClasesAcum+')</span>';
+      } else {
+        badgeAlerta='<span style="background:#eafaf1;color:#27ae60;border-radius:4px;padding:2px 6px;font-size:0.7rem;font-weight:bold" title="Inasistencia en rango normal">🟢 '+pctEst.toFixed(1)+'%</span>';
+      }
+    }
+
     return '<tr>'+
-      '<td style="text-align:left;font-size:0.82rem;padding:7px">'+e.n+'</td>'+
+      '<td style="text-align:left;font-size:0.82rem;padding:7px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px"><b>'+e.n+'</b>'+badgeAlerta+'</div></td>'+
       '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="P"'+(st==='P'?' checked':'')+'> Presente</label></td>'+
       '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="A"'+(st==='A'?' checked':'')+'>  Ausente</label></td>'+
       '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="J"'+(st==='J'?' checked':'')+'>  Justificado</label></td>'+
     '</tr>';
   }).join('');
-  var histRows=historial.slice(0,50).map(function(a){
+
+  var histRows=historial.slice(0,60).map(function(a){
     var c=db.carga.find(function(x){return x.id===a.cargaId;});
-    var tot=db.ests.filter(function(e){return e.g===a.grado;}).length||1;
+    var tot=db.ests.filter(function(e){return !e.deletedAt && e.g===a.grado;}).length||1;
     var pct=(a.presentes.length/tot*100).toFixed(0);
     var pctAusentes=100-parseInt(pct);
     var colPct=parseInt(pct)>=90?'#27ae60':parseInt(pct)>=70?'#e67e22':'#c0392b';
     var puedeEditar=isAdmin||(a.docente&&a.docente===sesion.u);
-    var alertaHtml = pctAusentes >= 25 ? '<div style="color:#c0392b;font-weight:bold;font-size:0.75rem;margin-top:4px">⚠️ RIESGO: ≥25% Inasistencia</div><button class="btn-sm" style="background:#8e44ad;margin-top:2px;font-size:0.7rem;width:100%" onclick="generarPlanAsistencia(\''+a.id+'\')">🤖 Plan IA</button>' : '';
+    var alertaHtml = pctAusentes >= pctCrit ? '<div style="color:#c0392b;font-weight:bold;font-size:0.72rem;margin-top:3px">🔴 ≥'+pctCrit+'% Inasistencia en la sesión</div>' : (pctAusentes>=pctPrev?'<div style="color:#d35400;font-weight:bold;font-size:0.72rem;margin-top:3px">🟡 Alerta temprana ('+pctAusentes+'%)</div>':'');
+
     return '<tr>'+
       '<td>'+a.fecha+'<br><span style="font-size:0.75rem;color:#7f8c8d">'+(a.periodo||'P1')+'</span></td><td>'+a.hora+(a.horaFin?' - '+a.horaFin:'')+'</td><td>'+a.grado+'</td>'+
       '<td style="text-align:left">'+(c?c.m:'\u2014')+'</td>'+
@@ -442,20 +475,49 @@ function htmlAsistencia(){
       '<td><span style="background:'+colPct+';color:#fff;border-radius:4px;padding:2px 6px;font-size:0.75rem">'+pct+'%</span>'+alertaHtml+'</td>'+
       '<td style="white-space:nowrap">'+
         '<button class="btn-sm" style="background:#1a5276" onclick="verDetalleAsistencia(\''+a.id+'\')" title="Ver detalle">👁</button> '+
-        '<button class="btn-sm" style="background:#27ae60" onclick="descargarAsistenciaRegistradaPDF(\''+a.id+'\')" title="Descargar PDF">📄</button>'+
-        (puedeEditar?' <button class="btn-sm" style="background:#e67e22" onclick="editarAsistencia(\''+a.id+'\')" title="Editar">✏️</button>':'')+
-        (puedeEditar?' <button class="btn-sm" style="background:#c0392b" onclick="eliminarAsistencia(\''+a.id+'\')" title="Eliminar">\u{1F5D1}</button>':'')+
+        '<button class="btn-sm" style="background:#27ae60" onclick="descargarAsistenciaRegistradaPDF(\''+a.id+'\')" title="Descargar PDF">📄</button> '+
+        (puedeEditar?'<button class="btn-sm" style="background:#e67e22" onclick="editarAsistencia(\''+a.id+'\')" title="Editar">✏️</button> ':'')+
+        (puedeEditar?'<button class="btn-sm" style="background:#c0392b" onclick="eliminarAsistencia(\''+a.id+'\')" title="Mover a papelera de reciclaje">🗑️</button>':'')+
       '</td></tr>';
   }).join('');
-  var tabDefs=[{id:'reg',label:'Registrar'},{id:'hist',label:'Historial'},{id:'desc',label:'📥 Planillas'}];
-  if(isAdmin) tabDefs.push({id:'rep',label:'Reportes'});
+
+  var tabDefs=[
+    {id:'reg',label:'📝 Registrar'},
+    {id:'hist',label:'📅 Historial'},
+    {id:'desc',label:'📥 Planillas'},
+    {id:'rep-psico',label:'🧠 Reporte Psicopedagógico'}
+  ];
+  if(isAdmin) tabDefs.push({id:'rep',label:'📊 Consolidado'});
+
   if(!asistTabActivo) asistTabActivo='reg';
-  var tabBtns=tabDefs.map(function(t){return '<button class="tab-btn'+(asistTabActivo===t.id?' active':'')+'" onclick="cambiarTabAsist(\''+t.id+'\')">'+t.label+'</button>';}).join('');
-  var html='<h3 class="sec-title">&#x1F4C5; Control de Asistencia</h3>';
+  var tabBtns=tabDefs.map(function(t){
+    return '<button class="tab-btn'+(asistTabActivo===t.id?' active':'')+'" onclick="cambiarTabAsist(\''+t.id+'\')">'+t.label+'</button>';
+  }).join('');
+
+  // Widget para configurar umbrales de inasistencia (accesible para Admin)
+  var configWidgetHtml = `
+    <div style="background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #003366;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div style="font-size:0.82rem;color:#334155">
+        <b>🚨 Parámetros del SIE (Decreto 1290):</b>
+        Alerta Preventiva: <span style="background:#fff3cd;color:#856404;padding:2px 6px;border-radius:4px;font-weight:bold">${pctPrev}%</span> &nbsp;|&nbsp;
+        Riesgo Reprobación / Crítico: <span style="background:#f8d7da;color:#721c24;padding:2px 6px;border-radius:4px;font-weight:bold">${pctCrit}%</span>
+        <span style="color:#64748b;font-size:0.75rem;margin-left:6px">(Configurable por el Administrador)</span>
+      </div>
+      ${isAdmin ? `
+      <div style="display:flex;align-items:center;gap:6px">
+        <button class="btn-sm" style="background:#003366;font-size:0.75rem;padding:5px 10px" onclick="abrirConfigInasistenciasRapida()" title="Modificar porcentajes de inasistencia">⚙️ Ajustar Umbrales</button>
+      </div>` : ''}
+    </div>
+  `;
+
+  var html='<h3 class="sec-title">📅 Control de Asistencia y Alertas Académicas</h3>';
+  html+=configWidgetHtml;
   html+='<div class="tab-btns">'+tabBtns+'</div>';
+
+  // TAB REGISTRAR
   var dReg=asistTabActivo==='reg'?'':'display:none';
-  html+='<div id="asist-reg" style="'+dReg+'"><div class="card"><h4 class="card-title">Registrar Asistencia</h4>';
-  html+='<div class="warn-box">&#x1F4CC; Si no tuvo acceso el dia de clase, puede ingresar la asistencia con la fecha y hora reales de esa jornada.</div>';
+  html+='<div id="asist-reg" style="'+dReg+'"><div class="card"><h4 class="card-title">Registrar Asistencia de Clase</h4>';
+  html+='<div class="warn-box">📌 Las inasistencias acumuladas se calculan automáticamente sobre el total de clases dictadas para alertar oportunamente sobre riesgos de pérdida de asignatura.</div>';
   html+='<div class="grid4" style="margin-bottom:12px">';
   html+='<div><label class="lbl">Periodo</label><select id="asistPeriodoSel" onchange="asistPeriodo=this.value">'+perOpts+'</select></div>';
   html+='<div><label class="lbl">Fecha de la clase</label><input type="date" id="asistFechaInp" value="'+asistFecha+'" onchange="asistFecha=this.value"></div>';
@@ -463,61 +525,62 @@ function htmlAsistencia(){
   html+='<div><label class="lbl">Hora fin</label><input type="time" id="asistHoraFinInp" value="'+asistHoraFin+'" onchange="asistHoraFin=this.value"></div>';
   html+='<div><label class="lbl">Grado</label><select id="asistGradoSel" onchange="asistGrado=this.value;asistCId=\'\';actualizarAsignaturasReg(this.value)">'+gradoOpts+'</select></div>';
   html+='<div><label class="lbl">Asignatura</label><select id="asistCIdSel" onchange="asistCId=this.value;actualizarEstadosAsist()">'+cargaOpts+'</select></div>';
-  html+='</div><div style="margin-bottom:12px"><label class="lbl">Actividad realizada</label>';
-  html+='<textarea id="asistActividad" rows="2" placeholder="Ej: Evaluacion escrita, taller, exposicion...">'+(existingReg&&existingReg.actividad?existingReg.actividad.replace(/</g,'&lt;'):'')+'</textarea></div>';
+  html+='</div><div style="margin-bottom:12px"><label class="lbl">Actividad / Tema desarrollado en clase</label>';
+  html+='<textarea id="asistActividad" rows="2" placeholder="Ej: Evaluación diagnóstica, explicación del tema, taller grupal...">'+(existingReg&&existingReg.actividad?existingReg.actividad.replace(/</g,'&lt;'):'')+'</textarea></div>';
   if(existingReg){
-    html+='<div class="warn-box" style="background:#fffbe6;border-left-color:#f1c40f;color:#7d6608;margin-bottom:10px">✏️ <b>Editando registro existente</b> del '+existingReg.fecha+'. Al guardar se actualizará este registro con los estados y actividad actuales.</div>';
+    html+='<div class="warn-box" style="background:#fffbe6;border-left-color:#f1c40f;color:#7d6608;margin-bottom:10px">✏️ <b>Editando registro existente</b> del '+existingReg.fecha+'. Al guardar se actualizarán los estados y actividades.</div>';
   }
   if(ests.length){
     html+='<div class="over"><table><thead><tr>'+
-      '<th style="text-align:left;min-width:200px">Estudiante</th>'+
+      '<th style="text-align:left;min-width:240px">Estudiante (Estado Inasistencia Acumulada)</th>'+
       '<th style="background:#27ae60;min-width:100px">&#x2705; Presente</th>'+
       '<th style="background:#c0392b;min-width:100px">&#x274C; Ausente</th>'+
       '<th style="background:#e67e22;min-width:110px">&#x26A0;&#xFE0F; Justificado</th>'+
     '</tr></thead><tbody>'+estRows+'</tbody></table></div>';
-    html+='<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'+
-      '<button class="btn btn-green" onclick="guardarAsistencia()">'+(existingReg?'✏️ ACTUALIZAR ASISTENCIA':'&#x1F4BE; GUARDAR ASISTENCIA')+'</button>'+
-      '<button class="btn btn-gray" onclick="marcarTodosPresentes()">&#x2705; Todos Presentes</button>'+
+    html+='<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
+      '<button class="btn btn-green" onclick="guardarAsistencia()">'+(existingReg?'✏️ ACTUALIZAR ASISTENCIA':'💾 GUARDAR ASISTENCIA')+'</button>'+
+      '<button class="btn btn-gray" onclick="marcarTodosPresentes()">✅ Todos Presentes</button>'+
     '</div>';
   } else {
     html+='<p class="empty">Seleccione grado y asignatura para ver los estudiantes.</p>';
   }
   html+='</div></div>';
+
+  // TAB HISTORIAL
   var dHist=asistTabActivo==='hist'?'':'display:none';
-  html+='<div id="asist-hist" style="'+dHist+'"><div class="card"><h4 class="card-title">Historial de Asistencia</h4>';
+  html+='<div id="asist-hist" style="'+dHist+'"><div class="card"><h4 class="card-title">Historial de Asistencias Registradas</h4>';
   if(historial.length){
     html+='<div class="over"><table><thead><tr>'+
-      '<th>Fecha</th><th>Hora</th><th>Grado</th><th>Asignatura</th><th>Actividad</th>'+
+      '<th>Fecha / Periodo</th><th>Hora</th><th>Grado</th><th>Asignatura</th><th>Actividad</th>'+
       '<th style="background:#27ae60">Pres.</th><th style="background:#c0392b">Aus.</th>'+
-      '<th style="background:#e67e22">Just.</th><th>%Asist.</th><th>Acciones</th>'+
+      '<th style="background:#e67e22">Just.</th><th>% Asist.</th><th>Acciones</th>'+
     '</tr></thead><tbody>'+histRows+'</tbody></table></div>';
   } else {
-    html+='<p class="empty">No hay registros de asistencia aun.</p>';
+    html+='<p class="empty">No hay registros de asistencia aún para los filtros seleccionados.</p>';
   }
   html+='</div></div>';
-  // Tab descarga disponible para admin y docente
+
+  // TAB DESCARGA / PLANILLAS
   var dDesc=asistTabActivo==='desc'?'':'display:none';
   var mesActual=new Date().getMonth()+1;
   var mesesOpts=['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'].map(function(m,i){return '<option value="'+(i+1)+'"'+(i+1===mesActual?' selected':'')+'>'+m+'</option>';}).join('');
   var frecOpts='<option value="mensual">📅 Mensual (todo el mes)</option><option value="quincenal">📅 Quincenal (15 días)</option><option value="semanal">📅 Semanal (5 días)</option>';
+
   html+='<div id="asist-desc" style="'+dDesc+'"><div class="card"><h4 class="card-title">📥 Descargar / Cargar Planillas de Asistencia</h4>';
-  html+='<div class="warn-box">Descargue la planilla vacía con los días hábiles (L,M,M,J,V) del período seleccionado. Diligénciela con P/A/J y cárguela de vuelta para registrar la asistencia en el sistema.</div>';
-  // Fila 1: Grado + Mes + Periodo
+  html+='<div class="warn-box">Descargue la planilla vacía con los días hábiles del período seleccionado. Diligénciela con P/A/J y cárguela de vuelta para registrar la asistencia en el sistema.</div>';
   html+='<div class="grid3" style="margin-bottom:8px">';
   html+='<div><label class="lbl">Grado</label><select id="descAsistGrado" onchange="actualizarAsignaturasDesc(this.value)">'+gradoOpts+'</select></div>';
   html+='<div><label class="lbl">Mes</label><select id="descAsistMes">'+mesesOpts+'</select></div>';
   html+='<div><label class="lbl">Período</label><select id="descAsistPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>';
   html+='</div>';
-  // Fila 2: Frecuencia + Semana/Quincena + Asignatura
   html+='<div class="grid3" style="margin-bottom:14px">';
   html+='<div><label class="lbl">Frecuencia</label><select id="descAsistFrec" onchange="_onFrecChange()">'+frecOpts+'</select></div>';
   html+='<div id="descAsistSubWrap"><label class="lbl" id="descAsistSubLbl">Semana</label>';
   html+='<select id="descAsistSub" style="display:none"><option value="1">Semana 1</option><option value="2">Semana 2</option><option value="3">Semana 3</option><option value="4">Semana 4</option><option value="5">Semana 5</option></select></div>';
   html+='<div><label class="lbl">Asignatura</label><select id="descAsistCId">'+cargaOpts+'</select></div>';
   html+='</div>';
-  // Botones de descarga
   html+='<div style="background:#f0f4f8;border-radius:8px;padding:12px;margin-bottom:12px">';
-  html+='<p style="font-size:0.82rem;color:#003366;font-weight:bold;margin-bottom:8px">📄 Descargar Planilla Vacía (para diligenciar)</p>';
+  html+='<p style="font-size:0.82rem;color:#003366;font-weight:bold;margin-bottom:8px">📄 Descargar Planilla Vacía (para diligenciar en físico o Excel)</p>';
   html+='<div class="flex-gap">';
   html+='<button class="btn btn-blue" onclick="descargarPlanillaAsistenciaPDF()">📄 Planilla PDF</button>';
   html+='<button class="btn btn-green" onclick="descargarPlanillaAsistenciaExcel()">📊 Planilla Excel</button>';
@@ -534,115 +597,414 @@ function htmlAsistencia(){
   html+='<button class="btn btn-orange" onclick="cargarPlanillaAsistencia()">📂 Importar Planilla Excel al Sistema</button>';
   html+='</div></div></div>';
 
+  // TAB REPORTE PSICOPEDAGÓGICO AUTOMATIZADO
+  var dPsico=asistTabActivo==='rep-psico'?'':'display:none';
+  html+='<div id="asist-rep-psico" style="'+dPsico+'">';
+  html+=htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts);
+  html+='</div>';
+
+  // TAB CONSOLIDADO (ADMIN)
   if(isAdmin){
     var dRep=asistTabActivo==='rep'?'':'display:none';
-    html+='<div id="asist-rep" style="'+dRep+'"><div class="card"><h4 class="card-title">Reporte de Asistencia por Estudiante</h4>';
+    html+='<div id="asist-rep" style="'+dRep+'"><div class="card"><h4 class="card-title">Consolidado de Asistencia por Estudiante</h4>';
     html+='<div class="grid2" style="margin-bottom:12px">';
     html+='<div><label class="lbl">Grado</label><select id="repAsistGrado" onchange="verReporteAsistencia()">'+gradoOpts+'</select></div>';
     html+='<div><label class="lbl">Asignatura</label><select id="repAsistCId" onchange="verReporteAsistencia()">'+cargaOpts+'</select></div>';
-    html+='</div><div id="reporteAsistWrap"><p class="empty">Seleccione filtros.</p></div></div></div>';
+    html+='</div><div id="reporteAsistWrap"><p class="empty">Seleccione filtros para ver el consolidado.</p></div></div></div>';
   }
-  // Sección cronograma para admin/rector
+
   html+=`<div class="card" style="margin-top:16px;border-left:4px solid #1a5276">
     <h4 class="card-title">📅 Cronograma de Ingreso de Notas</h4>
-    <p style="font-size:0.85rem;color:#555;margin-bottom:10px">Configure las fechas de apertura y cierre del sistema para ingreso de notas por periodo. Los docentes solo podrán ingresar notas cuando el periodo esté habilitado.</p>
+    <p style="font-size:0.85rem;color:#555;margin-bottom:10px">Configure las fechas de apertura y cierre del sistema para ingreso de notas por periodo.</p>
     <button class="btn btn-navy" onclick="pag='cronograma-notas';renderApp()">📅 Ir al Cronograma de Notas</button>
   </div>`;
+
   return html;
 }
 
-let asistTabActivo='reg';
+function abrirConfigInasistenciasRapida(){
+  var pctCrit = Number(db.config?.pctInasistenciaCritica || 25);
+  var pctPrev = Number(db.config?.pctInasistenciaPreventiva || 20);
 
-function actualizarAsignaturasDesc(gradoSel){
-  var isAdmin=sesion.r==='admin';
-  var misCargas=isAdmin?db.carga:db.carga.filter(function(c){return c.d===sesion.u;});
-  var cargasFiltradas=misCargas.filter(function(c){return c.g===gradoSel;});
-  var opts=cargasFiltradas.map(function(c){return '<option value="'+c.id+'">'+c.m+' ('+c.a+')</option>';}).join('');
-  var sel=document.getElementById('descAsistCId');
-  if(sel) sel.innerHTML=opts;
-  var selRep=document.getElementById('repAsistCId');
-  if(selRep) selRep.innerHTML=opts;
-}
-
-function actualizarEstadosAsist(){
-  // Se llama cuando cambia la asignatura — pre-carga estados desde registro existente
-  var existReg=(db.asistencia||[]).find(function(a){
-    return a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
-  });
-  var actEl=document.getElementById('asistActividad');
-  if(actEl) actEl.value=(existReg&&existReg.actividad)?existReg.actividad:'';
-  var ests=db.ests.filter(function(e){return e.g===asistGrado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
-  var tbody=document.querySelector('#asist-reg table tbody');
-  if(tbody&&ests.length){
-    tbody.innerHTML=ests.map(function(e){
-      var eid=String(e.id);
-      var st='P';
-      if(existReg){
-        if((existReg.ausentes||[]).some(function(x){return String(x)===eid;})) st='A';
-        else if((existReg.justificados||[]).some(function(x){return String(x)===eid;})) st='J';
-      }
-      return '<tr>'+
-        '<td style="text-align:left;font-size:0.82rem;padding:7px">'+e.n+'</td>'+
-        '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="P"'+(st==='P'?' checked':'')+'> Presente</label></td>'+
-        '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="A"'+(st==='A'?' checked':'')+'>  Ausente</label></td>'+
-        '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="J"'+(st==='J'?' checked':'')+'>  Justificado</label></td>'+
-      '</tr>';
-    }).join('');
+  var nCrit = prompt('🔴 Ingrese el porcentaje crítico de inasistencia para PÉRDIDA/REPROBACIÓN (ej: 25):', pctCrit);
+  if(nCrit === null) return;
+  var numCrit = parseFloat(nCrit);
+  if(isNaN(numCrit) || numCrit <= 0 || numCrit > 100){
+    alert('Ingrese un número válido entre 1 y 100.');
+    return;
   }
+
+  var nPrev = prompt('🟡 Ingrese el porcentaje preventivo de ALERTA TEMPRANA (ej: 20):', pctPrev);
+  if(nPrev === null) return;
+  var numPrev = parseFloat(nPrev);
+  if(isNaN(numPrev) || numPrev <= 0 || numPrev >= numCrit){
+    alert('El porcentaje preventivo debe ser menor que el porcentaje crítico.');
+    return;
+  }
+
+  updDB(function(d){
+    if(!d.config) d.config={};
+    d.config.pctInasistenciaCritica = numCrit;
+    d.config.pctInasistenciaPreventiva = numPrev;
+    return d;
+  });
+
+  alert('✅ Porcentajes actualizados:\n• Preventivo: '+numPrev+'%\n• Crítico (Reprobación): '+numCrit+'%');
+  renderApp();
 }
 
-function actualizarAsignaturasReg(gradoSel){
-  var isAdmin=sesion.r==='admin';
-  var misCargas=isAdmin?db.carga:db.carga.filter(function(c){return c.d===sesion.u;});
-  var cargasFiltradas=misCargas.filter(function(c){return c.g===gradoSel;});
-  if(cargasFiltradas.length) asistCId=String(cargasFiltradas[0].id);
-  asistGrado=gradoSel;
-  var opts=cargasFiltradas.map(function(c){return '<option value="'+c.id+'"'+(String(c.id)===String(asistCId)?' selected':'')+'>'+c.m+' ('+c.a+')</option>';}).join('');
-  var sel=document.getElementById('asistCIdSel');
-  if(sel){sel.innerHTML=opts;}
-  // Buscar registro existente para pre-cargar estados
-  var existReg=(db.asistencia||[]).find(function(a){
-    return a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===gradoSel;
+function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
+  var grado = asistGrado;
+  var cId = asistCId;
+  var pctCrit = Number(db.config?.pctInasistenciaCritica || 25);
+  var pctPrev = Number(db.config?.pctInasistenciaPreventiva || 20);
+
+  var ests = grado ? (db.ests || []).filter(function(e){ return !e.deletedAt && e.g === grado; }).sort(function(a,b){ return a.n.localeCompare(b.n); }) : [];
+  var clases = (db.asistencia || []).filter(function(a){
+    return !a.deletedAt && a.grado === grado && (!cId || String(a.cargaId) === String(cId));
   });
-  // Actualizar campo actividad si existe registro previo
-  var actEl=document.getElementById('asistActividad');
-  if(actEl&&existReg) actEl.value=existReg.actividad||'';
-  else if(actEl&&!existReg) actEl.value='';
-  // Actualizar lista de estudiantes
-  var ests=db.ests.filter(function(e){return e.g===gradoSel;}).sort(function(a,b){return a.n.localeCompare(b.n);});
-  var tbody=document.querySelector('#asist-reg table tbody');
-  if(tbody){
-    if(ests.length){
-      tbody.innerHTML=ests.map(function(e){
-        var eid=String(e.id);
-        var st='P';
-        if(existReg){
-          if((existReg.ausentes||[]).some(function(x){return String(x)===eid;})) st='A';
-          else if((existReg.justificados||[]).some(function(x){return String(x)===eid;})) st='J';
-        }
-        return '<tr>'+
-          '<td style="text-align:left;font-size:0.82rem;padding:7px">'+e.n+'</td>'+
-          '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="P"'+(st==='P'?' checked':'')+'> Presente</label></td>'+
-          '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="A"'+(st==='A'?' checked':'')+'>  Ausente</label></td>'+
-          '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="J"'+(st==='J'?' checked':'')+'>  Justificado</label></td>'+
-        '</tr>';
-      }).join('');
+  var totalClases = clases.length;
+
+  var criticos = [];
+  var preventivos = [];
+  var normales = [];
+
+  ests.forEach(function(e){
+    var eid = String(e.id);
+    var aus = clases.filter(function(c){ return (c.ausentes||[]).some(function(x){ return String(x)===String(eid); }); }).length;
+    var just = clases.filter(function(c){ return (c.justificados||[]).some(function(x){ return String(x)===String(eid); }); }).length;
+    var pres = totalClases - aus - just;
+    if(pres < 0) pres = 0;
+    var pctAus = totalClases > 0 ? ((aus / totalClases) * 100) : 0;
+
+    var item = {
+      est: e,
+      aus: aus,
+      just: just,
+      pres: pres,
+      pctAus: pctAus,
+      totalClases: totalClases
+    };
+
+    if(totalClases > 0 && pctAus >= pctCrit){
+      criticos.push(item);
+    } else if(totalClases > 0 && pctAus >= pctPrev){
+      preventivos.push(item);
     } else {
-      tbody.innerHTML='<tr><td colspan="4" class="empty">No hay estudiantes en este grado.</td></tr>';
+      normales.push(item);
     }
+  });
+
+  var cargaInfo = (db.carga || []).find(function(c){ return String(c.id) === String(cId); });
+  var asigNombre = cargaInfo ? (cargaInfo.m + ' (' + (cargaInfo.a||'') + ')') : 'Todas las asignaturas';
+
+  var criticosHtml = criticos.length ? criticos.map(function(item){
+    return `<tr style="background:#fff5f5">
+      <td style="text-align:left;padding:8px">
+        <b>${item.est.n}</b>
+        <div style="font-size:0.75rem;color:#777">Doc: ${item.est.numDoc || '—'} · Acudiente: ${item.est.acudiente || '—'} (Tel: ${item.est.tel || item.est.telefono || '—'})</div>
+      </td>
+      <td style="color:#c0392b;font-weight:bold">${item.aus} / ${item.totalClases}</td>
+      <td><span style="background:#c0392b;color:#fff;border-radius:4px;padding:3px 8px;font-weight:bold;font-size:0.8rem">🔴 ${item.pctAus.toFixed(1)}%</span></td>
+      <td style="text-align:left;font-size:0.76rem;color:#555">
+        <b>Riesgo inminente de reprobación (≥${pctCrit}%).</b> Requiere citación urgente de acudiente, remisión a Orientación Escolar y acta de compromiso institucional.
+      </td>
+      <td style="white-space:nowrap">
+        <button class="btn-sm" style="background:#8e44ad;font-size:0.75rem" onclick="analizarInasistenciaAdan(${item.est.id}, '${grado}', '${cId}')" title="Generar sugerencias psicopedagógicas con IA">🤖 Adán IA</button>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="5" class="empty" style="padding:16px;color:#27ae60">✅ No hay estudiantes en riesgo crítico en este grupo.</td></tr>`;
+
+  var preventivosHtml = preventivos.length ? preventivos.map(function(item){
+    return `<tr style="background:#fffdf5">
+      <td style="text-align:left;padding:8px">
+        <b>${item.est.n}</b>
+        <div style="font-size:0.75rem;color:#777">Acudiente: ${item.est.acudiente || '—'} (Tel: ${item.est.tel || item.est.telefono || '—'})</div>
+      </td>
+      <td style="color:#d35400;font-weight:bold">${item.aus} / ${item.totalClases}</td>
+      <td><span style="background:#f39c12;color:#fff;border-radius:4px;padding:3px 8px;font-weight:bold;font-size:0.8rem">🟡 ${item.pctAus.toFixed(1)}%</span></td>
+      <td style="text-align:left;font-size:0.76rem;color:#555">
+        <b>Alerta preventiva temprana (≥${pctPrev}%).</b> Realizar seguimiento formativo en aula, verificar causas psicosociales y notificar al acudiente.
+      </td>
+      <td style="white-space:nowrap">
+        <button class="btn-sm" style="background:#8e44ad;font-size:0.75rem" onclick="analizarInasistenciaAdan(${item.est.id}, '${grado}', '${cId}')" title="Generar sugerencias psicopedagógicas con IA">🤖 Adán IA</button>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="5" class="empty" style="padding:16px;color:#27ae60">✅ No hay estudiantes en alerta preventiva.</td></tr>`;
+
+  return `
+    <div class="card" style="border-top:4px solid #8e44ad">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <div>
+          <h4 class="card-title" style="margin:0;color:#003366">🧠 Panel de Reporte Psicopedagógico Automatizado</h4>
+          <small style="color:#666">Detección temprana de ausentismo escolar, sugerencias didácticas y rutas de atención integral (Decreto 1290 / Ley 1620)</small>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-green btn-sm" onclick="descargarReportePsicopedagogicoPDF('${grado}', '${cId}')">📥 Exportar Reporte PDF</button>
+        </div>
+      </div>
+
+      <!-- Filtros del panel -->
+      <div class="grid3" style="margin-bottom:14px;background:#f8fafc;padding:10px;border-radius:8px;border:1px solid #e2e8f0">
+        <div>
+          <label class="lbl">Grado a Analizar</label>
+          <select onchange="asistGrado=this.value;asistCId='';actualizarAsignaturasReg(this.value);renderApp()">${gradoOpts}</select>
+        </div>
+        <div>
+          <label class="lbl">Asignatura</label>
+          <select onchange="asistCId=this.value;renderApp()">${cargaOpts}</select>
+        </div>
+        <div>
+          <label class="lbl">Total Clases Evaluadas</label>
+          <div style="padding:7px 10px;background:#fff;border:1px solid #ccd;border-radius:6px;font-weight:bold;color:#003366;font-size:0.9rem">
+            ${totalClases} clase(s) registradas
+          </div>
+        </div>
+      </div>
+
+      <!-- Tarjetas de Resumen Estadístico -->
+      <div class="grid4" style="gap:12px;margin-bottom:16px">
+        <div style="background:#f0f7ff;border:1px solid #c8dcf0;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:1.4rem;font-weight:bold;color:#003366">${ests.length}</div>
+          <div style="font-size:0.75rem;color:#555;font-weight:bold">Total Estudiantes</div>
+        </div>
+        <div style="background:#eafaf1;border:1px solid #a3e4d7;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:1.4rem;font-weight:bold;color:#27ae60">${normales.length}</div>
+          <div style="font-size:0.75rem;color:#27ae60;font-weight:bold">🟢 Normal (&lt;${pctPrev}%)</div>
+        </div>
+        <div style="background:#fef9e7;border:1px solid #f9e79f;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:1.4rem;font-weight:bold;color:#d35400">${preventivos.length}</div>
+          <div style="font-size:0.75rem;color:#d35400;font-weight:bold">🟡 Preventivo (${pctPrev}% - ${pctCrit-1}%)</div>
+        </div>
+        <div style="background:#fdedec;border:1px solid #f5b7b1;border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:1.4rem;font-weight:bold;color:#c0392b">${criticos.length}</div>
+          <div style="font-size:0.75rem;color:#c0392b;font-weight:bold">🔴 Riesgo Pérdida (≥${pctCrit}%)</div>
+        </div>
+      </div>
+
+      <!-- Tabla de Estudiantes en Riesgo Crítico -->
+      <h5 style="color:#c0392b;margin:14px 0 6px">🔴 Estudiantes en Riesgo Crítico de Reprobación (Inasistencia ≥ ${pctCrit}%)</h5>
+      <div class="over" style="margin-bottom:16px">
+        <table style="width:100%;font-size:0.82rem">
+          <thead>
+            <tr style="background:#c0392b;color:#fff">
+              <th style="text-align:left">Estudiante</th>
+              <th>Faltas / Clases</th>
+              <th>% Inasistencia</th>
+              <th style="text-align:left">Diagnóstico Académico</th>
+              <th>Acción IA</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${criticosHtml}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Tabla de Estudiantes en Alerta Preventiva -->
+      <h5 style="color:#d35400;margin:14px 0 6px">🟡 Estudiantes en Alerta Preventiva Temprana (${pctPrev}% a ${pctCrit-1}%)</h5>
+      <div class="over" style="margin-bottom:16px">
+        <table style="width:100%;font-size:0.82rem">
+          <thead>
+            <tr style="background:#d35400;color:#fff">
+              <th style="text-align:left">Estudiante</th>
+              <th>Faltas / Clases</th>
+              <th>% Inasistencia</th>
+              <th style="text-align:left">Diagnóstico Académico</th>
+              <th>Acción IA</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${preventivosHtml}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Orientaciones Psicopedagógicas Diferenciadas -->
+      <div class="grid2" style="gap:16px;margin-top:16px">
+        <div style="background:#f0faf8;border:1px solid #b2dfdb;border-radius:8px;padding:14px">
+          <h5 style="color:#00695c;margin-top:0;display:flex;align-items:center;gap:6px">
+            👨‍🏫 Sugerencias Psicopedagógicas para el DOCENTE DE AULA
+          </h5>
+          <ul style="font-size:0.8rem;color:#333;line-height:1.5;padding-left:18px;margin:0">
+            <li><b>Flexibilización Didáctica:</b> Entregar guías de autoaprendizaje y talleres nivelatorios para recuperar saberes esenciales.</li>
+            <li><b>Diálogo Formativo Individual:</b> Indagar de manera asertiva posibles causas familiares, de salud o socioeconómicas.</li>
+            <li><b>Bitácora de Observaciones:</b> Registrar las inasistencias reiteradas en el módulo de <i>Observaciones de Aula</i>.</li>
+            <li><b>Evaluación Continua:</b> Concertar plazos razonables para la sustentación de actividades pendientes sin carácter punitivo.</li>
+          </ul>
+        </div>
+
+        <div style="background:#f4f6f9;border:1px solid #ccd5e0;border-radius:8px;padding:14px">
+          <h5 style="color:#1a3a5c;margin-top:0;display:flex;align-items:center;gap:6px">
+            🏛️ Sugerencias Psicopedagógicas para DIRECTIVOS (Rector / Coordinación / Orientación)
+          </h5>
+          <ul style="font-size:0.8rem;color:#333;line-height:1.5;padding-left:18px;margin:0">
+            <li><b>Citación Formal a Acudiente:</b> Suscribir Acta de Compromiso Institucional para garantizar el derecho a la educación.</li>
+            <li><b>Remisión a Orientación Escolar:</b> Realizar valoración psicosocial para identificar factores de deserción o vulnerabilidad.</li>
+            <li><b>Activación de Ruta (Ley 1098 / 1620):</b> Si se evidencia negligencia o abandono, reportar a Comisaría de Familia o ICBF.</li>
+            <li><b>Comité de Evaluación y Promoción:</b> Analizar los casos críticos antes de emitir actas finales de reprobación.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function analizarInasistenciaAdan(estId, grado, cId){
+  var est = (db.ests || []).find(function(e){ return String(e.id) === String(estId); });
+  if(!est){ alert('Estudiante no encontrado.'); return; }
+
+  var pctCrit = Number(db.config?.pctInasistenciaCritica || 25);
+  var pctPrev = Number(db.config?.pctInasistenciaPreventiva || 20);
+
+  var clases = (db.asistencia || []).filter(function(a){
+    return !a.deletedAt && a.grado === grado && (!cId || String(a.cargaId) === String(cId));
+  });
+  var totalClases = clases.length;
+  var aus = clases.filter(function(c){ return (c.ausentes||[]).some(function(x){ return String(x)===String(estId); }); }).length;
+  var just = clases.filter(function(c){ return (c.justificados||[]).some(function(x){ return String(x)===String(estId); }); }).length;
+  var pctAus = totalClases > 0 ? ((aus / totalClases) * 100) : 0;
+
+  var cInfo = (db.carga || []).find(function(c){ return String(c.id) === String(cId); });
+  var asig = cInfo ? cInfo.m : 'Área académica';
+
+  var prompt = `Actúa como especialista en Psicopedagogía Escolar y Orientación Educativa bajo la normatividad escolar colombiana (Decreto 1290 y Ley 1620).
+Genera un diagnóstico psicopedagógico y un plan de acción formativo para el siguiente estudiante:
+- Estudiante: ${est.n} (Grado: ${grado})
+- Asignatura: ${asig}
+- Total de clases dictadas: ${totalClases}
+- Inasistencias injustificadas: ${aus} (${pctAus.toFixed(1)}%)
+- Justificaciones: ${just}
+- Umbral crítico institucional para pérdida de materia: ${pctCrit}% (Umbral preventivo: ${pctPrev}%)
+- Estado actual: ${pctAus >= pctCrit ? '🔴 RIESGO CRÍTICO DE REPROBACIÓN' : pctAus >= pctPrev ? '🟡 ALERTA PREVENTIVA' : '🟢 NORMAL'}
+
+Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
+1. 🔍 Diagnóstico e Impacto Pedagógico
+2. 👨‍🏫 Recomendaciones y Estrategias para el Docente de Aula
+3. 🏛️ Acciones Institucionales y Psicoorientación para Directivos (Rector / Coordinador)
+4. 📝 Compromiso sugerido para el Acudiente y Estudiante`;
+
+  if(typeof iaAbrirConPrompt === 'function'){
+    iaAbrirConPrompt(prompt, '🧠 Diagnóstico Psicopedagógico — ' + est.n);
+  } else {
+    _showToast('Consultando asistente Adán IA...', 'info', 4000);
+    fetch('/api/inetis/ai/general', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: prompt })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d.content){
+        alert('🧠 DIAGNÓSTICO PSICOPEDAGÓGICO (ADÁN IA):\n\n' + d.content);
+      } else {
+        alert('Respuesta de IA recibida.');
+      }
+    })
+    .catch(function(err){
+      alert('Error consultando IA: ' + err.message);
+    });
   }
 }
 
-function cambiarTabAsist(tab){
-  asistTabActivo=tab;
-  var ids={reg:'asist-reg',hist:'asist-hist',rep:'asist-rep',desc:'asist-desc'};
-  Object.keys(ids).forEach(function(k){var el=document.getElementById(ids[k]);if(el)el.style.display=k===tab?'':'none';});
-  document.querySelectorAll('#contenido .tab-btn').forEach(function(b){
-    var lbl=b.textContent||'';
-    b.classList.toggle('active',
-      (tab==='reg'&&lbl.includes('Registrar'))||(tab==='hist'&&lbl.includes('Historial'))||(tab==='rep'&&lbl.includes('Reporte'))||(tab==='desc'&&lbl.includes('Planillas')));
+function descargarReportePsicopedagogicoPDF(grado, cId){
+  if(typeof window.jspdf === 'undefined'){ alert('Librería PDF no cargada.'); return; }
+  var doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
+  var PW = 215.9, PH = 279.4, MX = 14, MW = PW - MX * 2;
+  var y = 14;
+
+  var pctCrit = Number(db.config?.pctInasistenciaCritica || 25);
+  var pctPrev = Number(db.config?.pctInasistenciaPreventiva || 20);
+
+  var ests = grado ? (db.ests || []).filter(function(e){ return !e.deletedAt && e.g === grado; }).sort(function(a,b){ return a.n.localeCompare(b.n); }) : [];
+  var clases = (db.asistencia || []).filter(function(a){
+    return !a.deletedAt && a.grado === grado && (!cId || String(a.cargaId) === String(cId));
   });
-  if(tab==='rep') verReporteAsistencia();
+  var totalClases = clases.length;
+
+  var cInfo = (db.carga || []).find(function(c){ return String(c.id) === String(cId); });
+  var asig = cInfo ? cInfo.m : 'General';
+
+  // Membrete
+  if(db.logo){ try{ doc.addImage(db.logo, 'PNG', MX, y, 18, 18); }catch(e){} }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(0, 51, 102);
+  doc.text(db.nombre || 'INSTITUCIÓN EDUCATIVA', PW / 2, y + 4, { align: 'center' });
+  doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(80, 80, 80);
+  doc.text((db.municipio || '') + (db.depto ? ' - ' + db.depto : '') + ' · Año Lectivo ' + (db.anio || '2026'), PW / 2, y + 9, { align: 'center' });
+  y += 20;
+
+  doc.setDrawColor(0, 51, 102); doc.setLineWidth(0.5); doc.line(MX, y, PW - MX, y); y += 6;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(0, 51, 102);
+  doc.text('INFORME PSICOPEDAGÓGICO DE INASISTENCIAS Y ALERTAS TEMPRANAS', PW / 2, y, { align: 'center' }); y += 6;
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(50, 50, 50);
+  doc.text('Grado: ' + grado + '   |   Asignatura: ' + asig + '   |   Docente: ' + (sesion.n || sesion.u) + '   |   Clases Registradas: ' + totalClases, MX, y); y += 4;
+  doc.text('Umbrales SIE: Alerta Preventiva ≥ ' + pctPrev + '%   |   Riesgo Reprobación / Pérdida ≥ ' + pctCrit + '% (Decreto 1290)', MX, y); y += 6;
+  doc.line(MX, y, PW - MX, y); y += 5;
+
+  // Tabla
+  var COL = [MX, MX + 8, MX + 95, MX + 120, MX + 148];
+  doc.setFillColor(0, 51, 102); doc.rect(MX, y, MW, 6, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
+  doc.text('#', COL[0] + 1, y + 4);
+  doc.text('Estudiante', COL[1] + 1, y + 4);
+  doc.text('Faltas / Clases', COL[2], y + 4, { align: 'center' });
+  doc.text('% Inasist.', COL[3], y + 4, { align: 'center' });
+  doc.text('Estado Alerta', COL[4] + 1, y + 4);
+  y += 6;
+
+  doc.setFontSize(7.5);
+  ests.forEach(function(e, i){
+    if(y > PH - 30){ doc.addPage(); y = 14; }
+    var eid = String(e.id);
+    var aus = clases.filter(function(c){ return (c.ausentes||[]).some(function(x){ return String(x)===eid; }); }).length;
+    var pctAus = totalClases > 0 ? ((aus / totalClases) * 100) : 0;
+
+    var bg = i % 2 === 0 ? [248, 250, 252] : [255, 255, 255];
+    if(pctAus >= pctCrit) bg = [253, 237, 236];
+    else if(pctAus >= pctPrev) bg = [254, 249, 231];
+
+    doc.setFillColor.apply(doc, bg); doc.rect(MX, y, MW, 5.5, 'F');
+    doc.setTextColor(40, 40, 40); doc.setFont('helvetica', 'normal');
+    doc.text(String(i + 1), COL[0] + 1, y + 4);
+    doc.text(e.n.length > 38 ? e.n.substring(0, 36) + '…' : e.n, COL[1] + 1, y + 4);
+    doc.text(aus + ' / ' + totalClases, COL[2], y + 4, { align: 'center' });
+
+    if(pctAus >= pctCrit){
+      doc.setTextColor(192, 57, 43); doc.setFont('helvetica', 'bold');
+      doc.text(pctAus.toFixed(1) + '%', COL[3], y + 4, { align: 'center' });
+      doc.text('🔴 RIESGO REPROBACIÓN', COL[4] + 1, y + 4);
+    } else if(pctAus >= pctPrev){
+      doc.setTextColor(211, 84, 0); doc.setFont('helvetica', 'bold');
+      doc.text(pctAus.toFixed(1) + '%', COL[3], y + 4, { align: 'center' });
+      doc.text('🟡 ALERTA PREVENTIVA', COL[4] + 1, y + 4);
+    } else {
+      doc.setTextColor(39, 174, 96); doc.setFont('helvetica', 'normal');
+      doc.text(pctAus.toFixed(1) + '%', COL[3], y + 4, { align: 'center' });
+      doc.text('🟢 Normal', COL[4] + 1, y + 4);
+    }
+    y += 5.5;
+  });
+
+  y += 6;
+  if(y > PH - 45){ doc.addPage(); y = 14; }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(0, 51, 102);
+  doc.text('RECOMENDACIONES INSTITUCIONALES Y PSICOPEDAGÓGICAS:', MX, y); y += 4;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(60, 60, 60);
+  var reco = [
+    '• Docente de Aula: Entregar planes de mejoramiento continuo y registrar alertas formativas en el observador.',
+    '• Directivo Docente / Coordinación: Citación prioritaria a acudientes de estudiantes en riesgo para firma de compromisos.',
+    '• Orientación Escolar: Realizar acompañamiento psicosocial y activar rutas de atención integral si hay presunta vulneración.'
+  ];
+  reco.forEach(function(r){ doc.text(r, MX, y); y += 3.8; });
+
+  y += 10;
+  if(y > PH - 25){ doc.addPage(); y = 20; }
+  doc.line(MX, y, MX + 55, y); doc.line(PW - MX - 55, y, PW - MX, y);
+  y += 4;
+  doc.setFontSize(8); doc.text('Firma Docente', MX + 5, y); doc.text('Firma Rector / Coordinador', PW - MX - 50, y);
+
+  doc.save('Reporte_Psicopedagogico_' + grado + '_' + asig.replace(/\s+/g, '_') + '.pdf');
 }
 
 function marcarTodosPresentes(){
@@ -654,7 +1016,7 @@ function guardarAsistencia(){
   if(!asistFecha){alert('Ingrese la fecha.');return;}
   var actEl=document.getElementById('asistActividad');
   var actividad=actEl?actEl.value.trim():'';
-  var ests=db.ests.filter(function(e){return e.g===asistGrado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
+  var ests=db.ests.filter(function(e){return !e.deletedAt && e.g===asistGrado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
   var presentes=[],ausentes=[],justificados=[];
   ests.forEach(function(e){
     var sel=document.querySelector('input[name="as_'+e.id+'"]:checked');
@@ -667,7 +1029,7 @@ function guardarAsistencia(){
     if(!d.asistencia)d.asistencia=[];
     // Buscar si ya existe registro para esta fecha+cargaId+grado → actualizar en vez de duplicar
     var idx=d.asistencia.findIndex(function(a){
-      return a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
+      return !a.deletedAt && a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
     });
     var reg={
       id:idx!==-1?d.asistencia[idx].id:('a'+Date.now()),
@@ -708,8 +1070,12 @@ function guardarAsistencia(){
 }
 
 function eliminarAsistencia(id){
-  if(!confirm('¿Eliminar este registro de asistencia? Esta acción no se puede deshacer.')) return;
-  updDB(function(d){d.asistencia=(d.asistencia||[]).filter(function(a){return a.id!==id;});return d;});
+  if(!confirm('¿Mover este registro de asistencia a la papelera?')) return;
+  updDB(function(d){
+    var reg=(d.asistencia||[]).find(function(a){return a.id===id;});
+    if(reg) reg.deletedAt = new Date().toISOString();
+    return d;
+  });
   renderApp();
 }
 
@@ -3696,35 +4062,42 @@ async function enviarComunicadoGeneral(){
 }
 
 // ============================================================
-// OBSERVACIONES DE AULA — DOCENTE (entrada rápida)
+// OBSERVACIONES DE AULA — DOCENTE (CRUD Completo: Crear, Editar, Eliminar, Recuperar)
 // ============================================================
 function htmlObsAula(){
   const misGrados=[...new Set((db.carga||[]).filter(c=>c.d===sesion.u).map(c=>c.g))].sort();
-  if(!misGrados.length){
+  if(!misGrados.length && sesion.r!=='admin'){
     return `<h3 class="sec-title">📓 Observaciones de Aula</h3>
     <div class="info-box">No tiene grados asignados en la carga académica. Contacte al rector para asignarle cursos.</div>`;
   }
+  const gradosList = misGrados.length ? misGrados : db.grados.map(g=>g.n);
   const _numPerOA2=(db.config&&db.config.numPeriodos)||4;
   const perA=db.periodosActivos||Array(_numPerOA2).fill(true);
   const perActual=String(perA.lastIndexOf(true)+1||1);
-  const gradOpts=misGrados.map((g,i)=>`<option value="${g}"${i===0?' selected':''}>${g}</option>`).join('');
+  const gradOpts=gradosList.map((g,i)=>`<option value="${g}"${i===0?' selected':''}>${g}</option>`).join('');
   const _numPerOA=(db.config&&db.config.numPeriodos)||4;
   const perOpts=Array.from({length:_numPerOA},(_,i)=>i+1).map(p=>`<option value="${p}"${String(p)===perActual?' selected':''}>P${p}</option>`).join('');
+
   return `<h3 class="sec-title">📓 Observaciones de Aula</h3>
   <div class="info-box" style="margin-bottom:14px">
-    Registre observaciones rápidas de comportamiento, rendimiento, logros o inasistencias para sus estudiantes. Quedan vinculadas al <b>Observador del Estudiante</b> y son visibles para el rector y director de grupo.
+    Registre, edite o elimine observaciones formativas de comportamiento, rendimiento, logros o inasistencias. Quedan vinculadas en tiempo real al <b>Observador del Estudiante</b> y son visibles para directivos y docentes.
   </div>
-  <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
-    <div>
-      <label style="font-size:0.82rem;font-weight:600;color:#1a3a5c;display:block;margin-bottom:4px">Grado</label>
-      <select id="obsAulaGrado" onchange="renderObsAulaLista()" style="padding:8px 12px;border:1px solid #ccd;border-radius:7px;font-size:0.9rem">${gradOpts}</select>
+  <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+      <div>
+        <label style="font-size:0.82rem;font-weight:600;color:#1a3a5c;display:block;margin-bottom:4px">Grado</label>
+        <select id="obsAulaGrado" onchange="renderObsAulaLista()" style="padding:8px 12px;border:1px solid #ccd;border-radius:7px;font-size:0.9rem">${gradOpts}</select>
+      </div>
+      <div>
+        <label style="font-size:0.82rem;font-weight:600;color:#1a3a5c;display:block;margin-bottom:4px">Período</label>
+        <select id="obsAulaPer" onchange="renderObsAulaLista()" style="padding:8px 12px;border:1px solid #ccd;border-radius:7px;font-size:0.9rem">${perOpts}</select>
+      </div>
+      <button class="btn" style="background:#1a3a5c;color:#fff;padding:8px 18px;font-size:0.88rem" onclick="renderObsAulaLista()">🔄 Cargar</button>
+      <span id="obsAulaContador" style="font-size:0.78rem;color:#888;align-self:center"></span>
     </div>
     <div>
-      <label style="font-size:0.82rem;font-weight:600;color:#1a3a5c;display:block;margin-bottom:4px">Período</label>
-      <select id="obsAulaPer" onchange="renderObsAulaLista()" style="padding:8px 12px;border:1px solid #ccd;border-radius:7px;font-size:0.9rem">${perOpts}</select>
+      <button class="btn-sm" style="background:#566573;padding:7px 14px" onclick="abrirModalPapelera('observacion')">♻️ Papelera de Observaciones</button>
     </div>
-    <button class="btn" style="background:#1a3a5c;color:#fff;padding:8px 18px;font-size:0.88rem" onclick="renderObsAulaLista()">🔄 Cargar</button>
-    <span id="obsAulaContador" style="font-size:0.78rem;color:#888;align-self:center"></span>
   </div>
   <div id="obsAulaLista"></div>
   <script>setTimeout(renderObsAulaLista,80);<\/script>`;
@@ -3736,9 +4109,11 @@ function renderObsAulaLista(){
   const wrap=document.getElementById('obsAulaLista');
   const cnt=document.getElementById('obsAulaContador');
   if(!wrap) return;
-  const ests=(db.ests||[]).filter(e=>e.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
+
+  const ests=(db.ests||[]).filter(e=>!e.deletedAt && e.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   if(cnt) cnt.textContent=ests.length+' estudiante(s)';
   if(!ests.length){wrap.innerHTML='<div class="card"><p class="empty">Sin estudiantes en este grado.</p></div>';return;}
+
   const tiposObs=[
     {v:'Comportamental',label:'😤 Comportamental',color:'#e67e22'},
     {v:'Académica',label:'📚 Académica',color:'#2980b9'},
@@ -3748,34 +4123,67 @@ function renderObsAulaLista(){
   ];
   const tipoOpts=tiposObs.map(t=>`<option value="${t.v}">${t.label}</option>`).join('');
   const colorTipo=v=>(tiposObs.find(t=>t.v===v)||{color:'#555'}).color;
+  const isAdmin = sesion && sesion.r === 'admin';
+
   wrap.innerHTML=ests.map((e,idx)=>{
-    const obsDelPer=(e.observaciones||[]).filter(o=>String(o.per)===String(per));
-    const obsHoy=obsDelPer.filter(o=>o.doc===sesion.n);
+    const obsDelPer=(e.observaciones||[]).map((o, originalIdx)=>({ ...o, _origIdx: originalIdx })).filter(o=>!o.deletedAt && String(o.per)===String(per));
+    const obsHoy=obsDelPer.filter(o=>o.doc===sesion.n || o.doc===sesion.u);
+
     const totalHtml=obsDelPer.length
-      ?obsDelPer.slice(-5).reverse().map(o=>`<div style="border-left:3px solid ${colorTipo(o.tipo||'Otro')};padding:4px 8px;margin-bottom:5px;background:#fafafa;border-radius:0 5px 5px 0">
-          ${o.tipo?`<span style="font-size:0.68rem;font-weight:700;color:${colorTipo(o.tipo)};text-transform:uppercase">${o.tipo}</span> · `:''}
-          <span style="font-size:0.82rem;color:#333">${o.txt}</span>
-          <span style="font-size:0.7rem;color:#aaa;display:block;margin-top:1px">${o.doc} · ${o.fecha||''}</span>
-        </div>`).join('')
-      :`<p style="color:#ccc;font-size:0.8rem;margin:6px 0">Sin observaciones en P${per}</p>`;
-    return `<div class="card" style="margin-bottom:10px;padding:14px 16px" id="obsCard_${e.id}">
+      ?obsDelPer.slice().reverse().map(o=>{
+          const obsIdVal = o.id || ('obs_' + e.id + '_' + o._origIdx);
+          const puedeModificar = isAdmin || o.doc===sesion.n || o.doc===sesion.u || o.docente===sesion.u;
+          const jsonObsStr = encodeURIComponent(JSON.stringify(o));
+          return `<div style="border-left:4px solid ${colorTipo(o.tipo||'Otro')};padding:8px 10px;margin-bottom:8px;background:#f8fafc;border-radius:0 6px 6px 0;border:1px solid #e2e8f0;border-left-width:4px" id="obsItem_${obsIdVal}">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <div style="flex:1">
+                ${o.tipo?`<span style="font-size:0.72rem;font-weight:700;color:${colorTipo(o.tipo)};text-transform:uppercase;background:#fff;border:1px solid ${colorTipo(o.tipo)}40;padding:1px 6px;border-radius:4px">${o.tipo}</span> · `:''}
+                <span style="font-size:0.84rem;color:#1e293b;line-height:1.4">${o.txt}</span>
+                <span style="font-size:0.72rem;color:#64748b;display:block;margin-top:4px">👤 ${o.doc||'Docente'} · 📅 ${o.fecha||''}</span>
+              </div>
+              ${puedeModificar ? `
+              <div style="display:flex;gap:4px;flex-shrink:0">
+                <button class="btn-sm" style="background:#e67e22;padding:3px 7px;font-size:0.72rem" onclick="editarObsAula('${e.id}','${obsIdVal}',${o._origIdx})" title="Editar observación">✏️</button>
+                <button class="btn-sm" style="background:#c0392b;padding:3px 7px;font-size:0.72rem" onclick="eliminarObsAula('${e.id}','${obsIdVal}',${o._origIdx})" title="Eliminar observación (a papelera)">🗑️</button>
+              </div>` : ''}
+            </div>
+            <!-- Formulario de edición inline oculto -->
+            <div id="editObsForm_${obsIdVal}" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1">
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+                <select id="editObsTipo_${obsIdVal}" style="padding:5px;border-radius:5px;border:1px solid #cbd5e1;font-size:0.8rem">
+                  ${tiposObs.map(t=>`<option value="${t.v}"${t.v===o.tipo?' selected':''}>${t.label}</option>`).join('')}
+                </select>
+                <input type="text" id="editObsFecha_${obsIdVal}" value="${o.fecha||''}" style="padding:5px;border-radius:5px;border:1px solid #cbd5e1;font-size:0.8rem;width:120px" placeholder="Fecha">
+              </div>
+              <textarea id="editObsTxt_${obsIdVal}" rows="2" style="width:100%;padding:6px;border-radius:5px;border:1px solid #cbd5e1;font-size:0.82rem;resize:vertical;box-sizing:border-box;margin-bottom:6px">${o.txt}</textarea>
+              <div style="display:flex;gap:6px">
+                <button class="btn-sm btn-green" style="font-size:0.75rem;padding:4px 10px" onclick="guardarEdicionObsAula('${e.id}','${obsIdVal}',${o._origIdx})">💾 Guardar Cambios</button>
+                <button class="btn-sm btn-gray" style="font-size:0.75rem;padding:4px 8px" onclick="document.getElementById('editObsForm_${obsIdVal}').style.display='none'">Cancelar</button>
+              </div>
+            </div>
+          </div>`;
+        }).join('')
+      :`<p style="color:#94a3b8;font-size:0.8rem;margin:6px 0;font-style:italic">Sin observaciones registradas en el Período ${per}</p>`;
+
+    return `<div class="card" style="margin-bottom:12px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,0.06)" id="obsCard_${e.id}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:10px">
         <div>
-          <b style="font-size:0.95rem;color:#1a3a5c">${e.n}</b>
-          <span style="font-size:0.75rem;color:#888;margin-left:8px">${obsDelPer.length} obs. en P${per}${obsHoy.length?' · '+obsHoy.length+' tuyas':''}</span>
+          <b style="font-size:0.95rem;color:#003366">${e.n}</b>
+          <span style="font-size:0.75rem;color:#64748b;margin-left:8px">${obsDelPer.length} obs. en P${per}${obsHoy.length?' · '+obsHoy.length+' tuyas':''}</span>
         </div>
-        <button class="btn" style="background:#f0f0f0;color:#555;font-size:0.75rem;padding:4px 12px" onclick="toggleObsAulaForm('${e.id}')">✏️ Agregar</button>
+        <button class="btn" style="background:#e8f4fd;color:#003366;font-size:0.78rem;padding:5px 14px;border:1px solid #b8daff;font-weight:600" onclick="toggleObsAulaForm('${e.id}')">➕ Nueva Observación</button>
       </div>
-      <div id="obsAulaForm_${e.id}" style="display:none;border-top:1px solid #eee;padding-top:10px;margin-bottom:10px">
+      <div id="obsAulaForm_${e.id}" style="display:none;border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:12px;background:#f8fafc;padding:12px;border-radius:6px">
+        <b style="font-size:0.8rem;color:#003366;display:block;margin-bottom:8px">📝 Registrar Nueva Observación de Aula</b>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <select id="obsAulaTipo_${e.id}" style="padding:7px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.83rem;flex:1;min-width:180px">${tipoOpts}</select>
           <input id="obsAulaFechaObs_${e.id}" type="text" placeholder="Fecha (ej: hoy)" value="${new Date().toLocaleDateString('es-CO')}" style="padding:7px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.83rem;width:130px">
         </div>
-        <textarea id="obsAulaTxt_${e.id}" rows="3" placeholder="Describa la observación con detalle..."
+        <textarea id="obsAulaTxt_${e.id}" rows="3" placeholder="Describa la situación, comportamiento, acuerdo pedagógico o reconocimiento..."
           style="width:100%;padding:8px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.85rem;resize:vertical;box-sizing:border-box;margin-bottom:8px"></textarea>
         <div style="display:flex;gap:8px">
-          <button class="btn" style="background:#27ae60;color:#fff;font-size:0.83rem;padding:7px 18px" onclick="guardarObsAula('${e.id}','${per}')">💾 Guardar</button>
-          <button class="btn" style="background:#ecf0f1;color:#555;font-size:0.83rem;padding:7px 14px" onclick="toggleObsAulaForm('${e.id}')">Cancelar</button>
+          <button class="btn btn-green" style="font-size:0.83rem;padding:7px 18px" onclick="guardarObsAula('${e.id}','${per}')">💾 Guardar Observación</button>
+          <button class="btn btn-gray" style="font-size:0.83rem;padding:7px 14px" onclick="toggleObsAulaForm('${e.id}')">Cancelar</button>
         </div>
       </div>
       <div id="obsAulaHistorial_${e.id}">${totalHtml}</div>
@@ -3796,35 +4204,73 @@ function guardarObsAula(estId,per){
   const txt=(document.getElementById('obsAulaTxt_'+estId)?.value||'').trim();
   const fecha=document.getElementById('obsAulaFechaObs_'+estId)?.value||new Date().toLocaleDateString('es-CO');
   if(!txt){alert('Escriba el texto de la observación.');return;}
+
   const estIdNum=isNaN(Number(estId))?estId:Number(estId);
+  const newId = 'obs_' + estId + '_' + Date.now();
+
   updDB(d=>{
-    const idx=d.ests.findIndex(x=>x.id==estIdNum);
+    const idx=d.ests.findIndex(x=>String(x.id)===String(estIdNum));
     if(idx===-1) return d;
     if(!d.ests[idx].observaciones) d.ests[idx].observaciones=[];
-    d.ests[idx].observaciones.push({per:String(per),txt,tipo,doc:sesion.n,fecha,anio:d.anio});
+    d.ests[idx].observaciones.push({
+      id: newId,
+      per: String(per),
+      txt,
+      tipo,
+      doc: sesion.n || sesion.u,
+      docente: sesion.u,
+      fecha,
+      anio: d.anio
+    });
     return d;
   });
-  // Feedback visual inmediato
-  const colorTipo={'Comportamental':'#e67e22','Académica':'#2980b9','Logro':'#27ae60','Asistencia':'#8e44ad','Otro':'#7f8c8d'}[tipo]||'#555';
-  const hist=document.getElementById('obsAulaHistorial_'+estId);
-  if(hist){
-    const div=document.createElement('div');
-    div.style.cssText=`border-left:3px solid ${colorTipo};padding:4px 8px;margin-bottom:5px;background:#f0faf4;border-radius:0 5px 5px 0;animation:fadeIn 0.3s ease`;
-    div.innerHTML=`<span style="font-size:0.68rem;font-weight:700;color:${colorTipo};text-transform:uppercase">${tipo}</span> · <span style="font-size:0.82rem;color:#333">${txt}</span><span style="font-size:0.7rem;color:#aaa;display:block;margin-top:1px">${sesion.n} · ${fecha}</span>`;
-    hist.insertBefore(div,hist.firstChild);
+
+  _showToast('✅ Observación de aula registrada con éxito.', 'success', 3000);
+  renderObsAulaLista();
+}
+
+function editarObsAula(estId, obsId, obsIdx){
+  const form = document.getElementById('editObsForm_' + obsId);
+  if(form){
+    form.style.display = form.style.display==='none' ? 'block' : 'none';
+    if(form.style.display==='block'){
+      document.getElementById('editObsTxt_' + obsId)?.focus();
+    }
   }
-  // Actualizar contador
-  const eAct=db.ests.find(e=>e.id==estIdNum);
-  const card=document.getElementById('obsCard_'+estId);
-  if(card&&eAct){
-    const perObs=(eAct.observaciones||[]).filter(o=>String(o.per)===String(per));
-    const mias=perObs.filter(o=>o.doc===sesion.n);
-    const span=card.querySelector('span[style*="0.75rem"]');
-    if(span) span.textContent=perObs.length+' obs. en P'+per+' · '+mias.length+' tuyas';
-  }
-  // Limpiar y cerrar form
-  document.getElementById('obsAulaTxt_'+estId).value='';
-  toggleObsAulaForm(estId);
+}
+
+function guardarEdicionObsAula(estId, obsId, obsIdx){
+  const nTipo = document.getElementById('editObsTipo_' + obsId)?.value || 'Otro';
+  const nFecha = (document.getElementById('editObsFecha_' + obsId)?.value || '').trim();
+  const nTxt = (document.getElementById('editObsTxt_' + obsId)?.value || '').trim();
+
+  if(!nTxt){ alert('El texto de la observación no puede estar vacío.'); return; }
+
+  updDB(d=>{
+    const est = (d.ests||[]).find(e=>String(e.id)===String(estId));
+    if(!est || !Array.isArray(est.observaciones)) return d;
+    let obs = est.observaciones.find(o=>String(o.id)===String(obsId));
+    if(!obs && obsIdx!==undefined && est.observaciones[obsIdx]){
+      obs = est.observaciones[obsIdx];
+    }
+    if(obs){
+      obs.tipo = nTipo;
+      obs.fecha = nFecha;
+      obs.txt = nTxt;
+      obs.updatedAt = new Date().toISOString();
+      obs.updatedBy = sesion.u;
+    }
+    return d;
+  });
+
+  _showToast('✅ Observación editada y actualizada.', 'success', 2500);
+  renderObsAulaLista();
+}
+
+function eliminarObsAula(estId, obsId, obsIdx){
+  if(!confirm('¿Mover esta observación de aula a la papelera de reciclaje?')) return;
+  softDeleteRegistro('observacion', obsId, { estId, obsId, obsIdx });
+  renderObsAulaLista();
 }
 
 // ============================================================

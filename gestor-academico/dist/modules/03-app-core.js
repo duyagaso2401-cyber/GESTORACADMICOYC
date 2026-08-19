@@ -23,7 +23,7 @@ const BLANK_INST_DB = {
   jornada:'Mañana', modalidad:'',
   periodosActivos:[true,true,true,true],
   cronograma:{p1:{desde:'',hasta:''},p2:{desde:'',hasta:''},p3:{desde:'',hasta:''},p4:{desde:'',hasta:''}},
-  config:{escalaS:4.7,escalaA:4.0,escalaB:3.0,numPeriodos:4,pesosArea:{},pesosAsig:{},driveEvalAcceso:null},
+  config:{escalaS:4.7,escalaA:4.0,escalaB:3.0,numPeriodos:4,pesosArea:{},pesosAsig:{},driveEvalAcceso:null,pctInasistenciaCritica:25,pctInasistenciaPreventiva:20},
   grados:[], users:[{u:'elecciones',p:'elecciones2026',r:'elecciones',n:'MÓDULO ELECCIONES'}], ests:[], carga:[], descriptores:[],
   actas:[], actasPdf:[],
   planesArea:[], planeaciones:[],
@@ -47,7 +47,7 @@ const DDB = {
   jornada:'Mañana', modalidad:'',
   periodosActivos:[true,true,true,true],
   cronograma:{p1:{desde:'',hasta:''},p2:{desde:'',hasta:''},p3:{desde:'',hasta:''},p4:{desde:'',hasta:''}},
-  config:{escalaS:4.7,escalaA:4.0,escalaB:3.0,numPeriodos:4,pesosArea:{},pesosAsig:{},driveEvalAcceso:null},
+  config:{escalaS:4.7,escalaA:4.0,escalaB:3.0,numPeriodos:4,pesosArea:{},pesosAsig:{},driveEvalAcceso:null,pctInasistenciaCritica:25,pctInasistenciaPreventiva:20},
   grados:[], users:[{u:'admin',p:'1234',r:'admin',n:'ADMIN'},{u:'elecciones',p:'elecciones2026',r:'elecciones',n:'MÓDULO ELECCIONES'}],
   ests:[], carga:[], descriptores:[],
   actas:[], actasPdf:[],
@@ -2634,8 +2634,10 @@ function renderApp(){
     ?`<img src="${sesion.foto}" alt="Foto" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid #f1c40f;flex-shrink:0">`
     :`<span style="width:34px;height:34px;border-radius:50%;background:#1a5276;border:2px solid #f1c40f;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0">👤</span>`;
 
-  // Dropdown de acciones (Respaldo, Cargar, Duplicar, Voz, Offline)
+  // Dropdown de acciones (Respaldo, Cargar, Duplicar, Voz, Offline, Papelera)
   const _accionesItems=[
+    `<li><a class="dropdown-item" href="#" onclick="abrirModalPapelera();return false">♻️ Papelera de Reciclaje (Restaurar)</a></li>`,
+    `<li><hr class="dropdown-divider"></li>`,
     gestorSesion&&isAdmin?`<li><a class="dropdown-item" href="#" onclick="descargarRespaldo();return false">💾 Descargar respaldo JSON</a></li>`:'',
     gestorSesion&&isAdmin?`<li><a class="dropdown-item" href="#" onclick="document.getElementById('fileRespaldo').click();return false">📂 Cargar respaldo JSON</a></li>`:'',
     gestorSesion&&isAdmin?`<li><hr class="dropdown-divider"></li>`:'',
@@ -2687,6 +2689,7 @@ function renderApp(){
           </div>
           <div class="tn-right">
             <span id="_syncChip" onclick="_syncAll(true)" title="Clic para sincronizar ahora">☁️ ${_fmtSyncTime(_lastSyncTs)}</span>
+            <button class="tbtn" style="background:#34495e;display:flex;align-items:center;gap:4px;font-size:0.82rem" onclick="abrirModalPapelera()" title="Papelera de Reciclaje (Recuperar asistencias, descriptores, observaciones)">♻️ Papelera</button>
             ${(()=>{
               const _pId=gestorEnPlataforma||window._currentPlatId;
               const _pDat=_pId?gestorDB.platforms.find(x=>x.id===_pId):null;
@@ -3252,6 +3255,31 @@ function htmlConfigEvalPedagogica(){
             <div style="font-size:0.75rem;color:#888;margin-top:4px">Ej: pierde 2 áreas y el límite es 3 → queda APLAZADO (con nivelaciones pendientes para el año siguiente).</div>
           </div>
         </div>
+        <div style="background:#f0f8ff;border:1px solid #bce8f1;border-radius:8px;padding:12px;margin-top:10px">
+          <b style="font-size:0.85rem;color:#003366">🚨 Control de Inasistencias y Alertas (Decreto 1290)</b>
+          <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Configure los porcentajes institucionales para disparar alertas preventivas y riesgo de reprobación por inasistencia.</p>
+          <div class="grid2" style="gap:10px">
+            <div>
+              <label class="lbl" style="font-size:0.78rem">🔴 % Inasistencia Crítica (Pérdida/Reprobación)</label>
+              <div style="display:flex;align-items:center;gap:6px">
+                <input type="number" id="cfgPctInasistCritica" min="5" max="50" step="1" value="${db.config?.pctInasistenciaCritica!=null?db.config.pctInasistenciaCritica:25}" style="width:85px;padding:6px;font-weight:bold;color:#c0392b;font-size:0.9rem">
+                <span style="font-size:0.8rem;font-weight:bold">% (Por defecto 25%)</span>
+              </div>
+            </div>
+            <div>
+              <label class="lbl" style="font-size:0.78rem">🟡 % Inasistencia Preventiva (Alerta Temprana)</label>
+              <div style="display:flex;align-items:center;gap:6px">
+                <input type="number" id="cfgPctInasistPreventiva" min="5" max="45" step="1" value="${db.config?.pctInasistenciaPreventiva!=null?db.config.pctInasistenciaPreventiva:20}" style="width:85px;padding:6px;font-weight:bold;color:#d35400;font-size:0.9rem">
+                <span style="font-size:0.8rem;font-weight:bold">% (Por defecto 20%)</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:0.74rem;color:#666;margin-top:8px;line-height:1.4">
+            • &lt; ${db.config?.pctInasistenciaPreventiva||20}%: <span style="color:#27ae60;font-weight:bold">🟢 Normal</span> &nbsp;|&nbsp;
+            • Entre ${db.config?.pctInasistenciaPreventiva||20}% y ${db.config?.pctInasistenciaCritica||25}%: <span style="color:#e67e22;font-weight:bold">🟡 Preventivo</span> &nbsp;|&nbsp;
+            • &ge; ${db.config?.pctInasistenciaCritica||25}%: <span style="color:#c0392b;font-weight:bold">🔴 Crítico (Reprobación)</span>
+          </div>
+        </div>
       </div>
       <div>
         <b style="font-size:0.85rem;color:#27ae60">📚 Módulo de Recuperaciones</b>
@@ -3301,11 +3329,19 @@ function guardarConfigPedagogica(){
   const pesos=Array.from({length:np},(_,i)=>parseInt(document.getElementById('pesPer_'+i)?.value||Math.floor(100/np)));
   const total=pesos.reduce((a,b)=>a+b,0);
   if(Math.abs(total-100)>1){alert('Los pesos de los períodos deben sumar 100%. Actualmente: '+total+'%');return;}
+  const pctCrit=parseFloat(document.getElementById('cfgPctInasistCritica')?.value||25);
+  const pctPrev=parseFloat(document.getElementById('cfgPctInasistPreventiva')?.value||20);
+  if(pctCrit<=0 || pctCrit>100 || pctPrev<=0 || pctPrev>=pctCrit){
+    alert('Los porcentajes de inasistencia deben ser válidos y cumplir: 0 < Preventiva < Crítica ≤ 100');
+    return;
+  }
   updDB(d=>{
     if(!d.config)d.config={};
     const prevNp=(d.config.numPeriodos)||4;
     d.config.numPeriodos=np;
     d.config.pesosPeriodos=pesos;
+    d.config.pctInasistenciaCritica=pctCrit;
+    d.config.pctInasistenciaPreventiva=pctPrev;
     // Redimensionar periodosActivos al nuevo número de periodos
     const prevPA=d.periodosActivos||Array(prevNp).fill(true);
     d.periodosActivos=Array.from({length:np},(_,i)=>prevPA[i]!==false);
@@ -3344,7 +3380,7 @@ function guardarConfigPedagogica(){
   });
   _pushDB();
   fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Configuración pedagógica actualizada en '+(db.nombre||'institución'),meta:{modulo:'config-pedagogica'}})}).catch(()=>{});
-  alert('✅ Configuración pedagógica guardada. Los cambios se reflejarán en planillas e informes.');
+  alert('✅ Configuración pedagógica e inasistencias guardada. Los cambios se reflejarán en planillas, asistencia e informes.');
   renderApp();
 }
 
@@ -4603,102 +4639,507 @@ function pdfHorarioDocente(docU){
 
 
 // ============================================================
-// DESCRIPTORES
+// SISTEMA UNIVERSAL DE RECUPERACIÓN DE DATOS (SOFT DELETE / DESHACER / PAPELERA)
 // ============================================================
+
+let _toastDeshacerTimer = null;
+
+function mostrarToastDeshacer(mensaje, onDeshacer) {
+  let toast = document.getElementById('_toastDeshacer');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = '_toastDeshacer';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#001f3f;color:#fff;padding:12px 20px;border-radius:10px;box-shadow:0 6px 25px rgba(0,0,0,0.35);border-left:5px solid #f1c40f;display:flex;align-items:center;gap:14px;z-index:100000;font-size:0.88rem;animation:_slideInUp 0.25s ease;max-width:90vw;flex-wrap:wrap;';
+    document.body.appendChild(toast);
+  }
+
+  if (_toastDeshacerTimer) clearTimeout(_toastDeshacerTimer);
+
+  toast.innerHTML = `<span>${mensaje}</span>
+    <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
+      <button id="_btnToastDeshacer" style="background:#f1c40f;color:#001f3f;border:none;border-radius:6px;padding:6px 14px;font-weight:700;cursor:pointer;font-size:0.82rem">⏪ Deshacer</button>
+      <button onclick="cerrarToastDeshacer()" style="background:none;border:none;color:#aaa;cursor:pointer;font-size:1rem;padding:0 4px" title="Cerrar">✕</button>
+    </div>`;
+  toast.style.display = 'flex';
+
+  const btn = document.getElementById('_btnToastDeshacer');
+  if (btn) {
+    btn.onclick = function() {
+      cerrarToastDeshacer();
+      if (typeof onDeshacer === 'function') onDeshacer();
+    };
+  }
+
+  _toastDeshacerTimer = setTimeout(cerrarToastDeshacer, 8000);
+}
+
+function cerrarToastDeshacer() {
+  const toast = document.getElementById('_toastDeshacer');
+  if (toast) toast.style.display = 'none';
+  if (_toastDeshacerTimer) clearTimeout(_toastDeshacerTimer);
+}
+
+function softDeleteRegistro(tipo, id, extraMeta) {
+  const now = new Date().toISOString();
+  const usuario = (sesion && sesion.u) || 'admin';
+  const nombreUsuario = (sesion && sesion.n) || usuario;
+  let elementoInfo = '';
+
+  updDB(d => {
+    if (tipo === 'descriptor') {
+      const idx = (d.descriptores || []).findIndex(x => x.id === id);
+      if (idx !== -1) {
+        d.descriptores[idx].deletedAt = now;
+        d.descriptores[idx].deletedBy = usuario;
+        d.descriptores[idx].deletedByName = nombreUsuario;
+        elementoInfo = `Descriptor P${d.descriptores[idx].per} (${d.descriptores[idx].gra})`;
+      }
+    } else if (tipo === 'asistencia') {
+      const idx = (d.asistencia || []).findIndex(x => String(x.id) === String(id));
+      if (idx !== -1) {
+        d.asistencia[idx].deletedAt = now;
+        d.asistencia[idx].deletedBy = usuario;
+        d.asistencia[idx].deletedByName = nombreUsuario;
+        elementoInfo = `Asistencia ${d.asistencia[idx].fecha} (${d.asistencia[idx].grado})`;
+      }
+    } else if (tipo === 'observacion') {
+      const est = (d.ests || []).find(e => String(e.id) === String(extraMeta?.estId));
+      if (est && Array.isArray(est.observaciones)) {
+        let obs = null;
+        if (extraMeta && extraMeta.obsId) {
+          obs = est.observaciones.find(o => String(o.id) === String(extraMeta.obsId));
+        } else if (extraMeta && extraMeta.obsIdx !== undefined) {
+          obs = est.observaciones[extraMeta.obsIdx];
+        }
+        if (obs) {
+          obs.deletedAt = now;
+          obs.deletedBy = usuario;
+          obs.deletedByName = nombreUsuario;
+          elementoInfo = `Observación de ${est.n}`;
+        }
+      }
+    } else if (tipo === 'estudiante') {
+      const est = (d.ests || []).find(e => String(e.id) === String(id));
+      if (est) {
+        est.deletedAt = now;
+        est.deletedBy = usuario;
+        est.deletedByName = nombreUsuario;
+        elementoInfo = `Estudiante ${est.n}`;
+      }
+    }
+    return d;
+  });
+
+  mostrarToastDeshacer(`🗑️ ${elementoInfo || 'Elemento'} eliminado`, () => {
+    restaurarRegistro(tipo, id, extraMeta);
+  });
+
+  renderApp();
+}
+
+function restaurarRegistro(tipo, id, extraMeta) {
+  let restInfo = '';
+  updDB(d => {
+    if (tipo === 'descriptor') {
+      const desc = (d.descriptores || []).find(x => x.id === id);
+      if (desc) {
+        delete desc.deletedAt;
+        delete desc.deletedBy;
+        delete desc.deletedByName;
+        restInfo = `Descriptor P${desc.per} - ${desc.mat} (${desc.gra})`;
+      }
+    } else if (tipo === 'asistencia') {
+      const asist = (d.asistencia || []).find(x => String(x.id) === String(id));
+      if (asist) {
+        delete asist.deletedAt;
+        delete asist.deletedBy;
+        delete asist.deletedByName;
+        restInfo = `Asistencia ${asist.fecha} (${asist.grado})`;
+      }
+    } else if (tipo === 'observacion') {
+      const est = (d.ests || []).find(e => String(e.id) === String(extraMeta?.estId));
+      if (est && Array.isArray(est.observaciones)) {
+        let obs = null;
+        if (extraMeta && extraMeta.obsId) {
+          obs = est.observaciones.find(o => String(o.id) === String(extraMeta.obsId));
+        } else if (extraMeta && extraMeta.obsIdx !== undefined) {
+          obs = est.observaciones[extraMeta.obsIdx];
+        }
+        if (obs) {
+          delete obs.deletedAt;
+          delete obs.deletedBy;
+          delete obs.deletedByName;
+          restInfo = `Observación de ${est.n}`;
+        }
+      }
+    } else if (tipo === 'estudiante') {
+      const est = (d.ests || []).find(e => String(e.id) === String(id));
+      if (est) {
+        delete est.deletedAt;
+        delete est.deletedBy;
+        delete est.deletedByName;
+        restInfo = `Estudiante ${est.n}`;
+      }
+    }
+    return d;
+  });
+
+  alert(`✅ Elemento restaurado exitosamente:\n${restInfo || tipo}`);
+  renderApp();
+  const modalPap = document.getElementById('_papeleraModal');
+  if (modalPap && modalPap.style.display !== 'none') {
+    abrirModalPapelera();
+  }
+}
+
+function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
+  if (!confirm('⚠️ ¿ELIMINAR DEFINITIVAMENTE?\nEsta acción borrará permanentemente el registro de la base de datos y no se podrá recuperar.')) return;
+
+  updDB(d => {
+    if (tipo === 'descriptor') {
+      d.descriptores = (d.descriptores || []).filter(x => x.id !== id);
+    } else if (tipo === 'asistencia') {
+      d.asistencia = (d.asistencia || []).filter(x => String(x.id) !== String(id));
+    } else if (tipo === 'observacion') {
+      const est = (d.ests || []).find(e => String(e.id) === String(extraMeta?.estId));
+      if (est && Array.isArray(est.observaciones)) {
+        if (extraMeta && extraMeta.obsId) {
+          est.observaciones = est.observaciones.filter(o => String(o.id) !== String(extraMeta.obsId));
+        } else if (extraMeta && extraMeta.obsIdx !== undefined) {
+          est.observaciones.splice(extraMeta.obsIdx, 1);
+        }
+      }
+    } else if (tipo === 'estudiante') {
+      d.ests = (d.ests || []).filter(e => String(e.id) !== String(id));
+    }
+    return d;
+  });
+
+  renderApp();
+  const modalPap = document.getElementById('_papeleraModal');
+  if (modalPap && modalPap.style.display !== 'none') {
+    abrirModalPapelera();
+  }
+}
+
+function vaciarPapelera() {
+  if (!confirm('⚠️ ¿VACIAR TODA LA PAPELERA DE RECICLAJE?\nSe eliminarán de forma permanente todos los elementos borrados.')) return;
+  const isAdmin = sesion && sesion.r === 'admin';
+  const u = (sesion && sesion.u) || '';
+
+  updDB(d => {
+    d.descriptores = (d.descriptores || []).filter(x => !(x.deletedAt && (isAdmin || x.doc === u || x.deletedBy === u)));
+    d.asistencia = (d.asistencia || []).filter(x => !(x.deletedAt && (isAdmin || x.docente === u || x.deletedBy === u)));
+    (d.ests || []).forEach(e => {
+      if (Array.isArray(e.observaciones)) {
+        e.observaciones = e.observaciones.filter(o => !(o.deletedAt && (isAdmin || o.doc === sesion.n || o.deletedBy === u)));
+      }
+    });
+    if (isAdmin) {
+      d.ests = (d.ests || []).filter(e => !e.deletedAt);
+    }
+    return d;
+  });
+
+  alert('✅ Papelera vaciada correctamente.');
+  renderApp();
+  cerrarModalPapelera();
+}
+
+function abrirModalPapelera(filtroTipo) {
+  const isAdmin = sesion && sesion.r === 'admin';
+  const u = (sesion && sesion.u) || '';
+
+  const eliminados = [];
+
+  // Descriptores
+  (db.descriptores || []).forEach(d => {
+    if (d.deletedAt && (isAdmin || d.doc === u || d.deletedBy === u)) {
+      eliminados.push({
+        tipo: 'descriptor',
+        id: d.id,
+        tipoLabel: '📝 Descriptor',
+        titulo: `P${d.per} · ${d.mat} (${d.gra || '—'}) [${(d.niv || '').toUpperCase()}]`,
+        detalle: d.txt,
+        deletedAt: d.deletedAt,
+        deletedBy: d.deletedByName || d.deletedBy || d.doc || '—',
+        extraMeta: null
+      });
+    }
+  });
+
+  // Asistencias
+  (db.asistencia || []).forEach(a => {
+    if (a.deletedAt && (isAdmin || a.docente === u || a.deletedBy === u)) {
+      const c = (db.carga || []).find(x => x.id === a.cargaId);
+      eliminados.push({
+        tipo: 'asistencia',
+        id: a.id,
+        tipoLabel: '📅 Asistencia',
+        titulo: `Fecha: ${a.fecha} (${a.grado}) · ${c ? c.m : 'Asignatura'}`,
+        detalle: `${(a.presentes||[]).length} pres., ${(a.ausentes||[]).length} aus., ${(a.justificados||[]).length} just. — Actividad: ${a.actividad || '—'}`,
+        deletedAt: a.deletedAt,
+        deletedBy: a.deletedByName || a.deletedBy || a.docente || '—',
+        extraMeta: null
+      });
+    }
+  });
+
+  // Observaciones de Aula
+  (db.ests || []).forEach(e => {
+    (e.observaciones || []).forEach((o, oIdx) => {
+      if (o.deletedAt && (isAdmin || o.doc === sesion.n || o.deletedBy === u)) {
+        eliminados.push({
+          tipo: 'observacion',
+          id: o.id || ('obs_' + e.id + '_' + oIdx),
+          tipoLabel: '📓 Obs. Aula',
+          titulo: `Estudiante: ${e.n} (${e.g}) · P${o.per}`,
+          detalle: `[${o.tipo || 'General'}] ${o.txt} (${o.fecha || ''})`,
+          deletedAt: o.deletedAt,
+          deletedBy: o.deletedByName || o.deletedBy || o.doc || '—',
+          extraMeta: { estId: e.id, obsId: o.id, obsIdx: oIdx }
+        });
+      }
+    });
+  });
+
+  // Estudiantes
+  (db.ests || []).forEach(e => {
+    if (e.deletedAt && (isAdmin || e.deletedBy === u)) {
+      eliminados.push({
+        tipo: 'estudiante',
+        id: e.id,
+        tipoLabel: '👤 Estudiante',
+        titulo: `${e.n} (Grado ${e.g})`,
+        detalle: `Doc: ${e.tipoDoc || ''} ${e.numDoc || ''} · Acudiente: ${e.acudiente || '—'}`,
+        deletedAt: e.deletedAt,
+        deletedBy: e.deletedByName || e.deletedBy || '—',
+        extraMeta: null
+      });
+    }
+  });
+
+  eliminados.sort((a, b) => (b.deletedAt || '').localeCompare(a.deletedAt || ''));
+
+  let fTipo = filtroTipo || window._papeleraFiltroTipo || 'todos';
+  window._papeleraFiltroTipo = fTipo;
+
+  const listaFiltrada = fTipo === 'todos' ? eliminados : eliminados.filter(x => x.tipo === fTipo);
+
+  let modal = document.getElementById('_papeleraModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = '_papeleraModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:99990;display:flex;align-items:center;justify-content:center;padding:16px;animation:popFade 0.15s ease;';
+    modal.onclick = function(ev) { if (ev.target === modal) cerrarModalPapelera(); };
+    document.body.appendChild(modal);
+  }
+
+  const tiposBadge = {
+    'descriptor': '#2980b9',
+    'asistencia': '#16a085',
+    'observacion': '#8e44ad',
+    'estudiante': '#d35400'
+  };
+
+  const rowsHtml = listaFiltrada.length ? listaFiltrada.map(item => {
+    const fStr = item.deletedAt ? new Date(item.deletedAt).toLocaleString('es-CO') : '—';
+    const bColor = tiposBadge[item.tipo] || '#555';
+    const jsonMeta = encodeURIComponent(JSON.stringify(item.extraMeta || {}));
+    return `<tr style="border-bottom:1px solid #e0e8f0">
+      <td style="text-align:left;padding:8px 10px">
+        <span style="background:${bColor};color:#fff;border-radius:4px;padding:2px 6px;font-size:0.72rem;font-weight:bold;text-transform:uppercase">${item.tipoLabel}</span>
+      </td>
+      <td style="text-align:left;padding:8px 10px">
+        <b style="color:#003366;font-size:0.83rem">${item.titulo}</b>
+        <div style="font-size:0.76rem;color:#555;margin-top:2px;word-break:break-word">${item.detalle}</div>
+      </td>
+      <td style="font-size:0.75rem;color:#666;padding:8px 10px;white-space:nowrap">${fStr}<br><small style="color:#888">Por: ${item.deletedBy}</small></td>
+      <td style="padding:8px 10px;white-space:nowrap;text-align:center">
+        <button class="btn-sm" style="background:#27ae60;font-size:0.75rem;padding:5px 10px" onclick="restaurarRegistro('${item.tipo}', ${typeof item.id==='number'?item.id:`'${item.id}'`}, JSON.parse(decodeURIComponent('${jsonMeta}')))" title="Restaurar este elemento al sistema">♻️ Restaurar</button>
+        <button class="btn-sm" style="background:#c0392b;font-size:0.75rem;padding:5px 8px" onclick="eliminarRegistroDefinitivo('${item.tipo}', ${typeof item.id==='number'?item.id:`'${item.id}'`}, JSON.parse(decodeURIComponent('${jsonMeta}')))" title="Eliminar permanentemente">❌</button>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="4" class="empty" style="padding:35px;text-align:center;color:#888">♻️ La papelera de reciclaje está vacía. No hay elementos eliminados recientemente.</td></tr>`;
+
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:860px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 12px 50px rgba(0,0,0,0.4);border-top:4px solid #f1c40f">
+      <div style="background:#001f3f;color:#fff;padding:14px 20px;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:1.3rem">♻️</span>
+          <div>
+            <h3 style="margin:0;font-size:1rem;color:#fff">Papelera de Reciclaje / Recuperación de Datos</h3>
+            <small style="color:rgba(255,255,255,0.75);font-size:0.74rem">Restaure o elimine permanentemente elementos borrados en asistencias, descriptores y observaciones</small>
+          </div>
+        </div>
+        <button onclick="cerrarModalPapelera()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;font-size:1.1rem;cursor:pointer;border-radius:4px;padding:2px 8px">✕</button>
+      </div>
+      <div style="padding:12px 18px;background:#f5f8fa;border-bottom:1px solid #e0e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button class="btn-sm" style="background:${fTipo==='todos'?'#003366':'#dce4ef'};color:${fTipo==='todos'?'#fff':'#333'};padding:6px 12px" onclick="abrirModalPapelera('todos')">Todos (${eliminados.length})</button>
+          <button class="btn-sm" style="background:${fTipo==='descriptor'?'#2980b9':'#dce4ef'};color:${fTipo==='descriptor'?'#fff':'#333'};padding:6px 12px" onclick="abrirModalPapelera('descriptor')">Descriptores (${eliminados.filter(x=>x.tipo==='descriptor').length})</button>
+          <button class="btn-sm" style="background:${fTipo==='asistencia'?'#16a085':'#dce4ef'};color:${fTipo==='asistencia'?'#fff':'#333'};padding:6px 12px" onclick="abrirModalPapelera('asistencia')">Asistencias (${eliminados.filter(x=>x.tipo==='asistencia').length})</button>
+          <button class="btn-sm" style="background:${fTipo==='observacion'?'#8e44ad':'#dce4ef'};color:${fTipo==='observacion'?'#fff':'#333'};padding:6px 12px" onclick="abrirModalPapelera('observacion')">Obs. Aula (${eliminados.filter(x=>x.tipo==='observacion').length})</button>
+        </div>
+        ${eliminados.length && isAdmin ? `<button class="btn-sm btn-red" onclick="vaciarPapelera()" style="padding:6px 14px">🗑️ Vaciar Papelera</button>` : ''}
+      </div>
+      <div style="padding:14px 18px;overflow-y:auto;flex:1">
+        <div class="over" style="max-height:50vh">
+          <table style="width:100%;font-size:0.82rem">
+            <thead>
+              <tr style="background:#003366;color:#fff">
+                <th style="width:110px;text-align:left;padding:8px">Tipo</th>
+                <th style="text-align:left;padding:8px">Elemento / Contenido</th>
+                <th style="width:170px;text-align:left;padding:8px">Fecha Borrado</th>
+                <th style="width:160px;text-align:center;padding:8px">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="padding:10px 18px;background:#f5f7fa;border-top:1px solid #e0e8f0;display:flex;justify-content:flex-end;border-radius:0 0 12px 12px">
+        <button class="btn btn-gray" style="padding:7px 18px;font-size:0.83rem" onclick="cerrarModalPapelera()">Cerrar</button>
+      </div>
+    </div>
+  `;
+  modal.style.display = 'flex';
+}
+
+function cerrarModalPapelera() {
+  const modal = document.getElementById('_papeleraModal');
+  if (modal) modal.style.display = 'none';
+}
+
+// ============================================================
+// DESCRIPTORES (FILTRADO POR CARGA ACADÉMICA Y AISLAMIENTO)
+// ============================================================
+
 function htmlDescriptores(){
   const isAdmin=sesion.r==='admin';
   const docentes=db.users.filter(u=>u.r==='docente');
   const docsOpts=docentes.map(u=>`<option value="${u.u}">${u.n}</option>`).join('');
-  const gradOpts=db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
-  let descs=db.descriptores;if(!isAdmin) descs=descs.filter(d=>d.doc===sesion.u);
-  // ==== PANEL DE ESTADO: muestra cobertura de descriptores por docente/grado/asignatura/periodo ====
-  // Determinar la carga a revisar
-  const cargaRev=isAdmin?db.carga:db.carga.filter(c=>c.d===sesion.u);
-  const periodos=[1,2,3];
-  const niveles=['bajo','basico','alto','superior'];
-  // Agrupar carga por docente para el panel
-  const docentesEnCarga=isAdmin
-    ?[...new Set(cargaRev.map(c=>c.d))].map(du=>({u:du,n:db.users.find(x=>x.u===du)?.n||du}))
-    :[{u:sesion.u,n:sesion.n||sesion.u}];
-  let estadoRows='';
-  let totalFaltantes=0;
-  docentesEnCarga.forEach(doc=>{
-    const cargaDoc=cargaRev.filter(c=>c.d===doc.u);
-    // Agrupar por área/grado/asignatura
-    const combos=cargaDoc.map(c=>({grado:c.g,area:c.a||'—',mat:c.m}));
-    if(!combos.length) return;
-    combos.forEach(combo=>{
-      const faltaEnPer=[];
-      const tieneEnPer=[];
-      periodos.forEach(per=>{
-        const nivDesc=niveles.filter(niv=>descs.some(d=>d.doc===doc.u&&String(d.per)===String(per)&&d.mat===combo.mat&&d.gra===combo.grado&&d.niv===niv));
-        if(nivDesc.length===4) tieneEnPer.push(per);
-        else {faltaEnPer.push(per);totalFaltantes++;}
+
+  // 1. Docente activo en formulario
+  const docActivo = isAdmin ? (document.getElementById('descDoc')?.value || (docentes[0]?.u || sesion.u)) : sesion.u;
+
+  // 2. Grados disponibles: para docentes solo los grados de su carga académica
+  const misGradosDoc = isAdmin ? db.grados.map(g=>g.n) : [...new Set(db.carga.filter(c=>c.d===sesion.u).map(c=>c.g))].sort();
+  const gradOpts = (misGradosDoc.length ? misGradosDoc : db.grados.map(g=>g.n)).map(g=>`<option value="${g}">${g}</option>`).join('');
+
+  // 3. Descriptores activos (no borrados lógicamente)
+  let descs = (db.descriptores || []).filter(d => !d.deletedAt);
+  // AISLAMIENTO ESTRICTO: el docente solo visualiza sus propios descriptores
+  if(!isAdmin) {
+    descs = descs.filter(d => d.doc === sesion.u);
+  }
+
+  // 4. Panel de estado: cobertura por docente/grado/asignatura
+  const cargaRev = isAdmin ? db.carga : db.carga.filter(c => c.d === sesion.u);
+  const periodos = [1, 2, 3];
+  const niveles = ['bajo', 'basico', 'alto', 'superior'];
+
+  const docentesEnCarga = isAdmin
+    ? [...new Set(cargaRev.map(c => c.d))].map(du => ({ u: du, n: db.users.find(x => x.u === du)?.n || du }))
+    : [{ u: sesion.u, n: sesion.n || sesion.u }];
+
+  let estadoRows = '';
+  let totalFaltantes = 0;
+
+  docentesEnCarga.forEach(doc => {
+    const cargaDoc = cargaRev.filter(c => c.d === doc.u);
+    const combos = cargaDoc.map(c => ({ grado: c.g, area: c.a || '—', mat: c.m }));
+    if (!combos.length) return;
+
+    combos.forEach(combo => {
+      const faltaEnPer = [];
+      const tieneEnPer = [];
+      periodos.forEach(per => {
+        const nivDesc = niveles.filter(niv => descs.some(d => d.doc === doc.u && String(d.per) === String(per) && d.mat === combo.mat && d.gra === combo.grado && d.niv === niv));
+        if (nivDesc.length === 4) tieneEnPer.push(per);
+        else { faltaEnPer.push(per); totalFaltantes++; }
       });
-      const estado=faltaEnPer.length===0
-        ?`<span style="color:#27ae60;font-weight:700">✅ Completo</span>`
-        :faltaEnPer.length===3
-          ?`<span style="color:#c0392b;font-weight:700">❌ Sin descriptores</span>`
-          :`<span style="color:#e67e22;font-weight:700">⚠️ Faltan P${faltaEnPer.join(', P')}</span>`;
-      estadoRows+=`<tr>
-        ${isAdmin?`<td style="font-size:0.78rem;text-align:left">${doc.n}</td>`:''}
+      const estado = faltaEnPer.length === 0
+        ? `<span style="color:#27ae60;font-weight:700">✅ Completo</span>`
+        : faltaEnPer.length === 3
+          ? `<span style="color:#c0392b;font-weight:700">❌ Sin descriptores</span>`
+          : `<span style="color:#e67e22;font-weight:700">⚠️ Faltan P${faltaEnPer.join(', P')}</span>`;
+
+      estadoRows += `<tr>
+        ${isAdmin ? `<td style="font-size:0.78rem;text-align:left">${doc.n}</td>` : ''}
         <td style="text-align:left">${combo.grado}</td>
         <td style="text-align:left">${combo.area}</td>
         <td style="text-align:left">${combo.mat}</td>
-        <td>${tieneEnPer.map(p=>`<span style="background:#d5f5e3;color:#1a7531;border-radius:4px;padding:1px 5px;font-size:0.75rem;font-weight:700;margin:1px">P${p}✓</span>`).join('')}${faltaEnPer.map(p=>`<span style="background:#fde8e8;color:#c0392b;border-radius:4px;padding:1px 5px;font-size:0.75rem;font-weight:700;margin:1px">P${p}✗</span>`).join('')}</td>
+        <td>${tieneEnPer.map(p => `<span style="background:#d5f5e3;color:#1a7531;border-radius:4px;padding:1px 5px;font-size:0.75rem;font-weight:700;margin:1px">P${p}✓</span>`).join('')}${faltaEnPer.map(p => `<span style="background:#fde8e8;color:#c0392b;border-radius:4px;padding:1px 5px;font-size:0.75rem;font-weight:700;margin:1px">P${p}✗</span>`).join('')}</td>
         <td>${estado}</td>
       </tr>`;
     });
   });
-  const panelEstado=cargaRev.length?`
-  <div class="card" style="border-left:4px solid ${totalFaltantes===0?'#27ae60':'#e67e22'}">
+
+  const panelEstado = cargaRev.length ? `
+  <div class="card" style="border-left:4px solid ${totalFaltantes === 0 ? '#27ae60' : '#e67e22'}">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h4 class="card-title" style="margin:0">📊 Estado de Descriptores por Grado / Área / Asignatura</h4>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${isAdmin ? `
         <select id="_descFiltDoc" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
           <option value="">Todos los docentes</option>
-          ${docentesEnCarga.map(d=>`<option value="${d.u}">${d.n}</option>`).join('')}
-        </select>
+          ${docentesEnCarga.map(d => `<option value="${d.u}">${d.n}</option>`).join('')}
+        </select>` : ''}
         <select id="_descFiltGra" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
           <option value="">Todos los grados</option>
-          ${db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('')}
+          ${(misGradosDoc.length ? misGradosDoc : db.grados.map(g => g.n)).map(g => `<option value="${g}">${g}</option>`).join('')}
         </select>
         <select id="_descFiltArea" onchange="_filtrarEstadoDesc()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
           <option value="">Todas las áreas</option>
-          ${[...new Set(cargaRev.map(c=>c.a||'—'))].map(a=>`<option value="${a}">${a}</option>`).join('')}
+          ${[...new Set(cargaRev.map(c => c.a || '—'))].map(a => `<option value="${a}">${a}</option>`).join('')}
         </select>
       </div>
     </div>
-    ${totalFaltantes>0?`<div style="background:#fef9e7;border:1px solid #f1c40f;border-radius:7px;padding:8px 12px;font-size:0.82rem;margin-bottom:10px;color:#856404">⚠️ Faltan descriptores en <b>${totalFaltantes}</b> combinación(es) de periodo/grado/asignatura. Los periodos marcados con ✗ no tienen descriptores completos.</div>`:`<div style="background:#eafaf1;border:1px solid #27ae60;border-radius:7px;padding:8px 12px;font-size:0.82rem;margin-bottom:10px;color:#1a7531">✅ Todos los descriptores están completos para los periodos 1, 2 y 3.</div>`}
-    <div class="over" id="_estadoDescTablaWrap"><table id="_estadoDescTabla"><thead><tr>${isAdmin?'<th>Docente</th>':''}<th>Grado</th><th>Área</th><th>Asignatura</th><th>Periodos (P1 P2 P3)</th><th>Estado</th></tr></thead><tbody>${estadoRows}</tbody></table></div>
-  </div>`:
+    ${totalFaltantes > 0 ? `<div style="background:#fef9e7;border:1px solid #f1c40f;border-radius:7px;padding:8px 12px;font-size:0.82rem;margin-bottom:10px;color:#856404">⚠️ Faltan descriptores en <b>${totalFaltantes}</b> combinación(es) de periodo/grado/asignatura. Los periodos marcados con ✗ no tienen descriptores completos.</div>` : `<div style="background:#eafaf1;border:1px solid #27ae60;border-radius:7px;padding:8px 12px;font-size:0.82rem;margin-bottom:10px;color:#1a7531">✅ Todos los descriptores están completos para los periodos 1, 2 y 3.</div>`}
+    <div class="over" id="_estadoDescTablaWrap"><table id="_estadoDescTabla"><thead><tr>${isAdmin ? '<th>Docente</th>' : ''}<th>Grado</th><th>Área</th><th>Asignatura</th><th>Periodos (P1 P2 P3)</th><th>Estado</th></tr></thead><tbody>${estadoRows}</tbody></table></div>
+  </div>` :
   `<div class="card"><p class="empty">No hay carga académica asignada aún. Registre la carga en el módulo de Carga Académica para ver el estado de los descriptores.</p></div>`;
-  // ==== TABLA DE DESCRIPTORES REGISTRADOS ====
-  const rows=descs.map(d=>{
-    const nd=db.users.find(u=>u.u===d.doc)?.n||'N/A';
-    const nivColor=d.niv==='superior'?'#1a7531':d.niv==='alto'?'#1a5276':d.niv==='basico'?'#856404':'#c0392b';
-    return `<tr><td><input type="checkbox" class="chkDelDesc" value="${d.id}" style="margin-right:4px;">${d.per}</td><td>${nd}</td><td>${d.gra||'—'}</td><td>${d.mat}</td>
+
+  // 5. Tabla de Descriptores Registrados (Estrictamente aislada)
+  const rows = descs.map(d => {
+    const nd = db.users.find(u => u.u === d.doc)?.n || 'N/A';
+    const nivColor = d.niv === 'superior' ? '#1a7531' : d.niv === 'alto' ? '#1a5276' : d.niv === 'basico' ? '#856404' : '#c0392b';
+    return `<tr>
+      <td><input type="checkbox" class="chkDelDesc" value="${d.id}" style="margin-right:4px;">${d.per}</td>
+      ${isAdmin ? `<td>${nd}</td>` : ''}
+      <td>${d.gra || '—'}</td>
+      <td>${d.mat}</td>
       <td><b style="color:${nivColor};text-transform:uppercase">${d.niv}</b></td>
       <td style="text-align:left;font-size:0.79rem">${d.txt}</td>
-      <td><button class="btn-sm" style="background:#e67e22" onclick="editarDesc(${d.id})">✎</button>
-      <button class="btn-sm" style="background:#c0392b" onclick="eliminarDesc(${d.id})">🗑</button></td></tr>`;
+      <td style="white-space:nowrap">
+        <button class="btn-sm" style="background:#e67e22" onclick="editarDesc(${d.id})" title="Editar descriptor">✎</button>
+        <button class="btn-sm" style="background:#c0392b" onclick="eliminarDesc(${d.id})" title="Eliminar descriptor (a Papelera)">🗑</button>
+      </td>
+    </tr>`;
   }).join('');
+
+  const gradosDescs = [...new Set(descs.map(d => d.gra).filter(Boolean))].sort();
+  const materiasDescs = [...new Set(descs.map(d => d.mat).filter(Boolean))].sort();
+
   return `<h3 class="sec-title">Gestión de Descriptores por Periodo</h3>
   <div class="info-box" style="margin-bottom:10px">ℹ️ Los descriptores aplican para los Periodos <b>1, 2 y 3</b> únicamente. El Periodo 4 no tiene descriptores.</div>
   ${panelEstado}
   <div class="card">
     <h4 class="card-title">+ Nuevo Descriptor</h4>
-    ${isAdmin?`<div style="margin-bottom:10px"><label class="lbl">Docente</label><select id="descDoc" onchange="actualizarMatsDesc()">${docsOpts}</select></div>`:`<input type="hidden" id="descDoc" value="${sesion.u}">`}
+    ${isAdmin ? `<div style="margin-bottom:10px"><label class="lbl">Docente</label><select id="descDoc" onchange="actualizarMatsDesc()">${docsOpts}</select></div>` : `<input type="hidden" id="descDoc" value="${sesion.u}">`}
     <div class="grid4" style="margin-bottom:10px">
       <div><label class="lbl">Periodo</label><select id="descPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></div>
       <div><label class="lbl">Grado</label><select id="descGra" onchange="actualizarMatsDesc()">${gradOpts}</select></div>
-      <div><label class="lbl">Asignatura</label><select id="descMat"></select></div>
+      <div><label class="lbl">Asignatura</label><select id="descMat" onchange="actualizarGruposReplicaDesc()"></select></div>
     </div>
     <div style="margin-bottom:8px;padding:8px 10px;background:#e8f5e9;border-left:3px solid #27ae60;border-radius:4px;font-size:0.82rem"><b>El sistema agrega automáticamente los prefijos para TODOS los niveles:</b> Se le dificulta / Algunas veces / Casi siempre / Siempre</div>
     <div style="margin-bottom:8px;padding:8px 10px;background:#fff3cd;border-left:3px solid #f39c12;border-radius:4px;font-size:0.82rem">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0">
         <input type="checkbox" id="autoReplicaChk" checked style="width:18px;height:18px;cursor:pointer">
-        <span><b>Auto-replicar a TODOS los grupos del mismo grado</b> donde dicto esta asignatura (ej: si guardo en 6°1 también guarda en 6°2, 6°3…). Desactive si solo quiere guardar en el grado seleccionado.</span>
+        <span><b>Auto-replicar a los grupos de mi carga académica</b> para esta asignatura (ej: 6°1 → 6°2, 6°3 donde dicto). Desactive si solo quiere guardar en el grupo seleccionado.</span>
       </label>
     </div>
     <div style="margin-bottom:10px">
@@ -4720,11 +5161,12 @@ function htmlDescriptores(){
     <div class="flex-gap" style="margin-bottom:4px;align-items:flex-start;flex-wrap:wrap;gap:12px">
       <button class="btn btn-green" onclick="guardarDesc()">+ Guardar Descriptores</button>
       <div style="border:1px solid #b2dfdb;border-radius:7px;padding:10px 14px;background:#f0faf8;flex:1;min-width:260px">
-        <b style="color:#0e6655;font-size:0.85rem">🔁 Replicar en otros grupos del mismo grado</b>
-        <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Guarde primero los descriptores, luego seleccione los grupos destino y replique</p>
-        <div style="margin-bottom:6px"><label class="lbl" style="font-size:0.78rem">Grupos destino:</label>
-          <div id="descReplicaDest" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:4px;padding:4px;border:1px solid #ccc;border-radius:4px;background:#fff;max-height:80px;overflow-y:auto;">
-             ${db.grados.map(g=>`<label style="font-size:0.75rem;cursor:pointer"><input type="checkbox" name="chkRepDest" value="${g.n}"> ${g.n}</label>`).join('')}
+        <b style="color:#0e6655;font-size:0.85rem">🔁 Replicar a otros grupos asignados en mi carga</b>
+        <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Guarde primero los descriptores, luego seleccione los grupos destino asignados y replique:</p>
+        <div style="margin-bottom:6px">
+          <label class="lbl" style="font-size:0.78rem">Grupos destino (solo carga asignada):</label>
+          <div id="descReplicaDest" style="display:flex;flex-wrap:wrap;gap:6px;padding:6px;border:1px solid #ccc;border-radius:4px;background:#fff;max-height:90px;overflow-y:auto;">
+             <!-- Dinámicamente poblado según la carga del docente -->
           </div>
         </div>
         <button class="btn btn-teal" style="font-size:0.8rem;padding:7px 12px" onclick="replicarUltimosDescs()">🔁 Replicar al/los grupo(s)</button>
@@ -4733,216 +5175,308 @@ function htmlDescriptores(){
     </div>
   </div>
   <div class="card">
-    <h4 class="card-title">Descriptores Registrados (${descs.length})</h4>
-    ${descs.length?`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h4 class="card-title" style="margin:0">Descriptores Registrados (${descs.length})</h4>
+      <button class="btn-sm" style="background:#566573" onclick="abrirModalPapelera('descriptor')">♻️ Papelera (${(db.descriptores||[]).filter(d=>d.deletedAt && (isAdmin || d.doc===sesion.u)).length})</button>
+    </div>
+    ${descs.length ? `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <select id="_descFiltRegistGra" onchange="_filtrarDescReg()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
-        <option value="">Todos los grados</option>${db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('')}
+        <option value="">Todos los grados</option>
+        ${gradosDescs.map(g => `<option value="${g}">${g}</option>`).join('')}
       </select>
       <select id="_descFiltRegistMat" onchange="_filtrarDescReg()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
-        <option value="">Todas las asignaturas</option>${[...new Set(descs.map(d=>d.mat))].map(m=>`<option value="${m}">${m}</option>`).join('')}
+        <option value="">Todas las asignaturas</option>
+        ${materiasDescs.map(m => `<option value="${m}">${m}</option>`).join('')}
       </select>
-      ${isAdmin?`<select id="_descFiltRegistDoc" onchange="_filtrarDescReg()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem"><option value="">Todos los docentes</option>${docentes.map(u=>`<option value="${u.u}">${u.n}</option>`).join('')}</select>`:''}
+      ${isAdmin ? `
+      <select id="_descFiltRegistDoc" onchange="_filtrarDescReg()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
+        <option value="">Todos los docentes</option>
+        ${docentes.map(u => `<option value="${u.u}">${u.n}</option>`).join('')}
+      </select>` : ''}
       <select id="_descFiltRegistPer" onchange="_filtrarDescReg()" style="padding:6px 10px;border-radius:6px;border:1px solid #ccc;font-size:0.82rem">
-        <option value="">Todos los periodos</option><option value="1">Periodo 1</option><option value="2">Periodo 2</option><option value="3">Periodo 3</option>
+        <option value="">Todos los periodos</option>
+        <option value="1">Periodo 1</option>
+        <option value="2">Periodo 2</option>
+        <option value="3">Periodo 3</option>
       </select>
       <button class="btn btn-red btn-sm" onclick="eliminarDescsSeleccionados()">🗑 Eliminar Seleccionados</button>
       <button class="btn btn-green btn-sm" onclick="descargarDescriptoresPDF()">📥 Descargar PDF</button>
     </div>
-    <div class="over" style="max-height:420px;overflow-y:auto" id="_descRegTablaWrap"><table class="desc-table" id="_descRegTabla"><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll('.chkDelDesc').forEach(c=>c.checked=this.checked)"> Per.</th><th>Docente</th><th>Grado</th><th>Asignatura</th><th>Nivel</th><th style="text-align:left;min-width:200px">Descriptor</th><th>Acc.</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<p class="empty">No hay descriptores.</p>`}
+    <div class="over" style="max-height:420px;overflow-y:auto" id="_descRegTablaWrap">
+      <table class="desc-table" id="_descRegTabla">
+        <thead>
+          <tr>
+            <th><input type="checkbox" onchange="document.querySelectorAll('.chkDelDesc').forEach(c=>c.checked=this.checked)"> Per.</th>
+            ${isAdmin ? '<th>Docente</th>' : ''}
+            <th>Grado</th>
+            <th>Asignatura</th>
+            <th>Nivel</th>
+            <th style="text-align:left;min-width:200px">Descriptor</th>
+            <th>Acc.</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>` : `<p class="empty">No hay descriptores registrados para su usuario en el sistema.</p>`}
   </div>`;
 }
+
 function _filtrarEstadoDesc(){
-  const fDoc=(document.getElementById('_descFiltDoc')?.value||'').toLowerCase();
-  const fGra=(document.getElementById('_descFiltGra')?.value||'').toLowerCase();
-  const fArea=(document.getElementById('_descFiltArea')?.value||'').toLowerCase();
-  const tbody=document.querySelector('#_estadoDescTabla tbody');
-  if(!tbody) return;
+  const fDoc = (document.getElementById('_descFiltDoc')?.value || '').toLowerCase();
+  const fGra = (document.getElementById('_descFiltGra')?.value || '').toLowerCase();
+  const fArea = (document.getElementById('_descFiltArea')?.value || '').toLowerCase();
+  const tbody = document.querySelector('#_estadoDescTabla tbody');
+  if (!tbody) return;
   Array.from(tbody.rows).forEach(function(row){
-    const cells=Array.from(row.cells).map(c=>c.textContent.toLowerCase());
-    const show=(!fDoc||cells.some(c=>c.includes(fDoc)))&&(!fGra||cells[0].includes(fGra)||cells[1]?.includes(fGra))&&(!fArea||cells.some(c=>c.includes(fArea)));
-    row.style.display=show?'':'none';
+    const cells = Array.from(row.cells).map(c => c.textContent.toLowerCase());
+    const show = (!fDoc || cells.some(c => c.includes(fDoc))) && (!fGra || cells[0].includes(fGra) || cells[1]?.includes(fGra)) && (!fArea || cells.some(c => c.includes(fArea)));
+    row.style.display = show ? '' : 'none';
   });
-}
-function _filtrarDescReg(){
-  const fGra=(document.getElementById('_descFiltRegistGra')?.value||'').toLowerCase();
-  const fMat=(document.getElementById('_descFiltRegistMat')?.value||'').toLowerCase();
-  const fDoc=(document.getElementById('_descFiltRegistDoc')?.value||'').toLowerCase();
-  const fPer=(document.getElementById('_descFiltRegistPer')?.value||'').toLowerCase();
-  const tbody=document.querySelector('#_descRegTabla tbody');
-  if(!tbody) return;
-  Array.from(tbody.rows).forEach(function(row){
-    const cells=Array.from(row.cells).map(c=>c.textContent.toLowerCase());
-    const show=(!fPer||cells[0].includes(fPer))&&(!fDoc||cells[1].includes(fDoc))&&(!fGra||cells[2].includes(fGra))&&(!fMat||cells[3].includes(fMat));
-    row.style.display=show?'':'none';
-  });
-}
-function actualizarMatsDesc(){
-  const doc=document.getElementById('descDoc')?.value||sesion.u;
-  const gra=document.getElementById('descGra')?.value||'';
-  const mats=db.carga.filter(c=>c.d===doc&&c.g===gra);
-  const sel=document.getElementById('descMat');
-  if(sel) sel.innerHTML=mats.map(m=>`<option value="${m.m}">${m.m}</option>`).join('');
-}
-function actualizarPrefixDesc(){}
-function llenarRangoNivelDesc(){
-  // Los selectores de rango ya no están en el formulario simplificado
-  // Esta función se mantiene por compatibilidad
-}
-function guardarDesc(){
-    const doc=document.getElementById('descDoc')?.value||sesion.u;
-    const per=document.getElementById('descPer').value;
-    const gra=document.getElementById('descGra').value;
-    const mat=document.getElementById('descMat').value;
-    
-    const inputs=Array.from(document.querySelectorAll('.descTxtInput')).map(i=>i.value.trim()).filter(v=>v);
-    if(!mat||!inputs.length){alert('Complete el campo de asignatura e ingrese al menos un indicador');return;}
-    
-    function verbToInf(txt){
-      return txt.replace(/^(\S+)/, match=>{
-        let v=match.toLowerCase();
-        if(v==='es')return 'ser';
-        if(v==='tiene')return 'tener';
-        if(v==='hace')return 'hacer';
-        if(v==='escribe')return 'escribir';
-        if(v==='describe')return 'describir';
-        if(v==='construye')return 'construir';
-        if(v.endsWith('a')||v.endsWith('e')||v.endsWith('i')) return v+'r';
-        return match;
-      });
-    }
-    
-    const niveles=['bajo','basico','alto','superior'];
-    const base=Date.now();
-    const auto=document.getElementById('autoReplicaChk');
-    const replicar=!auto || auto.checked;
-    let gradosDestino=[gra];
-    if(replicar){
-      const baseDe=g=>String(g).split(/[°\-\s]/)[0];
-      const baseSrc=baseDe(gra);
-      const otros=db.carga
-        .filter(c=>c.d===doc && c.m===mat && baseDe(c.g)===baseSrc && c.g!==gra)
-        .map(c=>c.g);
-      gradosDestino=[...new Set([gra,...otros])];
-    }
-    updDB(d=>{
-      gradosDestino.forEach((gDest,gi)=>{
-        inputs.forEach((txRaw, txi)=>{
-           const prefijos={bajo:'(se le dificulta) ',basico:'Algunas veces ',alto:'Casi siempre ',superior:'Siempre '};
-           niveles.forEach((niv,i)=>{
-             let txtFinal = prefijos[niv];
-             if(niv==='bajo'){
-               txtFinal += verbToInf(txRaw);
-             } else {
-               txtFinal += txRaw;
-             }
-             d.descriptores.push({id:base+(gi*100)+(txi*10)+i,per,mat,niv,gra:gDest,txt:txtFinal,doc});
-           });
-        });
-      });
-      return d;
-    });
-    
-    const st=document.getElementById('replicaStatus');
-    if(st && gradosDestino.length>1){
-      st.textContent='✅ Descriptores guardados y auto-replicados a: '+gradosDestino.join(', ');
-    } else if(st){
-      st.textContent='✅ Descriptores guardados para '+gra;
-    }
-    
-    const fg = document.getElementById('_descFiltRegistGra')?.value;
-    const fm = document.getElementById('_descFiltRegistMat')?.value;
-    const fd = document.getElementById('_descFiltRegistDoc')?.value;
-    const fp = document.getElementById('_descFiltRegistPer')?.value;
-    renderApp();
-    setTimeout(()=>{
-      if(fg){const el=document.getElementById('_descFiltRegistGra');if(el)el.value=fg;}
-      if(fm){const el=document.getElementById('_descFiltRegistMat');if(el)el.value=fm;}
-      if(fd){const el=document.getElementById('_descFiltRegistDoc');if(el)el.value=fd;}
-      if(fp){const el=document.getElementById('_descFiltRegistPer');if(el)el.value=fp;}
-      _filtrarDescReg();
-    }, 50);
-  }
-  function editarDesc(id){
-  const d=db.descriptores.find(x=>x.id===id);if(!d) return;
-  const nt=prompt('Descriptor:',d.txt);if(nt===null) return;
-  updDB(db=>{const idx=db.descriptores.findIndex(x=>x.id===id);if(idx!==-1) db.descriptores[idx].txt=nt.trim();return db;});
-  const fg = document.getElementById('_descFiltRegistGra')?.value;
-  const fm = document.getElementById('_descFiltRegistMat')?.value;
-  const fd = document.getElementById('_descFiltRegistDoc')?.value;
-  const fp = document.getElementById('_descFiltRegistPer')?.value;
-  renderApp();
-  setTimeout(()=>{
-    if(fg){const el=document.getElementById('_descFiltRegistGra');if(el)el.value=fg;}
-    if(fm){const el=document.getElementById('_descFiltRegistMat');if(el)el.value=fm;}
-    if(fd){const el=document.getElementById('_descFiltRegistDoc');if(el)el.value=fd;}
-    if(fp){const el=document.getElementById('_descFiltRegistPer');if(el)el.value=fp;}
-    _filtrarDescReg();
-  }, 50);
-}
-function eliminarDesc(id){
-  if(!confirm('¿Eliminar?')) return;
-  updDB(db=>{db.descriptores=db.descriptores.filter(x=>x.id!==id);return db;});
-  const fg = document.getElementById('_descFiltRegistGra')?.value;
-  const fm = document.getElementById('_descFiltRegistMat')?.value;
-  const fd = document.getElementById('_descFiltRegistDoc')?.value;
-  const fp = document.getElementById('_descFiltRegistPer')?.value;
-  renderApp();
-  setTimeout(()=>{
-    if(fg){const el=document.getElementById('_descFiltRegistGra');if(el)el.value=fg;}
-    if(fm){const el=document.getElementById('_descFiltRegistMat');if(el)el.value=fm;}
-    if(fd){const el=document.getElementById('_descFiltRegistDoc');if(el)el.value=fd;}
-    if(fp){const el=document.getElementById('_descFiltRegistPer');if(el)el.value=fp;}
-    _filtrarDescReg();
-  }, 50);
 }
 
-// ============================================================
-// REPLICAR DESCRIPTORES A OTROS GRUPOS DEL MISMO GRADO BASE
-// ============================================================
+function _filtrarDescReg(){
+  const fGra = (document.getElementById('_descFiltRegistGra')?.value || '').toLowerCase();
+  const fMat = (document.getElementById('_descFiltRegistMat')?.value || '').toLowerCase();
+  const fDoc = (document.getElementById('_descFiltRegistDoc')?.value || '').toLowerCase();
+  const fPer = (document.getElementById('_descFiltRegistPer')?.value || '').toLowerCase();
+  const tbody = document.querySelector('#_descRegTabla tbody');
+  if (!tbody) return;
+  const isAdmin = sesion && sesion.r === 'admin';
+  Array.from(tbody.rows).forEach(function(row){
+    const cells = Array.from(row.cells).map(c => c.textContent.toLowerCase());
+    const show = (!fPer || cells[0].includes(fPer)) &&
+      (!fDoc || (isAdmin && cells[1]?.includes(fDoc))) &&
+      (!fGra || cells[isAdmin ? 2 : 1]?.includes(fGra)) &&
+      (!fMat || cells[isAdmin ? 3 : 2]?.includes(fMat));
+    row.style.display = show ? '' : 'none';
+  });
+}
+
+function actualizarMatsDesc(){
+  const doc = document.getElementById('descDoc')?.value || sesion.u;
+  const gra = document.getElementById('descGra')?.value || '';
+  const mats = db.carga.filter(c => c.d === doc && c.g === gra);
+  const sel = document.getElementById('descMat');
+  if (sel) {
+    sel.innerHTML = mats.map(m => `<option value="${m.m}">${m.m}</option>`).join('');
+  }
+  actualizarGruposReplicaDesc();
+}
+
+function actualizarGruposReplicaDesc(){
+  const doc = document.getElementById('descDoc')?.value || sesion.u;
+  const gra = document.getElementById('descGra')?.value || '';
+  const mat = document.getElementById('descMat')?.value || '';
+  const container = document.getElementById('descReplicaDest');
+  if (!container) return;
+
+  const baseDe = g => String(g).split(/[°\-\s]/)[0];
+  const baseSrc = baseDe(gra);
+
+  // RESTRICCIÓN ESTRICTA POR CARGA: Únicamente grupos donde este docente tiene asignada carga en esa materia
+  const otrosGruposCarga = [...new Set(
+    db.carga
+      .filter(c => c.d === doc && (!mat || c.m === mat) && c.g !== gra && (!baseSrc || baseDe(c.g) === baseSrc))
+      .map(c => c.g)
+  )].sort();
+
+  if (!otrosGruposCarga.length) {
+    // Si no hay del mismo grado base, buscar en otros grados asignados al docente para esa materia
+    const otrosTodos = [...new Set(
+      db.carga
+        .filter(c => c.d === doc && (!mat || c.m === mat) && c.g !== gra)
+        .map(c => c.g)
+    )].sort();
+
+    if (otrosTodos.length) {
+      container.innerHTML = otrosTodos.map(g => `<label style="font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:3px;background:#e8f4fd;padding:3px 7px;border-radius:4px"><input type="checkbox" name="chkRepDest" value="${g}"> ${g}</label>`).join('');
+    } else {
+      container.innerHTML = `<span style="font-size:0.75rem;color:#888;padding:4px">No tiene otros grupos con carga asignada en esta materia.</span>`;
+    }
+  } else {
+    container.innerHTML = otrosGruposCarga.map(g => `<label style="font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:3px;background:#e8f8f5;padding:3px 7px;border-radius:4px;border:1px solid #a3e4d7"><input type="checkbox" name="chkRepDest" value="${g}" checked> <b>${g}</b></label>`).join('');
+  }
+}
+
+function guardarDesc(){
+  const doc = document.getElementById('descDoc')?.value || sesion.u;
+  const per = document.getElementById('descPer')?.value || '1';
+  const gra = document.getElementById('descGra')?.value || '';
+  const mat = document.getElementById('descMat')?.value || '';
+
+  const inputs = Array.from(document.querySelectorAll('.descTxtInput')).map(i => i.value.trim()).filter(Boolean);
+  if (!mat || !inputs.length) {
+    alert('Complete el campo de asignatura e ingrese al menos un indicador');
+    return;
+  }
+
+  function verbToInf(txt){
+    return txt.replace(/^(\S+)/, match => {
+      let v = match.toLowerCase();
+      if (v === 'es') return 'ser';
+      if (v === 'tiene') return 'tener';
+      if (v === 'hace') return 'hacer';
+      if (v === 'escribe') return 'escribir';
+      if (v === 'describe') return 'describir';
+      if (v === 'construye') return 'construir';
+      if (v.endsWith('a') || v.endsWith('e') || v.endsWith('i')) return v + 'r';
+      return match;
+    });
+  }
+
+  const niveles = ['bajo', 'basico', 'alto', 'superior'];
+  const base = Date.now();
+  const auto = document.getElementById('autoReplicaChk');
+  const replicar = !auto || auto.checked;
+  let gradosDestino = [gra];
+
+  if (replicar) {
+    const baseDe = g => String(g).split(/[°\-\s]/)[0];
+    const baseSrc = baseDe(gra);
+    // Auto-replicar ÚNICAMENTE en los grupos asignados a este docente en su carga académica
+    const otros = db.carga
+      .filter(c => c.d === doc && c.m === mat && baseDe(c.g) === baseSrc && c.g !== gra)
+      .map(c => c.g);
+    gradosDestino = [...new Set([gra, ...otros])];
+  }
+
+  updDB(d => {
+    if (!d.descriptores) d.descriptores = [];
+    gradosDestino.forEach((gDest, gi) => {
+      inputs.forEach((txRaw, txi) => {
+        const prefijos = { bajo: '(se le dificulta) ', basico: 'Algunas veces ', alto: 'Casi siempre ', superior: 'Siempre ' };
+        niveles.forEach((niv, i) => {
+          let txtFinal = prefijos[niv];
+          if (niv === 'bajo') {
+            txtFinal += verbToInf(txRaw);
+          } else {
+            txtFinal += txRaw;
+          }
+          d.descriptores.push({
+            id: base + (gi * 100) + (txi * 10) + i,
+            per,
+            mat,
+            niv,
+            gra: gDest,
+            txt: txtFinal,
+            doc
+          });
+        });
+      });
+    });
+    return d;
+  });
+
+  const st = document.getElementById('replicaStatus');
+  if (st && gradosDestino.length > 1) {
+    st.textContent = '✅ Descriptores guardados y auto-replicados a su carga en: ' + gradosDestino.join(', ');
+  } else if (st) {
+    st.textContent = '✅ Descriptores guardados para ' + gra;
+  }
+
+  const fg = document.getElementById('_descFiltRegistGra')?.value;
+  const fm = document.getElementById('_descFiltRegistMat')?.value;
+  const fd = document.getElementById('_descFiltRegistDoc')?.value;
+  const fp = document.getElementById('_descFiltRegistPer')?.value;
+
+  renderApp();
+  setTimeout(() => {
+    if (fg) { const el = document.getElementById('_descFiltRegistGra'); if (el) el.value = fg; }
+    if (fm) { const el = document.getElementById('_descFiltRegistMat'); if (el) el.value = fm; }
+    if (fd) { const el = document.getElementById('_descFiltRegistDoc'); if (el) el.value = fd; }
+    if (fp) { const el = document.getElementById('_descFiltRegistPer'); if (el) el.value = fp; }
+    _filtrarDescReg();
+  }, 60);
+}
+
+function editarDesc(id){
+  const d = (db.descriptores || []).find(x => x.id === id);
+  if (!d) return;
+  const isAdmin = sesion && sesion.r === 'admin';
+  if (!isAdmin && d.doc !== sesion.u) {
+    alert('Solo puede editar los descriptores creados por su usuario.');
+    return;
+  }
+
+  const nt = prompt(`Editar descriptor (${d.niv.toUpperCase()} - ${d.gra}):`, d.txt);
+  if (nt === null || !nt.trim()) return;
+
+  updDB(database => {
+    const idx = (database.descriptores || []).findIndex(x => x.id === id);
+    if (idx !== -1) database.descriptores[idx].txt = nt.trim();
+    return database;
+  });
+
+  renderApp();
+  setTimeout(_filtrarDescReg, 60);
+}
+
+function eliminarDesc(id){
+  const d = (db.descriptores || []).find(x => x.id === id);
+  if (!d) return;
+  const isAdmin = sesion && sesion.r === 'admin';
+  if (!isAdmin && d.doc !== sesion.u) {
+    alert('Solo puede eliminar los descriptores creados por su usuario.');
+    return;
+  }
+
+  if (!confirm('¿Mover este descriptor a la papelera de reciclaje?')) return;
+  softDeleteRegistro('descriptor', id);
+}
+
 function replicarUltimosDescs(){
-  const doc=document.getElementById('descDoc')?.value||sesion.u;
-  const per=document.getElementById('descPer')?.value||'1';
-  const mat=document.getElementById('descMat')?.value||'';
-  const gradSrc=document.getElementById('descGra')?.value||'';
-  
-  const chks=Array.from(document.querySelectorAll('input[name="chkRepDest"]:checked'));
-  const gradsDest=chks.map(c=>c.value).filter(g=>g!==gradSrc);
-  if(!gradsDest.length){alert('Seleccione al menos un grupo destino diferente al grado origen.');return;}
-  if(!mat){alert('Seleccione primero una asignatura.');return;}
-  const srcDescs=db.descriptores.filter(d=>d.doc===doc&&String(d.per)===String(per)&&d.mat===mat&&d.gra===gradSrc);
-  if(!srcDescs.length){
+  const doc = document.getElementById('descDoc')?.value || sesion.u;
+  const per = document.getElementById('descPer')?.value || '1';
+  const mat = document.getElementById('descMat')?.value || '';
+  const gradSrc = document.getElementById('descGra')?.value || '';
+
+  const chks = Array.from(document.querySelectorAll('input[name="chkRepDest"]:checked'));
+  const gradsDest = chks.map(c => c.value).filter(g => g !== gradSrc);
+
+  if (!gradsDest.length) {
+    alert('Seleccione al menos un grupo destino asignado en su carga académica diferente al origen.');
+    return;
+  }
+  if (!mat) {
+    alert('Seleccione primero una asignatura.');
+    return;
+  }
+
+  const srcDescs = (db.descriptores || []).filter(d => !d.deletedAt && d.doc === doc && String(d.per) === String(per) && d.mat === mat && d.gra === gradSrc);
+  if (!srcDescs.length) {
     alert('No hay descriptores guardados para este docente/periodo/asignatura/grado origen.\nGuarde primero el descriptor y luego replique.');
     return;
   }
-  let totalRep=0;
-  updDB(d=>{
-    gradsDest.forEach(gradDest=>{
-      d.descriptores=d.descriptores.filter(x=>!(x.doc===doc&&String(x.per)===String(per)&&x.mat===mat&&x.gra===gradDest));
-      const base=Date.now()+Math.floor(Math.random()*10000);
-      srcDescs.forEach((sd,i)=>{
-        d.descriptores.push({id:base+i,per:sd.per,mat:sd.mat,niv:sd.niv,gra:gradDest,txt:sd.txt,doc:sd.doc});
+
+  let totalRep = 0;
+  updDB(d => {
+    gradsDest.forEach(gradDest => {
+      // Reemplazar descriptores activos previos en ese destino para esa materia/periodo
+      d.descriptores = (d.descriptores || []).filter(x => !(x.doc === doc && String(x.per) === String(per) && x.mat === mat && x.gra === gradDest));
+      const base = Date.now() + Math.floor(Math.random() * 10000);
+      srcDescs.forEach((sd, i) => {
+        d.descriptores.push({
+          id: base + i,
+          per: sd.per,
+          mat: sd.mat,
+          niv: sd.niv,
+          gra: gradDest,
+          txt: sd.txt,
+          doc: sd.doc
+        });
         totalRep++;
       });
     });
     return d;
   });
-  
-  const fg = document.getElementById('_descFiltRegistGra')?.value;
-  const fm = document.getElementById('_descFiltRegistMat')?.value;
-  const fd = document.getElementById('_descFiltRegistDoc')?.value;
-  const fp = document.getElementById('_descFiltRegistPer')?.value;
-  
+
   renderApp();
-  setTimeout(()=>{
-    const st=document.getElementById('replicaStatus');
-    if(st) st.textContent='✅ '+totalRep+' descriptor(es) replicado(s) a: '+gradsDest.join(', ');
-    if(fg){const el=document.getElementById('_descFiltRegistGra');if(el)el.value=fg;}
-    if(fm){const el=document.getElementById('_descFiltRegistMat');if(el)el.value=fm;}
-    if(fd){const el=document.getElementById('_descFiltRegistDoc');if(el)el.value=fd;}
-    if(fp){const el=document.getElementById('_descFiltRegistPer');if(el)el.value=fp;}
+  setTimeout(() => {
+    const st = document.getElementById('replicaStatus');
+    if (st) st.textContent = '✅ ' + totalRep + ' descriptor(es) replicado(s) exitosamente a: ' + gradsDest.join(', ');
     _filtrarDescReg();
-  }, 50);
+  }, 60);
 }
 
 function agregarCampoDesc(){

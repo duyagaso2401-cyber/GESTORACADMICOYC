@@ -3,6 +3,7 @@
 // Express + Node.js | Puerto 8080
 // ============================================================
 
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -41,12 +42,23 @@ app.use(express.json({ limit: '50mb' }));
 
 // ── Gemini ────────────────────────────────────────────────────────────────────
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL   = 'gemini-2.5-flash';
+function getGeminiApiKey(): string {
+  return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
+}
+
+const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const CANDIDATE_MODELS = [
+  PRIMARY_MODEL,
+  'gemini-2.0-flash',
+  'gemini-2.5-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro'
+].filter((m, i, arr) => m && arr.indexOf(m) === i);
 
 function getGenAI() {
-  if (!GEMINI_API_KEY) return null;
-  return new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) return null;
+  return new GoogleGenAI({ apiKey });
 }
 
 /**
@@ -381,6 +393,60 @@ app.post('/api/inetis/notify/seen', async (_req, res) => {
 // A06 · RUTAS — ASISTENTE IA ADÁN (GEMINI)
 // ============================================================
 
+app.get('/api/inetis/ai/status', async (_req, res) => {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return res.json({
+      ok: false,
+      keyConfigured: false,
+      message: 'GEMINI_API_KEY no encontrada en .env ni en variables de entorno.'
+    });
+  }
+
+  try {
+    const genAI = getGenAI();
+    if (!genAI) {
+      return res.json({ ok: false, keyConfigured: false, message: 'No se pudo inicializar la librería GoogleGenAI' });
+    }
+
+    let activeModel = '';
+    let lastError = '';
+
+    for (const m of CANDIDATE_MODELS) {
+      try {
+        const testRes = await genAI.models.generateContent({
+          model: m,
+          contents: 'Hola',
+          config: { maxOutputTokens: 10 }
+        });
+        if (testRes && (testRes.text || testRes.candidates)) {
+          activeModel = m;
+          break;
+        }
+      } catch (err: any) {
+        lastError = err?.message || String(err);
+      }
+    }
+
+    if (activeModel) {
+      return res.json({
+        ok: true,
+        keyConfigured: true,
+        model: activeModel,
+        message: `Asistente Adán conectado correctamente con modelo ${activeModel}`
+      });
+    } else {
+      return res.json({
+        ok: false,
+        keyConfigured: true,
+        message: `Clave detectada pero hubo fallo al consultar modelos: ${lastError}`
+      });
+    }
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, keyConfigured: true, error: e?.message || 'Error de diagnóstico' });
+  }
+});
+
 app.post('/api/inetis/ai/chat', async (req, res) => {
   try {
     const { messages, context, mode, imagePart } = req.body as {
@@ -390,49 +456,70 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       imagePart?: { mimeType: string; data: string };
     };
 
-    if (!GEMINI_API_KEY) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY no configurada en el servidor' });
     }
 
-    const genAI = getGenAI()!;
+    const genAI = getGenAI();
+    if (!genAI) {
+      return res.status(500).json({ error: 'Error inicializando cliente de IA' });
+    }
+
     const systemPrompt = buildSystemPrompt(context || {});
 
-    const history = messages.slice(0, -1).map(m => ({
+    const history = (messages || []).slice(0, -1).map(m => ({
       role: m.role === 'user' ? 'user' as const : 'model' as const,
-      parts: [{ text: m.content }],
+      parts: [{ text: m.content || '' }],
     }));
 
-    const lastMsg  = messages[messages.length - 1];
+    const lastMsg  = (messages && messages.length > 0) ? messages[messages.length - 1] : null;
     const userText = lastMsg?.content || '';
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const isPlanear = mode === 'planear' || messages.some(m =>
+    const isPlanear = mode === 'planear' || (messages || []).some(m =>
       m.content && m.content.includes('planeación de clase COMPLETA')
     );
 
-    const chat = genAI.chats.create({
-      model: GEMINI_MODEL,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.8,
-        maxOutputTokens: isPlanear ? 8192 : 4096,
-      },
-      history,
-    });
+    let stream = null;
+    let streamModel = '';
+    let lastError: any = null;
 
-    let stream;
-    if (imagePart && imagePart.data) {
-      stream = await chat.sendMessageStream({
-        message: [
-          { text: userText || 'Analiza esta imagen y describe lo que ves, luego responde lo que necesite el usuario.' },
-          { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
-        ],
-      });
-    } else {
-      stream = await chat.sendMessageStream({ message: userText });
+    for (const candidateModel of CANDIDATE_MODELS) {
+      try {
+        const chat = genAI.chats.create({
+          model: candidateModel,
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.8,
+            maxOutputTokens: isPlanear ? 8192 : 4096,
+          },
+          history,
+        });
+
+        if (imagePart && imagePart.data) {
+          stream = await chat.sendMessageStream({
+            message: [
+              { text: userText || 'Analiza esta imagen y describe lo que ves, luego responde lo que necesite el usuario.' },
+              { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
+            ],
+          });
+        } else {
+          stream = await chat.sendMessageStream({ message: userText });
+        }
+        streamModel = candidateModel;
+        break;
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`⚠️ Intento fallido con modelo IA ${candidateModel}:`, err?.message || err);
+      }
+    }
+
+    if (!stream) {
+      throw lastError || new Error('No se pudo establecer conexión con los modelos de Google Gemini');
     }
 
     for await (const chunk of stream) {
@@ -445,8 +532,8 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
     res.end();
     return;
   } catch (e: unknown) {
-    console.error('POST /api/inetis/ai/chat', e);
-    const msg = e instanceof Error ? e.message : 'Error interno';
+    console.error('POST /api/inetis/ai/chat error:', e);
+    const msg = e instanceof Error ? e.message : 'Error interno de comunicación con la IA';
     if (!res.headersSent) return res.status(500).json({ error: msg });
     try { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); } catch {}
     return;
@@ -461,7 +548,8 @@ app.post('/api/inetis/ai/general', async (req, res) => {
       prompt?: string;
     };
 
-    if (!GEMINI_API_KEY) {
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
       return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
     }
 
@@ -471,17 +559,35 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
     if (!userText) return res.status(400).json({ error: 'Texto vacío' });
 
-    const result = await genAI.models.generateContent({
-      model: GEMINI_MODEL,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.7,
-        maxOutputTokens: 1024,
-      },
-      contents: userText,
-    });
+    let resultText = '';
+    let lastError: any = null;
 
-    return res.json({ content: result.text || '' });
+    for (const candidateModel of CANDIDATE_MODELS) {
+      try {
+        const result = await genAI.models.generateContent({
+          model: candidateModel,
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.7,
+            maxOutputTokens: 2048,
+          },
+          contents: userText,
+        });
+        if (result && result.text) {
+          resultText = result.text;
+          break;
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`⚠️ Error en ai/general con modelo ${candidateModel}:`, err?.message || err);
+      }
+    }
+
+    if (!resultText && lastError) {
+      throw lastError;
+    }
+
+    return res.json({ content: resultText || '' });
   } catch (e: unknown) {
     console.error('POST /api/inetis/ai/general', e);
     const msg = e instanceof Error ? e.message : 'Error interno';
@@ -559,7 +665,10 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API Server escuchando en puerto ${PORT}`);
-  if (!GEMINI_API_KEY) {
+  const key = getGeminiApiKey();
+  if (!key) {
     console.warn('⚠️  GEMINI_API_KEY no configurada — IA no disponible');
+  } else {
+    console.log(`✅  Asistente Adán IA configurado. Modelo preferido: ${PRIMARY_MODEL}`);
   }
 });
