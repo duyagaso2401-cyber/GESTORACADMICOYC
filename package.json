@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "echo 'Sin paso de compilacion necesario'",
-    "start": "tsx src/index.ts",
+   
+   "start": "NODE_OPTIONS='--max-http-header-size=32768' tsx src/index.ts",
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
