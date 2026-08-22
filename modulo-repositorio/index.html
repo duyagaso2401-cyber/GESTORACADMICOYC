@@ -389,7 +389,8 @@ const INST        = new URLSearchParams(location.search).get('inst') || 'default
 const API         = '/api/repositorio';
 
 const _qpInst     = new URLSearchParams(location.search);
-const _instNombre = decodeURIComponent(_qpInst.get('_instNombre') || '');
+//const _instNombre = decodeURIComponent(_qpInst.get('_instNombre') || '');
+const _instNombre = decodeURIComponent(_qpInst.get('_instNombre') || _qpInst.get('instNombre') || '');
 const _instEscudo = decodeURIComponent(_qpInst.get('_instEscudo') || '');
 
 let currentPage = 1;

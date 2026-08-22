@@ -2569,7 +2569,8 @@ function renderApp(){
     const _repoUser=encodeURIComponent(sesion.n||sesion.u||'Usuario');
     const _repoNombre=encodeURIComponent(db.nombre||'');
     const _repoEscudo=encodeURIComponent(db.escudo||db.logo||'');
-    menu.push({id:'repositorio',label:'🗂️ Repositorio Recursos',href:`/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}&_instNombre=${_repoNombre}&_instEscudo=${_repoEscudo}`,external:true});
+   //menu.push({id:'repositorio',label:'🗂️ Repositorio Recursos',href:`/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}&_instNombre=${_repoNombre}&_instEscudo=${_repoEscudo}`,external:true});
+  menu.push({id:'repositorio',label:'🗂️ Repositorio Recursos',href:`/repositorio?inst=${_repoInst}&_portalRole=${_repoRole}&_portalUser=${_repoUser}`,external:true});
   }
 
   // Ordenar todos los módulos alfabéticamente (ignorando emojis y caracteres especiales)
