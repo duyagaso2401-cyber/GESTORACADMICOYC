@@ -416,9 +416,18 @@ const SESSION_ROLE_LABEL = {
   docente:'Docente', estudiante:'Estudiante', padre:'Acudiente'
 }[_pRole] || _pRole || 'Visitante';
 
-async function apiFetch(path, opts = {}) {
+/*async function apiFetch(path, opts = {}) {
   const sep = path.includes('?') ? '&' : '?';
   const url = `${API}${path}${sep}inst=${encodeURIComponent(INST)}`;
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return r.json();
+}*/
+
+// CÓDIGO CORREGIDO (Sin instNombre largo):
+async function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `${API}${path}${sep}inst=${encodeURIComponent(INST)}&portalRole=${encodeURIComponent(_prole)}&portalUser=${encodeURIComponent(_puser)}`;
   const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
   if (!r.ok) { const t = await r.text(); throw new Error(t); }
   return r.json();

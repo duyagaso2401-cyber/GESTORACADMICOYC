@@ -8366,7 +8366,7 @@ function eliminarObservacion(estId, obsIdx){
       data: { ...obs, estId: estId }
     });
   }
-//ACÁ COMIENZA EL CAMBIO HECHO
+//ACÁ FINALIZA EL CAMBIO HECHO
 
   // 2. Eliminar del arreglo principal
   updDB(d => {
