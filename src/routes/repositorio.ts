@@ -249,7 +249,7 @@ router.put('/resources/:id', async (req, res) => {
       metadata,
       type,
       description: desc,
-      link:     link     || null,
+      link:        link     || null,
       ...(fileData ? { fileData, fileName } : {}),
     }).where(and(eq(repositorioResources.id, id), eq(repositorioResources.institucionId, inst)));
     return res.json({ success: true });
@@ -424,14 +424,28 @@ router.get('/areas', async (req, res) => {
   const inst = getInst(req);
   try {
     let rows = await db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst));
-    
+    let asignaturasList: string[] = [];
+
     if (!rows.length) {
-      const { asignaturas } = await getDatosRealesDesdeNeon(inst);
-      return res.json(asignaturas.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre, name: nombre })));
+      const datos = await getDatosRealesDesdeNeon(inst);
+      asignaturasList = datos.asignaturas;
+    } else {
+      asignaturasList = rows.map(r => r.nombre);
     }
 
-    return res.json(rows.map(r => ({ ...r, name: r.nombre })));
-  } catch (e: any) { return res.status(500).json({ error: e.message }); }
+    if (req.query.format === 'object') {
+      return res.json(asignaturasList.map((nombre, index) => ({
+        id: index + 1,
+        institucionId: inst,
+        nombre,
+        name: nombre
+      })));
+    }
+
+    return res.json(asignaturasList);
+  } catch (e: any) { 
+    return res.status(500).json({ error: e.message }); 
+  }
 });
 
 router.post('/areas', async (req, res) => {
@@ -470,13 +484,25 @@ router.get('/grados', async (req, res) => {
   const inst = getInst(req);
   try {
     let rows = await db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst));
+    let gradosList: string[] = [];
 
     if (!rows.length) {
-      const { grados } = await getDatosRealesDesdeNeon(inst);
-      return res.json(grados.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre, name: nombre })));
+      const datos = await getDatosRealesDesdeNeon(inst);
+      gradosList = datos.grados;
+    } else {
+      gradosList = rows.map(r => r.nombre);
     }
 
-    return res.json(rows.map(r => ({ ...r, name: r.nombre })));
+    if (req.query.format === 'object') {
+      return res.json(gradosList.map((nombre, index) => ({
+        id: index + 1,
+        institucionId: inst,
+        nombre,
+        name: nombre
+      })));
+    }
+
+    return res.json(gradosList);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -516,12 +542,24 @@ router.get('/tipos', async (req, res) => {
   const inst = getInst(req);
   try {
     let rows = await db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, inst));
-    
+    let tiposList: string[] = [];
+
     if (!rows.length) {
-      return res.json(DEFAULT_TIPOS.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre, name: nombre })));
+      tiposList = DEFAULT_TIPOS;
+    } else {
+      tiposList = rows.map(r => r.nombre);
     }
 
-    return res.json(rows.map(r => ({ ...r, name: r.nombre })));
+    if (req.query.format === 'object') {
+      return res.json(tiposList.map((nombre, index) => ({
+        id: index + 1,
+        institucionId: inst,
+        nombre,
+        name: nombre
+      })));
+    }
+
+    return res.json(tiposList);
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
