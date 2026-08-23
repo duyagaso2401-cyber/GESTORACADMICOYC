@@ -47,14 +47,15 @@ async function getDatosRealesDesdeNeon(inst: string) {
     let escudoInst = '';
 
     if (gestorData?.platforms && Array.isArray(gestorData.platforms)) {
-      // Búsqueda flexible por id, sk o coincidencia de texto
+      // Búsqueda flexible por id, sk, substring o coincidencia parcial
       const plat = gestorData.platforms.find((p: any) => 
         p.id === inst || 
         p.sk === inst || 
         (p.id && inst.includes(p.id)) || 
         (p.sk && inst.includes(p.sk)) ||
-        (p.nombre && p.nombre.toLowerCase().includes(inst.toLowerCase()))
-      ) || gestorData.platforms[0]; // Fallback a la primera plataforma registrada
+        (p.nombre && p.nombre.toLowerCase().includes(inst.toLowerCase())) ||
+        (inst && p.id && p.id.includes(inst))
+      ) || gestorData.platforms[0];
 
       if (plat) {
         platSK = plat.sk || plat.id || '';
@@ -82,7 +83,7 @@ async function getDatosRealesDesdeNeon(inst: string) {
       )] as string[];
     }
 
-    // FALLBACKS DE SEGURIDAD (Suministra opciones por defecto si Neon DB aún no las ha generado)
+    // FALLBACKS GARANTIZADOS
     if (!grados.length) {
       grados = ['Sexto', 'Séptimo', 'Octavo', 'Noveno', 'Décimo', 'Undécimo'];
     }
@@ -417,7 +418,7 @@ router.post('/config', async (req, res) => {
 });
 
 // ============================================================
-// ÁREAS (Consultadas directamente de Neon con Fallback)
+// ÁREAS
 // ============================================================
 router.get('/areas', async (req, res) => {
   const inst = getInst(req);
@@ -426,10 +427,10 @@ router.get('/areas', async (req, res) => {
     
     if (!rows.length) {
       const { asignaturas } = await getDatosRealesDesdeNeon(inst);
-      rows = asignaturas.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
+      return res.json(asignaturas.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre, name: nombre })));
     }
 
-    return res.json(rows);
+    return res.json(rows.map(r => ({ ...r, name: r.nombre })));
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -463,7 +464,7 @@ router.delete('/areas/:id', async (req, res) => {
 });
 
 // ============================================================
-// GRADOS (Consultados directamente de Neon con Fallback)
+// GRADOS
 // ============================================================
 router.get('/grados', async (req, res) => {
   const inst = getInst(req);
@@ -472,10 +473,10 @@ router.get('/grados', async (req, res) => {
 
     if (!rows.length) {
       const { grados } = await getDatosRealesDesdeNeon(inst);
-      rows = grados.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
+      return res.json(grados.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre, name: nombre })));
     }
 
-    return res.json(rows);
+    return res.json(rows.map(r => ({ ...r, name: r.nombre })));
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
@@ -517,10 +518,10 @@ router.get('/tipos', async (req, res) => {
     let rows = await db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, inst));
     
     if (!rows.length) {
-      rows = DEFAULT_TIPOS.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
+      return res.json(DEFAULT_TIPOS.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre, name: nombre })));
     }
 
-    return res.json(rows);
+    return res.json(rows.map(r => ({ ...r, name: r.nombre })));
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
 
