@@ -14,7 +14,14 @@ const router = Router();
 
 /** Lee institucion_id de forma flexible desde query param */
 function getInst(req: any): string {
-  const inst = (req.query.inst || req.query._repoInst || req.query.instucionId || 'default').toString().trim();
+  const inst = (
+    req.query.inst || 
+    req.query._inst || 
+    req.query._repoInst || 
+    req.query.institucionId || 
+    req.query.instucionId || 
+    'default'
+  ).toString().trim();
   return inst || 'default';
 }
 
@@ -39,11 +46,15 @@ async function getDatosRealesDesdeNeon(inst: string) {
     let nombreInst = '';
     let escudoInst = '';
 
-    if (gestorData?.platforms) {
-      // Buscar coincidencia exacta o por id parcial
+    if (gestorData?.platforms && Array.isArray(gestorData.platforms)) {
+      // Búsqueda flexible por id, sk o coincidencia de texto
       const plat = gestorData.platforms.find((p: any) => 
-        p.id === inst || p.sk === inst || (p.nombre && p.nombre.toLowerCase().includes(inst.toLowerCase()))
-      ) || gestorData.platforms[0]; // fallback a la primera plataforma si existe
+        p.id === inst || 
+        p.sk === inst || 
+        (p.id && inst.includes(p.id)) || 
+        (p.sk && inst.includes(p.sk)) ||
+        (p.nombre && p.nombre.toLowerCase().includes(inst.toLowerCase()))
+      ) || gestorData.platforms[0]; // Fallback a la primera plataforma registrada
 
       if (plat) {
         platSK = plat.sk || plat.id || '';
@@ -52,27 +63,42 @@ async function getDatosRealesDesdeNeon(inst: string) {
       }
     }
 
-    if (!platSK) return { grados: [], asignaturas: [], nombreInst, escudoInst };
-
-    const platRows = await db.select().from(kvStore).where(eq(kvStore.key, platSK));
+    const targetKey = platSK || inst;
+    const platRows = await db.select().from(kvStore).where(eq(kvStore.key, targetKey));
     const platData = platRows[0]?.value as any;
 
-    if (!platData) return { grados: [], asignaturas: [], nombreInst, escudoInst };
+    let grados: string[] = [];
+    let asignaturas: string[] = [];
 
-    const gradosArr = (platData.grados || []) as any[];
-    const grados = [...new Set(
-      gradosArr.map((g: any) => (typeof g === 'string' ? g : g.n || g.id || g.nombre || '')).filter(Boolean)
-    )] as string[];
+    if (platData) {
+      const gradosArr = (platData.grados || []) as any[];
+      grados = [...new Set(
+        gradosArr.map((g: any) => (typeof g === 'string' ? g : g.n || g.id || g.nombre || '')).filter(Boolean)
+      )] as string[];
 
-    const cargaArr = (platData.carga || platData.asignaturas || platData.materias || []) as any[];
-    const asignaturas = [...new Set(
-      cargaArr.map((c: any) => (typeof c === 'string' ? c : c.m || c.a || c.nombre || '')).filter(Boolean)
-    )] as string[];
+      const cargaArr = (platData.carga || platData.asignaturas || platData.materias || []) as any[];
+      asignaturas = [...new Set(
+        cargaArr.map((c: any) => (typeof c === 'string' ? c : c.m || c.a || c.nombre || '')).filter(Boolean)
+      )] as string[];
+    }
+
+    // FALLBACKS DE SEGURIDAD (Suministra opciones por defecto si Neon DB aún no las ha generado)
+    if (!grados.length) {
+      grados = ['Sexto', 'Séptimo', 'Octavo', 'Noveno', 'Décimo', 'Undécimo'];
+    }
+    if (!asignaturas.length) {
+      asignaturas = ['Informática', 'Matemáticas', 'Lengua Castellana', 'Ciencias Naturales', 'Ciencias Sociales', 'Inglés'];
+    }
 
     return { grados, asignaturas, nombreInst, escudoInst };
   } catch (e) {
     console.error('Error leyendo kvStore de Neon:', e);
-    return { grados: [], asignaturas: [], nombreInst: '', escudoInst: '' };
+    return { 
+      grados: ['Sexto', 'Séptimo', 'Octavo', 'Noveno', 'Décimo', 'Undécimo'], 
+      asignaturas: ['Informática', 'Matemáticas', 'Lengua Castellana', 'Ciencias Naturales', 'Ciencias Sociales', 'Inglés'], 
+      nombreInst: '', 
+      escudoInst: '' 
+    };
   }
 }
 
@@ -391,14 +417,13 @@ router.post('/config', async (req, res) => {
 });
 
 // ============================================================
-// ÁREAS (Consultadas directamente de Neon)
+// ÁREAS (Consultadas directamente de Neon con Fallback)
 // ============================================================
 router.get('/areas', async (req, res) => {
   const inst = getInst(req);
   try {
     let rows = await db.select().from(repositorioAreas).where(eq(repositorioAreas.institucionId, inst));
     
-    // Si la tabla del repositorio está vacía, extrae las asignaturas reales creadas en el Gestor (Neon DB)
     if (!rows.length) {
       const { asignaturas } = await getDatosRealesDesdeNeon(inst);
       rows = asignaturas.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
@@ -438,14 +463,13 @@ router.delete('/areas/:id', async (req, res) => {
 });
 
 // ============================================================
-// GRADOS (Consultados directamente de Neon)
+// GRADOS (Consultados directamente de Neon con Fallback)
 // ============================================================
 router.get('/grados', async (req, res) => {
   const inst = getInst(req);
   try {
     let rows = await db.select().from(repositorioGrados).where(eq(repositorioGrados.institucionId, inst));
 
-    // Si la tabla del repositorio está vacía, extrae los grados reales creados en el Gestor (Neon DB)
     if (!rows.length) {
       const { grados } = await getDatosRealesDesdeNeon(inst);
       rows = grados.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
@@ -492,7 +516,6 @@ router.get('/tipos', async (req, res) => {
   try {
     let rows = await db.select().from(repositorioTipos).where(eq(repositorioTipos.institucionId, inst));
     
-    // Si no existen tipos creados para esta institución, proveer los tipos por defecto automáticos
     if (!rows.length) {
       rows = DEFAULT_TIPOS.map((nombre, index) => ({ id: index + 1, institucionId: inst, nombre })) as any;
     }
@@ -525,7 +548,7 @@ router.delete('/tipos/:id', async (req, res) => {
   const inst = getInst(req);
   const id = parseInt(req.params.id);
   try {
-    await db.delete(repositorioTipos).where(and(eq(repositorioTipos.institucionId, inst), eq(repositorioTipos.institucionId, inst)));
+    await db.delete(repositorioTipos).where(and(eq(repositorioTipos.id, id), eq(repositorioTipos.institucionId, inst)));
     return res.json({ success: true });
   } catch (e: any) { return res.status(500).json({ error: e.message }); }
 });
