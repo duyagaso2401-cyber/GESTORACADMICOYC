@@ -38,7 +38,7 @@
     .hdr-session { background: rgba(255,255,255,.18); backdrop-filter: blur(4px); padding: 6px 12px; border-radius: 20px; white-space: nowrap; font-weight: 500; }
 
     /* ── NAV TABS ── */
-    nav.tabs { background: var(--primary-dark); display: flex; gap: 4px; padding: 0 16px; border-bottom: 2px solid rgba(255,255,255,.1); overflow-x: auto; }
+    nav.tabs { background: var(--primary-dark); display: flex; gap: 4px; padding: 0 16px; border-bottom: 2px solid rgba(255,255,255,.1); }
     nav.tabs button {
       color: rgba(255,255,255,.75); background: none; border: none; padding: 12px 18px;
       font-size: 13px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent;
@@ -124,7 +124,7 @@
     .comment-area textarea:focus { border-color: var(--secondary); }
 
     .action-btn-group { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
-    .btn-dl { background: var(--success); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s, transform 0.1s; cursor: pointer; border: none; }
+    .btn-dl { background: var(--success); color: white; text-align: center; padding: 10px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; transition: background 0.2s, transform 0.1s; }
     .btn-dl:hover { background: #238579; transform: translateY(-1px); }
 
     /* ── ESTADÍSTICAS ── */
@@ -342,7 +342,7 @@
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg">
-        <label>Tipo de Recurso *</label>
+        <label>Tipo de Recurso</label>
         <select id="form-tipo" required>
           <option value="">-- Selecciona el tipo de recurso --</option>
           <optgroup label="📄 Documentos y Archivos">
@@ -416,16 +416,7 @@ const SESSION_ROLE_LABEL = {
   docente:'Docente', estudiante:'Estudiante', padre:'Acudiente'
 }[_pRole] || _pRole || 'Visitante';
 
-function escH(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
+// CÓDIGO CORREGIDO: Se ajustan los nombres de las variables a camelCase (_pRole y _pUser)
 async function apiFetch(path, opts = {}) {
   const sep = path.includes('?') ? '&' : '?';
   const url = `${API}${path}${sep}inst=${encodeURIComponent(INST)}&portalRole=${encodeURIComponent(_pRole)}&portalUser=${encodeURIComponent(_pUser)}`;
@@ -625,334 +616,301 @@ function toggleSelectAll(type, checked) {
   applyFilters();
 }
 
-function renderFormSelect(id, items) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const currentVal = el.value;
-  el.innerHTML = '<option value="">— Seleccionar —</option>' +
-    items.map(i => `<option value="${escH(i.nombre)}">${escH(i.nombre)}</option>`).join('');
-  el.value = currentVal;
-}
-
 async function loadResources() {
-  try {
-    allResources = await apiFetch('/recursos');
-  } catch(e) {
-    allResources = [];
-  }
+  try { allResources = await apiFetch('/resources'); } catch(e) { allResources = []; }
   applyFilters();
 }
 
 function applyFilters() {
-  const q = document.getElementById('search-input').value.toLowerCase().trim();
-  const selectedAreas = Array.from(document.querySelectorAll('.chk-area:checked')).map(c => c.value);
-  const selectedGrados = Array.from(document.querySelectorAll('.chk-grado:checked')).map(c => c.value);
-  const selectedTipos = Array.from(document.querySelectorAll('.chk-tipo:checked')).map(c => c.value);
-  const selectedPeriodo = document.getElementById('filter-periodo').value;
+  const q = (document.getElementById('search-input')?.value || '').toLowerCase();
+  const selAreas  = [...document.querySelectorAll('.chk-area:checked')].map(c => c.value);
+  const selGrados = [...document.querySelectorAll('.chk-grado:checked')].map(c => c.value);
+  const selTipos  = [...document.querySelectorAll('.chk-tipo:checked')].map(c => c.value);
+  const selPeriodo = document.getElementById('filter-periodo')?.value || '';
 
   filteredResources = allResources.filter(r => {
-    const matchQ = !q || (r.titulo && r.titulo.toLowerCase().includes(q)) || 
-                        (r.descripcion && r.descripcion.toLowerCase().includes(q)) || 
-                        (r.autor && r.autor.toLowerCase().includes(q)) ||
-                        (r.metadatos && r.metadatos.toLowerCase().includes(q));
+    const area = r.skill || '';
+    const grado = r.level || '';
+    const tipo = r.type  || '';
+    const periodo = r.periodo || '';
     
-    const matchArea = selectedAreas.length === 0 || selectedAreas.includes(r.area || '');
-    const matchGrado = selectedGrados.length === 0 || selectedGrados.includes(r.grado || '');
-    const matchTipo = selectedTipos.length === 0 || selectedTipos.includes(r.tipo || '');
-    const matchPeriodo = !selectedPeriodo || r.periodo === selectedPeriodo;
-
-    return matchQ && matchArea && matchGrado && matchTipo && matchPeriodo;
+    const matchArea = !selAreas.length  || selAreas.includes(area);
+    const matchGrado = !selGrados.length || selGrados.includes(grado);
+    const matchTipo = !selTipos.length  || selTipos.includes(tipo);
+    const matchPeriodo = !selPeriodo       || periodo === selPeriodo;
+    const matchQ = !q || [r.title, r.author, area, grado, tipo, periodo, r.description, r.metadata].join(' ').toLowerCase().includes(q);
+    
+    return matchArea && matchGrado && matchTipo && matchPeriodo && matchQ;
   });
 
   currentPage = 1;
-  renderResourcesGrid();
+  renderResourcesPage();
 }
 
-function renderResourcesGrid() {
-  const grid = document.getElementById('resources-grid');
-  const emptyMsg = document.getElementById('empty-msg');
-  grid.innerHTML = '';
+function renderResourcesPage() {
+  const grid  = document.getElementById('resources-grid');
+  const empty = document.getElementById('empty-msg');
+  const pag   = document.getElementById('pagination');
+  const total = filteredResources.length;
+  const pages = Math.ceil(total / PER_PAGE) || 1;
+  if (currentPage > pages) currentPage = pages;
 
-  if (!filteredResources.length) {
-    emptyMsg.classList.remove('hidden');
-    document.getElementById('pagination').innerHTML = '';
-    return;
+  const slice = filteredResources.slice((currentPage-1)*PER_PAGE, currentPage*PER_PAGE);
+
+  if (!slice.length) {
+    grid.innerHTML = ''; empty.classList.remove('hidden'); pag.innerHTML = ''; return;
   }
-  emptyMsg.classList.add('hidden');
+  empty.classList.add('hidden');
 
-  const start = (currentPage - 1) * PER_PAGE;
-  const paged = filteredResources.slice(start, start + PER_PAGE);
+  grid.innerHTML = slice.map(r => {
+    const avg = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '-';
+    const stars = r.rating_count ? '★'.repeat(Math.round(r.rating_sum / r.rating_count)) : '';
+    const area = r.skill || 'General';
+    const grado = r.level || 'General';
+    const tipo = r.type || '';
+    const periodo = r.periodo || '';
+    const isSelected = selectedRes?.id === r.id;
 
-  paged.forEach(r => {
-    const card = document.createElement('div');
-    card.className = `card ${selectedRes && selectedRes.id === r.id ? 'selected' : ''}`;
-    card.onclick = () => selectResource(r);
+    let actionBtn = '';
+    if (r.link) {
+      const linkUrl = r.link.startsWith('http') ? r.link : `https://${r.link}`;
+      actionBtn = `<a href="${linkUrl}" target="_blank" rel="noopener noreferrer" onclick="trackDownload(${r.id})" class="btn-page active" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:4px 8px;">🔗 Abrir Enlace</a>`;
+    }
 
-    const tags = (r.metadatos || '').split(',').filter(Boolean).map(t => `<span class="card-tag">${escH(t.trim())}</span>`).join('');
-    const ratingStars = '★'.repeat(Math.round(r.rating || 0)) + '☆'.repeat(5 - Math.round(r.rating || 0));
-
-    card.innerHTML = `
-      <span class="card-badge">${escH(r.tipo || 'Recurso')}</span>
-      <div class="card-title">${escH(r.titulo)}</div>
-      <div class="card-meta">
-        <div><strong>Área:</strong> ${escH(r.area || 'General')}</div>
-        <div><strong>Grado:</strong> ${escH(r.grado || 'General')}</div>
-        <div><strong>Periodo:</strong> ${escH(r.periodo || 'N/A')}</div>
-      </div>
-      <div style="margin-top:6px">${tags}</div>
-      <div class="card-footer">
-        <span class="card-rating" title="Puntuación">${ratingStars}</span>
-        <span style="font-size:11px;color:#94a3b8">👁 ${r.vistas || 0} | 📥 ${r.descargas || 0}</span>
+    return `
+      <div class="card ${isSelected ? 'selected' : ''}" onclick="selectResource(${r.id})">
+        ${tipo ? `<span class="card-badge">📁 ${tipo}</span>` : ''}
+        <h3 class="card-title">${r.title}</h3>
+        <p class="card-meta">Por: <strong>${r.author || r.uploader || 'Docente'}</strong></p>
+        <div style="display:flex; gap:4px; flex-wrap:wrap; margin: 6px 0;">
+          <span class="card-tag">📚 ${area}</span>
+          <span class="card-tag">🎓 ${grado}</span>
+          ${periodo ? `<span class="card-tag" style="background:#e6fffa; color:#234e52;">📅 ${periodo}</span>` : ''}
+        </div>
+        <div class="card-footer">
+          <div class="card-rating"><span style="color:#f59e0b;">${stars}</span> <span>${avg}</span></div>
+          <div class="card-actions" onclick="event.stopPropagation()">${actionBtn}</div>
+        </div>
       </div>
     `;
-    grid.appendChild(card);
-  });
+  }).join('');
 
-  renderPagination();
+  renderPagination(pages);
 }
 
-function renderPagination() {
-  const totalPages = Math.ceil(filteredResources.length / PER_PAGE);
-  const container = document.getElementById('pagination');
-  container.innerHTML = '';
-
-  if (totalPages <= 1) return;
-
-  for (let i = 1; i <= totalPages; i++) {
-    const btn = document.createElement('button');
-    btn.className = `btn-page ${i === currentPage ? 'active' : ''}`;
-    btn.textContent = i;
-    btn.onclick = () => { currentPage = i; renderResourcesGrid(); };
-    container.appendChild(btn);
+function renderPagination(pages) {
+  const pag = document.getElementById('pagination');
+  if (pages <= 1) { pag.innerHTML = ''; return; }
+  let html = '';
+  for (let i = 1; i <= pages; i++) {
+    html += `<button class="btn-page ${i === currentPage ? 'active' : ''}" onclick="gotoPage(${i})">${i}</button>`;
   }
+  pag.innerHTML = html;
 }
 
-async function selectResource(r) {
-  selectedRes = r;
-  renderResourcesGrid();
-  
-  const detailEl = document.getElementById('detail-content');
-  const ratingStars = [1,2,3,4,5].map(s => 
-    `<span onclick="rateResource(${r.id}, ${s})" class="${s <= Math.round(r.rating || 0) ? 'lit' : ''}">★</span>`
+function trackDownload(id) {
+  fetch(`${API}/resources/${id}/download`, { method: 'POST' }).catch(console.error);
+}
+
+function gotoPage(n) { currentPage = n; renderResourcesPage(); }
+
+function selectResource(id) {
+  selectedRes = allResources.find(r => r.id === id);
+  renderResourcesPage();
+
+  if (!selectedRes) return;
+  const r = selectedRes;
+  const avg = r.rating_count ? (r.rating_sum / r.rating_count).toFixed(1) : '—';
+  const ratingCount = r.rating_count || 0;
+  const ratingSum = r.rating_sum || 0;
+
+  const starsHtml = [1,2,3,4,5].map(s =>
+    `<span class="${s<=Math.round(ratingCount ? ratingSum/ratingCount : 0)?'lit':''}" onclick="rateResource(${r.id},${s})" title="${s} estrella(s)">★</span>`
   ).join('');
 
-  detailEl.innerHTML = `
-    <div class="detail-title">${escH(r.titulo)}</div>
+  const comments = (r.comments || []).slice(-5).reverse().map(c =>
+    `<div style="border-bottom:1px solid #edf2f7;padding:6px 0;font-size:11px"><strong>${escH(c.user||'—')}</strong>: ${escH(c.text)}</div>`
+  ).join('') || '<div style="font-size:11px;color:#aaa">Sin comentarios registrados.</div>';
+
+  document.getElementById('detail-content').innerHTML = `
+    <div class="detail-title">${escH(r.title)}</div>
     <div class="detail-meta">
-      <div><strong>Área / Asignatura:</strong> ${escH(r.area || 'General')}</div>
-      <div><strong>Grado / Nivel:</strong> ${escH(r.grado || 'General')}</div>
-      <div><strong>Tipo de Recurso:</strong> ${escH(r.tipo || 'Sin clasificar')}</div>
-      <div><strong>Periodo:</strong> ${escH(r.periodo || 'No especificado')}</div>
-      <div><strong>Autor:</strong> ${escH(r.autor || 'Anónimo')}</div>
-      <div><strong>Fecha Carga:</strong> ${r.fecha ? new Date(r.fecha).toLocaleDateString() : 'N/A'}</div>
-      <div><strong>Vistas:</strong> ${r.vistas || 0} | <strong>Descargas:</strong> ${r.descargas || 0}</div>
+      <strong>Área / Asignatura:</strong> ${escH(r.skill||'General')}<br>
+      <strong>Grado / Nivel:</strong> ${escH(r.level||'General')}<br>
+      <strong>Tipo de Recurso:</strong> ${escH(r.type||'Sin especificar')}<br>
+      <strong>Periodo Académico:</strong> ${escH(r.periodo||'No especificado')}<br>
+      <strong>Autor/Creador:</strong> ${escH(r.author||'—')}<br>
+      ${r.description ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;"><strong>Propósito:</strong><br>${escH(r.description)}</div>` : ''}
     </div>
-    
-    <div style="font-size:13px;color:#475569;margin-bottom:12px;line-height:1.4">
-      <strong>Descripción:</strong><br>${escH(r.descripcion || 'Sin descripción disponible.')}
-    </div>
-
+    <div style="font-size:12px;margin-bottom:4px"><strong>Valoración:</strong> ${avg} / 5 (${ratingCount} votos)</div>
+    <div class="rating-stars">${starsHtml}</div>
     <div class="action-btn-group">
-      <button class="btn-dl" onclick="downloadResource(${r.id}, '${escH(r.enlace)}')">
-        📥 Acceder / Descargar Recurso
-      </button>
-      ${canEdit ? `<button class="btn warn" onclick="openEditModal(${r.id})">✏️ Editar Material</button>` : ''}
-      ${canAdmin ? `<button class="btn danger" onclick="deleteResource(${r.id})">🗑️ Eliminar Material</button>` : ''}
+      <a class="btn-dl" href="${escH(r.link||'#')}" target="_blank" onclick="trackDownload(${r.id})">📥 Acceder al Recurso</a>
     </div>
-
-    <div style="margin-top:16px">
-      <label style="font-size:12px;font-weight:700;color:#334155">Calificar este recurso:</label>
-      <div class="rating-stars">${ratingStars}</div>
-    </div>
-  `;
-
-  try {
-    await apiFetch(`/recursos/${r.id}/vista`, { method: 'POST' });
-    r.vistas = (r.vistas || 0) + 1;
-  } catch(e) {}
+    <div class="comment-area">
+      <strong style="font-size:12px;color:var(--primary)">Comentarios</strong>
+      <div style="margin:8px 0;max-height:150px;overflow-y:auto">${comments}</div>
+      <textarea id="comment-txt" placeholder="Escribe un comentario…"></textarea>
+      <button class="btn" style="margin-top:6px;width:100%" onclick="sendComment(${r.id})">Enviar comentario</button>
+    </div>`;
 }
 
-async function downloadResource(id, url) {
+async function rateResource(id, stars) {
   try {
-    await apiFetch(`/recursos/${id}/descarga`, { method: 'POST' });
-    if (selectedRes && selectedRes.id === id) {
-      selectedRes.descargas = (selectedRes.descargas || 0) + 1;
-    }
-  } catch(e) {}
-  
-  if (url) {
-    window.open(url, '_blank');
-  } else {
-    alert('El recurso no contiene un enlace válido.');
-  }
-}
-
-async function rateResource(id, rating) {
-  try {
-    await apiFetch(`/recursos/${id}/rate`, {
-      method: 'POST',
-      body: JSON.stringify({ rating })
-    });
-    alert('¡Gracias por tu calificación!');
+    await apiFetch('/resources/'+id+'/rate', { method:'POST', body: JSON.stringify({ rating: stars }) });
     await loadResources();
-    if (selectedRes && selectedRes.id === id) {
-      const updated = allResources.find(item => item.id === id);
-      if (updated) selectResource(updated);
-    }
-  } catch(e) {
-    alert('Error al calificar: ' + e.message);
-  }
+    selectResource(id);
+  } catch(e) {}
+}
+
+async function sendComment(id) {
+  const txt = document.getElementById('comment-txt')?.value.trim();
+  if (!txt) return;
+  try {
+    await apiFetch('/resources/'+id+'/comment', {
+      method:'POST',
+      body: JSON.stringify({ user: _pUser, text: txt, date: new Date().toLocaleDateString('es-CO') })
+    });
+    await loadResources();
+    selectResource(id);
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function deleteResource(id) {
+  if (!confirm('¿Eliminar este material pedagógico?')) return;
+  try {
+    await apiFetch('/resources/'+id, { method:'DELETE' });
+    await loadResources();
+    renderAdminResTable();
+    document.getElementById('detail-content').innerHTML='<div class="detail-placeholder">← Selecciona un material para visualizar sus detalles.</div>';
+  } catch(e) { alert('Error: ' + e.message); }
 }
 
 function openAddModal() {
   document.getElementById('modal-res-title').textContent = 'Cargar Nuevo Material Didáctico';
   document.getElementById('modal-res-id').value = '';
-  document.getElementById('form-title').value = '';
+  ['form-title','form-author','form-desc','form-link','form-meta'].forEach(id => document.getElementById(id).value='');
   document.getElementById('form-area').value = '';
   document.getElementById('form-grado').value = '';
   document.getElementById('form-tipo').value = '';
   document.getElementById('form-periodo').value = '';
-  document.getElementById('form-author').value = _pUser !== 'Visitante' ? _pUser : '';
-  document.getElementById('form-desc').value = '';
-  document.getElementById('form-link').value = '';
-  document.getElementById('form-meta').value = '';
-  
-  document.getElementById('modal-res').classList.add('open');
+  openModal('modal-res');
 }
 
 function openEditModal(id) {
-  const r = allResources.find(item => item.id === id);
+  const r = allResources.find(x => x.id===id);
   if (!r) return;
-
   document.getElementById('modal-res-title').textContent = 'Editar Material Didáctico';
   document.getElementById('modal-res-id').value = r.id;
-  document.getElementById('form-title').value = r.titulo || '';
-  document.getElementById('form-area').value = r.area || '';
-  document.getElementById('form-grado').value = r.grado || '';
-  document.getElementById('form-tipo').value = r.tipo || '';
+  document.getElementById('form-title').value = r.title || '';
+  document.getElementById('form-author').value = r.author || '';
+  document.getElementById('form-desc').value = r.description || '';
+  document.getElementById('form-link').value = r.link || '';
+  document.getElementById('form-meta').value = r.metadata || '';
+  document.getElementById('form-area').value = r.skill || '';
+  document.getElementById('form-grado').value = r.level || '';
+  document.getElementById('form-tipo').value = r.type  || '';
   document.getElementById('form-periodo').value = r.periodo || '';
-  document.getElementById('form-author').value = r.autor || '';
-  document.getElementById('form-desc').value = r.descripcion || '';
-  document.getElementById('form-link').value = r.enlace || '';
-  document.getElementById('form-meta').value = r.metadatos || '';
-
-  document.getElementById('modal-res').classList.add('open');
-}
-
-function closeModal(id) {
-  document.getElementById(id).classList.remove('open');
+  openModal('modal-res');
 }
 
 async function saveResource() {
   const id = document.getElementById('modal-res-id').value;
-  const payload = {
-    titulo: document.getElementById('form-title').value.trim(),
-    area: document.getElementById('form-area').value,
-    grado: document.getElementById('form-grado').value,
-    tipo: document.getElementById('form-tipo').value,
-    periodo: document.getElementById('form-periodo').value,
-    autor: document.getElementById('form-author').value.trim(),
-    descripcion: document.getElementById('form-desc').value.trim(),
-    enlace: document.getElementById('form-link').value.trim(),
-    metadatos: document.getElementById('form-meta').value.trim()
-  };
+  const title = document.getElementById('form-title').value.trim();
+  const link = document.getElementById('form-link').value.trim();
+  const periodo = document.getElementById('form-periodo').value;
 
-  if (!payload.titulo || !payload.tipo || !payload.periodo || !payload.enlace) {
-    alert('Por favor completa todos los campos obligatorios (*).');
-    return;
-  }
+  if (!title || !link || !periodo) { alert('Por favor completa los campos obligatorios (*).'); return; }
+
+  const body = {
+    title,
+    author: document.getElementById('form-author').value.trim(),
+    skill: document.getElementById('form-area').value,
+    level: document.getElementById('form-grado').value,
+    type: document.getElementById('form-tipo').value,
+    periodo: periodo,
+    desc: document.getElementById('form-desc').value.trim(),
+    link: link,
+    metadata: document.getElementById('form-meta').value.trim(),
+    uploader: _pUser,
+  };
 
   try {
     if (id) {
-      await apiFetch(`/recursos/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      await apiFetch('/resources/'+id, { method:'PUT', body: JSON.stringify(body) });
     } else {
-      await apiFetch('/recursos', { method: 'POST', body: JSON.stringify(payload) });
+      await apiFetch('/resources', { method:'POST', body: JSON.stringify(body) });
     }
     closeModal('modal-res');
     await loadResources();
-  } catch(e) {
-    alert('Error al guardar: ' + e.message);
-  }
+    renderAdminResTable();
+  } catch(e) { alert('Error al guardar: ' + e.message); }
 }
 
-async function deleteResource(id) {
-  if (!confirm('¿Estás seguro de eliminar este recurso didáctico?')) return;
-  try {
-    await apiFetch(`/recursos/${id}`, { method: 'DELETE' });
-    selectedRes = null;
-    document.getElementById('detail-content').innerHTML = `
-      <div class="detail-placeholder">
-        <p style="font-size:24px; margin-bottom:8px;">📌</p>
-        Selecciona un recurso o material didáctico para visualizar sus detalles.
-      </div>`;
-    await loadResources();
-  } catch(e) {
-    alert('Error al eliminar: ' + e.message);
-  }
+function renderAdminResTable() {
+  const tbody = document.getElementById('admin-res-body');
+  if (!tbody) return;
+  if (!allResources.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#aaa">Sin recursos cargados</td></tr>'; return; }
+  tbody.innerHTML = allResources.map(r =>
+    `<tr>
+      <td>${r.id}</td>
+      <td><strong>${escH(r.title)}</strong></td>
+      <td>${escH(r.skill||'—')}</td>
+      <td>${escH(r.level||'—')}</td>
+      <td>${escH(r.type||'—')}</td>
+      <td>${escH(r.author||'—')}</td>
+      <td>
+        <button class="btn sm warn" onclick="openEditModal(${r.id})">✏️ Edit</button> 
+        <button class="btn sm danger" onclick="deleteResource(${r.id})">🗑 Del</button>
+      </td>
+    </tr>`
+  ).join('');
 }
 
 async function loadStats() {
   try {
-    const data = await apiFetch('/stats');
-    document.getElementById('st-views').textContent = data.vistasTotales || 0;
-    document.getElementById('st-dl').textContent = data.descargasTotales || 0;
-    document.getElementById('st-res').textContent = data.recursosTotales || 0;
-
+    const st = await apiFetch('/stats');
+    document.getElementById('st-views').textContent = st.views || 0;
+    document.getElementById('st-dl').textContent = st.downloads || 0;
+    document.getElementById('st-res').textContent = allResources.length;
+    const logs = (st.logs || []).slice(-20).reverse();
     const tbody = document.getElementById('log-body');
-    if (data.logs && data.logs.length) {
-      tbody.innerHTML = data.logs.map(l => `
-        <tr>
-          <td>${new Date(l.fecha).toLocaleString()}</td>
-          <td>${escH(l.usuario)}</td>
-          <td>${escH(l.rol)}</td>
-          <td>${escH(l.accion)}</td>
-        </tr>
-      `).join('');
-    } else {
-      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#aaa">Sin registros recientes</td></tr>';
-    }
+    if (!logs.length) return;
+    tbody.innerHTML = logs.map(l =>
+      `<tr><td>${escH(l.timestamp||'')}</td><td>${escH(l.user||'—')}</td><td>${escH(l.role||'—')}</td><td>${escH(l.action||'—')}</td></tr>`
+    ).join('');
   } catch(e) {}
 }
 
 async function saveConfig() {
   const name = document.getElementById('cfg-name').value.trim();
   const logo = document.getElementById('cfg-logo').value.trim();
-
+  if (!name) { alert('El nombre no puede estar vacío.'); return; }
   try {
-    await apiFetch('/config', {
-      method: 'POST',
-      body: JSON.stringify({ name, logo })
-    });
-    alert('Configuración guardada correctamente.');
-    location.reload();
-  } catch(e) {
-    alert('Error al guardar la configuración: ' + e.message);
-  }
+    await apiFetch('/config', { method:'POST', body: JSON.stringify({ name, logo }) });
+    document.getElementById('hdr-inst-name').textContent = name;
+    document.getElementById('site-title-tag').textContent = name;
+    if (logo) { const img = document.getElementById('hdr-logo'); img.src=logo; img.style.display=''; }
+    alert('✅ Configuración guardada exitosamente.');
+  } catch(e) { alert('Error: ' + e.message); }
 }
 
-function renderAdminResTable() {
-  const tbody = document.getElementById('admin-res-body');
-  if (!allResources.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#aaa">Sin recursos registrados</td></tr>';
-    return;
-  }
-  tbody.innerHTML = allResources.map(r => `
-    <tr>
-      <td>${r.id}</td>
-      <td><strong>${escH(r.titulo)}</strong></td>
-      <td>${escH(r.area || 'General')}</td>
-      <td>${escH(r.grado || 'General')}</td>
-      <td>${escH(r.tipo || 'N/A')}</td>
-      <td>${escH(r.autor || 'Anónimo')}</td>
-      <td>
-        <button class="btn warn sm" onclick="openEditModal(${r.id})">Editar</button>
-        <button class="btn danger sm" onclick="deleteResource(${r.id})">Eliminar</button>
-      </td>
-    </tr>
-  `).join('');
+function renderFormSelect(selectId, items) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— Seleccionar —</option>' + items.map(it => `<option value="${escH(it.nombre)}">${escH(it.nombre)}</option>`).join('');
+  sel.value = cur;
 }
 
-window.onload = init;
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function escH(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+init();
 </script>
 </body>
 </html>
