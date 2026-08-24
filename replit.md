@@ -6,7 +6,7 @@ Sistema de gestión académica multi-plataforma para instituciones educativas co
 - **Backend**: Node.js + Express + TypeScript (`src/index.ts`)
 - **Frontend**: HTML/CSS/JS estático servido desde `gestor-academico/dist/`
 - **Base de datos**: PostgreSQL (Neon) vía Drizzle ORM
-- **IA**: Google Gemini (`gemini-2.5-flash`) — asistente "Adán"
+- **IA**: Google Gemini (`gemini-1.5-flash`) — asistente "Adán"
 
 ## Cómo ejecutar
 ```
