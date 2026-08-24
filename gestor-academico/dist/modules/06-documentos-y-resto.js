@@ -392,6 +392,38 @@ let asistPeriodo='P1';
 let asistGrado='';
 let asistCId='';
 let asistTabActivo='reg';
+window._asistSubmitting = false;
+
+function cambiarTabAsist(tab){
+  asistTabActivo = tab || 'reg';
+  window._asistSubmitting = false;
+
+  // Restablecer de inmediato cualquier estado bloqueado en los botones de navegación
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    b.disabled = false;
+    b.style.pointerEvents = 'auto';
+    b.classList.remove('active');
+  });
+
+  var tabIds = ['reg', 'hist', 'desc', 'rep-psico', 'rep'];
+  tabIds.forEach(function(id){
+    var el = document.getElementById('asist-' + id);
+    if(el){
+      el.style.display = (id === asistTabActivo) ? 'block' : 'none';
+    }
+  });
+
+  renderApp();
+
+  // Asegurar que tras renderizar los botones de navegación continúen 100% habilitados
+  setTimeout(function(){
+    document.querySelectorAll('.tab-btn').forEach(function(b){
+      b.disabled = false;
+      b.style.pointerEvents = 'auto';
+    });
+  }, 50);
+}
+window.cambiarTabAsist = cambiarTabAsist;
 
 function htmlAsistencia(){
   var isAdmin=sesion.r==='admin';
@@ -888,7 +920,8 @@ Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
     iaAbrirConPrompt(prompt, '🧠 Diagnóstico Psicopedagógico — ' + est.n);
   } else {
     _showToast('Consultando asistente Adán IA...', 'info', 4000);
-    fetch('/api/inetis/ai/general', {
+    var aiGeneralUrl = (typeof API_BASE!=='undefined'?API_BASE:'') + '/api/inetis/ai/general';
+    fetch(aiGeneralUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: prompt })
@@ -897,12 +930,14 @@ Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
     .then(function(d){
       if(d.content){
         alert('🧠 DIAGNÓSTICO PSICOPEDAGÓGICO (ADÁN IA):\n\n' + d.content);
+      } else if(d.error){
+        _showToast('Aviso de IA: ' + d.error, 'warn', 5000);
       } else {
         alert('Respuesta de IA recibida.');
       }
     })
     .catch(function(err){
-      alert('Error consultando IA: ' + err.message);
+      _showToast('Error consultando IA: ' + err.message, 'error', 4000);
     });
   }
 }
@@ -1012,6 +1047,7 @@ function marcarTodosPresentes(){
 }
 
 function guardarAsistencia(){
+  if(window._asistSubmitting) return;
   if(!asistGrado||!asistCId){alert('Seleccione grado y asignatura.');return;}
   if(!asistFecha){alert('Ingrese la fecha.');return;}
   var actEl=document.getElementById('asistActividad');
@@ -1025,57 +1061,74 @@ function guardarAsistencia(){
     else if(val==='J') justificados.push(e.id);
     else presentes.push(e.id);
   });
-  updDB(function(d){
-    if(!d.asistencia)d.asistencia=[];
-    // Buscar si ya existe registro para esta fecha+cargaId+grado → actualizar en vez de duplicar
-    var idx=d.asistencia.findIndex(function(a){
-      return !a.deletedAt && a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
+
+  window._asistSubmitting = true;
+
+  try {
+    updDB(function(d){
+      if(!d.asistencia)d.asistencia=[];
+      // Buscar si ya existe registro para esta fecha+cargaId+grado → actualizar en vez de duplicar
+      var idx=d.asistencia.findIndex(function(a){
+        return !a.deletedAt && a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
+      });
+      var reg={
+        id:idx!==-1?d.asistencia[idx].id:('a'+Date.now()),
+        fecha:asistFecha,hora:asistHora,horaFin:asistHoraFin,periodo:asistPeriodo,grado:asistGrado,
+        cargaId:Number(asistCId),docente:sesion.u,actividad:actividad,
+        presentes:presentes,ausentes:ausentes,justificados:justificados
+      };
+      if(idx!==-1){d.asistencia[idx]=reg;}
+      else{d.asistencia.push(reg);}
+      return d;
     });
-    var reg={
-      id:idx!==-1?d.asistencia[idx].id:('a'+Date.now()),
-      fecha:asistFecha,hora:asistHora,horaFin:asistHoraFin,periodo:asistPeriodo,grado:asistGrado,
-      cargaId:Number(asistCId),docente:sesion.u,actividad:actividad,
-      presentes:presentes,ausentes:ausentes,justificados:justificados
-    };
-    if(idx!==-1){d.asistencia[idx]=reg;}
-    else{d.asistencia.push(reg);}
-    return d;
-  });
-  // ── NOTIFICACIONES AUTOMÁTICAS DE AUSENCIA A PADRES ──────────────────────
-  if(ausentes.length>0){
-    var cargaInfo=db.carga.find(function(c){return String(c.id)===String(asistCId);})||{m:'Asignatura',a:'Asignatura'};
-    var asignaturaN=cargaInfo.m||cargaInfo.a||'Asignatura';
-    ausentes.forEach(function(estId){
-      var est=db.ests.find(function(e){return String(e.id)===String(estId);});
-      if(!est) return;
-      var nomEst=est.n||('Est.'+estId);
-      var nomAcud=est.acudiente||'Acudiente';
-      var msgNotif='📅 AUSENCIA REGISTRADA – '+nomEst+' estuvo AUSENTE el '+asistFecha+' en '+asignaturaN+' ('+asistGrado+'). Docente: '+sesion.n+'. Institución: '+(db.nombre||'Institución Educativa')+'.';
-      // Registrar en el sistema de notificaciones del servidor (visible en tiempo real vía SSE)
-      try{
-        fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({kind:'ausencia',actor:sesion.n,message:msgNotif,
-            meta:{estId:estId,estNombre:nomEst,acudiente:nomAcud,fecha:asistFecha,grado:asistGrado,asignatura:asignaturaN,docente:sesion.n,inst:db.nombre||''}})
-        }).catch(function(){});
-      }catch(ex){}
-    });
-    // Notificación visual del navegador (si el usuario la concedió)
-    _solicitarYMostrarNotifNavegador(
-      '📅 Ausencias registradas',
-      ausentes.length+' estudiante(s) ausente(s) en '+asistGrado+' — '+asistFecha+'. Los padres han sido notificados en el sistema.'
-    );
+
+    // ── NOTIFICACIONES AUTOMÁTICAS DE AUSENCIA A PADRES ──────────────────────
+    if(ausentes.length>0){
+      var cargaInfo=db.carga.find(function(c){return String(c.id)===String(asistCId);})||{m:'Asignatura',a:'Asignatura'};
+      var asignaturaN=cargaInfo.m||cargaInfo.a||'Asignatura';
+      var notifEndpoint = (typeof API_BASE!=='undefined'?API_BASE:'') + '/api/inetis/notify';
+      ausentes.forEach(function(estId){
+        var est=db.ests.find(function(e){return String(e.id)===String(estId);});
+        if(!est) return;
+        var nomEst=est.n||('Est.'+estId);
+        var nomAcud=est.acudiente||'Acudiente';
+        var msgNotif='📅 AUSENCIA REGISTRADA – '+nomEst+' estuvo AUSENTE el '+asistFecha+' en '+asignaturaN+' ('+asistGrado+'). Docente: '+sesion.n+'. Institución: '+(db.nombre||'Institución Educativa')+'.';
+        try{
+          fetch(notifEndpoint,{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({kind:'ausencia',actor:sesion.n,message:msgNotif,
+              meta:{estId:estId,estNombre:nomEst,acudiente:nomAcud,fecha:asistFecha,grado:asistGrado,asignatura:asignaturaN,docente:sesion.n,inst:db.nombre||''}})
+          }).catch(function(){});
+        }catch(ex){}
+      });
+      if(typeof _solicitarYMostrarNotifNavegador === 'function'){
+        _solicitarYMostrarNotifNavegador(
+          '📅 Ausencias registradas',
+          ausentes.length+' estudiante(s) ausente(s) en '+asistGrado+' — '+asistFecha+'. Los padres han sido notificados en el sistema.'
+        );
+      }
+    }
+
+    _showToast('✅ Asistencia guardada: '+presentes.length+' presentes, '+ausentes.length+' ausentes, '+justificados.length+' justificados.', 'success', 3500);
+    asistTabActivo='hist';
+  } catch(e){
+    alert('Error al guardar asistencia: ' + (e.message || e));
+  } finally {
+    window._asistSubmitting = false;
+    renderApp();
+
+    // Desbloqueo y reactividad inmediata de botones de navegación
+    setTimeout(function(){
+      document.querySelectorAll('.tab-btn, button').forEach(function(b){
+        b.disabled = false;
+        b.style.pointerEvents = 'auto';
+      });
+    }, 40);
   }
-  alert((presentes.length+ausentes.length+justificados.length>0?'✅ Asistencia guardada:\n':'✅ Registro actualizado:\n')+presentes.length+' presentes, '+ausentes.length+' ausentes, '+justificados.length+' justificados.'+(ausentes.length>0?'\n🔔 Notificación de ausencia enviada al sistema para '+ausentes.length+' acudiente(s).':''));
-  asistTabActivo='hist';renderApp();
 }
 
 function eliminarAsistencia(id){
   if(!confirm('¿Mover este registro de asistencia a la papelera?')) return;
-  updDB(function(d){
-    var reg=(d.asistencia||[]).find(function(a){return a.id===id;});
-    if(reg) reg.deletedAt = new Date().toISOString();
-    return d;
-  });
+  softDeleteRegistro('asistencia', id, { id: id });
   renderApp();
 }
 

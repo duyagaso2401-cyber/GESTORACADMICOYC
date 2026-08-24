@@ -4785,11 +4785,11 @@ function restaurarRegistro(tipo, id, extraMeta) {
     return d;
   });
 
-  alert(`✅ Elemento restaurado exitosamente:\n${restInfo || tipo}`);
+  _showToast(`✅ ${restInfo || 'Elemento'} restaurado correctamente.`, 'success', 3000);
   renderApp();
   const modalPap = document.getElementById('_papeleraModal');
   if (modalPap && modalPap.style.display !== 'none') {
-    abrirModalPapelera();
+    abrirModalPapelera(window._papeleraFiltroTipo);
   }
 }
 

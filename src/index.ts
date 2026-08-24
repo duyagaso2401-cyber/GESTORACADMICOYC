@@ -551,7 +551,10 @@ app.post('/api/inetis/ai/general', async (req, res) => {
       return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
     }
 
-    const genAI = getGenAI()!;
+    const genAI = getGenAI();
+    if (!genAI) {
+      return res.status(503).json({ error: 'No se pudo inicializar el cliente de Google Gemini.' });
+    }
     const systemPrompt = buildSystemPrompt(context || {});
     const userText = prompt || (messages && messages[messages.length - 1]?.content) || '';
 
