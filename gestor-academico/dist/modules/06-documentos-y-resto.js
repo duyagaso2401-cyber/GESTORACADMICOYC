@@ -425,6 +425,62 @@ function cambiarTabAsist(tab){
 }
 window.cambiarTabAsist = cambiarTabAsist;
 
+function actualizarAsignaturasReg(gradoSel){
+  asistGrado = gradoSel || '';
+  var isAdmin = sesion.r === 'admin';
+  var misCargas = isAdmin ? db.carga : db.carga.filter(function(c){ return c.d === sesion.u; });
+  var cargasFiltradas = misCargas.filter(function(c){ return c.g === asistGrado; });
+  if(cargasFiltradas.length > 0){
+    asistCId = String(cargasFiltradas[0].id);
+  } else {
+    asistCId = '';
+  }
+  var sel = document.getElementById('asistCIdSel');
+  if(sel){
+    var opts = cargasFiltradas.map(function(c){
+      return '<option value="' + c.id + '"' + (String(c.id) === String(asistCId) ? ' selected' : '') + '>' + c.m + ' (' + c.a + ')</option>';
+    }).join('');
+    sel.innerHTML = opts || '<option value="">Sin asignaturas asignadas</option>';
+  }
+  actualizarEstadosAsist();
+  renderApp();
+}
+window.actualizarAsignaturasReg = actualizarAsignaturasReg;
+
+function actualizarEstadosAsist(){
+  var cIdSel = document.getElementById('asistCIdSel');
+  if(cIdSel && cIdSel.value){
+    asistCId = String(cIdSel.value);
+  }
+  var gSel = document.getElementById('asistGradoSel');
+  if(gSel && gSel.value){
+    asistGrado = gSel.value;
+  }
+  var fInp = document.getElementById('asistFechaInp');
+  if(fInp && fInp.value){
+    asistFecha = fInp.value;
+  }
+  var pSel = document.getElementById('asistPeriodoSel');
+  if(pSel && pSel.value){
+    asistPeriodo = pSel.value;
+  }
+
+  renderApp();
+}
+window.actualizarEstadosAsist = actualizarEstadosAsist;
+
+function actualizarAsignaturasDesc(gradoSel){
+  var isAdmin = sesion.r === 'admin';
+  var misCargas = isAdmin ? db.carga : db.carga.filter(function(c){ return c.d === sesion.u; });
+  var cargasFiltradas = misCargas.filter(function(c){ return c.g === gradoSel; });
+  var opts = cargasFiltradas.map(function(c){ return '<option value="' + c.id + '">' + c.m + ' (' + c.a + ')</option>'; }).join('');
+  var sel = document.getElementById('descAsistCId');
+  if(sel) sel.innerHTML = opts;
+  var selRep = document.getElementById('repAsistCId');
+  if(selRep) selRep.innerHTML = opts;
+}
+window.actualizarAsignaturasDesc = actualizarAsignaturasDesc;
+
 function htmlAsistencia(){
   var isAdmin=sesion.r==='admin';
   var misCargas=isAdmin?db.carga:db.carga.filter(function(c){return c.d===sesion.u;});

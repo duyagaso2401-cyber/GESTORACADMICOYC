@@ -10,7 +10,8 @@ const ESCUDO_INETIS = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAA
 // ============================================================
 const SK = 'ie_sincelejito_db_v4';
 const GESTOR_SK = 'gestor_academico_yc_v1';
-const API_BASE = '';  // se detecta automáticamente (relativo)
+const API_BASE = (typeof window !== 'undefined' && typeof window.API_URL === 'string' && window.API_URL) || (typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin.startsWith('http') ? window.location.origin : (typeof CONFIG !== 'undefined' && CONFIG.API_URL ? CONFIG.API_URL.replace(/\/$/, '') : ''));
+window.API_BASE = API_BASE;
 
 // ============================================================
 // BASE DE DATOS EN BLANCO PARA NUEVAS INSTITUCIONES
@@ -2327,8 +2328,8 @@ function renderGestorLanding(){
         <a href="https://wa.me/57${w2}" target="_blank" class="gestor-wsp">${_WSP_SVG} ${w2}</a>
       </div>
       <div style="margin-top:10px">
-        <a href="https://gestoracadmicoyc.onrender.com" target="_blank" style="display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:8px;padding:7px 18px;color:#cce4ff;text-decoration:none;font-size:0.83rem;font-weight:500;transition:background .2s" onmouseover="this.style.background='rgba(255,255,255,0.14)'" onmouseout="this.style.background='rgba(255,255,255,0.07)'">
-          🌐 <span><span style="color:#b0c4de;font-size:0.75rem">Link de acceso al GESTOR ACADÉMICO YC: </span>gestoracadmicoyc.onrender.com</span>
+        <a href="https://gestoracademicoyc.com" target="_blank" style="display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:8px;padding:7px 18px;color:#cce4ff;text-decoration:none;font-size:0.83rem;font-weight:500;transition:background .2s" onmouseover="this.style.background='rgba(255,255,255,0.14)'" onmouseout="this.style.background='rgba(255,255,255,0.07)'">
+          🌐 <span><span style="color:#b0c4de;font-size:0.75rem">Link de acceso al GESTOR ACADÉMICO YC: </span>gestoracademicoyc.com</span>
         </a>
       </div>
     </div>

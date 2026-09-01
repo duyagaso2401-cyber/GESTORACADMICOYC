@@ -23,14 +23,13 @@ const PORT = parseInt(process.env.PORT || '8080');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Esta es la ruta corregida basada en tu estructura de carpetas:
 const STATIC_DIR = path.resolve(__dirname, '../gestor-academico/dist');
 
-// Configuración robusta de CORS para soportar Live Server, Replit y Render sin bloqueos
+// Configuración robusta de CORS para soportar Live Server, Replit y Render
 app.use(cors({
-  origin: '*', // Permite peticiones desde Live Server (127.0.0.1:5500), Replit y Render
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-gemini-api-key', 'x-gemini-key', 'x-api-key'],
   optionsSuccessStatus: 200
 }));
 
@@ -42,26 +41,44 @@ app.use(express.json({ limit: '50mb' }));
 
 // ── Gemini ────────────────────────────────────────────────────────────────────
 
-function getGeminiApiKey(): string {
+function getGeminiApiKey(req?: express.Request): string {
+  if (req) {
+    const bodyKey = (req.body && (req.body.apiKey || req.body.geminiApiKey || req.body.geminiKey)) as string;
+    if (bodyKey && typeof bodyKey === 'string' && bodyKey.trim()) return bodyKey.trim();
+    const headerKey = (req.headers['x-gemini-api-key'] || req.headers['x-gemini-key'] || req.headers['x-api-key']) as string;
+    if (headerKey && typeof headerKey === 'string' && headerKey.trim()) return headerKey.trim();
+    const authHeader = req.headers['authorization'] as string;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7).trim();
+      if (token.startsWith('AIza')) return token;
+    }
+  }
   return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 }
 
-const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-const CANDIDATE_MODELS = [
-  PRIMARY_MODEL,
-  'gemini-1.5-flash',
-  'gemini-1.5-pro'
-].filter((m, i, arr) => m && arr.indexOf(m) === i);
+// Modelos activos y vigentes únicamente
+const PRIMARY_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '').trim();
 
-function getGenAI() {
-  const apiKey = getGeminiApiKey();
+const CANDIDATE_MODELS = [
+    PRIMARY_MODEL,
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-3.6-flash'
+].filter((model, index, self) => Boolean(model) && self.indexOf(model) === index);
+
+function getGenAI(apiKeyParam?: string) {
+  const apiKey = (apiKeyParam || getGeminiApiKey()).trim();
   if (!apiKey) return null;
-  return new GoogleGenAI({ apiKey });
+  try {
+    return new GoogleGenAI({ apiKey });
+  } catch (err) {
+    console.error('Error al inicializar GoogleGenAI:', err);
+    return null;
+  }
 }
 
 /**
  * Construye el system prompt de Adán con el contexto de la institución activa.
- * Soporta modo gestor (multi-plataforma) y modo institución (single-tenant).
  */
 function buildSystemPrompt(context: Record<string, unknown>): string {
   const inst            = context.institucion    as string   || 'Gestor Académico YC';
@@ -143,7 +160,6 @@ INSTRUCCIONES:
 }
 
 // ── SSE (Server-Sent Events) ──────────────────────────────────────────────────
-// Mapa: sk → Set de respuestas SSE activas para sincronización en tiempo real.
 
 const sseClients = new Map<string, Set<express.Response>>();
 
@@ -171,13 +187,9 @@ function servePortal(_req: express.Request, res: express.Response) {
 // A03 · RUTAS — SALUD Y SINCRONIZACIÓN EN TIEMPO REAL (SSE)
 // ============================================================
 
-// ── Health check ──────────────────────────────────────────────────────────────
-
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
-
-// ── SSE — suscripción por canal (sk) ─────────────────────────────────────────
 
 app.get('/api/inetis/events', (req, res) => {
   const sk = String(req.query.sk || '');
@@ -215,8 +227,6 @@ app.get('/api/inetis/events', (req, res) => {
 
 const GESTOR_SK = '__gestor_academico_yc__';
 
-// ── KV genérico — datos de institución ───────────────────────────────────────
-
 app.get('/api/inetis/db', async (req, res) => {
   try {
     const sk = String(req.query.sk || '');
@@ -249,8 +259,6 @@ app.post('/api/inetis/db', async (req, res) => {
   }
 });
 
-// ── Gestor DB — estado global del administrador general ───────────────────────
-
 app.get('/api/inetis/gestordb', async (_req, res) => {
   try {
     const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
@@ -279,8 +287,6 @@ app.post('/api/inetis/gestordb', async (req, res) => {
     return res.status(500).json({ error: 'Error interno' });
   }
 });
-
-// ── Documentos — paz y salvo, certificados, actas, etc. ──────────────────────
 
 app.get('/api/inetis/docs', async (req, res) => {
   try {
@@ -391,18 +397,18 @@ app.post('/api/inetis/notify/seen', async (_req, res) => {
 // A06 · RUTAS — ASISTENTE IA ADÁN (GEMINI)
 // ============================================================
 
-app.get('/api/inetis/ai/status', async (_req, res) => {
-  const apiKey = getGeminiApiKey();
+app.get('/api/inetis/ai/status', async (req, res) => {
+  const apiKey = getGeminiApiKey(req);
   if (!apiKey) {
     return res.json({
       ok: false,
       keyConfigured: false,
-      message: 'GEMINI_API_KEY no encontrada en .env ni en variables de entorno.'
+      message: 'GEMINI_API_KEY o GOOGLE_API_KEY no encontrada en .env ni en variables de entorno.'
     });
   }
 
   try {
-    const genAI = getGenAI();
+    const genAI = getGenAI(apiKey);
     if (!genAI) {
       return res.json({ ok: false, keyConfigured: false, message: 'No se pudo inicializar la librería GoogleGenAI' });
     }
@@ -437,11 +443,11 @@ app.get('/api/inetis/ai/status', async (_req, res) => {
       return res.json({
         ok: false,
         keyConfigured: true,
-        message: `Clave detectada pero hubo fallo al consultar modelos: ${lastError}`
+        message: `Clave detectada pero hubo fallo al consultar modelos Gemini: ${lastError}`
       });
     }
   } catch (e: any) {
-    return res.status(500).json({ ok: false, keyConfigured: true, error: e?.message || 'Error de diagnóstico' });
+    return res.status(200).json({ ok: false, keyConfigured: true, error: e?.message || 'Error de diagnóstico' });
   }
 });
 
@@ -454,14 +460,26 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       imagePart?: { mimeType: string; data: string };
     };
 
-    const apiKey = getGeminiApiKey();
+    const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY no configurada en el servidor' });
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.write(`data: ${JSON.stringify({ content: '⚠️ **Asistente Adán**: Clave GEMINI_API_KEY o GOOGLE_API_KEY no detectada en el servidor (.env) ni en la petición.' })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
     }
 
-    const genAI = getGenAI();
+    const genAI = getGenAI(apiKey);
     if (!genAI) {
-      return res.status(500).json({ error: 'Error inicializando cliente de IA' });
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.write(`data: ${JSON.stringify({ content: '⚠️ Error al inicializar el cliente de Google Gemini con la clave proporcionada.' })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
     }
 
     const systemPrompt = buildSystemPrompt(context || {});
@@ -486,7 +504,7 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
     let streamModel = '';
     let lastError: any = null;
 
-    for (const candidateModel of CANDIDATE_MODELS) {
+   /* for (const candidateModel of CANDIDATE_MODELS) {
       try {
         const chat = genAI.chats.create({
           model: candidateModel,
@@ -501,7 +519,7 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
         if (imagePart && imagePart.data) {
           stream = await chat.sendMessageStream({
             message: [
-              { text: userText || 'Analiza esta imagen y describe lo que ves, luego responde lo que necesite el usuario.' },
+              { text: userText || 'Analiza esta imagen y describe lo que ves.' },
               { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
             ],
           });
@@ -515,9 +533,41 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
         console.warn(`⚠️ Intento fallido con modelo IA ${candidateModel}:`, err?.message || err);
       }
     }
+*/
+for (const candidateModel of CANDIDATE_MODELS) {
+      try {
+        const chat = genAI.chats.create({
+          model: candidateModel,
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.7,
+            maxOutputTokens: isPlanear ? 4096 : 2048, // Permite respuestas largas sin cortar la idea
+          },
+          history: history.slice(-6), // Mantiene un contexto de conversación equilibrado
+        });
 
+        if (imagePart && imagePart.data) {
+          stream = await chat.sendMessageStream({
+            message: [
+              { text: userText || 'Analiza esta imagen.' },
+              { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
+            ],
+          });
+        } else {
+          stream = await chat.sendMessageStream({ message: userText });
+        }
+        break;
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`⚠️ Intento fallido con modelo ${candidateModel}:`, err?.message || err);
+      }
+    }
     if (!stream) {
-      throw lastError || new Error('No se pudo establecer conexión con los modelos de Google Gemini');
+      const errMsg = lastError?.message || 'No se pudo establecer conexión con los modelos Gemini de Google.';
+      res.write(`data: ${JSON.stringify({ content: `⚠️ Error de conexión con Gemini: ${errMsg}` })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
     }
 
     for await (const chunk of stream) {
@@ -532,8 +582,16 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
   } catch (e: unknown) {
     console.error('POST /api/inetis/ai/chat error:', e);
     const msg = e instanceof Error ? e.message : 'Error interno de comunicación con la IA';
-    if (!res.headersSent) return res.status(500).json({ error: msg });
-    try { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); } catch {}
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+    }
+    try {
+      res.write(`data: ${JSON.stringify({ content: `⚠️ Error: ${msg}` })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch {}
     return;
   }
 });
@@ -546,19 +604,28 @@ app.post('/api/inetis/ai/general', async (req, res) => {
       prompt?: string;
     };
 
-    const apiKey = getGeminiApiKey();
+    const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
+      return res.json({
+        ok: false,
+        error: 'GEMINI_API_KEY_NO_CONFIGURADA',
+        content: '⚠️ La clave GEMINI_API_KEY o GOOGLE_API_KEY no está configurada.'
+      });
     }
 
-    const genAI = getGenAI();
+    const genAI = getGenAI(apiKey);
     if (!genAI) {
-      return res.status(503).json({ error: 'No se pudo inicializar el cliente de Google Gemini.' });
+      return res.json({
+        ok: false,
+        error: 'ERROR_INICIALIZANDO_GENAI',
+        content: '⚠️ No se pudo inicializar el cliente de Google Gemini con la clave provista.'
+      });
     }
+
     const systemPrompt = buildSystemPrompt(context || {});
     const userText = prompt || (messages && messages[messages.length - 1]?.content) || '';
 
-    if (!userText) return res.status(400).json({ error: 'Texto vacío' });
+    if (!userText) return res.status(400).json({ ok: false, error: 'Texto vacío', content: '' });
 
     let resultText = '';
     let lastError: any = null;
@@ -585,14 +652,81 @@ app.post('/api/inetis/ai/general', async (req, res) => {
     }
 
     if (!resultText && lastError) {
-      throw lastError;
+      return res.json({
+        ok: false,
+        error: lastError?.message || 'Error en consulta Gemini',
+        content: `⚠️ No se pudo generar la respuesta con Gemini: ${lastError?.message || 'Error desconocido'}`
+      });
     }
 
-    return res.json({ content: resultText || '' });
+    return res.json({ ok: true, content: resultText || '' });
   } catch (e: unknown) {
     console.error('POST /api/inetis/ai/general', e);
     const msg = e instanceof Error ? e.message : 'Error interno';
-    return res.status(500).json({ error: msg });
+    return res.json({ ok: false, error: msg, content: `⚠️ Error al procesar solicitud de IA: ${msg}` });
+  }
+});
+
+// ── RUTA DEDICADA PARA INFORMES Y REPORTES PSICOPEDAGÓGICOS POR GRADO Y PERIODO ─────────
+
+app.post('/api/inetis/ai/psicopedagogico', async (req, res) => {
+  try {
+    const { grado, periodo, datosAsistencia, datosObservador, context } = req.body as {
+      grado: string;
+      periodo: string;
+      datosAsistencia?: any[];
+      datosObservador?: any[];
+      context?: Record<string, unknown>;
+    };
+
+    const apiKey = getGeminiApiKey(req);
+    if (!apiKey) {
+      return res.status(400).json({ ok: false, message: 'Clave API no configurada' });
+    }
+
+    const genAI = getGenAI(apiKey);
+    if (!genAI) {
+      return res.status(500).json({ ok: false, message: 'Error al inicializar Gemini' });
+    }
+
+    const promptText = `
+Genera un informe psicopedagógico detallado con las siguientes especificaciones:
+- Grado evaluado: ${grado || 'Todos los grados'}
+- Periodo académico: ${periodo || 'Todos los periodos'}
+- Datos de inasistencias acumuladas: ${JSON.stringify(datosAsistencia || [])}
+- Anotaciones del observador/convivencia: ${JSON.stringify(datosObservador || [])}
+
+Proporciona:
+1. Resumen ejecutivo de novedades comportamentales y de asistencia.
+2. Identificación de estudiantes en riesgo académico o deserción.
+3. Recomendaciones y compromisos recomendados para docentes y acudientes.
+`;
+
+    let resultText = '';
+    for (const candidateModel of CANDIDATE_MODELS) {
+      try {
+        const result = await genAI.models.generateContent({
+          model: candidateModel,
+          config: {
+            systemInstruction: buildSystemPrompt(context || {}),
+            temperature: 0.7,
+            maxOutputTokens: 4096,
+          },
+          contents: promptText,
+        });
+        if (result && result.text) {
+          resultText = result.text;
+          break;
+        }
+      } catch (err) {
+        console.warn(`Error con modelo ${candidateModel}:`, err);
+      }
+    }
+
+    return res.json({ ok: true, report: resultText });
+  } catch (e: any) {
+    console.error('Error en /api/inetis/ai/psicopedagogico:', e);
+    return res.status(500).json({ ok: false, error: e?.message || 'Error interno' });
   }
 });
 
