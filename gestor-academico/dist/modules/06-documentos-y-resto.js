@@ -2029,6 +2029,7 @@ function _esPensionBloqueada(est){
   if(_getPlatTipo()!=='privada') return false;
   return est.pensionAlDia!==true;
 }
+
 function descargarBoletinPadre(estId){
   estId=String(estId);
   const est=db.ests.find(function(e){return String(e.id)===estId;});

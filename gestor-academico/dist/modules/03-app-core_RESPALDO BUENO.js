@@ -7154,13 +7154,11 @@ function pdfConsolidadoDir(){
 // PDF HELPERS
 // ============================================================
 const ROT1='REPÚBLICA DE COLOMBIA';
-// Normaliza espacios dobles/múltiples y saltos de línea sueltos que vienen de la configuración institucional
-function _normEspacios(t){return String(t||'').replace(/\s+/g,' ').trim();}
-function getROT2(){return _normEspacios(db.depto)}
-function getROT3(){return _normEspacios(db.nombre||(db.corregimiento?'INSTITUCIÓN EDUCATIVA DE '+db.corregimiento:'INSTITUCIÓN EDUCATIVA')).toUpperCase();}
-function getROT4(){return _normEspacios(db.resolucion)}
-function getROT5(){return _normEspacios(db.encabezado)}
-function getROT6(){return _normEspacios(db.piePagina)}
+function getROT2(){return db.depto||''}
+function getROT3(){return (db.nombre||(db.corregimiento?'INSTITUCIÓN EDUCATIVA DE '+db.corregimiento:'INSTITUCIÓN EDUCATIVA')).toUpperCase();}
+function getROT4(){return db.resolucion||''}
+function getROT5(){return db.encabezado||''}
+function getROT6(){return db.piePagina||''}
 
 function getPDF(orient,formato){const{jsPDF}=window.jspdf;
   // Tamaño oficio Colombia: 216 × 330 mm. Por defecto A4.
@@ -7330,24 +7328,24 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     // Zona de texto: entre los dos escudos → de x=30 a x=186 = 156mm, centro=108
     const _hL2=30,_hR2=186,_hCX2=(_hL2+_hR2)/2,_hMW2=_hR2-_hL2-4;
     doc.setTextColor(0,51,102);
-    doc.setFontSize(7.5);doc.setFont('helvetica','bold');
+    doc.setFontSize(6.5);doc.setFont('helvetica','bold');
     doc.text('REPÚBLICA DE COLOMBIA',_hCX2,_hY+4,{align:'center',maxWidth:_hMW2});
-    const _depLabel=db.depto?'DEPARTAMENTO DE '+_normEspacios(db.depto).toUpperCase():(getROT2()||'');
-    if(_depLabel){doc.setFontSize(7);doc.text(_depLabel,_hCX2,_hY+8,{align:'center',maxWidth:_hMW2});}
-    doc.setFontSize(9);doc.setFont('helvetica','bold');
+    const _depLabel=db.depto?'DEPARTAMENTO DE '+(db.depto).toUpperCase():(getROT2()||'');
+    if(_depLabel){doc.setFontSize(6);doc.text(_depLabel,_hCX2,_hY+8,{align:'center',maxWidth:_hMW2});}
+    doc.setFontSize(8);doc.setFont('helvetica','bold');
     const _brot3=doc.splitTextToSize(getROT3()||(db.nombre||'INSTITUCIÓN EDUCATIVA'),_hMW2);
-    doc.text(_brot3,_hCX2,_hY+13,{align:'center'});
-    let _hNext=_hY+13+(_brot3.length*4.4);
-    doc.setFontSize(6);doc.setFont('helvetica','normal');doc.setTextColor(40);
-    if(getROT4()){const _r4=doc.splitTextToSize(getROT4(),_hMW2);doc.text(_r4,_hCX2,_hNext,{align:'center'});_hNext+=_r4.length*3.3;}
-    if(getROT5()){const _r5=doc.splitTextToSize(getROT5(),_hMW2);doc.text(_r5,_hCX2,_hNext,{align:'center'});_hNext+=_r5.length*3.3;}
-    if(getROT6()){const _r6=doc.splitTextToSize(getROT6(),_hMW2);doc.text(_r6,_hCX2,_hNext,{align:'center'});_hNext+=_r6.length*3.3;}
-    doc.setFontSize(6);doc.text('Dane: '+(db.dane||'')+'   Nit: '+(db.nit||''),_hCX2,_hNext+1.8,{align:'center',maxWidth:_hMW2});
-    _hNext+=5.5;
+    doc.text(_brot3,_hCX2,_hY+12.5,{align:'center'});
+    let _hNext=_hY+12.5+(_brot3.length*4.2);
+    doc.setFontSize(5.2);doc.setFont('helvetica','normal');doc.setTextColor(40);
+    if(getROT4()){const _r4=doc.splitTextToSize(getROT4(),_hMW2);doc.text(_r4,_hCX2,_hNext,{align:'center'});_hNext+=_r4.length*3.0;}
+    if(getROT5()){const _r5=doc.splitTextToSize(getROT5(),_hMW2);doc.text(_r5,_hCX2,_hNext,{align:'center'});_hNext+=_r5.length*3.0;}
+    if(getROT6()){const _r6=doc.splitTextToSize(getROT6(),_hMW2);doc.text(_r6,_hCX2,_hNext,{align:'center'});_hNext+=_r6.length*3.0;}
+    doc.setFontSize(5.2);doc.text('Dane: '+(db.dane||'')+'   Nit: '+(db.nit||''),_hCX2,_hNext+1.5,{align:'center',maxWidth:_hMW2});
+    _hNext+=5;
     doc.setTextColor(0);doc.setLineWidth(0.5);doc.line(10,_hNext,206,_hNext);
     const tituloDoc=incluirResumenFinal?'INFORME FINAL DEL AÑO — EVALUACIÓN Y DESEMPEÑO ACADÉMICO':'INFORME DE EVALUACIÓN Y DESEMPEÑO ACADÉMICO';
     const _titY=_hNext+6;
-    doc.setFontSize(10.5);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
+    doc.setFontSize(9.5);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
     const _titLines=doc.splitTextToSize(tituloDoc,_hMW2);
     doc.text(_titLines,_hCX2,_titY,{align:'center'});
     doc.setTextColor(0);
@@ -7358,7 +7356,7 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     const _cx=(_lm+_rm)/2; // centro horizontal
     // ── Fila del estudiante ──
     doc.setFillColor(220,232,255);doc.rect(_lm,_tableStart-6,_tw,6,'F');
-    doc.setFontSize(8);doc.setFont('helvetica','bold');doc.setTextColor(0,30,80);
+    doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(0,30,80);
     doc.text('ESTUDIANTE: '+e.n+'   AÑO: '+db.anio+'   GRADO: '+grado+'   PERIODO: '+per+'   PUESTO: '+pu+'°',_cx,_tableStart-1.4,{align:'center',maxWidth:_tw-4});
     doc.setLineWidth(0.3);doc.rect(_lm,_tableStart-6,_tw,6);doc.setTextColor(0);
     // Solo columnas del periodo seleccionado
@@ -7389,13 +7387,13 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     doc.autoTable({
       head:tableHead,body:tableBody,startY:_tableStart,
       margin:{left:_lm,right:216-_rm},
-      styles:{fontSize:7.5,cellPadding:0.7,overflow:'linebreak',minCellHeight:3.2},
-      headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold',halign:'center',fontSize:7.5,cellPadding:0.8},
+      styles:{fontSize:5.8,cellPadding:0.4,overflow:'linebreak',minCellHeight:2.5},
+      headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold',halign:'center',fontSize:5.8,cellPadding:0.5},
       columnStyles:{
         0:{fontStyle:'bold',cellWidth:33,halign:'left'},
         1:{cellWidth:54,halign:'left'},
-        2:{halign:'center',cellWidth:8,fontSize:7},
-        3:{cellWidth:40,halign:'left',fontSize:7},
+        2:{halign:'center',cellWidth:8,fontSize:5.5},
+        3:{cellWidth:40,halign:'left',fontSize:5.5},
         4:{halign:'center',cellWidth:15,fontStyle:'bold'},
         5:{halign:'center',cellWidth:46,fontStyle:'bold'}
       },
@@ -7413,8 +7411,8 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
               const _dtxt=(raw[0]||'').replace('~D~','');
               try{
                 const _dlines=data.doc.splitTextToSize('  >> '+_dtxt,_tw-4);
-                data.cell.styles.minCellHeight=Math.max(4.5,_dlines.length*3.4+1.8);
-              }catch(e){data.cell.styles.minCellHeight=9;}
+                data.cell.styles.minCellHeight=Math.max(4,_dlines.length*2.8+1.5);
+              }catch(e){data.cell.styles.minCellHeight=8;}
             }
           }
           if(raw[1]&&typeof raw[1]==='string'&&raw[1].startsWith('\u2192')){
@@ -7446,9 +7444,9 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
             doc.rect(_lm,data.cell.y,_tw,data.cell.height,'F');
             doc.setDrawColor(210,200,140);doc.setLineWidth(0.15);
             doc.rect(_lm,data.cell.y,_tw,data.cell.height);
-            doc.setFontSize(7);doc.setFont('helvetica','italic');doc.setTextColor(60,40,0);
+            doc.setFontSize(6);doc.setFont('helvetica','italic');doc.setTextColor(60,40,0);
             const lines=doc.splitTextToSize('  >> '+txt,_tw-4);
-            doc.text(lines,_lm+2,data.cell.y+3.6);
+            doc.text(lines,_lm+2,data.cell.y+3.2);
             doc.setTextColor(0);doc.setFont('helvetica','normal');doc.setDrawColor(0);doc.setLineWidth(0.1);
           }
           // CARITA EMOJI para grados de transicion / preescolar (ajustada a la celda)
@@ -7489,63 +7487,50 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
       }
     });
     let fy=doc.lastAutoTable.finalY+1;
-    // ── Control de margen inferior: si un bloque no cabe, se desplaza a una página nueva ──
-    const pageH=doc.internal.pageSize.height;
-    const _margenInferior=28; // reserva de espacio para no invadir el margen inferior/firmas
-    const _asegurarEspacio=(alturaNecesaria)=>{
-      if(fy+alturaNecesaria>pageH-_margenInferior){doc.addPage();fy=16;}
-    };
     // ── Promedios por periodo del estudiante y promedio del curso ──
     const perProms=[1,2,3,4].map(p=>calcPromedioEstPer(e.id,grado,p));
     const promAnualEst=parseFloat((perProms.reduce((a,b)=>a+b,0)/4).toFixed(2));
     const promsGradoP=db.ests.filter(x=>x.g===grado).map(x=>calcPromedioEstPer(x.id,grado,per));
     const promCurso=promsGradoP.length?parseFloat((promsGradoP.reduce((a,b)=>a+b,0)/promsGradoP.length).toFixed(2)):0;
-    _asegurarEspacio(7);
     doc.setFillColor(220,238,255);doc.rect(_lm,fy,_tw,6,'F');
     doc.setLineWidth(0.3);doc.rect(_lm,fy,_tw,6);
-    doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
+    doc.setFontSize(6);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
     const pLabel=perProms.map((p,i)=>'P'+(i+1)+': '+p.toFixed(2)).join('   ');
-    doc.text('PROMEDIOS:  '+pLabel+'   |   PROM. ANUAL: '+promAnualEst.toFixed(2)+'   PROM. CURSO P'+per+': '+promCurso.toFixed(2),_cx,fy+4.2,{align:'center',maxWidth:_tw-4});
+    doc.text('PROMEDIOS:  '+pLabel+'   |   PROM. ANUAL: '+promAnualEst.toFixed(2)+'   PROM. CURSO P'+per+': '+promCurso.toFixed(2),_cx,fy+4.2,{align:'center'});
     doc.setTextColor(0);fy+=8;
     // Usar áreas del periodo si es boletin por periodo, o anual si es informe final
     const areasPerd=incluirResumenFinal?getAreasPerdidas(e.id,grado):getAreasPerdidasPeriodo(e.id,grado,per);
     if(areasPerd.length>0){
-      doc.setFontSize(7.5);doc.setFont('helvetica','bold');
-      const lblAreas=incluirResumenFinal?'BAJO DESEMPEÑO ANUAL: ':'BAJO DESEMPEÑO P'+per+': ';
+      doc.setFontSize(6.5);doc.setFont('helvetica','bold');
+      const lblAreas=incluirResumenFinal?'⚠ BAJO DESEMPEÑO ANUAL: ':'⚠ BAJO DESEMPEÑO P'+per+': ';
       const _areasTxt=lblAreas+areasPerd.join('  |  ');
       const _areasLines=doc.splitTextToSize(_areasTxt,_tw-8);
-      const _areasH=Math.max(7.5,_areasLines.length*4.6+3);
-      // Si el bloque de bajo desempeño no cabe en lo que resta de la página, se desplaza a una nueva
-      _asegurarEspacio(_areasH);
+      const _areasH=Math.max(7,_areasLines.length*4.2+3);
       doc.setFillColor(255,230,230);doc.rect(_lm,fy,_tw,_areasH,'F');
       doc.setTextColor(192,57,43);
-      doc.text(_areasLines,_lm+4,fy+4.4);
+      doc.text(_areasLines,_lm+4,fy+4);
       doc.setTextColor(0);fy+=_areasH+1;
     }
     if(incluirResumenFinal){
       const promAnioGral=calcPromedioEst(e.id,grado);
       const estadoFinal=areasPerd.length===0?'APROBADO(A)':areasPerd.length<=2?'APROBADO(A) CON ÁREAS POR NIVELAR':'REPROBADO(A)';
-      _asegurarEspacio(8);
       doc.setFillColor(240,246,255);doc.rect(_lm,fy,_tw,7,'F');doc.setLineWidth(0.3);doc.rect(_lm,fy,_tw,7);
-      doc.setFontSize(8);doc.setFont('helvetica','bold');
-      doc.text('PROMEDIO GENERAL: '+promAnioGral.toFixed(2)+'   ESTADO FINAL: '+estadoFinal+' (Áreas perd.: '+areasPerd.length+')',_cx,fy+4.8,{align:'center',maxWidth:_tw-4});
+      doc.setFontSize(7);doc.setFont('helvetica','bold');
+      doc.text('PROMEDIO GENERAL: '+promAnioGral.toFixed(2)+'   ESTADO FINAL: '+estadoFinal+' (Áreas perd.: '+areasPerd.length+')',_cx,fy+4.8,{align:'center'});
       fy+=9;
     }
-    _asegurarEspacio(6);
-    doc.setFontSize(7);doc.setFont('helvetica','normal');
-    doc.setFillColor(248,248,248);doc.rect(_lm,fy,_tw,5.5,'F');
-    doc.setLineWidth(0.2);doc.rect(_lm,fy,_tw,5.5);
-    doc.text('BAJO (0.0–2.9)   |   BÁSICO (3.0–3.9)   |   ALTO (4.0–4.6)   |   SUPERIOR (4.7–5.0)',_cx,fy+3.7,{align:'center',maxWidth:_tw-4});
-    fy+=7.5;
+    doc.setFontSize(6);doc.setFont('helvetica','normal');
+    doc.setFillColor(248,248,248);doc.rect(_lm,fy,_tw,5,'F');
+    doc.setLineWidth(0.2);doc.rect(_lm,fy,_tw,5);
+    doc.text('BAJO (0.0–2.9)   |   BÁSICO (3.0–3.9)   |   ALTO (4.0–4.6)   |   SUPERIOR (4.7–5.0)',_cx,fy+3.4,{align:'center'});
+    fy+=7;
     if(e.obsDirector){
-      doc.setFontSize(8);doc.setFont('helvetica','bold');
-      const obsL=doc.splitTextToSize(e.obsDirector,_tw-4);
-      _asegurarEspacio(4+obsL.length*4+2);
-      doc.text('OBSERVACIÓN DEL DIRECTOR DE GRUPO:',_lm,fy);fy+=4.5;
-      doc.setFont('helvetica','normal');doc.setFontSize(7.5);
-      doc.text(obsL,_lm,fy);fy+=obsL.length*4+2;
+      doc.setFontSize(7);doc.setFont('helvetica','bold');doc.text('OBSERVACIÓN DEL DIRECTOR DE GRUPO:',_lm,fy);fy+=4;
+      doc.setFont('helvetica','normal');doc.setFontSize(6.5);
+      const obsL=doc.splitTextToSize(e.obsDirector,_tw-4);doc.text(obsL,_lm,fy);fy+=obsL.length*3.5+2;
     }
     // ── Firmas: siempre al fondo sin conflicto ──
+    const pageH=doc.internal.pageSize.height;
     // Si el contenido llega muy abajo, añadir nueva página para las firmas
     if(fy>pageH-32){doc.addPage();fy=16;}
     const firmaY=Math.max(fy+6,pageH-26);
@@ -7558,10 +7543,10 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     doc.setLineWidth(0.4);
     doc.line(_fL1,firmaY,_fL2,firmaY);
     doc.line(_fR1,firmaY,_fR2,firmaY);
-    doc.setFontSize(7.5);doc.setFont('helvetica','bold');
+    doc.setFontSize(6.5);doc.setFont('helvetica','bold');
     doc.text((db.rectora||'RECTOR(A)').toUpperCase(),_fLcx,firmaY+4,{align:'center',maxWidth:_fL2-_fL1});
     doc.text((infoG.d||'DIRECTOR DE GRUPO').toUpperCase(),_fRcx,firmaY+4,{align:'center',maxWidth:_fR2-_fR1});
-    doc.setFont('helvetica','normal');doc.setFontSize(7);
+    doc.setFont('helvetica','normal');doc.setFontSize(6);
     doc.text('RECTOR(A)',_fLcx,firmaY+8.5,{align:'center'});
     doc.text('DIRECTOR(A) DE GRUPO',_fRcx,firmaY+8.5,{align:'center'});
     addFooterPDF(doc);
