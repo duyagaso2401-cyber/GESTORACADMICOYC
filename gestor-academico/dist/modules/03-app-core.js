@@ -35,6 +35,8 @@ const BLANK_INST_DB = {
   actividades:[], actEntregas:[], evaluaciones:[], evalRespuestas:[], evalDocente:[],
   leccionario:[],
   planeacionesIA:[],
+  // ── Notas de Actividades en Clase (catálogo compartido + asignación por asignatura/periodo + valores) ──
+  notasActColumnas:[], notasActAsignadas:{}, notasAct:{},
   autoPromocion:false, configHorario:{},
   _schemaVersion: 9
 };
@@ -60,6 +62,8 @@ const DDB = {
   actividades:[], actEntregas:[], evaluaciones:[], evalRespuestas:[], evalDocente:[],
   leccionario:[],
   planeacionesIA:[],
+  // ── Notas de Actividades en Clase (catálogo compartido + asignación por asignatura/periodo + valores) ──
+  notasActColumnas:[], notasActAsignadas:{}, notasAct:{},
   autoPromocion:false, configHorario:{},
   _schemaVersion: 9
 };
@@ -316,6 +320,7 @@ const TODOS_MODULOS=[
   {id:'estado-notas',label:'🔍 Estado de Notas',core:true},
   // ─── ACADÉMICOS PRINCIPALES ────────────────────────────────────────────────
   {id:'planilla',label:'📊 Planilla de Calificaciones'},
+  {id:'notas-actividades',label:'📝 Notas de Actividades en Clase'},
   {id:'descriptores',label:'📝 Descriptores'},
   {id:'horarios',label:'🕐 Horarios'},
   {id:'asistencia',label:'📅 Asistencia'},
@@ -329,6 +334,7 @@ const TODOS_MODULOS=[
   {id:'ausentismo',label:'📋 Permisos de Ausencia'},
   {id:'aviso-docente',label:'📢 Avisos a Estudiantes (Docente)'},
   {id:'obs-aula',label:'📓 Observador de Aula (Docente)'},
+  {id:'buzon-sugerencias',label:'📮 Buzón de Sugerencias'},
   // ─── GESTIÓN INSTITUCIONAL ─────────────────────────────────────────────────
   {id:'alerta-temprana',label:'🔔 Alertas Académicas'},
   {id:'comunicado-general',label:'📢 Comunicado General'},
@@ -353,6 +359,7 @@ const TODOS_MODULOS=[
 const GESTOR_DEFAULT={
   superAdmin:{u:'gestor',p:'Gestor2026*',nombre:'Adán Yesid Jiménez Cabrales'},
   wsp1:'3205292337',wsp2:'3227483837',
+  sugerencias:[],
   platforms:[{
     id:'inetis-sincelejito',
     nombre:'INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO',
@@ -376,6 +383,8 @@ function _migrateGestorDB(data){
   const migrated=_deepMergeWithDefaults(GESTOR_DEFAULT,Object.assign({},GESTOR_DEFAULT,data));
   // Garantizar plataformas como array
   if(!Array.isArray(migrated.platforms)) migrated.platforms=JSON.parse(JSON.stringify(GESTOR_DEFAULT.platforms));
+  // Garantizar buzón de sugerencias como array
+  if(!Array.isArray(migrated.sugerencias)) migrated.sugerencias=[];
   // superAdmin con fusión profunda
   if(!migrated.superAdmin||typeof migrated.superAdmin!=='object'){
     migrated.superAdmin=JSON.parse(JSON.stringify(GESTOR_DEFAULT.superAdmin));
@@ -405,6 +414,14 @@ function _migrateGestorDB(data){
     if(!Array.isArray(plat.aniosDisponibles)||!plat.aniosDisponibles.length) plat.aniosDisponibles=[plat.anioActivo];
     if(!plat.aniosDisponibles.includes(plat.anioActivo)) plat.aniosDisponibles.push(plat.anioActivo);
     plat.aniosDisponibles=plat.aniosDisponibles.sort();
+    // Migración: límites de tiempo de sesión por rol (0 = sin límite)
+    if(!plat.limitesSesion||typeof plat.limitesSesion!=='object'){
+      plat.limitesSesion={admin:0,docente:0,padre:0,estudiante:0};
+    } else {
+      ['admin','docente','padre','estudiante'].forEach(function(r){
+        if(typeof plat.limitesSesion[r]!=='number') plat.limitesSesion[r]=0;
+      });
+    }
   });
   return migrated;
 }
@@ -1171,6 +1188,8 @@ function renderGestorAdmin(){
   else if(_gestorPag==='cronograma') contenido=htmlGestorCronograma();
   else if(_gestorPag==='notificaciones') contenido=htmlGestorNotificaciones();
   else if(_gestorPag==='creditos') contenido=htmlGestorCreditos();
+  else if(_gestorPag==='sesiones') contenido=htmlGestorTiempoSesion();
+  else if(_gestorPag==='sugerencias') contenido=htmlGestorSugerencias();
   document.getElementById('app').innerHTML=`
   <div class="gestor-admin-wrap">
     <div class="gestor-topbar">
@@ -1187,6 +1206,8 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#8e44ad" onclick="_gestorPag='ia';renderGestorAdmin()">🤖 Asistente IA</button>
         <button class="tbtn" style="background:#d35400" onclick="_gestorPag='creditos';renderGestorAdmin()">⚡ Créditos IA</button>
         <button class="tbtn" style="background:#1a7a6e" onclick="_gestorPag='cronograma';renderGestorAdmin()">📅 Cronograma</button>
+        <button class="tbtn" style="background:#117864" onclick="_gestorPag='sesiones';renderGestorAdmin()" title="Configurar el tiempo máximo de uso diario por rol en cada institución">⏱️ Tiempo de Uso</button>
+        <button class="tbtn" style="background:#8e44ad" onclick="_gestorPag='sugerencias';renderGestorAdmin()" title="Ver todas las sugerencias y calificaciones enviadas por los usuarios de todas las instituciones">📮 Sugerencias</button>
         <button class="tbtn" style="background:#2980b9;position:relative" onclick="_gestorPag='notificaciones';renderGestorAdmin()">🔔 <span id="notifBadgeTxt">Notif</span><span id="notifBadge" style="display:none;background:#e74c3c;color:#fff;border-radius:10px;font-size:0.65rem;padding:1px 5px;margin-left:2px;font-weight:bold">0</span></button>
         <button class="tbtn" style="background:#27ae60;font-size:0.74rem" onclick="descargarRespaldoGestor()" title="Descargar respaldo JSON del sistema gestor">💾 Respaldo</button>
         <button class="tbtn" style="background:#e67e22;font-size:0.74rem" onclick="document.getElementById('fileRespaldoGestor').click()" title="Cargar respaldo JSON del sistema gestor">📂 Cargar</button>
@@ -1622,6 +1643,83 @@ function htmlGestorPlataformas(){
   <div style="margin-bottom:14px;text-align:right"><button class="btn btn-blue" style="font-size:0.85rem;padding:8px 18px" onclick="descargarGestorCompleto()" title="Descarga el sistema completo con todos los datos">⬇ Descargar Sistema Completo GESTOR ACADÉMICO YC</button></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px">${cards}</div>`;
 }
+// ============================================================
+// ⏱️ CONTROL DE TIEMPO DE USO DIARIO POR ROL Y POR INSTITUCIÓN
+// Permite al súper admin (Gestor Académico YC) limitar cuántos
+// minutos puede permanecer conectado cada rol dentro de cada
+// institución. Al agotarse el tiempo la sesión se cierra sola
+// (ver S06-B más abajo), avisando antes para que el usuario
+// guarde su trabajo. 0 = sin límite (uso libre).
+// ============================================================
+function htmlGestorTiempoSesion(){
+  if(!gestorDB.platforms.length) return `<div class="card"><p class="empty" style="padding:40px">No hay instituciones registradas todavía.</p></div>`;
+  const roles=[{k:'admin',lbl:'🏫 Admin / Rector',color:'#003366'},{k:'docente',lbl:'👨‍🏫 Docente',color:'#1a5276'},{k:'padre',lbl:'👨‍👩‍👦 Padre/Acudiente',color:'#8e44ad'},{k:'estudiante',lbl:'🎒 Estudiante',color:'#27ae60'}];
+  const cards=gestorDB.platforms.map(plat=>{
+    const lim=plat.limitesSesion||{admin:0,docente:0,padre:0,estudiante:0};
+    const campos=roles.map(r=>`
+      <div style="flex:1;min-width:130px">
+        <label class="lbl" style="font-size:0.76rem;color:${r.color}">${r.lbl}</label>
+        <div style="display:flex;align-items:center;gap:5px">
+          <input type="number" min="0" step="5" id="limSes_${plat.id}_${r.k}" value="${lim[r.k]||0}" style="width:70px;padding:6px;border:1px solid #ccc;border-radius:5px">
+          <span style="font-size:0.74rem;color:#888">min</span>
+        </div>
+      </div>`).join('');
+    return `<div class="plat-card">
+      <div class="plat-nombre" style="margin-bottom:4px">🏫 ${plat.nombre}</div>
+      <div class="plat-info" style="margin-bottom:10px">📍 ${plat.municipio||'—'}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">${campos}</div>
+      <div style="font-size:0.72rem;color:#888;margin-bottom:10px">💡 Ingrese <b>0</b> para uso libre (sin límite de tiempo) en ese rol.</div>
+      <button class="btn btn-green" style="font-size:0.82rem;padding:7px 14px" onclick="guardarLimiteSesion('${plat.id}')">💾 Guardar límites de ${plat.nombre.split(' ').slice(0,3).join(' ')}…</button>
+    </div>`;
+  }).join('');
+  return `<h3 style="color:#003366;margin-bottom:8px">⏱️ Tiempo de Uso Diario por Rol e Institución</h3>
+  <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Defina cuántos minutos puede permanecer conectado cada rol dentro de cada institución. Al agotarse el tiempo, la sesión se cierra automáticamente (con avisos previos para guardar cambios) para ahorrar recursos de la base de datos y de navegación. Al volver a ingresar, el contador se reinicia a cero.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px">${cards}</div>`;
+}
+function guardarLimiteSesion(platId){
+  const roles=['admin','docente','padre','estudiante'];
+  const nuevo={};
+  roles.forEach(r=>{
+    const el=document.getElementById('limSes_'+platId+'_'+r);
+    nuevo[r]=Math.max(0,parseInt(el&&el.value||0)||0);
+  });
+  let nombrePlat='';
+  updGestorDB(g=>{
+    const plat=g.platforms.find(x=>x.id===platId);
+    if(plat){plat.limitesSesion=nuevo;nombrePlat=plat.nombre;}
+    return g;
+  });
+  alert('✅ Límites de tiempo de sesión actualizados para '+nombrePlat+'.');
+  renderGestorAdmin();
+}
+// ============================================================
+// 📮 BUZÓN DE SUGERENCIAS — VISTA DEL SÚPER ADMIN
+// Muestra todas las sugerencias y calificaciones (1-5) enviadas
+// por los usuarios de TODAS las instituciones, con el promedio
+// general de satisfacción.
+// ============================================================
+function htmlGestorSugerencias(){
+  const sugs=(gestorDB.sugerencias||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const estrellasView=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+  const conCalif=sugs.filter(s=>s.calificacion>0);
+  const promGeneral=conCalif.length?(conCalif.reduce((s,x)=>s+x.calificacion,0)/conCalif.length).toFixed(2):'—';
+  const filas=sugs.map(s=>`
+    <div style="background:#fff;border-left:4px solid #1a5276;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.08)">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px">
+        <b style="font-size:0.86rem;color:#003366">🏫 ${s.platNombre||'—'} · ${s.rol||'—'} · ${s.nombre||s.usuario||'Anónimo'}</b>
+        <span style="color:#f1c40f;font-size:0.95rem">${s.calificacion?estrellasView(s.calificacion):'Sin calificación'}</span>
+      </div>
+      <div style="font-size:0.85rem;color:#333">${s.texto?s.texto:'<i style="color:#999">Sin comentario, solo calificación</i>'}</div>
+      <div style="font-size:0.72rem;color:#999;margin-top:5px">${new Date(s.fecha).toLocaleString('es-CO')}</div>
+    </div>`).join('');
+  return `<h3 style="color:#003366;margin-bottom:6px">📮 Buzón de Sugerencias — Todas las Instituciones</h3>
+  <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Sugerencias y calificaciones (1 a 5) que los usuarios de cada institución dejaron de forma voluntaria antes de cerrar sesión o desde el módulo "Buzón de Sugerencias".</p>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+    <div class="card" style="flex:1;min-width:180px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#003366">${sugs.length}</div><div style="font-size:0.78rem;color:#666">Sugerencias recibidas</div></div>
+    <div class="card" style="flex:1;min-width:180px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#f1c40f">${promGeneral}${promGeneral!=='—'?' / 5':''}</div><div style="font-size:0.78rem;color:#666">Satisfacción promedio</div></div>
+  </div>
+  ${sugs.length?filas:'<div class="card"><p class="empty" style="padding:40px">Aún no se han recibido sugerencias.</p></div>'}`;
+}
 function htmlGestorNueva(){
   const platEdit=_gestorEditPlatId?gestorDB.platforms.find(x=>x.id===_gestorEditPlatId):null;
   const platDB=platEdit?loadPlatformDB(platEdit.sk):{};
@@ -1895,6 +1993,227 @@ function guardarGestorConfig(){
 // doLoginInstitucional, renderBienvenidaInstitucion) y en S10
 // (loginBiometrico, mostrarRecuperarPassword, etc.).
 // Esta sección actúa como marcador de referencia.
+
+// ============================================================
+// S04-B · CONTROL DE TIEMPO DE SESIÓN POR ROL (configurado por
+// el súper admin en "⏱️ Tiempo de Uso" — ver htmlGestorTiempoSesion).
+// Muestra un contador regresivo junto al botón de sincronizar,
+// avisa al usuario a los 10, 5 y 1 minuto(s) restantes para que
+// guarde su trabajo, y cierra la sesión automáticamente al
+// agotarse el tiempo. El contador se reinicia a cero en cada
+// nuevo ingreso. No aplica al súper admin gestionando su propio
+// panel ni cuando entra a una institución en modo gestor.
+// ============================================================
+let _sesTimerInterval=null;
+let _sesTimerAvisos={diez:false,cinco:false,uno:false};
+let _sesTimerLoginKey=null;
+
+function _limiteMinutosSesionActual(){
+  if(!sesion||!sesion.r) return 0;
+  if(sesion._gestorMode) return 0; // el súper admin operando como admin de una institución no tiene límite
+  if(gestorSesion&&!gestorEnPlataforma) return 0; // panel propio del Gestor Académico YC
+  const platId=window._currentPlatId||gestorEnPlataforma||null;
+  if(!platId||typeof gestorDB==='undefined'||!gestorDB.platforms) return 0;
+  const plat=gestorDB.platforms.find(x=>x.id===platId);
+  if(!plat||!plat.limitesSesion) return 0;
+  const min=plat.limitesSesion[sesion.r];
+  return (typeof min==='number'&&min>0)?min:0;
+}
+
+function _iniciarControlTiempoSesion(){
+  const limMin=_limiteMinutosSesionActual();
+  const loginKey=(window._currentPlatId||gestorEnPlataforma||'')+'|'+(sesion?sesion.r+':'+(sesion.u||sesion.estId||''):'');
+  if(_sesTimerLoginKey!==loginKey){
+    // Nuevo login (o cambio de rol/institución): el contador se reinicia a cero
+    _sesTimerLoginKey=loginKey;
+    window._sesTimerInicio=Date.now();
+    _sesTimerAvisos={diez:false,cinco:false,uno:false};
+    if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
+  }
+  if(!limMin){
+    if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
+    setTimeout(function(){_actualizarChipTiempoSesion(null);},0);
+    return;
+  }
+  if(!_sesTimerInterval) _sesTimerInterval=setInterval(_tickControlTiempoSesion,1000);
+  // Diferido: se ejecuta luego de que renderApp() termine de reconstruir el DOM
+  setTimeout(_tickControlTiempoSesion,0);
+}
+
+function _tickControlTiempoSesion(){
+  const limMin=_limiteMinutosSesionActual();
+  if(!limMin||!sesion){if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}_actualizarChipTiempoSesion(null);return;}
+  const limMs=limMin*60000;
+  const transcurrido=Date.now()-(window._sesTimerInicio||Date.now());
+  const restanteMs=Math.max(0,limMs-transcurrido);
+  _actualizarChipTiempoSesion(restanteMs);
+  const restMin=restanteMs/60000;
+  if(restMin<=10&&!_sesTimerAvisos.diez){_sesTimerAvisos.diez=true;_avisoTiempoSesion(10);}
+  if(restMin<=5&&!_sesTimerAvisos.cinco){_sesTimerAvisos.cinco=true;_avisoTiempoSesion(5);}
+  if(restMin<=1&&!_sesTimerAvisos.uno){_sesTimerAvisos.uno=true;_avisoTiempoSesion(1);}
+  if(restanteMs<=0){
+    if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
+    _forzarCierrePorTiempo();
+  }
+}
+
+function _fmtTiempoSesion(ms){
+  const totalSeg=Math.max(0,Math.floor(ms/1000));
+  const m=Math.floor(totalSeg/60);
+  const s=totalSeg%60;
+  return String(m)+':'+String(s).padStart(2,'0');
+}
+
+function _actualizarChipTiempoSesion(restanteMs){
+  let chip=document.getElementById('_sesTimerChip');
+  if(restanteMs==null){if(chip)chip.remove();return;}
+  const critico=restanteMs<=5*60000;
+  const alerta=restanteMs<=10*60000;
+  const bg=critico?'#c0392b':(alerta?'#e67e22':'#1a5276');
+  if(!chip||!document.body.contains(chip)){
+    chip=document.createElement('span');
+    chip.id='_sesTimerChip';
+    chip.title='Tiempo restante de sesión configurado por el administrador del sistema';
+    chip.style.cssText='display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;font-weight:bold;color:#fff;border-radius:14px;padding:5px 11px;margin-right:6px;white-space:nowrap;cursor:default;z-index:9997';
+    const syncChip=document.getElementById('_syncChip');
+    if(syncChip&&syncChip.parentNode){
+      syncChip.parentNode.insertBefore(chip,syncChip);
+    } else {
+      // Roles sin topbar de sincronización (Padre/Estudiante): chip flotante fijo arriba a la derecha
+      chip.style.cssText+=';position:fixed;top:10px;right:14px;box-shadow:0 2px 10px rgba(0,0,0,0.28)';
+      document.body.appendChild(chip);
+    }
+  }
+  chip.style.background=bg;
+  chip.textContent='⏳ '+_fmtTiempoSesion(restanteMs);
+}
+
+function _avisoTiempoSesion(minRestantes){
+  const hayPendientes=(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0);
+  const msjPend=hayPendientes?'\n\n⚠️ Tiene notas SIN GUARDAR en la Planilla — pulse "GUARDAR CAMBIOS" ahora mismo para no perderlas.':'';
+  const txt=minRestantes===1?'1 minuto':minRestantes+' minutos';
+  alert('⏰ Le queda(n) '+txt+' de sesión.\n\nPor política de la institución, la sesión se cerrará automáticamente al agotarse el tiempo para ahorrar recursos del sistema.\n\nGuarde los cambios que esté realizando.'+msjPend);
+}
+
+function _forzarCierrePorTiempo(){
+  try{
+    if(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0&&typeof _aplicarNotasPendientesEnDB==='function'){
+      _aplicarNotasPendientesEnDB();
+      _pushDB();
+    }
+  }catch(e){}
+  _actualizarChipTiempoSesion(null);
+  alert('⏰ Su tiempo de sesión ha finalizado.\n\nLa sesión se cerrará ahora para liberar recursos del sistema. Vuelva a ingresar cuando lo necesite — el contador se reiniciará a cero.');
+  // Cierre directo (sin pedir sugerencia): es un cierre automático por tiempo, no una acción deliberada del usuario.
+  // También garantiza el reinicio inmediato del contador para el próximo login.
+  _cerrarSesionReal();
+}
+
+// ============================================================
+// 📮 BUZÓN DE SUGERENCIAS
+// Disponible en TODOS los roles (Admin, Docente, Padre, Estudiante):
+// - Como ventana emergente OPCIONAL justo antes de cerrar sesión.
+// - Como módulo independiente accesible en cualquier momento.
+// El usuario puede escribir qué le gustaría que se mejore y calificar
+// su nivel de satisfacción de 1 a 5. Si no desea dejar nada, puede
+// cerrar y listo. Todas las sugerencias quedan disponibles para el
+// súper admin del sistema en el panel del Gestor Académico YC.
+// ============================================================
+function _htmlFormularioSugerenciaInline(desdeLogout){
+  desdeLogout=!!desdeLogout;
+  const estrellas=[1,2,3,4,5].map(n=>`<button type="button" onclick="_seleccionarCalifSug(${n})" id="sugEstrella_${n}" style="background:none;border:none;font-size:1.9rem;cursor:pointer;color:#ccc;padding:2px;line-height:1" title="${n} de 5">★</button>`).join('');
+  return `
+    <label class="lbl">Nivel de satisfacción con el uso de la plataforma (1 a 5)</label>
+    <div id="sugEstrellasWrap" style="margin-bottom:12px">${estrellas}</div>
+    <input type="hidden" id="sugCalificacion" value="0">
+    <label class="lbl">¿Qué aspecto le gustaría que mejoremos? (opcional)</label>
+    <textarea id="sugTexto" rows="4" placeholder="Escriba aquí su sugerencia..." style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:0.86rem;resize:vertical;box-sizing:border-box"></textarea>
+    <button class="btn btn-green" style="margin-top:12px;width:100%" onclick="_enviarSugerenciaYSalir(${desdeLogout})">✅ Enviar sugerencia${desdeLogout?' y salir':''}</button>`;
+}
+function _seleccionarCalifSug(n){
+  const inp=document.getElementById('sugCalificacion');if(inp)inp.value=n;
+  for(let i=1;i<=5;i++){
+    const el=document.getElementById('sugEstrella_'+i);
+    if(el) el.style.color=i<=n?'#f1c40f':'#ccc';
+  }
+}
+function abrirModalBuzonSugerencias(desdeLogout){
+  const old=document.getElementById('modalBuzonSug');if(old)old.remove();
+  const modal=document.createElement('div');
+  modal.id='modalBuzonSug';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:999999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:14px;padding:22px;max-width:420px;width:100%;max-height:92vh;overflow-y:auto">
+    <h4 style="color:#003366;margin-bottom:6px">📮 Buzón de Sugerencias</h4>
+    <p style="font-size:0.82rem;color:#666;margin-bottom:14px">${desdeLogout?'Antes de salir, c':'C'}uéntenos qué le gustaría que mejoremos y qué tan satisfecho(a) está con el uso de la plataforma. Es totalmente opcional.</p>
+    ${_htmlFormularioSugerenciaInline(desdeLogout)}
+    <button class="btn btn-gray" style="width:100%;margin-top:8px" onclick="_cerrarModalBuzonSugerencias(${desdeLogout?'true':'false'})">${desdeLogout?'🚪 Salir sin sugerencia':'✕ Cerrar'}</button>
+  </div>`;
+  document.body.appendChild(modal);
+}
+function _cerrarModalBuzonSugerencias(desdeLogout){
+  const m=document.getElementById('modalBuzonSug');if(m)m.remove();
+  if(desdeLogout) _cerrarSesionReal();
+}
+async function _enviarSugerenciaYSalir(desdeLogout){
+  const textoEl=document.getElementById('sugTexto');
+  const califEl=document.getElementById('sugCalificacion');
+  const texto=(textoEl&&textoEl.value||'').trim();
+  const calif=parseInt(califEl&&califEl.value||'0')||0;
+  const modalAbierto=document.getElementById('modalBuzonSug');
+  if(!texto&&!calif){
+    // Nada para enviar: equivale a "cerrar sin sugerencia"
+    if(modalAbierto) modalAbierto.remove();
+    if(desdeLogout) _cerrarSesionReal();
+    return;
+  }
+  try{ await _pullGestorDB(); }catch(e){}
+  const platId=window._currentPlatId||gestorEnPlataforma||null;
+  const plat=platId&&gestorDB.platforms?gestorDB.platforms.find(x=>x.id===platId):null;
+  const nuevaSug={
+    id:'sug_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
+    platId:platId||'',
+    platNombre:plat?plat.nombre:((db&&db.nombre)||'—'),
+    rol:sesion?sesion.r:'—',
+    usuario:sesion?(sesion.u||''):'',
+    nombre:sesion?(sesion.n||''):'',
+    texto,
+    calificacion:calif,
+    fecha:new Date().toISOString()
+  };
+  updGestorDB(g=>{
+    g.sugerencias=g.sugerencias||[];
+    g.sugerencias.push(nuevaSug);
+    return g;
+  });
+  const m=document.getElementById('modalBuzonSug');if(m)m.remove();
+  alert('✅ ¡Gracias por su sugerencia! Su comentario llegará al administrador general del sistema.');
+  if(desdeLogout) _cerrarSesionReal();
+  else if(typeof pag!=='undefined'&&pag==='buzon-sugerencias') renderApp();
+}
+function htmlBuzonSugerencias(){
+  const isAdmin=sesion.r==='admin';
+  const platId=window._currentPlatId||gestorEnPlataforma||null;
+  const estrellasView=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+  const misSug=(gestorDB.sugerencias||[]).filter(s=>s.platId===platId).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const listaAdmin=isAdmin?`
+    <h4 style="color:#003366;margin:22px 0 10px">📋 Sugerencias recibidas en esta institución (${misSug.length})</h4>
+    ${misSug.length?`<div style="display:flex;flex-direction:column;gap:10px">${misSug.map(s=>`
+      <div style="background:#f8f9fa;border-left:4px solid #1a5276;border-radius:0 8px 8px 0;padding:10px 14px">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px">
+          <b style="font-size:0.85rem;color:#003366">${s.nombre||s.usuario||'Anónimo'} · ${s.rol||''}</b>
+          <span style="color:#f1c40f;font-size:0.9rem">${s.calificacion?estrellasView(s.calificacion):'—'}</span>
+        </div>
+        <div style="font-size:0.83rem;color:#333">${s.texto?s.texto:'<i style="color:#999">Sin comentario, solo calificación</i>'}</div>
+        <div style="font-size:0.7rem;color:#999;margin-top:4px">${new Date(s.fecha).toLocaleString('es-CO')}</div>
+      </div>`).join('')}</div>`:'<p class="empty">Aún no hay sugerencias registradas en esta institución.</p>'}
+  `:'';
+  return `<h3 class="sec-title">📮 Buzón de Sugerencias</h3>
+  <div class="card">
+    <p style="font-size:0.85rem;color:#666;margin-bottom:14px">¿Qué aspecto le gustaría que mejoremos? Cuéntenos también qué tan satisfecho(a) está con el uso de la plataforma. Su opinión es completamente opcional y llega directamente al administrador general del sistema.</p>
+    ${_htmlFormularioSugerenciaInline(false)}
+  </div>
+  ${listaAdmin}`;
+}
 
 // ============================================================
 // S06 · CÁLCULO DE NOTAS Y CALIFICACIONES
@@ -2311,8 +2630,29 @@ function renderGestorLanding(){
           <li style="margin-bottom:5px">• <b>Sincronización en la nube</b> automática cuando se reconecta</li>
           <li style="margin-bottom:5px">• <b>Reportes y boletines PDF</b> en tiempo real</li>
         </ul>
-        <div style="font-weight:bold;color:#3498db;margin-top:12px;margin-bottom:8px">🧩 Módulos Disponibles (${TODOS_MODULOS.length})</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">${TODOS_MODULOS.map(m=>`<span style="background:rgba(46,204,113,0.18);padding:3px 8px;border-radius:4px;font-size:0.72rem">${m.label}</span>`).join('')}</div>
+        <div style="font-weight:bold;color:#3498db;margin-top:12px;margin-bottom:4px">✨ Una plataforma pensada para la educación del futuro</div>
+      </div>
+      <div class="edu-showcase">
+        <div class="edu-showcase-title">🎓 Innovación educativa al servicio de su institución</div>
+        <div class="edu-showcase-sub">Herramientas modernas que acompañan a rectores, docentes, familias y estudiantes en cada paso de la gestión escolar.</div>
+        <div class="edu-cards">
+          <div class="edu-card">
+            <img src="https://images.unsplash.com/photo-1758685848174-e061c6486651?auto=format&fit=crop&w=800&q=75" alt="Docente usando tecnología en el aula" loading="lazy" onerror="this.remove()">
+            <div class="edu-card-overlay"><div><h4>Innovación pedagógica</h4><p>Asistente académico con IA, descriptores de desempeño y seguimiento personalizado en el aula.</p></div></div>
+          </div>
+          <div class="edu-card">
+            <img src="https://images.unsplash.com/photo-1762427355235-dd22e5cb010c?auto=format&fit=crop&w=800&q=75" alt="Escritorio organizado con planificación escolar" loading="lazy" onerror="this.remove()">
+            <div class="edu-card-overlay"><div><h4>Gestión escolar eficiente</h4><p>Planillas, boletines, asistencia y observador del estudiante centralizados en un solo lugar.</p></div></div>
+          </div>
+          <div class="edu-card">
+            <img src="https://images.unsplash.com/photo-1758270705290-62b6294dd044?auto=format&fit=crop&w=800&q=75" alt="Estudiantes usando tecnología educativa" loading="lazy" onerror="this.remove()">
+            <div class="edu-card-overlay"><div><h4>Tecnología educativa</h4><p>Colaboración y aprendizaje potenciados por herramientas digitales modernas.</p></div></div>
+          </div>
+          <div class="edu-card">
+            <img src="https://images.unsplash.com/photo-1563986768494-4dee2763ff3f?auto=format&fit=crop&w=800&q=75" alt="Sincronización digital entre laptop y celular" loading="lazy" onerror="this.remove()">
+            <div class="edu-card-overlay"><div><h4>Transformación digital</h4><p>Trabaje sin conexión y sincronice automáticamente al reconectarse a internet.</p></div></div>
+          </div>
+        </div>
       </div>
       <div class="gestor-owner">
         <div style="font-size:0.78rem;color:#b0c4de;margin-bottom:5px;text-transform:uppercase;letter-spacing:1px">Propietario y Administrador</div>
@@ -2508,6 +2848,7 @@ function renderApp(){
   if(!sesion||!sesion.r){render();return;}
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
   if(typeof htmlAvisoDocente==='undefined'){setTimeout(renderApp,30);return;}
+  _iniciarControlTiempoSesion();
   if(sesion.r==='elecciones'){iaRemoveWidget();renderElecciones();return;}
   if(sesion.r==='padre'){iaRemoveWidget();renderPadre();return;}
   if(sesion.r==='estudiante'){iaRemoveWidget();renderEstudiante();return;}
@@ -2539,6 +2880,8 @@ function renderApp(){
   if(sesion.r==='docente'&&_ma('obs-aula')) menu.push({id:'obs-aula',label:'📓 Obs. de Aula'});
   if(_ma('descriptores')) menu.push({id:'descriptores',label:'📝 Descriptores'});
   if(_ma('planilla')) menu.push({id:'planilla',label:'📊 Planilla'});
+  if((isAdmin||sesion.r==='docente')&&_ma('notas-actividades')) menu.push({id:'notas-actividades',label:'📝 Notas de Actividades'});
+  if(_ma('buzon-sugerencias')) menu.push({id:'buzon-sugerencias',label:'📮 Buzón de Sugerencias'});
   if((sesion.r==='docente'||isAdmin)&&_ma('estado-notas')&&!isAdmin) menu.push({id:'estado-notas',label:'🔍 Estado Notas'});
   if(sesion.r==='docente'&&_ma('ausentismo')) menu.push({id:'ausentismo',label:'📋 Permiso Ausencia'});
   if((isAdmin||sesion.r==='docente')&&_ma('menciones-honor')) menu.push({id:'menciones-honor',label:'🏅 Menciones Honor'});
@@ -2605,6 +2948,8 @@ function renderApp(){
   else if(pag==='estado-notas'&&!isAdmin&&sesion.r!=='docente') contenido=htmlEstadoNotas();
   else if(pag==='descriptores') contenido=htmlDescriptores();
   else if(pag==='planilla') contenido=htmlPlanilla();
+  else if(pag==='notas-actividades'&&(isAdmin||sesion.r==='docente')) contenido=htmlNotasActividades();
+  else if(pag==='buzon-sugerencias') contenido=htmlBuzonSugerencias();
   else if(pag==='adm-rep') contenido=htmlInformes();
   else if(pag==='actas') contenido=htmlActas();
   else if(pag==='observador') contenido=htmlObservador();
@@ -2791,15 +3136,27 @@ function toggleSidebar(open){
   if(open){sb.classList.add('open');ov.classList.add('open');}
   else{sb.classList.remove('open');ov.classList.remove('open');}
 }
-function cerrarSesion(){
+function _cerrarSesionReal(){
   sesion=null;
   _disconnectSSE();
+  // Reiniciar por completo el control de tiempo de sesión: así el PRÓXIMO login
+  // (incluso del mismo usuario) siempre arranca el contador desde cero, en vez de
+  // seguir contando desde la sesión anterior ya cerrada.
+  _sesTimerLoginKey=null;
+  window._sesTimerInicio=null;
+  _sesTimerAvisos={diez:false,cinco:false,uno:false};
+  if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
+  _actualizarChipTiempoSesion(null);
   if(gestorSesion&&gestorEnPlataforma){
     gestorEnPlataforma=null;db=loadDB();window._currentPlatSK=null;window._currentPlatId=null;
     renderGestorAdmin();return;
   }
   window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();
   render();
+}
+function cerrarSesion(){
+  // Antes de cerrar la sesión, ofrecer al usuario dejar una sugerencia/calificación (opcional)
+  abrirModalBuzonSugerencias(true);
 }
 function actualizarPerfil(){
   const u=document.getElementById('pUser').value.trim();const p=document.getElementById('pPass').value.trim();
@@ -5844,7 +6201,7 @@ function abrirPopupNota(estId,campo,btnEl){
     ];
     html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
     cualOpts.forEach(function(o){
-      html+='<button onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+o.val+')" style="padding:8px 4px;font-size:0.78rem;font-weight:bold;background:'+o.color+';color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation;line-height:1.3">'+o.lbl+'<br><span style="font-size:0.62rem;opacity:0.85">'+o.desc+'</span></button>';
+      html+='<button class="nota-btn" onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+o.val+')" style="padding:8px 4px;font-size:0.78rem;font-weight:bold;background:'+o.color+';color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation;line-height:1.3">'+o.lbl+'<br><span style="font-size:0.62rem;opacity:0.85">'+o.desc+'</span></button>';
     });
     html+='</div></div>';
     html+='<div style="font-size:0.73rem;text-align:center;color:#7f8c8d;margin-bottom:8px">— o ingrese nota exacta —</div>';
@@ -5859,7 +6216,7 @@ function abrirPopupNota(estId,campo,btnEl){
     let v=min;
     while(v<=max+0.001){
       const vf=parseFloat(v.toFixed(1));
-      html+='<button onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+vf+')" style="flex:1;padding:8px 1px;font-size:0.82rem;font-weight:bold;background:'+col+';color:#fff;border:none;border-radius:5px;cursor:pointer;min-width:28px;min-height:38px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">'+vf.toFixed(1)+'</button>';
+      html+='<button class="nota-btn" onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+vf+')" style="flex:1;padding:8px 1px;font-size:0.82rem;font-weight:bold;background:'+col+';color:#fff;border:none;border-radius:5px;cursor:pointer;min-width:28px;min-height:38px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">'+vf.toFixed(1)+'</button>';
       v=parseFloat((v+0.1).toFixed(1));
     }
     html+='</div>';
@@ -6554,6 +6911,260 @@ function saveNota(estId,campo,valor){
     if(bEl){bEl.textContent=base.toFixed(1);bEl.style.color=base<3?'#c0392b':'#333';}
     if(dEl){dEl.textContent=defF.toFixed(1);dEl.style.color=colorNota(defF);}
   }
+}
+
+// ============================================================
+// 📝 NOTAS DE ACTIVIDADES EN CLASE
+// Módulo independiente de la Planilla donde el docente registra
+// notas de actividades cotidianas (Actividad en clase, Talleres,
+// Actividad en casa, Participación en clases, Evaluación) con
+// fecha y hora. Puede agregar tantas columnas de cada tipo como
+// necesite (Taller 1, Taller 2...); el NOMBRE de cada columna es
+// un catálogo compartido por toda la institución, para que sea el
+// mismo entre docentes. El promedio resultante puede sincronizarse
+// —si el docente lo decide— con la columna que elija de la
+// Planilla, donde se computa automáticamente con el % configurado
+// para esa columna junto con las demás notas. Si no sincroniza, la
+// Planilla sigue funcionando exactamente igual que siempre.
+// ============================================================
+let notaActPer='1', notaActCId='';
+const TIPOS_NOTAS_ACT=['Actividad en clase','Talleres','Actividad en casa','Participación en clases','Evaluación'];
+
+function _colsActCatalogoPorTipo(tipo){
+  return (db.notasActColumnas||[]).filter(c=>c.tipo===tipo).sort((a,b)=>a.numero-b.numero);
+}
+function _colsActAsignadas(cId,per){
+  const key=cId+'_'+per;
+  const ids=(db.notasActAsignadas||{})[key]||[];
+  return ids.map(id=>(db.notasActColumnas||[]).find(c=>c.id===id)).filter(Boolean);
+}
+function _valorNotaAct(cId,per,colId,estId){
+  const key=cId+'_'+per+'_'+colId+'_'+estId;
+  return (db.notasAct||{})[key]||null;
+}
+function _promedioNotasActEst(cId,per,estId){
+  const cols=_colsActAsignadas(cId,per);
+  if(!cols.length) return null;
+  let s=0,n=0;
+  cols.forEach(c=>{
+    const v=_valorNotaAct(cId,per,c.id,estId);
+    if(v&&typeof v.valor==='number'){s+=v.valor;n++;}
+  });
+  return n?parseFloat((s/n).toFixed(2)):null;
+}
+
+function htmlNotasActividades(){
+  const isAdmin=sesion.r==='admin';
+  const mats=db.carga.filter(x=>isAdmin||x.d===sesion.u);
+  if(!notaActCId&&mats.length) notaActCId=String(mats[0].id);
+  const matsOpts=mats.map(c=>`<option value="${c.id}"${notaActCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
+  const carga=notaActCId?db.carga.find(x=>x.id===Number(notaActCId)):null;
+  const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
+  const numPer=_getNumPer();
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const cols=carga?_colsActAsignadas(cId,per):[];
+
+  let tabla='';
+  if(!mats.length) tabla=`<p class="empty">No tiene asignaturas a cargo.</p>`;
+  else if(!carga) tabla=`<p class="empty">Seleccione una asignatura.</p>`;
+  else if(!ests.length) tabla=`<p class="empty">No hay estudiantes en este grado.</p>`;
+  else if(!cols.length) tabla=`<div class="warn-box">ℹ️ Aún no ha agregado columnas de notas para esta asignatura y periodo. Use el botón "➕ Agregar nota" para comenzar.</div>`;
+  else {
+    const headCols=cols.map(c=>`<th style="font-size:0.76rem;background:#003366;color:#fff">${c.nombre}<br><button title="Quitar esta columna de esta asignatura/periodo (no borra los datos ya registrados)" onclick="quitarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.85);color:#c0392b;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">✕ quitar</button></th>`).join('');
+    const rows=ests.map(e=>{
+      const cells=cols.map(c=>{
+        const v=_valorNotaAct(cId,per,c.id,e.id);
+        const val=v&&typeof v.valor==='number'?v.valor:null;
+        const fh=v&&v.fecha?`<br><span style="font-size:0.6rem;color:#888">${v.fecha}${v.hora?' '+v.hora:''}</span>`:'';
+        return `<td style="border:1px solid #ddd;padding:3px 4px;text-align:center">
+          <button class="nota-btn" onclick="abrirPopupNotaAct('${e.id}','${c.id}')" style="background:${val!=null?colorNota(val):'#eee'};color:${val!=null?'#fff':'#888'};font-weight:bold;font-size:0.82rem;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;min-width:44px;min-height:34px">${val!=null?val.toFixed(1):'—'}</button>${fh}
+        </td>`;
+      }).join('');
+      const prom=_promedioNotasActEst(cId,per,e.id);
+      return `<tr>
+        <td style="text-align:left;font-weight:500;border:1px solid #ddd;padding:4px 6px;font-size:0.82rem">${e.n}</td>
+        ${cells}
+        <td style="font-weight:bold;border:1px solid #ddd;padding:5px 6px;text-align:center;color:${prom!=null?colorNota(prom):'#aaa'}">${prom!=null?prom.toFixed(2):'—'}</td>
+      </tr>`;
+    }).join('');
+    tabla=`<div class="over"><table><thead><tr>
+      <th style="font-size:0.78rem">Estudiante</th>${headCols}<th style="font-size:0.78rem;background:#1a5276;color:#fff">PROMEDIO</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  return `<h3 class="sec-title">📝 Notas de Actividades en Clase</h3>
+  <div class="card">
+    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">Registre aquí notas de actividades cotidianas (talleres, participación, actividades en casa/clase, evaluaciones) con fecha y hora. El promedio resultante puede sincronizarse, si usted lo desea, con la columna que elija en la Planilla de Calificaciones — si no lo hace, la Planilla sigue funcionando exactamente igual que siempre.</p>
+    <div class="grid2" style="margin-bottom:15px">
+      <div><label class="lbl">Periodo</label><select id="notaActPerSel" onchange="cambiarNotaActPer(this.value)">
+        ${Array.from({length:numPer},(_,i)=>i+1).map(n=>`<option value="${n}"${notaActPer===String(n)?' selected':''}>Periodo ${n}</option>`).join('')}
+      </select></div>
+      <div><label class="lbl">Asignatura</label><select id="notaActCIdSel" onchange="cambiarNotaActCId(this.value)">${matsOpts}</select></div>
+    </div>
+    ${carga?`<div class="info-box"><b>Grado:</b> ${carga.g} | <b>Área:</b> ${carga.a} | <b>Docente:</b> ${carga.dn}</div>`:''}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+      <button class="btn btn-blue" ${carga?'':'disabled'} onclick="abrirModalAgregarColNotaAct()">➕ Agregar nota</button>
+      <button class="btn btn-green" ${(carga&&cols.length)?'':'disabled'} onclick="abrirModalSincronizarNotaAct()" title="Sincroniza el promedio de este módulo con la columna que elija en la Planilla">🔄 Sincronizar con Planilla</button>
+    </div>
+    ${tabla}
+  </div>`;
+}
+function cambiarNotaActPer(v){notaActPer=v;renderApp();}
+function cambiarNotaActCId(v){notaActCId=v;renderApp();}
+
+// ── Modal: agregar columna (nueva o existente del catálogo compartido por tipo) ──
+function abrirModalAgregarColNotaAct(){
+  const old=document.getElementById('modalNotaAct');if(old)old.remove();
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const yaAsignadas=(db.notasActAsignadas||{})[cId+'_'+per]||[];
+  const opts=TIPOS_NOTAS_ACT.map(t=>`<option value="${t}">${t}</option>`).join('');
+  const modal=document.createElement('div');
+  modal.id='modalNotaAct';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto">
+    <h4 style="color:#003366;margin-bottom:12px">➕ Agregar nota</h4>
+    <label class="lbl">Tipo de actividad</label>
+    <select id="nacTipo" onchange="_actualizarListaColExistentesNAC()" style="width:100%;margin-bottom:10px">${opts}</select>
+    <div id="nacExistentesWrap" style="margin-bottom:10px"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-green" style="flex:1" onclick="_confirmarAgregarColNAC()">✔ Agregar</button>
+      <button class="btn btn-gray" style="flex:1" onclick="document.getElementById('modalNotaAct').remove()">✕ Cancelar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  window._nacYaAsignadas=yaAsignadas;
+  _actualizarListaColExistentesNAC();
+}
+function _actualizarListaColExistentesNAC(){
+  const tipoSel=document.getElementById('nacTipo');if(!tipoSel) return;
+  const tipo=tipoSel.value;
+  const existentes=_colsActCatalogoPorTipo(tipo).filter(c=>!(window._nacYaAsignadas||[]).includes(c.id));
+  const wrap=document.getElementById('nacExistentesWrap');
+  if(!wrap) return;
+  const sigNum=(_colsActCatalogoPorTipo(tipo).reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
+  wrap.innerHTML=`
+    <label class="lbl">Columna</label>
+    <select id="nacColSel">
+      <option value="__nueva__">➕ Crear nueva: "${tipo} ${sigNum}"</option>
+      ${existentes.map(c=>`<option value="${c.id}">${c.nombre} (reutilizar)</option>`).join('')}
+    </select>
+    <div style="font-size:0.72rem;color:#888;margin-top:4px">El nombre de las columnas es compartido por todos los docentes. Si crea una nueva, quedará disponible para los demás.</div>`;
+}
+function _confirmarAgregarColNAC(){
+  const tipo=document.getElementById('nacTipo').value;
+  const sel=document.getElementById('nacColSel').value;
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const key=cId+'_'+per;
+  updDB(d=>{
+    d.notasActColumnas=d.notasActColumnas||[];
+    d.notasActAsignadas=d.notasActAsignadas||{};
+    let colId=sel;
+    if(sel==='__nueva__'){
+      const sigNum=(d.notasActColumnas.filter(c=>c.tipo===tipo).reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
+      colId='nac_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+      d.notasActColumnas.push({id:colId,tipo,numero:sigNum,nombre:tipo+' '+sigNum});
+    }
+    const arr=d.notasActAsignadas[key]||[];
+    if(!arr.includes(colId)) arr.push(colId);
+    d.notasActAsignadas[key]=arr;
+    return d;
+  });
+  document.getElementById('modalNotaAct').remove();
+  renderApp();
+}
+function quitarColNotaAct(colId){
+  if(!confirm('¿Quitar esta columna de esta asignatura y periodo?\n\nLos datos ya registrados NO se eliminan, solo deja de mostrarse aquí. Puede volver a agregarla cuando la necesite.')) return;
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const key=cId+'_'+per;
+  updDB(d=>{
+    d.notasActAsignadas=d.notasActAsignadas||{};
+    d.notasActAsignadas[key]=(d.notasActAsignadas[key]||[]).filter(id=>id!==colId);
+    return d;
+  });
+  renderApp();
+}
+
+// ── Popup: ingresar nota + fecha + hora de la actividad ──
+function abrirPopupNotaAct(estId,colId){
+  const old=document.getElementById('popupNotaAct');if(old)old.remove();
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const v=_valorNotaAct(cId,per,colId,estId)||{};
+  const hoy=new Date();
+  const fechaDef=v.fecha||hoy.toISOString().slice(0,10);
+  const horaDef=v.hora||hoy.toTimeString().slice(0,5);
+  const popup=document.createElement('div');
+  popup.id='popupNotaAct';
+  popup.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+  popup.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:320px;width:100%">
+    <h4 style="color:#003366;margin-bottom:12px">🎯 Registrar nota</h4>
+    <label class="lbl">Nota (0.0 – 5.0)</label>
+    <input type="number" id="nacValor" min="0" max="5" step="0.1" value="${v.valor!=null?v.valor:''}" style="width:100%;margin-bottom:10px;padding:8px;font-size:1rem;text-align:center">
+    <label class="lbl">Fecha</label>
+    <input type="date" id="nacFecha" value="${fechaDef}" style="width:100%;margin-bottom:10px">
+    <label class="lbl">Hora</label>
+    <input type="time" id="nacHora" value="${horaDef}" style="width:100%;margin-bottom:14px">
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-green" style="flex:1" onclick="_guardarNotaAct('${estId}','${colId}')">💾 Guardar</button>
+      <button class="btn btn-gray" style="flex:1" onclick="document.getElementById('popupNotaAct').remove()">✕ Cerrar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(popup);
+}
+function _guardarNotaAct(estId,colId){
+  const valor=Math.min(5,Math.max(0,parseFloat(document.getElementById('nacValor').value)||0));
+  const fecha=document.getElementById('nacFecha').value||new Date().toISOString().slice(0,10);
+  const hora=document.getElementById('nacHora').value||'';
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const key=cId+'_'+per+'_'+colId+'_'+estId;
+  updDB(d=>{
+    d.notasAct=d.notasAct||{};
+    d.notasAct[key]={valor,fecha,hora};
+    return d;
+  });
+  const p=document.getElementById('popupNotaAct');if(p)p.remove();
+  renderApp();
+}
+
+// ── Sincronización del promedio del módulo con una columna elegida de la Planilla ──
+function abrirModalSincronizarNotaAct(){
+  const old=document.getElementById('modalSyncNAC');if(old)old.remove();
+  const _cfgP=db.config||{};
+  const cols=(_cfgP.columnasBase&&_cfgP.columnasBase.length)?_cfgP.columnasBase:[{key:'s',nom:_cfgP.nomSer||'SER'},{key:'sb',nom:_cfgP.nomSaber||'SABER'},{key:'h',nom:_cfgP.nomHacer||'HACER'}];
+  const opts=cols.map(c=>`<button class="btn" style="background:#1a5276;color:#fff;margin:4px" onclick="_confirmarSyncNAC('${c.key}')">${c.nom}</button>`).join('');
+  const modal=document.createElement('div');
+  modal.id='modalSyncNAC';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%;text-align:center">
+    <h4 style="color:#003366;margin-bottom:8px">🔄 Sincronizar con Planilla</h4>
+    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">¿Con cuál columna de la Planilla desea sincronizar el promedio de este módulo? La nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás columnas.</p>
+    <div style="display:flex;flex-wrap:wrap;justify-content:center">${opts}</div>
+    <button class="btn btn-gray" style="margin-top:14px" onclick="document.getElementById('modalSyncNAC').remove()">✕ Cancelar</button>
+  </div>`;
+  document.body.appendChild(modal);
+}
+function _confirmarSyncNAC(colKey){
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const carga=db.carga.find(x=>x.id===cId);
+  const modal=document.getElementById('modalSyncNAC');if(modal)modal.remove();
+  if(!carga){alert('Asignatura no encontrada.');return;}
+  const ests=db.ests.filter(x=>x.g===carga.g);
+  let n=0;
+  updDB(d=>{
+    ests.forEach(est=>{
+      const prom=_promedioNotasActEst(cId,per,est.id);
+      if(prom==null) return;
+      const idx=d.ests.findIndex(x=>x.id===est.id);if(idx===-1) return;
+      const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
+      if(!nts[cId]) nts[cId]={};if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
+      nts[cId][per][colKey]=Math.round(prom*10)/10;
+      d.ests[idx]={...e,nts};
+      n++;
+    });
+    return d;
+  });
+  _pushDB();
+  alert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nLa nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás notas.');
+  renderApp();
 }
 
 // ============================================================

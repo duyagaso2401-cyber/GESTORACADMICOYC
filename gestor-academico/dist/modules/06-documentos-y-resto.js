@@ -2203,6 +2203,7 @@ function renderPadre(){
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${moduloActivo('pre-matricula')?`<button style="background:#27ae60;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="abrirPreMatriculaLogueado()">📝 Pre-Matrícula</button>`:''}
+      ${moduloActivo('buzon-sugerencias')?`<button style="background:#8e44ad;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="abrirModalBuzonSugerencias(false)">📮 Sugerencias</button>`:''}
       <button style="background:#c0392b;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="cerrarSesion()">🚪 Salir</button>
     </div>
   </div>
@@ -2662,6 +2663,7 @@ function renderEstudiante(){
   <div class="header">${db.logo?`<img src="${db.logo}" style="max-height:80px;border-radius:6px">`:""}<h1>Portal del Estudiante — ${db.nombre||'Institución'} ${db.anio}</h1><p>${est.n} · ${est.g} · ${esOnline?'💻 Online':'🏫 Presencial'}</p></div>
   <div class="topbar"><span><b>Estudiante:</b> ${est.n}</span><div class="topbar-btns">
     ${moduloActivo('pre-matricula')?'<button class="tbtn" style="background:#27ae60" onclick="abrirPreMatriculaLogueado()">📝 Pre-Matrícula</button>':''}
+    ${moduloActivo('buzon-sugerencias')?'<button class="tbtn" style="background:#8e44ad" onclick="abrirModalBuzonSugerencias(false)">📮 Sugerencias</button>':''}
     <button class="tbtn" style="background:#c0392b" onclick="cerrarSesion()">🚪 Salir</button></div></div>
   <div class="main">
     ${panelModalidad}
