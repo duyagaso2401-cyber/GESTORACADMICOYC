@@ -285,49 +285,15 @@ function loadDB(sk){
   return JSON.parse(JSON.stringify(DDB));
 }
 let _saveTimer=null;
-let _lastDbJson=null; // cache del último JSON.stringify(db) para no recalcularlo dos veces (localStorage + red)
-// ============================================================
-// Clonado rápido de la base de datos: usa structuredClone (nativo del
-// navegador, más rápido que ida-y-vuelta por JSON) y si no está disponible
-// (navegadores muy antiguos) cae de vuelta al método JSON de siempre.
-// Mismo resultado, menor costo de CPU — útil cuando el historial de la
-// institución crece (más años, más estudiantes).
-// ============================================================
-function _clonarDB(obj){
-  if(typeof structuredClone==='function'){
-    try{ return structuredClone(obj); }catch(e){ /* si algo no es clonable, usar respaldo JSON */ }
-  }
-  return JSON.parse(JSON.stringify(obj));
-}
-// Instrumentación de rendimiento OPCIONAL y desactivada por defecto.
-// Actívala desde la consola con: window._debugPerf = true
-// Útil para diagnosticar lentitud en instituciones grandes (1000+
-// estudiantes, varios años de historial) sin tener que tocar el código.
-function _medirPerf(etiqueta, fn){
-  if(!window._debugPerf) return fn();
-  const t0=performance.now();
-  const r=fn();
-  const t1=performance.now();
-  console.log('[perf] '+etiqueta+': '+(t1-t0).toFixed(1)+'ms');
-  return r;
-}
 function saveDB(){
   const _sk=window._currentPlatSK||SK;
-  _medirPerf('saveDB (stringify+localStorage)', function(){
-    try{
-      _lastDbJson=JSON.stringify(db);
-      localStorage.setItem(_sk,_lastDbJson);
-    }catch(e){ _lastDbJson=null; }
-  });
+  try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
   if(_saveTimer) clearTimeout(_saveTimer);
   _saveTimer=setTimeout(_pushDB,350);
 }
 function _pushDB(){
   const _sk=window._currentPlatSK||SK;
-  // Reutiliza el JSON ya calculado en saveDB() en vez de volver a serializar
-  // el objeto completo (evita un tercer stringify del mismo contenido).
-  const _json=_lastDbJson || JSON.stringify(db);
-  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"sk":'+JSON.stringify(_sk)+',"data":'+_json+'}'}).catch(()=>{});
+  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk,data:db})}).catch(()=>{});
 }
 async function _pullDB(){
   try{
@@ -338,12 +304,7 @@ async function _pullDB(){
       try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}return true;}}
   }catch(e){}return false;
 }
-function updDB(fn){
-  _medirPerf('updDB (clonar+mutar)', function(){
-    db=fn(_clonarDB(db));
-  });
-  saveDB();
-}
+function updDB(fn){ db=fn(JSON.parse(JSON.stringify(db))); saveDB(); }
 
 // ============================================================
 // S03 · GESTOR MULTI-TENANT — DB Y MÓDULOS POR PLATAFORMA
@@ -526,14 +487,10 @@ let gestorEnPlataforma=null;
 let _gestorPag='plataformas';
 let _gestorEditPlatId=null;
 function saveGestorDB(){
-  const _json=_medirPerf('saveGestorDB (stringify)', function(){ return JSON.stringify(gestorDB); });
-  try{localStorage.setItem(GESTOR_SK,_json);}catch(e){}
-  fetch('/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"data":'+_json+'}'}).catch(()=>{});
+  try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
+  fetch('/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:gestorDB})}).catch(()=>{});
 }
-function updGestorDB(fn){
-  gestorDB=_medirPerf('updGestorDB (clonar+mutar)', function(){ return fn(_clonarDB(gestorDB)); });
-  saveGestorDB();
-}
+function updGestorDB(fn){gestorDB=fn(JSON.parse(JSON.stringify(gestorDB)));saveGestorDB();}
 
 // ─── GESTIÓN DE AÑOS LECTIVOS POR PLATAFORMA ──────────────────────────────────
 // Cada año lectivo se guarda de forma aislada en la nube con su propia clave.
@@ -1872,7 +1829,6 @@ function guardarLimiteSesion(platId){
 // general de satisfacción.
 // ============================================================
 let _gestorSugFiltro='todas';
-let _gestorSugPagina=1;
 function htmlGestorSugerencias(){
   const todas=(gestorDB.sugerencias||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
   todas.forEach(s=>{if(!s.estado) s.estado='pendiente';}); // compat: sugerencias antiguas sin estado
@@ -1883,9 +1839,8 @@ function htmlGestorSugerencias(){
   const nRev=todas.filter(s=>s.estado==='en_revision').length;
   const nRes=todas.filter(s=>s.estado==='resuelta').length;
   const sugs=_gestorSugFiltro==='todas'?todas:todas.filter(s=>s.estado===_gestorSugFiltro);
-  const _pagSug=_paginar(sugs,_gestorSugPagina,15);
   const estadoInfo={pendiente:{label:'🟡 Pendiente',color:'#b7770d',bg:'#fef9e7'},en_revision:{label:'🔵 En revisión',color:'#1a5276',bg:'#eaf4fe'},resuelta:{label:'🟢 Resuelta',color:'#1e8449',bg:'#eafaf1'}};
-  const filas=_pagSug.items.map(s=>{
+  const filas=sugs.map(s=>{
     const ei=estadoInfo[s.estado]||estadoInfo.pendiente;
     return `
     <div style="background:#fff;border-left:4px solid ${ei.color};border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.08)">
@@ -1915,17 +1870,15 @@ function htmlGestorSugerencias(){
   return `<h3 style="color:#003366;margin-bottom:6px">📮 Buzón de Sugerencias — Todas las Instituciones</h3>
   <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Sugerencias y calificaciones (1 a 5) que los usuarios de cada institución dejaron de forma voluntaria antes de cerrar sesión o desde el módulo "Buzón de Sugerencias". Puede marcar cada una como en revisión o resuelta, y responderle directamente al usuario.</p>
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='todas';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#003366">${todas.length}</div><div style="font-size:0.78rem;color:#666">Total</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='pendiente';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#b7770d">${nPend}</div><div style="font-size:0.78rem;color:#666">🟡 Pendientes</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='en_revision';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1a5276">${nRev}</div><div style="font-size:0.78rem;color:#666">🔵 En revisión</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='resuelta';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1e8449">${nRes}</div><div style="font-size:0.78rem;color:#666">🟢 Resueltas</div></div>
+    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='todas';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#003366">${todas.length}</div><div style="font-size:0.78rem;color:#666">Total</div></div>
+    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='pendiente';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#b7770d">${nPend}</div><div style="font-size:0.78rem;color:#666">🟡 Pendientes</div></div>
+    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='en_revision';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1a5276">${nRev}</div><div style="font-size:0.78rem;color:#666">🔵 En revisión</div></div>
+    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='resuelta';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1e8449">${nRes}</div><div style="font-size:0.78rem;color:#666">🟢 Resueltas</div></div>
     <div class="card" style="flex:1;min-width:140px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#f1c40f">${promGeneral}${promGeneral!=='—'?' / 5':''}</div><div style="font-size:0.78rem;color:#666">Satisfacción prom.</div></div>
   </div>
-  ${_gestorSugFiltro!=='todas'?`<div style="margin-bottom:10px"><button class="btn-sm" style="background:#7f8c8d" onclick="_gestorSugFiltro='todas';_gestorSugPagina=1;renderGestorAdmin()">✕ Quitar filtro</button></div>`:''}
-  ${sugs.length?filas:'<div class="card"><p class="empty" style="padding:40px">No hay sugerencias con este filtro.</p></div>'}
-  ${_htmlPaginacion(_pagSug.pagina,_pagSug.totalPaginas,_pagSug.total,'_cambiarPaginaSugerencias')}`;
+  ${_gestorSugFiltro!=='todas'?`<div style="margin-bottom:10px"><button class="btn-sm" style="background:#7f8c8d" onclick="_gestorSugFiltro='todas';renderGestorAdmin()">✕ Quitar filtro</button></div>`:''}
+  ${sugs.length?filas:'<div class="card"><p class="empty" style="padding:40px">No hay sugerencias con este filtro.</p></div>'}`;
 }
-function _cambiarPaginaSugerencias(p){ _gestorSugPagina=p; renderGestorAdmin(); }
 async function _cambiarEstadoSugerencia(id,nuevoEstado){
   try{ await _pullGestorDB(); }catch(e){}
   updGestorDB(g=>{
@@ -3273,27 +3226,6 @@ document.addEventListener('keydown', function(e){
   const docs=document.getElementById('docsModal');
   if(docs && docs.classList.contains('open')){ cerrarDocsModal(); return; }
 });
-
-// ============================================================
-// PAGINACIÓN — utilidad genérica para listados largos
-// (estudiantes, sugerencias del súper admin, papelera) para no
-// cargar/renderizar todo el listado de una sola vez.
-// ============================================================
-function _paginar(arr, pagina, porPagina){
-  const total=arr.length;
-  const totalPaginas=Math.max(1, Math.ceil(total/porPagina));
-  const pagActual=Math.min(Math.max(1, pagina||1), totalPaginas);
-  const inicio=(pagActual-1)*porPagina;
-  return { items: arr.slice(inicio, inicio+porPagina), pagina: pagActual, totalPaginas, total, porPagina };
-}
-function _htmlPaginacion(pagina, totalPaginas, total, onCambiarFnName){
-  if(totalPaginas<=1) return '';
-  return `<div class="pag-nav" style="display:flex;align-items:center;justify-content:center;gap:10px;margin:14px 0;flex-wrap:wrap">
-    <button class="btn-sm" style="background:#7f8c8d" ${pagina<=1?'disabled':''} onclick="${onCambiarFnName}(${pagina-1})" aria-label="Página anterior">◀ Anterior</button>
-    <span style="font-size:0.82rem;color:var(--text-secondary)">Página ${pagina} de ${totalPaginas} · ${total} en total</span>
-    <button class="btn-sm" style="background:#7f8c8d" ${pagina>=totalPaginas?'disabled':''} onclick="${onCambiarFnName}(${pagina+1})" aria-label="Página siguiente">Siguiente ▶</button>
-  </div>`;
-}
 
 function renderApp(){
   if(!sesion||!sesion.r){render();return;}
@@ -4720,17 +4652,12 @@ RODRÍGUEZ MARIA"></textarea>
     <div id="estTablaWrap">${htmlEstTabla(fgrado)}</div>
   </div>`;
 }
-let _estTablaPagina=1;
-let _estTablaGradoPrevio=null;
 function htmlEstTabla(grado){
-  if(grado!==_estTablaGradoPrevio){ _estTablaPagina=1; _estTablaGradoPrevio=grado; }
-  const todosEsts=db.ests.filter(x=>x.g===grado).sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
-  if(!todosEsts.length) return `<p class="empty">No hay estudiantes. Registre estudiantes usando el formulario de arriba.</p>`;
-  const _pagEst=_paginar(todosEsts,_estTablaPagina,30);
-  const ests=_pagEst.items;
+  const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
+  if(!ests.length) return `<p class="empty">No hay estudiantes. Registre estudiantes usando el formulario de arriba.</p>`;
   const _privT=_getPlatTipo()==='privada';
   const rows=ests.map((e,i)=>`<tr>
-    <td>${(_pagEst.pagina-1)*_pagEst.porPagina+i+1}</td>
+    <td>${i+1}</td>
     <td style="text-align:left">
       <div style="display:flex;align-items:center;gap:7px">
         ${e.foto?`<img src="${e.foto}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid #003366;flex-shrink:0" onclick="abrirZoomFoto('${e.foto}','${fmtNombreEst(e)}',event)">`:`<span style="width:32px;height:32px;border-radius:50%;background:#c5d8f0;border:2px solid #003366;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0">👤</span>`}
@@ -4753,11 +4680,9 @@ function htmlEstTabla(grado){
     ${_privT?`<button class="btn-sm" style="background:${(() => {const ps=_getPazSalvoEst(e);return ps.ok?'#27ae60':'#c0392b';})()}" title="Paz y Salvo" onclick="abrirPazSalvoModal('${String(e.id)}')">⚖️</button>`:''}
     <button class="btn-sm" style="background:#c0392b" title="Eliminar" onclick="eliminarEst('${String(e.id)}')">🗑</button>
     </td></tr>`).join('');
-  return `<p style="color:#666;font-size:0.85rem;margin-bottom:8px">Total: <b>${todosEsts.length}</b> estudiante(s) en <b>${grado}</b>${_privT?' · <span style="font-size:0.8rem;color:#8e44ad">🏢 Institución Privada</span>':''} · <span style="font-size:0.8rem;color:#555">Orden: Apellido Apellido Nombre Nombre</span></p>
-  <div class="over"><table><thead><tr><th>#</th><th style="text-align:left">Nombre Completo</th><th>Grado</th>${_privT?'<th>Pensión</th>':''}<th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>
-  ${_htmlPaginacion(_pagEst.pagina,_pagEst.totalPaginas,_pagEst.total,'_cambiarPaginaEstudiantes')}`;
+  return `<p style="color:#666;font-size:0.85rem;margin-bottom:8px">Total: <b>${ests.length}</b> estudiante(s) en <b>${grado}</b>${_privT?' · <span style="font-size:0.8rem;color:#8e44ad">🏢 Institución Privada</span>':''} · <span style="font-size:0.8rem;color:#555">Orden: Apellido Apellido Nombre Nombre</span></p>
+  <div class="over"><table><thead><tr><th>#</th><th style="text-align:left">Nombre Completo</th><th>Grado</th>${_privT?'<th>Pensión</th>':''}<th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
-function _cambiarPaginaEstudiantes(p){ _estTablaPagina=p; renderEstTabla(); }
 function renderEstTabla(){
   const g=document.getElementById('estFiltroGrado')?.value||db.grados[0]?.n||'';
   const wrap=document.getElementById('estTablaWrap');if(wrap) wrap.innerHTML=htmlEstTabla(g);
@@ -5751,12 +5676,9 @@ function abrirModalPapelera(filtroTipo) {
   eliminados.sort((a, b) => (b.deletedAt || '').localeCompare(a.deletedAt || ''));
 
   let fTipo = filtroTipo || window._papeleraFiltroTipo || 'todos';
-  if (filtroTipo && filtroTipo !== window._papeleraFiltroTipo) window._papeleraPagina = 1;
   window._papeleraFiltroTipo = fTipo;
 
   const listaFiltrada = fTipo === 'todos' ? eliminados : eliminados.filter(x => x.tipo === fTipo);
-  const _pagPap = _paginar(listaFiltrada, window._papeleraPagina || 1, 20);
-  window._papeleraPagina = _pagPap.pagina;
 
   let modal = document.getElementById('_papeleraModal');
   if (!modal) {
@@ -5774,7 +5696,7 @@ function abrirModalPapelera(filtroTipo) {
     'estudiante': '#d35400'
   };
 
-  const rowsHtml = _pagPap.items.length ? _pagPap.items.map(item => {
+  const rowsHtml = listaFiltrada.length ? listaFiltrada.map(item => {
     const fStr = item.deletedAt ? new Date(item.deletedAt).toLocaleString('es-CO') : '—';
     const bColor = tiposBadge[item.tipo] || '#555';
     const jsonMeta = encodeURIComponent(JSON.stringify(item.extraMeta || {}));
@@ -5831,7 +5753,6 @@ function abrirModalPapelera(filtroTipo) {
             </tbody>
           </table>
         </div>
-        ${_htmlPaginacion(_pagPap.pagina,_pagPap.totalPaginas,_pagPap.total,'_cambiarPaginaPapelera')}
       </div>
       <div style="padding:10px 18px;background:#f5f7fa;border-top:1px solid #e0e8f0;display:flex;justify-content:flex-end;border-radius:0 0 12px 12px">
         <button class="btn btn-gray" style="padding:7px 18px;font-size:0.83rem" onclick="cerrarModalPapelera()">Cerrar</button>
@@ -5845,7 +5766,6 @@ function cerrarModalPapelera() {
   const modal = document.getElementById('_papeleraModal');
   if (modal) modal.style.display = 'none';
 }
-function _cambiarPaginaPapelera(p){ window._papeleraPagina = p; abrirModalPapelera(); }
 
 // ============================================================
 // DESCRIPTORES (FILTRADO POR CARGA ACADÉMICA Y AISLAMIENTO)

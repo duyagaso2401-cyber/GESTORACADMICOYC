@@ -35,10 +35,6 @@ const BLANK_INST_DB = {
   actividades:[], actEntregas:[], evaluaciones:[], evalRespuestas:[], evalDocente:[],
   leccionario:[],
   planeacionesIA:[],
-  // ── Notas de Actividades en Clase (catálogo compartido + asignación por asignatura/periodo + valores) ──
-  notasActColumnas:[], notasActAsignadas:{}, notasAct:{},
-  // ── Historial/auditoría de cambios de notas en la Planilla (solo consulta admin) ──
-  logNotas:[],
   autoPromocion:false, configHorario:{},
   _schemaVersion: 9
 };
@@ -64,10 +60,6 @@ const DDB = {
   actividades:[], actEntregas:[], evaluaciones:[], evalRespuestas:[], evalDocente:[],
   leccionario:[],
   planeacionesIA:[],
-  // ── Notas de Actividades en Clase (catálogo compartido + asignación por asignatura/periodo + valores) ──
-  notasActColumnas:[], notasActAsignadas:{}, notasAct:{},
-  // ── Historial/auditoría de cambios de notas en la Planilla (solo consulta admin) ──
-  logNotas:[],
   autoPromocion:false, configHorario:{},
   _schemaVersion: 9
 };
@@ -285,49 +277,15 @@ function loadDB(sk){
   return JSON.parse(JSON.stringify(DDB));
 }
 let _saveTimer=null;
-let _lastDbJson=null; // cache del último JSON.stringify(db) para no recalcularlo dos veces (localStorage + red)
-// ============================================================
-// Clonado rápido de la base de datos: usa structuredClone (nativo del
-// navegador, más rápido que ida-y-vuelta por JSON) y si no está disponible
-// (navegadores muy antiguos) cae de vuelta al método JSON de siempre.
-// Mismo resultado, menor costo de CPU — útil cuando el historial de la
-// institución crece (más años, más estudiantes).
-// ============================================================
-function _clonarDB(obj){
-  if(typeof structuredClone==='function'){
-    try{ return structuredClone(obj); }catch(e){ /* si algo no es clonable, usar respaldo JSON */ }
-  }
-  return JSON.parse(JSON.stringify(obj));
-}
-// Instrumentación de rendimiento OPCIONAL y desactivada por defecto.
-// Actívala desde la consola con: window._debugPerf = true
-// Útil para diagnosticar lentitud en instituciones grandes (1000+
-// estudiantes, varios años de historial) sin tener que tocar el código.
-function _medirPerf(etiqueta, fn){
-  if(!window._debugPerf) return fn();
-  const t0=performance.now();
-  const r=fn();
-  const t1=performance.now();
-  console.log('[perf] '+etiqueta+': '+(t1-t0).toFixed(1)+'ms');
-  return r;
-}
 function saveDB(){
   const _sk=window._currentPlatSK||SK;
-  _medirPerf('saveDB (stringify+localStorage)', function(){
-    try{
-      _lastDbJson=JSON.stringify(db);
-      localStorage.setItem(_sk,_lastDbJson);
-    }catch(e){ _lastDbJson=null; }
-  });
+  try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
   if(_saveTimer) clearTimeout(_saveTimer);
   _saveTimer=setTimeout(_pushDB,350);
 }
 function _pushDB(){
   const _sk=window._currentPlatSK||SK;
-  // Reutiliza el JSON ya calculado en saveDB() en vez de volver a serializar
-  // el objeto completo (evita un tercer stringify del mismo contenido).
-  const _json=_lastDbJson || JSON.stringify(db);
-  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"sk":'+JSON.stringify(_sk)+',"data":'+_json+'}'}).catch(()=>{});
+  fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk,data:db})}).catch(()=>{});
 }
 async function _pullDB(){
   try{
@@ -338,12 +296,7 @@ async function _pullDB(){
       try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}return true;}}
   }catch(e){}return false;
 }
-function updDB(fn){
-  _medirPerf('updDB (clonar+mutar)', function(){
-    db=fn(_clonarDB(db));
-  });
-  saveDB();
-}
+function updDB(fn){ db=fn(JSON.parse(JSON.stringify(db))); saveDB(); }
 
 // ============================================================
 // S03 · GESTOR MULTI-TENANT — DB Y MÓDULOS POR PLATAFORMA
@@ -363,7 +316,6 @@ const TODOS_MODULOS=[
   {id:'estado-notas',label:'🔍 Estado de Notas',core:true},
   // ─── ACADÉMICOS PRINCIPALES ────────────────────────────────────────────────
   {id:'planilla',label:'📊 Planilla de Calificaciones'},
-  {id:'notas-actividades',label:'📝 Notas de Actividades en Clase'},
   {id:'descriptores',label:'📝 Descriptores'},
   {id:'horarios',label:'🕐 Horarios'},
   {id:'asistencia',label:'📅 Asistencia'},
@@ -377,8 +329,6 @@ const TODOS_MODULOS=[
   {id:'ausentismo',label:'📋 Permisos de Ausencia'},
   {id:'aviso-docente',label:'📢 Avisos a Estudiantes (Docente)'},
   {id:'obs-aula',label:'📓 Observador de Aula (Docente)'},
-  {id:'buzon-sugerencias',label:'📮 Buzón de Sugerencias'},
-  {id:'log-notas',label:'📜 Historial de Cambios en Notas'},
   // ─── GESTIÓN INSTITUCIONAL ─────────────────────────────────────────────────
   {id:'alerta-temprana',label:'🔔 Alertas Académicas'},
   {id:'comunicado-general',label:'📢 Comunicado General'},
@@ -403,7 +353,6 @@ const TODOS_MODULOS=[
 const GESTOR_DEFAULT={
   superAdmin:{u:'gestor',p:'Gestor2026*',nombre:'Adán Yesid Jiménez Cabrales'},
   wsp1:'3205292337',wsp2:'3227483837',
-  sugerencias:[],
   platforms:[{
     id:'inetis-sincelejito',
     nombre:'INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO',
@@ -427,8 +376,6 @@ function _migrateGestorDB(data){
   const migrated=_deepMergeWithDefaults(GESTOR_DEFAULT,Object.assign({},GESTOR_DEFAULT,data));
   // Garantizar plataformas como array
   if(!Array.isArray(migrated.platforms)) migrated.platforms=JSON.parse(JSON.stringify(GESTOR_DEFAULT.platforms));
-  // Garantizar buzón de sugerencias como array
-  if(!Array.isArray(migrated.sugerencias)) migrated.sugerencias=[];
   // superAdmin con fusión profunda
   if(!migrated.superAdmin||typeof migrated.superAdmin!=='object'){
     migrated.superAdmin=JSON.parse(JSON.stringify(GESTOR_DEFAULT.superAdmin));
@@ -458,14 +405,6 @@ function _migrateGestorDB(data){
     if(!Array.isArray(plat.aniosDisponibles)||!plat.aniosDisponibles.length) plat.aniosDisponibles=[plat.anioActivo];
     if(!plat.aniosDisponibles.includes(plat.anioActivo)) plat.aniosDisponibles.push(plat.anioActivo);
     plat.aniosDisponibles=plat.aniosDisponibles.sort();
-    // Migración: límites de tiempo de sesión por rol (0 = sin límite)
-    if(!plat.limitesSesion||typeof plat.limitesSesion!=='object'){
-      plat.limitesSesion={admin:0,docente:0,padre:0,estudiante:0};
-    } else {
-      ['admin','docente','padre','estudiante'].forEach(function(r){
-        if(typeof plat.limitesSesion[r]!=='number') plat.limitesSesion[r]=0;
-      });
-    }
   });
   return migrated;
 }
@@ -526,14 +465,10 @@ let gestorEnPlataforma=null;
 let _gestorPag='plataformas';
 let _gestorEditPlatId=null;
 function saveGestorDB(){
-  const _json=_medirPerf('saveGestorDB (stringify)', function(){ return JSON.stringify(gestorDB); });
-  try{localStorage.setItem(GESTOR_SK,_json);}catch(e){}
-  fetch('/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"data":'+_json+'}'}).catch(()=>{});
+  try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
+  fetch('/api/inetis/gestordb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:gestorDB})}).catch(()=>{});
 }
-function updGestorDB(fn){
-  gestorDB=_medirPerf('updGestorDB (clonar+mutar)', function(){ return fn(_clonarDB(gestorDB)); });
-  saveGestorDB();
-}
+function updGestorDB(fn){gestorDB=fn(JSON.parse(JSON.stringify(gestorDB)));saveGestorDB();}
 
 // ─── GESTIÓN DE AÑOS LECTIVOS POR PLATAFORMA ──────────────────────────────────
 // Cada año lectivo se guarda de forma aislada en la nube con su propia clave.
@@ -552,7 +487,7 @@ function _getSKParaAnio(baseSK, anio){
 // Cambia de año lectivo (solo lectura para históricos)
 async function switchAnioLectivoVer(anio){
   const platId=gestorEnPlataforma||window._currentPlatId;
-  if(!platId){customAlert('No hay plataforma activa.');return;}
+  if(!platId){alert('No hay plataforma activa.');return;}
   const plat=gestorDB.platforms.find(x=>x.id===platId);
   if(!plat) return;
   if(anio===plat.anioActivo){
@@ -571,7 +506,7 @@ async function switchAnioLectivoVer(anio){
     const hLocal=(db.historialAnios||[]).find(h=>h.anio===anio);
     if(hLocal&&hLocal.datos) histData=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio:anio}));
   }
-  if(!histData){customAlert('No se encontraron datos para el año '+anio+'. Asegúrese de haberlo archivado primero.');return;}
+  if(!histData){alert('No se encontraron datos para el año '+anio+'. Asegúrese de haberlo archivado primero.');return;}
   // Abrir modal de visualización (solo lectura)
   _mostrarAnioHistoricoModal(anio,histData,plat);
 }
@@ -579,19 +514,19 @@ async function switchAnioLectivoVer(anio){
 // Inicia un nuevo año lectivo para la plataforma activa
 async function iniciarNuevoAnioLectivo(){
   const platId=gestorEnPlataforma||window._currentPlatId;
-  if(!platId){customAlert('No hay plataforma activa.');return;}
+  if(!platId){alert('No hay plataforma activa.');return;}
   const plat=gestorDB.platforms.find(x=>x.id===platId);
   if(!plat) return;
   const anioActual=plat.anioActivo||db.anio||String(new Date().getFullYear());
   const sugerido=String(parseInt(anioActual)+1);
   const nuevoAnio=prompt(`Ingrese el año lectivo a iniciar (ej. ${sugerido}):`,sugerido);
-  if(!nuevoAnio||!/^\d{4}$/.test(nuevoAnio.trim())){customAlert('Año inválido.');return;}
+  if(!nuevoAnio||!/^\d{4}$/.test(nuevoAnio.trim())){alert('Año inválido.');return;}
   const anio=nuevoAnio.trim();
   if(plat.aniosDisponibles&&plat.aniosDisponibles.includes(anio)){
-    if(!await customConfirm(`El año ${anio} ya existe. ¿Desea activarlo como año actual?`)) return;
+    if(!confirm(`El año ${anio} ya existe. ¿Desea activarlo como año actual?`)) return;
     await _activarAnioLectivo(platId,anio);return;
   }
-  if(!await customConfirm(`¿Iniciar el año lectivo ${anio}?\n\n• El año ${anioActual} se archivará automáticamente\n• Se creará una nueva BD para ${anio}\n• Se copiarán: institución, grados, usuarios, carga académica\n• Notas, asistencia, observaciones → quedan en el histórico\n\n¿Continuar?`)) return;
+  if(!confirm(`¿Iniciar el año lectivo ${anio}?\n\n• El año ${anioActual} se archivará automáticamente\n• Se creará una nueva BD para ${anio}\n• Se copiarán: institución, grados, usuarios, carga académica\n• Notas, asistencia, observaciones → quedan en el histórico\n\n¿Continuar?`)) return;
   // 1. Archivar el año actual en la nube
   await _archivarAnioEnNube(platId,anioActual);
   // 2. Crear nueva BD para el nuevo año
@@ -629,7 +564,7 @@ async function _activarAnioLectivo(platId,anio){
   const plat=gestorDB.platforms.find(x=>x.id===platId);if(!plat) return;
   const baseSK=plat.sk.replace(/_hist_.*/,'');
   const anioActual=plat.anioActivo;
-  if(!await customConfirm(`¿Activar el año ${anio} como año actual?\n\nEl año ${anioActual} se archivará y se cargará el año ${anio}.`)) return;
+  if(!confirm(`¿Activar el año ${anio} como año actual?\n\nEl año ${anioActual} se archivará y se cargará el año ${anio}.`)) return;
   await _archivarAnioEnNube(platId,anioActual);
   // Cargar datos del año solicitado
   const histSK=baseSK+'_hist_'+anio;
@@ -639,7 +574,7 @@ async function _activarAnioLectivo(platId,anio){
     const hLocal=(db.historialAnios||[]).find(h=>h.anio===anio);
     if(hLocal&&hLocal.datos) histData=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio:anio}));
   }
-  if(!histData){customAlert('No se pudieron encontrar los datos del año '+anio);return;}
+  if(!histData){alert('No se pudieron encontrar los datos del año '+anio);return;}
   // Guardar como año activo
   try{await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:baseSK,data:histData})});localStorage.setItem(baseSK,JSON.stringify(histData));}catch(e){}
   updGestorDB(function(g){const p=g.platforms.find(x=>x.id===platId);if(p){p.anioActivo=anio;if(!p.aniosDisponibles.includes(anio))p.aniosDisponibles.push(anio);p.aniosDisponibles=p.aniosDisponibles.sort();}return g;});
@@ -717,72 +652,6 @@ function _mostrarAnioHistoricoModal(anio,data,plat){
   document.body.appendChild(div);
 }
 
-// ── Comparativa histórica año a año (Tablero del rector/admin) ──
-// Trae, uno por uno, los datos de cada año lectivo archivado y calcula el
-// promedio institucional y % de aprobación reutilizando calcPromedioEst()/
-// calcNotaDef() ya existentes. Como esas funciones leen la variable global
-// "db", se intercambia temporalmente por cada año (de forma síncrona, sin
-// await de por medio) y se restaura de inmediato tras calcular ese año.
-async function _cargarComparativaHistorica(){
-  const box=document.getElementById('_histComparativaBox');
-  if(!box) return;
-  box.innerHTML='<p style="text-align:center;color:#888;padding:20px">⏳ Cargando datos de años anteriores...</p>';
-  const platId=window._currentPlatId||gestorEnPlataforma;
-  const plat=gestorDB.platforms.find(x=>x.id===platId);
-  if(!plat){box.innerHTML='<p class="empty">No se pudo determinar la institución activa.</p>';return;}
-  const anios=(plat.aniosDisponibles&&plat.aniosDisponibles.length?plat.aniosDisponibles:[plat.anioActivo]).slice().sort();
-  const dbReal=db; // referencia real, se restaura tras cada cálculo
-  const resultados=[];
-  for(const anio of anios){
-    let data=null;
-    if(anio===plat.anioActivo){
-      data=dbReal;
-    } else {
-      const histSK=_getSKParaAnio(plat.sk,anio);
-      try{
-        const r=await fetch((typeof API_BASE!=='undefined'?API_BASE:'')+'/api/inetis/db?sk='+encodeURIComponent(histSK));
-        if(r.ok){const j=await r.json();if(j&&j.data) data=_migrateDB(j.data);}
-      }catch(e){}
-      if(!data){
-        const hLocal=(dbReal.historialAnios||[]).find(h=>h.anio===anio);
-        if(hLocal&&hLocal.datos) data=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio}));
-      }
-    }
-    if(!data){continue;}
-    // ── Cálculo síncrono con intercambio temporal de "db" ──
-    db=data;
-    let sum=0,cnt=0,apr=0;
-    (data.ests||[]).forEach(function(e){
-      const mats=(data.carga||[]).filter(function(c){return c.g===e.g;});
-      if(!mats.length) return;
-      const numPer=(data.config&&data.config.numPeriodos)||4;
-      const tieneN=mats.some(function(m){for(let p=1;p<=numPer;p++) if(calcNotaDef(e.nts,m.id,p)>0) return true;return false;});
-      if(!tieneN) return;
-      const pr=calcPromedioEst(e.id,e.g);
-      sum+=pr;cnt++;if(pr>=3.0)apr++;
-    });
-    db=dbReal; // restaurar de inmediato
-    resultados.push({anio,prom:cnt?parseFloat((sum/cnt).toFixed(2)):0,pctApr:cnt?Math.round(apr/cnt*100):0,cnt,esActivo:anio===plat.anioActivo});
-  }
-  if(!resultados.length){box.innerHTML='<p class="empty">No se encontraron datos de ningún año lectivo.</p>';return;}
-  const maxProm=5;
-  box.innerHTML=resultados.map(function(r){
-    const colorP=r.prom>=4?'#1a5276':r.prom>=3?'#b7770d':'#c0392b';
-    return `<div style="margin-bottom:14px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-        <b style="font-size:0.85rem;color:#1a3a5c">📅 ${r.anio}${r.esActivo?' <span style="background:#27ae60;color:#fff;border-radius:8px;padding:1px 8px;font-size:0.68rem">ACTIVO</span>':''}</b>
-        <span style="font-size:0.78rem;color:#888">${r.cnt} estudiante(s) con notas</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;background:#eee;border-radius:6px;height:20px;overflow:hidden;position:relative">
-          <div style="background:${colorP};height:100%;width:${Math.min(100,(r.prom/maxProm)*100)}%;border-radius:6px;transition:width .4s"></div>
-        </div>
-        <span style="font-weight:bold;color:${colorP};min-width:44px;text-align:right">${r.prom.toFixed(2)}</span>
-      </div>
-      <div style="font-size:0.74rem;color:#888;margin-top:2px">✅ ${r.pctApr}% de aprobación</div>
-    </div>`;
-  }).join('');
-}
 function _exportarDatosHistorico(anio){
   const histData=(db.historialAnios||[]).find(h=>h.anio===anio);
   const exportData=histData?histData.datos:db;
@@ -891,20 +760,20 @@ async function abrirModalImportarAnio(){
 async function _ejecutarImportacionAnio(modalId){
   const sel=document.getElementById('_importAnioSel');
   const anioOrigen=sel?sel.value:'';
-  if(!anioOrigen){customAlert('Seleccione un año de origen.');return;}
+  if(!anioOrigen){alert('Seleccione un año de origen.');return;}
   const impCarga=document.getElementById('_impCarga')?.checked;
   const impGrados=document.getElementById('_impGrados')?.checked;
   const impEsts=document.getElementById('_impEsts')?.checked;
   const impDescs=document.getElementById('_impDescs')?.checked;
   const impUsers=document.getElementById('_impUsers')?.checked;
-  if(!impCarga&&!impGrados&&!impEsts&&!impDescs&&!impUsers){customAlert('Seleccione al menos una opción.');return;}
+  if(!impCarga&&!impGrados&&!impEsts&&!impDescs&&!impUsers){alert('Seleccione al menos una opción.');return;}
 
   const btn=document.querySelector(`#${modalId} button[onclick*="_ejecutarImportacion"]`);
   if(btn){btn.textContent='⏳ Cargando datos...';btn.disabled=true;}
 
   const origen=await _cargarDatosAnioOrigen(anioOrigen);
   if(!origen){
-    customAlert('No se pudieron cargar los datos del año '+anioOrigen+'.\nVerifique que el año esté archivado en el sistema.');
+    alert('No se pudieron cargar los datos del año '+anioOrigen+'.\nVerifique que el año esté archivado en el sistema.');
     if(btn){btn.textContent='📥 Importar Ahora';btn.disabled=false;}
     return;
   }
@@ -1052,7 +921,7 @@ async function _ejecutarImportacionAnio(modalId){
   renderApp();
   setTimeout(function(){
     _showToast('✅ Importación completada','success',4000);
-    customAlert('✅ Importación completada exitosamente:\n\n• '+resumen.join('\n• ')+'\n\nRevise los datos importados en cada módulo.');
+    alert('✅ Importación completada exitosamente:\n\n• '+resumen.join('\n• ')+'\n\nRevise los datos importados en cada módulo.');
   },300);
 }
 
@@ -1103,7 +972,7 @@ function moduloActivo(modId,platId){
   }
 async function entrarPlataforma(platId){
   const plat=gestorDB.platforms.find(x=>x.id===platId);
-  if(!plat){customAlert('Plataforma no encontrada');return;}
+  if(!plat){alert('Plataforma no encontrada');return;}
   gestorEnPlataforma=platId;
   window._currentPlatSK=plat.sk;
   window._currentPlatId=platId;
@@ -1135,79 +1004,24 @@ function salirDeGestorPlataforma(){
   db=loadDB();window._currentPlatSK=null;window._currentPlatId=null;
   renderGestorAdmin();
 }
-// ============================================================
-// 🔐 SEGURIDAD DE CONTRASEÑAS — Súper Admin, Rector/Admin y Docente
-// PBKDF2 (Web Crypto API nativa del navegador) con sal aleatoria de
-// 16 bytes y 100.000 iteraciones SHA-256. Formato almacenado:
-// "pbkdf2$<saltHex>$<hashHex>".
-// Compatibilidad: si la contraseña guardada NO tiene ese formato, se
-// trata como contraseña heredada sin cifrar (instituciones ya
-// existentes) — se compara tal cual y, si coincide, se re-guarda ya
-// cifrada de forma automática y transparente ("migración perezosa",
-// sin necesidad de que nadie cambie su contraseña a mano).
-// No aplica a estudiantes/acudientes: su credencial es su número de
-// documento, que la institución debe poder consultar para
-// entregárselo físicamente a los más pequeños (ver "Ver Credenciales").
-// ============================================================
-async function _hashPassword(password,saltHex){
-  const enc=new TextEncoder();
-  let salt;
-  if(saltHex){
-    salt=new Uint8Array(saltHex.match(/.{2}/g).map(b=>parseInt(b,16)));
-  } else {
-    salt=crypto.getRandomValues(new Uint8Array(16));
-  }
-  const keyMaterial=await crypto.subtle.importKey('raw',enc.encode(password),{name:'PBKDF2'},false,['deriveBits']);
-  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt,iterations:100000,hash:'SHA-256'},keyMaterial,256);
-  const hashHex=Array.from(new Uint8Array(bits)).map(b=>b.toString(16).padStart(2,'0')).join('');
-  const saltHexOut=Array.from(salt).map(b=>b.toString(16).padStart(2,'0')).join('');
-  return 'pbkdf2$'+saltHexOut+'$'+hashHex;
-}
-function _esHashPassword(p){
-  return typeof p==='string'&&p.indexOf('pbkdf2$')===0&&p.split('$').length===3;
-}
-async function _verificarPassword(passwordIngresada,valorGuardado){
-  if(!valorGuardado) return false;
-  if(!_esHashPassword(valorGuardado)) return passwordIngresada===valorGuardado; // heredada, sin cifrar
-  const partes=valorGuardado.split('$');
-  const recalculado=await _hashPassword(passwordIngresada,partes[1]);
-  return recalculado.split('$')[2]===partes[2];
-}
-function _savePlatDBQuiet(sk,platDB){
-  try{localStorage.setItem(sk,JSON.stringify(platDB));}catch(e){}
-  fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk,data:platDB})}).catch(()=>{});
-}
-async function doLoginGestor(){
+function doLoginGestor(){
   const u=document.getElementById('gUser')?.value.trim();
   const p=document.getElementById('gPass')?.value.trim();
-  if(u===gestorDB.superAdmin.u&&await _verificarPassword(p,gestorDB.superAdmin.p)){
-    if(!_esHashPassword(gestorDB.superAdmin.p)){
-      // Migración perezosa: la contraseña heredada coincidió, se re-guarda ya cifrada
-      const nuevoHash=await _hashPassword(p);
-      updGestorDB(d=>{d.superAdmin.p=nuevoHash;return d;});
-    }
+  if(u===gestorDB.superAdmin.u&&p===gestorDB.superAdmin.p){
     gestorSesion={logged:true};_gestorPag='plataformas';renderGestorAdmin();_initGestorNotifPoll();
-  } else {customAlert('Credenciales de Administrador General incorrectas.');}
+  } else {alert('Credenciales de Administrador General incorrectas.');}
 }
 async function doLoginInstitucional(){
   const rol=document.getElementById('iRol')?.value;
   const u=document.getElementById('iUser')?.value.trim();
   const p=document.getElementById('iPass')?.value.trim();
-  if(!rol||!u){customAlert('Complete los campos de usuario y contraseña.');return;}
+  if(!rol||!u){alert('Complete los campos de usuario y contraseña.');return;}
   for(const plat of gestorDB.platforms){
     if(!plat.activa) continue;
     const platDB=await _fetchPlatDB(plat.sk);
     let sesionData=null;
     if(rol==='elecciones'){
-      if(u==='elecciones'){
-        const eu=platDB.users&&platDB.users.find(x=>x.r==='elecciones');
-        if(eu&&await _verificarPassword(p,eu.p)){
-          sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};
-          if(!_esHashPassword(eu.p)){eu.p=await _hashPassword(p);_savePlatDBQuiet(plat.sk,platDB);}
-        } else if(!eu&&p==='inetis2026'){
-          sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};
-        }
-      }
+      if(u==='elecciones'){const eu=platDB.users&&platDB.users.find(x=>x.r==='elecciones');if((eu&&eu.p===p)||(!eu&&p==='inetis2026')) sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};}
     } else if(rol==='padre'){
       const est=platDB.ests&&platDB.ests.find(e=>(e.numDocAcud||'').toString().trim()===u&&(e.numDoc||e.numDocAcud||'').toString().trim()===p);
       if(est) sesionData={u,p,r:'padre',n:est.acudiente||'ACUDIENTE',estId:est.id};
@@ -1215,20 +1029,17 @@ async function doLoginInstitucional(){
       const est=platDB.ests&&platDB.ests.find(e=>(e.numDoc||'').toString().trim()===u&&(e.numDoc||'').toString().trim()===p);
       if(est) sesionData={u,p,r:'estudiante',n:est.n,estId:est.id};
     } else {
-      const user=platDB.users&&platDB.users.find(x=>x.u===u&&x.r===rol);
-      if(user&&await _verificarPassword(p,user.p)){
-        sesionData=user;
-        if(!_esHashPassword(user.p)){user.p=await _hashPassword(p);_savePlatDBQuiet(plat.sk,platDB);}
-      }
+      const user=platDB.users&&platDB.users.find(x=>x.u===u&&x.p===p&&x.r===rol);
+      if(user) sesionData=user;
     }
     if(sesionData){
-      const pagTarget=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla';
+      const pagTarget=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
       window._pendingLogin={sesionData,platDB,plat,pag:pagTarget};
       if(rol==='docente'){try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:sesionData.n,message:'El/La docente '+sesionData.n+' ingresó al sistema',meta:{u:sesionData.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}}
       renderBienvenidaInstitucion(plat.id);return;
     }
   }
-  customAlert('❌ No se encontraron credenciales válidas en ninguna plataforma.\n\nVerifique usuario, contraseña y rol.');
+  alert('❌ No se encontraron credenciales válidas en ninguna plataforma.\n\nVerifique usuario, contraseña y rol.');
 }
 function renderBienvenidaInstitucion(platId){
   const pl=gestorDB.platforms.find(x=>x.id===platId);
@@ -1337,7 +1148,7 @@ function renderBienvenidaInstitucion(platId){
 }
 async function abrirPreMatriculaPortalIntermedio(platId){
   const p=gestorDB.platforms.find(x=>x.id===platId);
-  if(!p){customAlert('Institución no encontrada.');return;}
+  if(!p){alert('Institución no encontrada.');return;}
   window._currentPlatSK=p.sk;
   window._currentPlatId=platId;
   window._portalOrigenPlatId=platId;
@@ -1360,8 +1171,6 @@ function renderGestorAdmin(){
   else if(_gestorPag==='cronograma') contenido=htmlGestorCronograma();
   else if(_gestorPag==='notificaciones') contenido=htmlGestorNotificaciones();
   else if(_gestorPag==='creditos') contenido=htmlGestorCreditos();
-  else if(_gestorPag==='sesiones') contenido=htmlGestorTiempoSesion();
-  else if(_gestorPag==='sugerencias') contenido=htmlGestorSugerencias();
   document.getElementById('app').innerHTML=`
   <div class="gestor-admin-wrap">
     <div class="gestor-topbar">
@@ -1378,13 +1187,10 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#8e44ad" onclick="_gestorPag='ia';renderGestorAdmin()">🤖 Asistente IA</button>
         <button class="tbtn" style="background:#d35400" onclick="_gestorPag='creditos';renderGestorAdmin()">⚡ Créditos IA</button>
         <button class="tbtn" style="background:#1a7a6e" onclick="_gestorPag='cronograma';renderGestorAdmin()">📅 Cronograma</button>
-        <button class="tbtn" style="background:#117864" onclick="_gestorPag='sesiones';renderGestorAdmin()" title="Configurar el tiempo máximo de uso diario por rol en cada institución">⏱️ Tiempo de Uso</button>
-        <button class="tbtn" style="background:#8e44ad" onclick="_gestorPag='sugerencias';renderGestorAdmin()" title="Ver todas las sugerencias y calificaciones enviadas por los usuarios de todas las instituciones">📮 Sugerencias</button>
         <button class="tbtn" style="background:#2980b9;position:relative" onclick="_gestorPag='notificaciones';renderGestorAdmin()">🔔 <span id="notifBadgeTxt">Notif</span><span id="notifBadge" style="display:none;background:#e74c3c;color:#fff;border-radius:10px;font-size:0.65rem;padding:1px 5px;margin-left:2px;font-weight:bold">0</span></button>
         <button class="tbtn" style="background:#27ae60;font-size:0.74rem" onclick="descargarRespaldoGestor()" title="Descargar respaldo JSON del sistema gestor">💾 Respaldo</button>
         <button class="tbtn" style="background:#e67e22;font-size:0.74rem" onclick="document.getElementById('fileRespaldoGestor').click()" title="Cargar respaldo JSON del sistema gestor">📂 Cargar</button>
         <input type="file" id="fileRespaldoGestor" accept=".json" style="display:none" onchange="cargarRespaldoGestor(this)">
-        <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
         <button class="tbtn" style="background:#c0392b" onclick="cerrarGestorSesion()">🚪 Salir</button>
       </div>
     </div>
@@ -1710,7 +1516,7 @@ window._gestorIAVozRec=null;
 function gestorIAsugerencia(txt){const ta=document.getElementById('gestorIAinput');if(ta){ta.value=txt;gestorIAenviar();}}
 function gestorIAVoz(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Use Chrome o Edge para voz.');return;}
+  if(!SR){alert('Use Chrome o Edge para voz.');return;}
   const btn=document.getElementById('gestorIAVozBtn');
   if(window._gestorIAVozRec){try{window._gestorIAVozRec.stop();}catch(e){}window._gestorIAVozRec=null;if(btn){btn.textContent='🎙️ Voz';btn.style.background='#6c3483';}return;}
   const rec=new SR();rec.lang='es-CO';rec.continuous=false;rec.interimResults=false;
@@ -1816,138 +1622,6 @@ function htmlGestorPlataformas(){
   <div style="margin-bottom:14px;text-align:right"><button class="btn btn-blue" style="font-size:0.85rem;padding:8px 18px" onclick="descargarGestorCompleto()" title="Descarga el sistema completo con todos los datos">⬇ Descargar Sistema Completo GESTOR ACADÉMICO YC</button></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px">${cards}</div>`;
 }
-// ============================================================
-// ⏱️ CONTROL DE TIEMPO DE USO DIARIO POR ROL Y POR INSTITUCIÓN
-// Permite al súper admin (Gestor Académico YC) limitar cuántos
-// minutos puede permanecer conectado cada rol dentro de cada
-// institución. Al agotarse el tiempo la sesión se cierra sola
-// (ver S06-B más abajo), avisando antes para que el usuario
-// guarde su trabajo. 0 = sin límite (uso libre).
-// ============================================================
-function htmlGestorTiempoSesion(){
-  if(!gestorDB.platforms.length) return `<div class="card"><p class="empty" style="padding:40px">No hay instituciones registradas todavía.</p></div>`;
-  const roles=[{k:'admin',lbl:'🏫 Admin / Rector',color:'#003366'},{k:'docente',lbl:'👨‍🏫 Docente',color:'#1a5276'},{k:'padre',lbl:'👨‍👩‍👦 Padre/Acudiente',color:'#8e44ad'},{k:'estudiante',lbl:'🎒 Estudiante',color:'#27ae60'}];
-  const cards=gestorDB.platforms.map(plat=>{
-    const lim=plat.limitesSesion||{admin:0,docente:0,padre:0,estudiante:0};
-    const campos=roles.map(r=>`
-      <div style="flex:1;min-width:130px">
-        <label class="lbl" style="font-size:0.76rem;color:${r.color}">${r.lbl}</label>
-        <div style="display:flex;align-items:center;gap:5px">
-          <input type="number" min="0" step="5" id="limSes_${plat.id}_${r.k}" value="${lim[r.k]||0}" style="width:70px;padding:6px;border:1px solid #ccc;border-radius:5px">
-          <span style="font-size:0.74rem;color:#888">min</span>
-        </div>
-      </div>`).join('');
-    return `<div class="plat-card">
-      <div class="plat-nombre" style="margin-bottom:4px">🏫 ${plat.nombre}</div>
-      <div class="plat-info" style="margin-bottom:10px">📍 ${plat.municipio||'—'}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">${campos}</div>
-      <div style="font-size:0.72rem;color:#888;margin-bottom:10px">💡 Ingrese <b>0</b> para uso libre (sin límite de tiempo) en ese rol.</div>
-      <button class="btn btn-green" style="font-size:0.82rem;padding:7px 14px" onclick="guardarLimiteSesion('${plat.id}')">💾 Guardar límites de ${plat.nombre.split(' ').slice(0,3).join(' ')}…</button>
-    </div>`;
-  }).join('');
-  return `<h3 style="color:#003366;margin-bottom:8px">⏱️ Tiempo de Uso Diario por Rol e Institución</h3>
-  <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Defina cuántos minutos puede permanecer conectado cada rol dentro de cada institución. Al agotarse el tiempo, la sesión se cierra automáticamente (con avisos previos para guardar cambios) para ahorrar recursos de la base de datos y de navegación. Al volver a ingresar, el contador se reinicia a cero.</p>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px">${cards}</div>`;
-}
-function guardarLimiteSesion(platId){
-  const roles=['admin','docente','padre','estudiante'];
-  const nuevo={};
-  roles.forEach(r=>{
-    const el=document.getElementById('limSes_'+platId+'_'+r);
-    nuevo[r]=Math.max(0,parseInt(el&&el.value||0)||0);
-  });
-  let nombrePlat='';
-  updGestorDB(g=>{
-    const plat=g.platforms.find(x=>x.id===platId);
-    if(plat){plat.limitesSesion=nuevo;nombrePlat=plat.nombre;}
-    return g;
-  });
-  customAlert('✅ Límites de tiempo de sesión actualizados para '+nombrePlat+'.');
-  renderGestorAdmin();
-}
-// ============================================================
-// 📮 BUZÓN DE SUGERENCIAS — VISTA DEL SÚPER ADMIN
-// Muestra todas las sugerencias y calificaciones (1-5) enviadas
-// por los usuarios de TODAS las instituciones, con el promedio
-// general de satisfacción.
-// ============================================================
-let _gestorSugFiltro='todas';
-let _gestorSugPagina=1;
-function htmlGestorSugerencias(){
-  const todas=(gestorDB.sugerencias||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
-  todas.forEach(s=>{if(!s.estado) s.estado='pendiente';}); // compat: sugerencias antiguas sin estado
-  const estrellasView=n=>'★'.repeat(n)+'☆'.repeat(5-n);
-  const conCalif=todas.filter(s=>s.calificacion>0);
-  const promGeneral=conCalif.length?(conCalif.reduce((s,x)=>s+x.calificacion,0)/conCalif.length).toFixed(2):'—';
-  const nPend=todas.filter(s=>s.estado==='pendiente').length;
-  const nRev=todas.filter(s=>s.estado==='en_revision').length;
-  const nRes=todas.filter(s=>s.estado==='resuelta').length;
-  const sugs=_gestorSugFiltro==='todas'?todas:todas.filter(s=>s.estado===_gestorSugFiltro);
-  const _pagSug=_paginar(sugs,_gestorSugPagina,15);
-  const estadoInfo={pendiente:{label:'🟡 Pendiente',color:'#b7770d',bg:'#fef9e7'},en_revision:{label:'🔵 En revisión',color:'#1a5276',bg:'#eaf4fe'},resuelta:{label:'🟢 Resuelta',color:'#1e8449',bg:'#eafaf1'}};
-  const filas=_pagSug.items.map(s=>{
-    const ei=estadoInfo[s.estado]||estadoInfo.pendiente;
-    return `
-    <div style="background:#fff;border-left:4px solid ${ei.color};border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.08)">
-      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px">
-        <b style="font-size:0.86rem;color:#003366">🏫 ${s.platNombre||'—'} · ${s.rol||'—'} · ${s.nombre||s.usuario||'Anónimo'}</b>
-        <span style="color:#f1c40f;font-size:0.95rem">${s.calificacion?estrellasView(s.calificacion):'Sin calificación'}</span>
-      </div>
-      <div style="font-size:0.85rem;color:#333">${s.texto?s.texto:'<i style="color:#999">Sin comentario, solo calificación</i>'}</div>
-      <div style="font-size:0.72rem;color:#999;margin:5px 0 10px">${new Date(s.fecha).toLocaleString('es-CO')}</div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <span style="background:${ei.bg};color:${ei.color};border-radius:6px;padding:3px 10px;font-size:0.74rem;font-weight:700">${ei.label}</span>
-        <select style="font-size:0.76rem;padding:4px 8px;border-radius:6px;border:1px solid #ccc" onchange="_cambiarEstadoSugerencia('${s.id}',this.value)">
-          <option value="pendiente"${s.estado==='pendiente'?' selected':''}>🟡 Pendiente</option>
-          <option value="en_revision"${s.estado==='en_revision'?' selected':''}>🔵 En revisión</option>
-          <option value="resuelta"${s.estado==='resuelta'?' selected':''}>🟢 Resuelta</option>
-        </select>
-      </div>
-      ${s.respuesta?`<div style="background:#f0f6ff;border-left:3px solid #1a5276;border-radius:0 6px 6px 0;padding:8px 12px;margin-bottom:8px">
-        <div style="font-size:0.72rem;color:#1a5276;font-weight:700;margin-bottom:3px">💬 Respuesta del administrador general${s.respuestaFecha?' — '+new Date(s.respuestaFecha).toLocaleString('es-CO'):''}</div>
-        <div style="font-size:0.82rem;color:#333">${s.respuesta}</div>
-      </div>`:''}
-      <div style="display:flex;gap:6px">
-        <input type="text" id="sugResp_${s.id}" placeholder="${s.respuesta?'Editar respuesta...':'Escribir una respuesta para el usuario...'}" value="${(s.respuesta||'').replace(/"/g,'&quot;')}" style="flex:1;padding:6px 10px;font-size:0.8rem;border:1px solid #ccc;border-radius:6px">
-        <button class="btn-sm" style="background:#1a5276" onclick="_responderSugerencia('${s.id}')">💬 ${s.respuesta?'Actualizar':'Responder'}</button>
-      </div>
-    </div>`;}).join('');
-  return `<h3 style="color:#003366;margin-bottom:6px">📮 Buzón de Sugerencias — Todas las Instituciones</h3>
-  <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Sugerencias y calificaciones (1 a 5) que los usuarios de cada institución dejaron de forma voluntaria antes de cerrar sesión o desde el módulo "Buzón de Sugerencias". Puede marcar cada una como en revisión o resuelta, y responderle directamente al usuario.</p>
-  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='todas';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#003366">${todas.length}</div><div style="font-size:0.78rem;color:#666">Total</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='pendiente';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#b7770d">${nPend}</div><div style="font-size:0.78rem;color:#666">🟡 Pendientes</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='en_revision';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1a5276">${nRev}</div><div style="font-size:0.78rem;color:#666">🔵 En revisión</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='resuelta';_gestorSugPagina=1;renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1e8449">${nRes}</div><div style="font-size:0.78rem;color:#666">🟢 Resueltas</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#f1c40f">${promGeneral}${promGeneral!=='—'?' / 5':''}</div><div style="font-size:0.78rem;color:#666">Satisfacción prom.</div></div>
-  </div>
-  ${_gestorSugFiltro!=='todas'?`<div style="margin-bottom:10px"><button class="btn-sm" style="background:#7f8c8d" onclick="_gestorSugFiltro='todas';_gestorSugPagina=1;renderGestorAdmin()">✕ Quitar filtro</button></div>`:''}
-  ${sugs.length?filas:'<div class="card"><p class="empty" style="padding:40px">No hay sugerencias con este filtro.</p></div>'}
-  ${_htmlPaginacion(_pagSug.pagina,_pagSug.totalPaginas,_pagSug.total,'_cambiarPaginaSugerencias')}`;
-}
-function _cambiarPaginaSugerencias(p){ _gestorSugPagina=p; renderGestorAdmin(); }
-async function _cambiarEstadoSugerencia(id,nuevoEstado){
-  try{ await _pullGestorDB(); }catch(e){}
-  updGestorDB(g=>{
-    const s=(g.sugerencias||[]).find(x=>x.id===id);
-    if(s) s.estado=nuevoEstado;
-    return g;
-  });
-  renderGestorAdmin();
-}
-async function _responderSugerencia(id){
-  const inp=document.getElementById('sugResp_'+id);
-  const texto=(inp&&inp.value||'').trim();
-  if(!texto){customAlert('Escriba una respuesta antes de enviar.');return;}
-  try{ await _pullGestorDB(); }catch(e){}
-  updGestorDB(g=>{
-    const s=(g.sugerencias||[]).find(x=>x.id===id);
-    if(s){s.respuesta=texto;s.respuestaFecha=new Date().toISOString();if(s.estado==='pendiente') s.estado='en_revision';}
-    return g;
-  });
-  customAlert('✅ Respuesta guardada. El usuario la verá la próxima vez que revise el Buzón de Sugerencias.');
-  renderGestorAdmin();
-}
 function htmlGestorNueva(){
   const platEdit=_gestorEditPlatId?gestorDB.platforms.find(x=>x.id===_gestorEditPlatId):null;
   const platDB=platEdit?loadPlatformDB(platEdit.sk):{};
@@ -1976,7 +1650,7 @@ function htmlGestorNueva(){
       <div><label class="lbl">Teléfono institucional</label><input id="nPTel" value="${platDB.telInst||''}" placeholder="Teléfono"></div>
       <div><label class="lbl">Email institucional</label><input id="nPEmail" value="${platDB.emailInst||''}" placeholder="correo@sede.edu.co"></div>
       <div><label class="lbl">Usuario Admin (rector(a)/admin)</label><input id="nPAdminU" value="${au?au.u:'admin'}" placeholder="admin"></div>
-      <div><label class="lbl">Contraseña Admin</label><input id="nPAdminP" value="${au?'':'1234'}" placeholder="${au?'Dejar en blanco para mantener la actual':'1234'}"></div>
+      <div><label class="lbl">Contraseña Admin</label><input id="nPAdminP" value="${au?au.p:'1234'}" placeholder="1234"></div>
     </div>
     <div style="margin:14px 0">
         <label class="lbl">Escudo / Logo de la Institución</label>
@@ -2049,9 +1723,9 @@ function htmlGestorConfig(){
     <button class="btn btn-green" onclick="guardarGestorConfig()">💾 Guardar Configuración</button>
   </div>`;
 }
-async function crearNuevaPlataforma(){
+function crearNuevaPlataforma(){
   const nombre=document.getElementById('nPNombre')?.value.trim();
-  if(!nombre){customAlert('Ingrese el nombre de la institución');return;}
+  if(!nombre){alert('Ingrese el nombre de la institución');return;}
   const id='plat_'+Date.now();
   const sk='gestor_plat_'+id;
   const municipio=(document.getElementById('nPMunicipio')?.value.trim()||'').toUpperCase();
@@ -2069,7 +1743,7 @@ async function crearNuevaPlataforma(){
   const platDB=JSON.parse(JSON.stringify(BLANK_INST_DB));
   platDB.rectora=rectora;platDB.municipio=municipio;platDB.corregimiento=municipio;platDB.depto=depto;
   platDB.anio=anio;platDB.dane=dane;platDB.nit=nit;platDB.telInst=tel;platDB.emailInst=email;
-  platDB.users=[{u:adminU,p:await _hashPassword(adminP),r:'admin',n:'ADMIN'}];
+  platDB.users=[{u:adminU,p:adminP,r:'admin',n:'ADMIN'}];
   localStorage.setItem(sk,JSON.stringify(platDB));
   fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:sk,data:platDB})}).catch(()=>{});
   const tipo=document.getElementById('nPTipo')?.value||'publica';
@@ -2077,13 +1751,13 @@ async function crearNuevaPlataforma(){
   if(tipo==='privada'&&pension) platDB.valorPension=pension;
   platDB.tipoInstitucion=tipo;
   updGestorDB(d=>{const escudoData=document.getElementById('nPEscudoData')?.value||'';d.platforms.push({id,nombre,municipio,depto,sk,activa:true,fechaCreacion:new Date().toISOString().split('T')[0],modulosActivos,modulosDesactivados,escudo:escudoData,tipo});return d;});
-  customAlert(`✅ Plataforma "${nombre}" creada exitosamente.\n\n🏛️ Tipo: ${tipo==='publica'?'Pública':'Privada'}\n🔑 Usuario admin: ${adminU}\n🔑 Contraseña: ${adminP}\n\nGuarde esta contraseña en un lugar seguro: por seguridad, el sistema solo almacena su versión cifrada y no podrá volver a mostrarla en texto plano.\n\nYa puede entrar a ella desde el panel.`);
+  alert(`✅ Plataforma "${nombre}" creada exitosamente.\n\n🏛️ Tipo: ${tipo==='publica'?'Pública':'Privada'}\n🔑 Usuario admin: ${adminU}\n🔑 Contraseña: ${adminP}\n\nYa puede entrar a ella desde el panel.`);
   _gestorPag='plataformas';renderGestorAdmin();
 }
 function abrirEditarPlat(platId){_gestorEditPlatId=platId;_gestorPag='editar';renderGestorAdmin();}
-async function guardarEditarPlat(){
+function guardarEditarPlat(){
   const plat=gestorDB.platforms.find(x=>x.id===_gestorEditPlatId);if(!plat) return;
-  const nombre=document.getElementById('nPNombre')?.value.trim();if(!nombre){customAlert('Ingrese el nombre');return;}
+  const nombre=document.getElementById('nPNombre')?.value.trim();if(!nombre){alert('Ingrese el nombre');return;}
   const municipio=(document.getElementById('nPMunicipio')?.value.trim()||'').toUpperCase();
   const depto=(document.getElementById('nPDepto')?.value.trim()||'');
   const rectora=(document.getElementById('nPRectora')?.value.trim()||'').toUpperCase();
@@ -2093,16 +1767,15 @@ async function guardarEditarPlat(){
   const tel=document.getElementById('nPTel')?.value.trim()||'';
   const email=document.getElementById('nPEmail')?.value.trim()||'';
   const adminU=document.getElementById('nPAdminU')?.value.trim()||'admin';
-  const adminPNueva=document.getElementById('nPAdminP')?.value.trim()||''; // vacío = mantener la actual
+  const adminP=document.getElementById('nPAdminP')?.value.trim()||'1234';
   const modulosActivos=TODOS_MODULOS.filter(m=>document.getElementById('mChk_'+m.id)?.checked).map(m=>m.id);
   const modulosDesactivados=TODOS_MODULOS.filter(m=>!document.getElementById('mChk_'+m.id)?.checked).map(m=>m.id);
   const platDB=loadPlatformDB(plat.sk);
   platDB.rectora=rectora;platDB.municipio=municipio;platDB.corregimiento=municipio;platDB.depto=depto;
   platDB.anio=anio;platDB.dane=dane;platDB.nit=nit;platDB.telInst=tel;platDB.emailInst=email;
   const aIdx=platDB.users?platDB.users.findIndex(x=>x.r==='admin'):-1;
-  const nuevoHashSiAplica=adminPNueva?await _hashPassword(adminPNueva):null;
-  if(aIdx>=0){platDB.users[aIdx].u=adminU;if(nuevoHashSiAplica) platDB.users[aIdx].p=nuevoHashSiAplica;}
-  else{if(!platDB.users)platDB.users=[];platDB.users.push({u:adminU,p:nuevoHashSiAplica||await _hashPassword('1234'),r:'admin',n:'ADMIN'});}
+  if(aIdx>=0){platDB.users[aIdx].u=adminU;platDB.users[aIdx].p=adminP;}
+  else{if(!platDB.users)platDB.users=[];platDB.users.push({u:adminU,p:adminP,r:'admin',n:'ADMIN'});}
   localStorage.setItem(plat.sk,JSON.stringify(platDB));
   fetch('/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:plat.sk,data:platDB})}).catch(()=>{});
   const tipoE=document.getElementById('nPTipo')?.value||'publica';
@@ -2110,7 +1783,7 @@ async function guardarEditarPlat(){
   if(tipoE==='privada'&&pensionE) platDB.valorPension=pensionE;
   platDB.tipoInstitucion=tipoE;
   const escudoDataE=document.getElementById('nPEscudoData')?.value||'';updGestorDB(d=>{const idx=d.platforms.findIndex(x=>x.id===_gestorEditPlatId);if(idx>=0) d.platforms[idx]={...d.platforms[idx],nombre,municipio,depto,modulosActivos,modulosDesactivados,tipo:tipoE,...(escudoDataE?{escudo:escudoDataE}:{})};return d;});
-  customAlert(`✅ Plataforma "${nombre}" actualizada.\n🏛️ Tipo: ${tipoE==='publica'?'Pública':'Privada'}`);
+  alert(`✅ Plataforma "${nombre}" actualizada.\n🏛️ Tipo: ${tipoE==='publica'?'Pública':'Privada'}`);
   _gestorEditPlatId=null;_gestorPag='plataformas';renderGestorAdmin();
 }
 function toggleActivarPlat(platId){updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.activa=!p.activa;return d;});renderGestorAdmin();}
@@ -2119,13 +1792,13 @@ function toggleBloquearPlat(platId){
   if(!plat) return;
   const nuevoEstado=!plat.bloqueada;
   updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p)p.bloqueada=nuevoEstado;return d;});
-  customAlert(nuevoEstado?'🔒 Plataforma BLOQUEADA. Los docentes no podrán ingresar hasta que la desbloquee.':'🔓 Plataforma DESBLOQUEADA.');
+  alert(nuevoEstado?'🔒 Plataforma BLOQUEADA. Los docentes no podrán ingresar hasta que la desbloquee.':'🔓 Plataforma DESBLOQUEADA.');
   renderGestorAdmin();
 }
-async function eliminarPlataforma(platId){
+function eliminarPlataforma(platId){
   const plat=gestorDB.platforms.find(x=>x.id===platId);if(!plat) return;
-  if(plat.id==='inetis-sincelejito'){customAlert('⚠️ La plataforma base (INETIS Sincelejito) no se puede eliminar desde el gestor.');return;}
-  if(!await customConfirm(`⚠️ ¿Eliminar permanentemente "${plat.nombre}"?\n\nSe borrarán TODOS los datos. Esta acción no se puede deshacer.`)) return;
+  if(plat.id==='inetis-sincelejito'){alert('⚠️ La plataforma base (INETIS Sincelejito) no se puede eliminar desde el gestor.');return;}
+  if(!confirm(`⚠️ ¿Eliminar permanentemente "${plat.nombre}"?\n\nSe borrarán TODOS los datos. Esta acción no se puede deshacer.`)) return;
   try{localStorage.removeItem(plat.sk);}catch(e){}
   updGestorDB(d=>{d.platforms=d.platforms.filter(x=>x.id!==platId);return d;});
   renderGestorAdmin();
@@ -2175,13 +1848,13 @@ function guardarModulosModal(platId){
   const modulosDesactivados=TODOS_MODULOS.filter(m=>!document.getElementById('mMod_'+m.id)?.checked).map(m=>m.id);
   updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p){p.modulosActivos=modulosActivos;p.modulosDesactivados=modulosDesactivados;}return d;});
   const ov=document.getElementById('gModOv');if(ov)ov.remove();
-  customAlert('✅ Módulos actualizados correctamente.');
+  alert('✅ Módulos actualizados correctamente.');
   renderGestorAdmin();
 }
-async function guardarGestorConfig(){
+function guardarGestorConfig(){
   const oldP=document.getElementById('cfgGPassOld')?.value.trim();
   const newP=document.getElementById('cfgGPassNew')?.value.trim();
-  if(newP&&!(await _verificarPassword(oldP,gestorDB.superAdmin.p))){customAlert('❌ La contraseña actual no es correcta.');return;}
+  if(newP&&oldP!==gestorDB.superAdmin.p){alert('❌ La contraseña actual no es correcta.');return;}
   const nombre=document.getElementById('cfgGNombre')?.value.trim();
   const usuario=document.getElementById('cfgGUser')?.value.trim();
   const cedula=document.getElementById('cfgGCedula')?.value.trim();
@@ -2191,11 +1864,10 @@ async function guardarGestorConfig(){
   const wsp1=document.getElementById('cfgWsp1')?.value.trim();
   const wsp2=document.getElementById('cfgWsp2')?.value.trim();
   const foto=window._cfgGFoto!==undefined?window._cfgGFoto:null;
-  const newHash=newP?await _hashPassword(newP):null;
   updGestorDB(d=>{
     if(nombre) d.superAdmin.nombre=nombre;
     if(usuario) d.superAdmin.u=usuario;
-    if(newHash) d.superAdmin.p=newHash;
+    if(newP) d.superAdmin.p=newP;
     if(cedula) d.superAdmin.cedula=cedula;
     if(email) d.superAdmin.email=email;
     if(telefono) d.superAdmin.telefono=telefono;
@@ -2206,7 +1878,7 @@ async function guardarGestorConfig(){
     return d;
   });
   window._cfgGFoto=undefined;
-  customAlert('✅ Configuración guardada correctamente.');
+  alert('✅ Configuración guardada correctamente.');
   renderGestorAdmin();
 }
 // ============================================================
@@ -2223,247 +1895,6 @@ async function guardarGestorConfig(){
 // doLoginInstitucional, renderBienvenidaInstitucion) y en S10
 // (loginBiometrico, mostrarRecuperarPassword, etc.).
 // Esta sección actúa como marcador de referencia.
-
-// ============================================================
-// S04-B · CONTROL DE TIEMPO DE SESIÓN POR ROL (configurado por
-// el súper admin en "⏱️ Tiempo de Uso" — ver htmlGestorTiempoSesion).
-// Muestra un contador regresivo junto al botón de sincronizar,
-// avisa al usuario a los 10, 5 y 1 minuto(s) restantes para que
-// guarde su trabajo, y cierra la sesión automáticamente al
-// agotarse el tiempo. El contador se reinicia a cero en cada
-// nuevo ingreso. No aplica al súper admin gestionando su propio
-// panel ni cuando entra a una institución en modo gestor.
-// ============================================================
-let _sesTimerInterval=null;
-let _sesTimerAvisos={diez:false,cinco:false,uno:false};
-let _sesTimerLoginKey=null;
-
-function _limiteMinutosSesionActual(){
-  if(!sesion||!sesion.r) return 0;
-  if(sesion._gestorMode) return 0; // el súper admin operando como admin de una institución no tiene límite
-  if(gestorSesion&&!gestorEnPlataforma) return 0; // panel propio del Gestor Académico YC
-  const platId=window._currentPlatId||gestorEnPlataforma||null;
-  if(!platId||typeof gestorDB==='undefined'||!gestorDB.platforms) return 0;
-  const plat=gestorDB.platforms.find(x=>x.id===platId);
-  if(!plat||!plat.limitesSesion) return 0;
-  const min=plat.limitesSesion[sesion.r];
-  return (typeof min==='number'&&min>0)?min:0;
-}
-
-function _iniciarControlTiempoSesion(){
-  const limMin=_limiteMinutosSesionActual();
-  const loginKey=(window._currentPlatId||gestorEnPlataforma||'')+'|'+(sesion?sesion.r+':'+(sesion.u||sesion.estId||''):'');
-  if(_sesTimerLoginKey!==loginKey){
-    // Nuevo login (o cambio de rol/institución): el contador se reinicia a cero
-    _sesTimerLoginKey=loginKey;
-    window._sesTimerInicio=Date.now();
-    _sesTimerAvisos={diez:false,cinco:false,uno:false};
-    if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
-  }
-  if(!limMin){
-    if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
-    setTimeout(function(){_actualizarChipTiempoSesion(null);},0);
-    return;
-  }
-  if(!_sesTimerInterval) _sesTimerInterval=setInterval(_tickControlTiempoSesion,1000);
-  // Diferido: se ejecuta luego de que renderApp() termine de reconstruir el DOM
-  setTimeout(_tickControlTiempoSesion,0);
-}
-
-function _tickControlTiempoSesion(){
-  const limMin=_limiteMinutosSesionActual();
-  if(!limMin||!sesion){if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}_actualizarChipTiempoSesion(null);return;}
-  const limMs=limMin*60000;
-  const transcurrido=Date.now()-(window._sesTimerInicio||Date.now());
-  const restanteMs=Math.max(0,limMs-transcurrido);
-  _actualizarChipTiempoSesion(restanteMs);
-  const restMin=restanteMs/60000;
-  if(restMin<=10&&!_sesTimerAvisos.diez){_sesTimerAvisos.diez=true;_avisoTiempoSesion(10);}
-  if(restMin<=5&&!_sesTimerAvisos.cinco){_sesTimerAvisos.cinco=true;_avisoTiempoSesion(5);}
-  if(restMin<=1&&!_sesTimerAvisos.uno){_sesTimerAvisos.uno=true;_avisoTiempoSesion(1);}
-  if(restanteMs<=0){
-    if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
-    _forzarCierrePorTiempo();
-  }
-}
-
-function _fmtTiempoSesion(ms){
-  const totalSeg=Math.max(0,Math.floor(ms/1000));
-  const m=Math.floor(totalSeg/60);
-  const s=totalSeg%60;
-  return String(m)+':'+String(s).padStart(2,'0');
-}
-
-function _actualizarChipTiempoSesion(restanteMs){
-  let chip=document.getElementById('_sesTimerChip');
-  if(restanteMs==null){if(chip)chip.remove();return;}
-  const critico=restanteMs<=5*60000;
-  const alerta=restanteMs<=10*60000;
-  const bg=critico?'#c0392b':(alerta?'#e67e22':'#1a5276');
-  if(!chip||!document.body.contains(chip)){
-    chip=document.createElement('span');
-    chip.id='_sesTimerChip';
-    chip.title='Tiempo restante de sesión configurado por el administrador del sistema';
-    chip.style.cssText='display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;font-weight:bold;color:#fff;border-radius:14px;padding:5px 11px;margin-right:6px;white-space:nowrap;cursor:default;z-index:9997';
-    const syncChip=document.getElementById('_syncChip');
-    if(syncChip&&syncChip.parentNode){
-      syncChip.parentNode.insertBefore(chip,syncChip);
-    } else {
-      // Roles sin topbar de sincronización (Padre/Estudiante): chip flotante fijo arriba a la derecha
-      chip.style.cssText+=';position:fixed;top:10px;right:14px;box-shadow:0 2px 10px rgba(0,0,0,0.28)';
-      document.body.appendChild(chip);
-    }
-  }
-  chip.style.background=bg;
-  chip.textContent='⏳ '+_fmtTiempoSesion(restanteMs);
-}
-
-function _avisoTiempoSesion(minRestantes){
-  const hayPendientes=(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0);
-  const msjPend=hayPendientes?'\n\n⚠️ Tiene notas SIN GUARDAR en la Planilla — pulse "GUARDAR CAMBIOS" ahora mismo para no perderlas.':'';
-  const txt=minRestantes===1?'1 minuto':minRestantes+' minutos';
-  customAlert('⏰ Le queda(n) '+txt+' de sesión.\n\nPor política de la institución, la sesión se cerrará automáticamente al agotarse el tiempo para ahorrar recursos del sistema.\n\nGuarde los cambios que esté realizando.'+msjPend);
-}
-
-function _forzarCierrePorTiempo(){
-  try{
-    if(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0&&typeof _aplicarNotasPendientesEnDB==='function'){
-      _aplicarNotasPendientesEnDB();
-      _pushDB();
-    }
-  }catch(e){}
-  _actualizarChipTiempoSesion(null);
-  customAlert('⏰ Su tiempo de sesión ha finalizado.\n\nLa sesión se cerrará ahora para liberar recursos del sistema. Vuelva a ingresar cuando lo necesite — el contador se reiniciará a cero.');
-  // Cierre directo (sin pedir sugerencia): es un cierre automático por tiempo, no una acción deliberada del usuario.
-  // También garantiza el reinicio inmediato del contador para el próximo login.
-  _cerrarSesionReal();
-}
-
-// ============================================================
-// 📮 BUZÓN DE SUGERENCIAS
-// Disponible en TODOS los roles (Admin, Docente, Padre, Estudiante):
-// - Como ventana emergente OPCIONAL justo antes de cerrar sesión.
-// - Como módulo independiente accesible en cualquier momento.
-// El usuario puede escribir qué le gustaría que se mejore y calificar
-// su nivel de satisfacción de 1 a 5. Si no desea dejar nada, puede
-// cerrar y listo. Todas las sugerencias quedan disponibles para el
-// súper admin del sistema en el panel del Gestor Académico YC.
-// ============================================================
-function _htmlFormularioSugerenciaInline(desdeLogout){
-  desdeLogout=!!desdeLogout;
-  const estrellas=[1,2,3,4,5].map(n=>`<button type="button" onclick="_seleccionarCalifSug(${n})" id="sugEstrella_${n}" style="background:none;border:none;font-size:1.9rem;cursor:pointer;color:#ccc;padding:2px;line-height:1" title="${n} de 5">★</button>`).join('');
-  return `
-    <label class="lbl">Nivel de satisfacción con el uso de la plataforma (1 a 5)</label>
-    <div id="sugEstrellasWrap" style="margin-bottom:12px">${estrellas}</div>
-    <input type="hidden" id="sugCalificacion" value="0">
-    <label class="lbl">¿Qué aspecto le gustaría que mejoremos? (opcional)</label>
-    <textarea id="sugTexto" rows="4" placeholder="Escriba aquí su sugerencia..." style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:0.86rem;resize:vertical;box-sizing:border-box"></textarea>
-    <button class="btn btn-green" style="margin-top:12px;width:100%" onclick="_enviarSugerenciaYSalir(${desdeLogout})">✅ Enviar sugerencia${desdeLogout?' y salir':''}</button>`;
-}
-function _seleccionarCalifSug(n){
-  const inp=document.getElementById('sugCalificacion');if(inp)inp.value=n;
-  for(let i=1;i<=5;i++){
-    const el=document.getElementById('sugEstrella_'+i);
-    if(el) el.style.color=i<=n?'#f1c40f':'#ccc';
-  }
-}
-function abrirModalBuzonSugerencias(desdeLogout){
-  const old=document.getElementById('modalBuzonSug');if(old)old.remove();
-  const modal=document.createElement('div');
-  modal.id='modalBuzonSug';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:999999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML=`<div style="background:#fff;border-radius:14px;padding:22px;max-width:420px;width:100%;max-height:92vh;overflow-y:auto">
-    <h4 style="color:#003366;margin-bottom:6px">📮 Buzón de Sugerencias</h4>
-    <p style="font-size:0.82rem;color:#666;margin-bottom:14px">${desdeLogout?'Antes de salir, c':'C'}uéntenos qué le gustaría que mejoremos y qué tan satisfecho(a) está con el uso de la plataforma. Es totalmente opcional.</p>
-    ${_htmlFormularioSugerenciaInline(desdeLogout)}
-    <button class="btn btn-gray" style="width:100%;margin-top:8px" onclick="_cerrarModalBuzonSugerencias(${desdeLogout?'true':'false'})">${desdeLogout?'🚪 Salir sin sugerencia':'✕ Cerrar'}</button>
-  </div>`;
-  document.body.appendChild(modal);
-}
-function _cerrarModalBuzonSugerencias(desdeLogout){
-  const m=document.getElementById('modalBuzonSug');if(m)m.remove();
-  if(desdeLogout) _cerrarSesionReal();
-}
-async function _enviarSugerenciaYSalir(desdeLogout){
-  const textoEl=document.getElementById('sugTexto');
-  const califEl=document.getElementById('sugCalificacion');
-  const texto=(textoEl&&textoEl.value||'').trim();
-  const calif=parseInt(califEl&&califEl.value||'0')||0;
-  const modalAbierto=document.getElementById('modalBuzonSug');
-  if(!texto&&!calif){
-    // Nada para enviar: equivale a "cerrar sin sugerencia"
-    if(modalAbierto) modalAbierto.remove();
-    if(desdeLogout) _cerrarSesionReal();
-    return;
-  }
-  try{ await _pullGestorDB(); }catch(e){}
-  const platId=window._currentPlatId||gestorEnPlataforma||null;
-  const plat=platId&&gestorDB.platforms?gestorDB.platforms.find(x=>x.id===platId):null;
-  const nuevaSug={
-    id:'sug_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
-    platId:platId||'',
-    platNombre:plat?plat.nombre:((db&&db.nombre)||'—'),
-    rol:sesion?sesion.r:'—',
-    usuario:sesion?(sesion.u||''):'',
-    nombre:sesion?(sesion.n||''):'',
-    texto,
-    calificacion:calif,
-    fecha:new Date().toISOString(),
-    estado:'pendiente', // pendiente | en_revision | resuelta
-    respuesta:'',
-    respuestaFecha:null
-  };
-  updGestorDB(g=>{
-    g.sugerencias=g.sugerencias||[];
-    g.sugerencias.push(nuevaSug);
-    return g;
-  });
-  const m=document.getElementById('modalBuzonSug');if(m)m.remove();
-  customAlert('✅ ¡Gracias por su sugerencia! Su comentario llegará al administrador general del sistema.');
-  if(desdeLogout) _cerrarSesionReal();
-  else if(typeof pag!=='undefined'&&pag==='buzon-sugerencias') renderApp();
-}
-function htmlBuzonSugerencias(){
-  const isAdmin=sesion.r==='admin';
-  const platId=window._currentPlatId||gestorEnPlataforma||null;
-  const estrellasView=n=>'★'.repeat(n)+'☆'.repeat(5-n);
-  const estadoInfo={pendiente:{label:'🟡 Pendiente',color:'#b7770d',bg:'#fef9e7'},en_revision:{label:'🔵 En revisión',color:'#1a5276',bg:'#eaf4fe'},resuelta:{label:'🟢 Resuelta',color:'#1e8449',bg:'#eafaf1'}};
-  const misSug=(gestorDB.sugerencias||[]).filter(s=>s.platId===platId).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
-  const propiasSug=misSug.filter(s=>s.usuario===sesion.u);
-  const _htmlTicket=s=>{
-    const ei=estadoInfo[s.estado||'pendiente']||estadoInfo.pendiente;
-    return `<div style="background:#f8f9fa;border-left:4px solid ${ei.color};border-radius:0 8px 8px 0;padding:10px 14px">
-        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px">
-          <b style="font-size:0.85rem;color:#003366">${s.nombre||s.usuario||'Anónimo'} · ${s.rol||''}</b>
-          <span style="color:#f1c40f;font-size:0.9rem">${s.calificacion?estrellasView(s.calificacion):'—'}</span>
-        </div>
-        <div style="font-size:0.83rem;color:#333">${s.texto?s.texto:'<i style="color:#999">Sin comentario, solo calificación</i>'}</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-          <span style="background:${ei.bg};color:${ei.color};border-radius:6px;padding:2px 9px;font-size:0.7rem;font-weight:700">${ei.label}</span>
-          <span style="font-size:0.7rem;color:#999">${new Date(s.fecha).toLocaleString('es-CO')}</span>
-        </div>
-        ${s.respuesta?`<div style="background:#fff;border-left:3px solid #1a5276;border-radius:0 6px 6px 0;padding:7px 10px;margin-top:6px">
-          <div style="font-size:0.68rem;color:#1a5276;font-weight:700;margin-bottom:2px">💬 Respuesta del administrador general</div>
-          <div style="font-size:0.8rem;color:#333">${s.respuesta}</div>
-        </div>`:''}
-      </div>`;
-  };
-  const listaPropias=propiasSug.length?`
-    <h4 style="color:#003366;margin:22px 0 10px">📋 Mis sugerencias enviadas (${propiasSug.length})</h4>
-    <div style="display:flex;flex-direction:column;gap:10px">${propiasSug.map(_htmlTicket).join('')}</div>
-  `:'';
-  const listaAdmin=isAdmin?`
-    <h4 style="color:#003366;margin:22px 0 10px">📋 Sugerencias recibidas en esta institución (${misSug.length})</h4>
-    ${misSug.length?`<div style="display:flex;flex-direction:column;gap:10px">${misSug.map(_htmlTicket).join('')}</div>`:'<p class="empty">Aún no hay sugerencias registradas en esta institución.</p>'}
-  `:'';
-  return `<h3 class="sec-title">📮 Buzón de Sugerencias</h3>
-  <div class="card">
-    <p style="font-size:0.85rem;color:#666;margin-bottom:14px">¿Qué aspecto le gustaría que mejoremos? Cuéntenos también qué tan satisfecho(a) está con el uso de la plataforma. Su opinión es completamente opcional y llega directamente al administrador general del sistema, quien puede responderle aquí mismo.</p>
-    ${_htmlFormularioSugerenciaInline(false)}
-  </div>
-  ${listaPropias}
-  ${listaAdmin}`;
-}
 
 // ============================================================
 // S06 · CÁLCULO DE NOTAS Y CALIFICACIONES
@@ -2880,29 +2311,8 @@ function renderGestorLanding(){
           <li style="margin-bottom:5px">• <b>Sincronización en la nube</b> automática cuando se reconecta</li>
           <li style="margin-bottom:5px">• <b>Reportes y boletines PDF</b> en tiempo real</li>
         </ul>
-        <div style="font-weight:bold;color:#3498db;margin-top:12px;margin-bottom:4px">✨ Una plataforma pensada para la educación del futuro</div>
-      </div>
-      <div class="edu-showcase">
-        <div class="edu-showcase-title">🎓 Innovación educativa al servicio de su institución</div>
-        <div class="edu-showcase-sub">Herramientas modernas que acompañan a rectores, docentes, familias y estudiantes en cada paso de la gestión escolar.</div>
-        <div class="edu-cards">
-          <div class="edu-card">
-            <img src="https://images.unsplash.com/photo-1758685848174-e061c6486651?auto=format&fit=crop&w=800&q=75" alt="Docente usando tecnología en el aula" loading="lazy" onerror="this.remove()">
-            <div class="edu-card-overlay"><div><h4>Innovación pedagógica</h4><p>Asistente académico con IA, descriptores de desempeño y seguimiento personalizado en el aula.</p></div></div>
-          </div>
-          <div class="edu-card">
-            <img src="https://images.unsplash.com/photo-1762427355235-dd22e5cb010c?auto=format&fit=crop&w=800&q=75" alt="Escritorio organizado con planificación escolar" loading="lazy" onerror="this.remove()">
-            <div class="edu-card-overlay"><div><h4>Gestión escolar eficiente</h4><p>Planillas, boletines, asistencia y observador del estudiante centralizados en un solo lugar.</p></div></div>
-          </div>
-          <div class="edu-card">
-            <img src="https://images.unsplash.com/photo-1758270705290-62b6294dd044?auto=format&fit=crop&w=800&q=75" alt="Estudiantes usando tecnología educativa" loading="lazy" onerror="this.remove()">
-            <div class="edu-card-overlay"><div><h4>Tecnología educativa</h4><p>Colaboración y aprendizaje potenciados por herramientas digitales modernas.</p></div></div>
-          </div>
-          <div class="edu-card">
-            <img src="https://images.unsplash.com/photo-1563986768494-4dee2763ff3f?auto=format&fit=crop&w=800&q=75" alt="Sincronización digital entre laptop y celular" loading="lazy" onerror="this.remove()">
-            <div class="edu-card-overlay"><div><h4>Transformación digital</h4><p>Trabaje sin conexión y sincronice automáticamente al reconectarse a internet.</p></div></div>
-          </div>
-        </div>
+        <div style="font-weight:bold;color:#3498db;margin-top:12px;margin-bottom:8px">🧩 Módulos Disponibles (${TODOS_MODULOS.length})</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${TODOS_MODULOS.map(m=>`<span style="background:rgba(46,204,113,0.18);padding:3px 8px;border-radius:4px;font-size:0.72rem">${m.label}</span>`).join('')}</div>
       </div>
       <div class="gestor-owner">
         <div style="font-size:0.78rem;color:#b0c4de;margin-bottom:5px;text-transform:uppercase;letter-spacing:1px">Propietario y Administrador</div>
@@ -3024,38 +2434,32 @@ function _pmFiltrar(q){
     +'<button onclick="abrirPreMatriculaPortalIntermedio(\''+match.id+'\')" style="background:linear-gradient(90deg,#27ae60,#1e8449);color:#fff;border:none;border-radius:9px;padding:10px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 3px 12px rgba(39,174,96,0.4)">📝 Iniciar Prematrícula</button>'
     +'</div>';
 }
-async function doLogin(){
+function doLogin(){
   const rol=document.getElementById('lRol').value;
   const u=document.getElementById('lUser').value.trim();
   const p=document.getElementById('lPass').value.trim();
   if(rol==='elecciones'){
     if(u==='elecciones'&&p==='inetis2026'){sesion={u:'elecciones',p:'inetis2026',r:'elecciones',n:'MÓDULO ELECCIONES'};pag='elecciones';render();return;}
-    customAlert('Credenciales incorrectas.');return;
+    alert('Credenciales incorrectas.');return;
   }
   // Padre y Estudiante usan el documento de identidad
   if(rol==='padre'){
     const est=db.ests.find(e=>(e.numDocAcud||'').toString().trim()===u && (e.numDoc||e.numDocAcud||'').toString().trim()===p);
-    if(!est){customAlert('No se encontró acudiente con esos datos.\nUsuario = N° documento del acudiente\nClave = N° documento del estudiante');return;}
+    if(!est){alert('No se encontró acudiente con esos datos.\nUsuario = N° documento del acudiente\nClave = N° documento del estudiante');return;}
     sesion={u,p,r:'padre',n:est.acudiente||'ACUDIENTE',estId:est.id};pag='padre-home';
     _sseInit(); // Conectar SSE para que el padre reciba actualizaciones en tiempo real
     render();return;
   }
   if(rol==='estudiante'){
     const est=db.ests.find(e=>(e.numDoc||'').toString().trim()===u && (e.numDoc||'').toString().trim()===p);
-    if(!est){customAlert('No se encontró estudiante con ese documento.\nUsuario y clave = su número de documento');return;}
+    if(!est){alert('No se encontró estudiante con ese documento.\nUsuario y clave = su número de documento');return;}
     sesion={u,p,r:'estudiante',n:est.n,estId:est.id};pag='est-home';
     _sseInit(); // Conectar SSE para que el estudiante reciba actualizaciones en tiempo real
     render();return;
   }
-  const user=db.users.find(x=>x.u===u&&x.r===rol);
-  if(!user||!(await _verificarPassword(p,user.p))){customAlert('Credenciales incorrectas.');return;}
-  if(!_esHashPassword(user.p)){
-    // Migración perezosa: la contraseña heredada coincidió, se re-guarda ya cifrada
-    const nuevoHash=await _hashPassword(p);
-    updDB(d=>{const idx=d.users.findIndex(x=>x.u===user.u);if(idx!==-1) d.users[idx].p=nuevoHash;return d;});
-    user.p=nuevoHash;
-  }
-  sesion=user;pag=user.r==='admin'?'tablero':user.r==='docente'?'panel-docente':'planilla';
+  const user=db.users.find(x=>x.u===u&&x.p===p&&x.r===rol);
+  if(!user){alert('Credenciales incorrectas.');return;}
+  sesion=user;pag='planilla';
   // Notificar a rectora cuando un docente entra al sistema
   if(rol==='docente'){
     try{
@@ -3100,206 +2504,10 @@ function _docenteCalificaEvalDesempeno(user){
   if(user.decreto!=='1278') return false;
   return ['Propiedad','Periodo de Prueba'].includes(user.modalidadDecre||'');
 }
-// ============================================================
-// MODO OSCURO — Alternar y persistir preferencia de tema
-// (Reutiliza las variables de color --bg-*, --text-*, etc. del CSS)
-// ============================================================
-function _temaActual(){
-  return document.documentElement.getAttribute('data-theme')==='dark' ? 'dark' : 'light';
-}
-function toggleTema(){
-  const nuevo = _temaActual()==='dark' ? 'light' : 'dark';
-  if(nuevo==='dark') document.documentElement.setAttribute('data-theme','dark');
-  else document.documentElement.removeAttribute('data-theme');
-  try{ localStorage.setItem('gestorYcTema', nuevo); }catch(e){}
-  const esOscuro = nuevo==='dark';
-  document.querySelectorAll('[data-theme-toggle]').forEach(function(btn){
-    btn.textContent = esOscuro ? '☀️ Modo claro' : '🌙 Modo oscuro';
-    btn.setAttribute('aria-pressed', esOscuro ? 'true' : 'false');
-  });
-}
-
-// ============================================================
-// MODALES PROPIOS — Reemplazo accesible de alert()/confirm() nativos
-// Diseño consistente con el resto del sistema (mismo estilo que
-// el modal del Buzón de Sugerencias): overlay + tarjeta centrada,
-// con foco atrapado, cierre con Escape y etiquetas ARIA.
-// ============================================================
-function _escaparHtmlModal(texto){
-  texto = String(texto===null||texto===undefined ? '' : texto);
-  const div = document.createElement('div');
-  div.textContent = texto;
-  return div.innerHTML;
-}
-function _cmCerrar(overlay, valor, resolve, elFocoPrevio){
-  if(overlay && overlay._cmKeydown) document.removeEventListener('keydown', overlay._cmKeydown, true);
-  if(overlay && overlay.parentNode) overlay.remove();
-  if(elFocoPrevio && typeof elFocoPrevio.focus==='function'){
-    try{ elFocoPrevio.focus(); }catch(e){}
-  }
-  resolve(valor);
-}
-function _cmAbrir(opts){
-  return new Promise(function(resolve){
-    const elFocoPrevio = document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className='cm-overlay';
-    const idUnico = 'cm_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-    const titleId = idUnico+'_t';
-    const descId = idUnico+'_d';
-    overlay.innerHTML = `
-      <div class="cm-box" role="alertdialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1">
-        <div class="cm-hd">
-          <span class="cm-icon" aria-hidden="true">${opts.icono}</span>
-          <h3 class="cm-title" id="${titleId}">${opts.titulo}</h3>
-        </div>
-        <div class="cm-bd" id="${descId}">${opts.mensajeHtml}</div>
-        <div class="cm-ft">
-          ${opts.esConfirm?`<button type="button" class="btn btn-gray" data-cm-accion="cancelar">${opts.textoCancelar}</button>`:''}
-          <button type="button" class="btn ${opts.esConfirm?'btn-blue':'btn-navy'}" data-cm-accion="aceptar">${opts.textoAceptar}</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const box = overlay.querySelector('.cm-box');
-    const btnAceptar = overlay.querySelector('[data-cm-accion="aceptar"]');
-    const btnCancelar = overlay.querySelector('[data-cm-accion="cancelar"]');
-    function cerrar(valor){ _cmCerrar(overlay, valor, resolve, elFocoPrevio); }
-    btnAceptar.addEventListener('click', function(){ cerrar(true); });
-    if(btnCancelar) btnCancelar.addEventListener('click', function(){ cerrar(false); });
-    overlay.addEventListener('mousedown', function(e){ if(e.target===overlay) cerrar(opts.esConfirm?false:true); });
-    function _trapFoco(e){
-      if(e.key==='Escape'){ e.preventDefault(); cerrar(opts.esConfirm?false:true); return; }
-      if(e.key!=='Tab') return;
-      const focusables = overlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-      if(!focusables.length) return;
-      const primero = focusables[0], ultimo = focusables[focusables.length-1];
-      if(e.shiftKey && document.activeElement===primero){ e.preventDefault(); ultimo.focus(); }
-      else if(!e.shiftKey && document.activeElement===ultimo){ e.preventDefault(); primero.focus(); }
-    }
-    overlay._cmKeydown = _trapFoco;
-    document.addEventListener('keydown', _trapFoco, true);
-    setTimeout(function(){ (btnAceptar||box).focus(); }, 10);
-  });
-}
-function customAlert(mensaje, titulo){
-  return _cmAbrir({
-    esConfirm:false,
-    mensajeHtml:_escaparHtmlModal(mensaje),
-    titulo: titulo || 'Aviso',
-    icono:'ℹ️',
-    textoAceptar:'Aceptar'
-  });
-}
-function customConfirm(mensaje, opts){
-  opts = opts || {};
-  return _cmAbrir({
-    esConfirm:true,
-    mensajeHtml:_escaparHtmlModal(mensaje),
-    titulo: opts.titulo || '¿Está seguro?',
-    icono: opts.icono || '⚠️',
-    textoAceptar: opts.textoAceptar || 'Sí, continuar',
-    textoCancelar: opts.textoCancelar || 'Cancelar'
-  });
-}
-
-// ============================================================
-// SKELETON DE CARGA — evita el parpadeo en blanco al cambiar de módulo
-// ============================================================
-function _htmlSkeletonContenido(){
-  const filas = [80,60,100,40,90,55,70].map(function(w){
-    return '<div class="skel-line w'+(w>=80?'80':w>=60?'60':'40')+'"></div>';
-  }).join('');
-  return '<div class="skel-wrap">'+
-    '<div class="skel-title"></div>'+
-    '<div class="skel-card">'+
-      '<div class="skel-row"><div class="skel-line"></div><div class="skel-line"></div><div class="skel-line"></div></div>'+
-      filas+
-      '<div class="skel-block"></div>'+
-    '</div>'+
-  '</div>';
-}
-function _mostrarSkeletonYNavegar(){
-  const cont = document.getElementById('contenido');
-  if(cont){
-    cont.setAttribute('aria-busy','true');
-    cont.innerHTML = _htmlSkeletonContenido();
-    requestAnimationFrame(function(){ setTimeout(renderApp, 0); });
-  } else {
-    renderApp();
-  }
-}
-
-// ============================================================
-// ACCESIBILIDAD DE POPUPS FLOTANTES (notas de la Planilla)
-// Añade rol/atributos ARIA, atrapa el foco con Tab y permite
-// cerrar con la tecla Escape, sin alterar su comportamiento.
-// ============================================================
-function _activarAccesibilidadPopup(popup, cerrarFn, etiqueta){
-  if(!popup) return;
-  popup.setAttribute('role','dialog');
-  popup.setAttribute('aria-modal','true');
-  popup.setAttribute('aria-label', etiqueta || 'Ventana emergente');
-  popup.setAttribute('tabindex','-1');
-  function _onKeydown(e){
-    if(e.key==='Escape'){
-      e.preventDefault();
-      if(typeof cerrarFn==='function') cerrarFn();
-      return;
-    }
-    if(e.key!=='Tab') return;
-    const focusables = popup.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-    if(!focusables.length) return;
-    const primero=focusables[0], ultimo=focusables[focusables.length-1];
-    if(e.shiftKey && document.activeElement===primero){ e.preventDefault(); ultimo.focus(); }
-    else if(!e.shiftKey && document.activeElement===ultimo){ e.preventDefault(); primero.focus(); }
-  }
-  popup._accesibilidadKeydown=_onKeydown;
-  document.addEventListener('keydown', _onKeydown, true);
-  setTimeout(function(){
-    const primerFocable = popup.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-    if(primerFocable) primerFocable.focus(); else popup.focus();
-  }, 10);
-}
-function _liberarAccesibilidadPopup(popup){
-  if(popup && popup._accesibilidadKeydown){
-    document.removeEventListener('keydown', popup._accesibilidadKeydown, true);
-  }
-}
-// Permite cerrar con Escape los modales de Ficha de Matrícula y Documentos
-document.addEventListener('keydown', function(e){
-  if(e.key!=='Escape') return;
-  const ficha=document.getElementById('fichaModal');
-  if(ficha && ficha.classList.contains('open')){ cerrarFichaModal(); return; }
-  const docs=document.getElementById('docsModal');
-  if(docs && docs.classList.contains('open')){ cerrarDocsModal(); return; }
-});
-
-// ============================================================
-// PAGINACIÓN — utilidad genérica para listados largos
-// (estudiantes, sugerencias del súper admin, papelera) para no
-// cargar/renderizar todo el listado de una sola vez.
-// ============================================================
-function _paginar(arr, pagina, porPagina){
-  const total=arr.length;
-  const totalPaginas=Math.max(1, Math.ceil(total/porPagina));
-  const pagActual=Math.min(Math.max(1, pagina||1), totalPaginas);
-  const inicio=(pagActual-1)*porPagina;
-  return { items: arr.slice(inicio, inicio+porPagina), pagina: pagActual, totalPaginas, total, porPagina };
-}
-function _htmlPaginacion(pagina, totalPaginas, total, onCambiarFnName){
-  if(totalPaginas<=1) return '';
-  return `<div class="pag-nav" style="display:flex;align-items:center;justify-content:center;gap:10px;margin:14px 0;flex-wrap:wrap">
-    <button class="btn-sm" style="background:#7f8c8d" ${pagina<=1?'disabled':''} onclick="${onCambiarFnName}(${pagina-1})" aria-label="Página anterior">◀ Anterior</button>
-    <span style="font-size:0.82rem;color:var(--text-secondary)">Página ${pagina} de ${totalPaginas} · ${total} en total</span>
-    <button class="btn-sm" style="background:#7f8c8d" ${pagina>=totalPaginas?'disabled':''} onclick="${onCambiarFnName}(${pagina+1})" aria-label="Página siguiente">Siguiente ▶</button>
-  </div>`;
-}
-
 function renderApp(){
   if(!sesion||!sesion.r){render();return;}
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
   if(typeof htmlAvisoDocente==='undefined'){setTimeout(renderApp,30);return;}
-  _iniciarControlTiempoSesion();
   if(sesion.r==='elecciones'){iaRemoveWidget();renderElecciones();return;}
   if(sesion.r==='padre'){iaRemoveWidget();renderPadre();return;}
   if(sesion.r==='estudiante'){iaRemoveWidget();renderEstudiante();return;}
@@ -3330,11 +2538,7 @@ function renderApp(){
   if(sesion.r==='docente'&&_ma('aviso-docente')) menu.push({id:'aviso-docente',label:'📢 Avisos a Estudiantes'});
   if(sesion.r==='docente'&&_ma('obs-aula')) menu.push({id:'obs-aula',label:'📓 Obs. de Aula'});
   if(_ma('descriptores')) menu.push({id:'descriptores',label:'📝 Descriptores'});
-  if(sesion.r==='docente') menu.unshift({id:'panel-docente',label:'🎯 Mi Panel'});
   if(_ma('planilla')) menu.push({id:'planilla',label:'📊 Planilla'});
-  if((isAdmin||sesion.r==='docente')&&_ma('notas-actividades')) menu.push({id:'notas-actividades',label:'📝 Notas de Actividades'});
-  if(_ma('buzon-sugerencias')) menu.push({id:'buzon-sugerencias',label:'📮 Buzón de Sugerencias'});
-  if(isAdmin&&_ma('log-notas')) menu.push({id:'log-notas',label:'📜 Historial de Notas'});
   if((sesion.r==='docente'||isAdmin)&&_ma('estado-notas')&&!isAdmin) menu.push({id:'estado-notas',label:'🔍 Estado Notas'});
   if(sesion.r==='docente'&&_ma('ausentismo')) menu.push({id:'ausentismo',label:'📋 Permiso Ausencia'});
   if((isAdmin||sesion.r==='docente')&&_ma('menciones-honor')) menu.push({id:'menciones-honor',label:'🏅 Menciones Honor'});
@@ -3384,7 +2588,6 @@ function renderApp(){
   const sidebarItems=menu.map(m=>{const {icon,text}=_sbLabel(m.label);if(m.external)return `<a class="sb-btn" href="${m.href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit;background:linear-gradient(90deg,rgba(230,140,20,.13),transparent);border-left:3px solid #e68c14"><span class="sb-icon" style="color:#e68c14">${icon}</span><span style="color:#9a5e05">${text} ↗</span></a>`;return `<button class="sb-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}');toggleSidebar(false)"><span class="sb-icon">${icon}</span><span>${text}</span></button>`;}).join('');
   let contenido='';
   if(pag==='tablero'&&isAdmin) contenido=htmlTablero();
-  else if(pag==='panel-docente'&&sesion.r==='docente') contenido=htmlPanelDocente();
   else if(pag==='alerta-temprana'&&isAdmin) contenido=htmlAlertaTemprana();
   else if(pag==='comunicado-general'&&isAdmin) contenido=htmlComunicadoGeneral();
   else if(pag==='adm-base'&&isAdmin) contenido=htmlConfigBase();
@@ -3402,9 +2605,6 @@ function renderApp(){
   else if(pag==='estado-notas'&&!isAdmin&&sesion.r!=='docente') contenido=htmlEstadoNotas();
   else if(pag==='descriptores') contenido=htmlDescriptores();
   else if(pag==='planilla') contenido=htmlPlanilla();
-  else if(pag==='notas-actividades'&&(isAdmin||sesion.r==='docente')) contenido=htmlNotasActividades();
-  else if(pag==='buzon-sugerencias') contenido=htmlBuzonSugerencias();
-  else if(pag==='log-notas'&&isAdmin) contenido=htmlLogNotas();
   else if(pag==='adm-rep') contenido=htmlInformes();
   else if(pag==='actas') contenido=htmlActas();
   else if(pag==='observador') contenido=htmlObservador();
@@ -3472,7 +2672,6 @@ function renderApp(){
         <div class="sidebar-footer">
           <div class="sf-user">👤 ${sesion.n}</div>
           <div class="sf-rol">${_rolLabel}</div>
-          <button class="theme-toggle-btn" data-theme-toggle style="width:100%;justify-content:center;margin-bottom:6px" onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
           <button class="tbtn" style="background:#c0392b;width:100%;padding:7px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:6px;margin-top:2px" onclick="cerrarSesion()">🚪 Cerrar sesión</button>
         </div>
       </aside>
@@ -3533,7 +2732,7 @@ function renderApp(){
                 <div style="flex:1;min-width:220px">
                   <div class="flex-gap" style="margin-bottom:8px">
                     <input type="text" id="pUser" value="${sesion.u}" placeholder="Nuevo Usuario" style="flex:1;min-width:120px">
-                    <span style="position:relative;flex:1;min-width:120px;display:flex;align-items:center"><input type="password" id="pPass" value="" placeholder="Dejar en blanco para no cambiar" style="flex:1;padding-right:34px"><button type="button" title="Ver/ocultar contraseña" onclick="(function(btn){var i=document.getElementById('pPass');i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁️':'🙈';}).call(this,this)" style="position:absolute;right:4px;background:none;border:none;cursor:pointer;font-size:0.9rem;padding:2px;line-height:1;color:#555">👁️</button></span>
+                    <span style="position:relative;flex:1;min-width:120px;display:flex;align-items:center"><input type="password" id="pPass" value="${sesion.p}" placeholder="Nueva Contraseña" style="flex:1;padding-right:34px"><button type="button" title="Ver/ocultar contraseña" onclick="(function(btn){var i=document.getElementById('pPass');i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁️':'🙈';}).call(this,this)" style="position:absolute;right:4px;background:none;border:none;cursor:pointer;font-size:0.9rem;padding:2px;line-height:1;color:#555">👁️</button></span>
                     <button class="btn btn-green" onclick="actualizarPerfil()">Actualizar</button>
                   </div>
                   <div style="font-size:0.8rem;color:#555;margin-bottom:8px">📧 <b>${sesion.email||'No registrado'}</b> &nbsp;|&nbsp; 📞 <b>${sesion.telefono||'No registrado'}</b></div>
@@ -3563,7 +2762,7 @@ function navTo(id, push=true){
     url.searchParams.set('mod', id);
     window.history.pushState({mod: id}, '', url);
   }
-  _mostrarSkeletonYNavegar();
+  renderApp();
 }
 window.addEventListener('popstate', function(e){
   var url = new URL(window.location);
@@ -3592,17 +2791,9 @@ function toggleSidebar(open){
   if(open){sb.classList.add('open');ov.classList.add('open');}
   else{sb.classList.remove('open');ov.classList.remove('open');}
 }
-function _cerrarSesionReal(){
+function cerrarSesion(){
   sesion=null;
   _disconnectSSE();
-  // Reiniciar por completo el control de tiempo de sesión: así el PRÓXIMO login
-  // (incluso del mismo usuario) siempre arranca el contador desde cero, en vez de
-  // seguir contando desde la sesión anterior ya cerrada.
-  _sesTimerLoginKey=null;
-  window._sesTimerInicio=null;
-  _sesTimerAvisos={diez:false,cinco:false,uno:false};
-  if(_sesTimerInterval){clearInterval(_sesTimerInterval);_sesTimerInterval=null;}
-  _actualizarChipTiempoSesion(null);
   if(gestorSesion&&gestorEnPlataforma){
     gestorEnPlataforma=null;db=loadDB();window._currentPlatSK=null;window._currentPlatId=null;
     renderGestorAdmin();return;
@@ -3610,18 +2801,11 @@ function _cerrarSesionReal(){
   window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();
   render();
 }
-function cerrarSesion(){
-  // Antes de cerrar la sesión, ofrecer al usuario dejar una sugerencia/calificación (opcional)
-  abrirModalBuzonSugerencias(true);
-}
-async function actualizarPerfil(){
+function actualizarPerfil(){
   const u=document.getElementById('pUser').value.trim();const p=document.getElementById('pPass').value.trim();
-  if(!u){customAlert('Complete el usuario');return;}
-  const nuevoHash=p?await _hashPassword(p):null;
-  updDB(d=>{d.users=d.users.map(x=>x.u===sesion.u?{...x,u,p:nuevoHash||x.p}:x);return d;});
-  const dbUser=db.users.find(x=>x.u===u);
-  sesion={...sesion,u,p:dbUser?dbUser.p:sesion.p};
-  customAlert('Credenciales actualizadas.'+(p?'':' (la contraseña no se modificó)'));renderApp();
+  if(!u||!p){alert('Complete usuario y contraseña');return;}
+  updDB(d=>{d.users=d.users.map(x=>x.u===sesion.u?{...x,u,p}:x);return d;});
+  sesion={...sesion,u,p};alert('Credenciales actualizadas.');renderApp();
 }
 // ─── DESCARGA DE RESPALDO COMPLETO (JSON + ZIP con todas las plataformas) ────
 function descargarRespaldo(){
@@ -3649,7 +2833,7 @@ function cargarRespaldo(inp){
     let _parseOk=false;
     try{
       let data;
-      try{data=JSON.parse(ev.target.result);_parseOk=true;}catch(pe){inp.value='';customAlert('Archivo inválido: no es un JSON válido.\n\nVerifique que el archivo sea un respaldo JSON del sistema.');return;}
+      try{data=JSON.parse(ev.target.result);_parseOk=true;}catch(pe){inp.value='';alert('Archivo inválido: no es un JSON válido.\n\nVerifique que el archivo sea un respaldo JSON del sistema.');return;}
       // ── Validación flexible: acepta cualquier respaldo de versiones anteriores o actuales ──
       const tieneEstructura=data&&typeof data==='object'&&(
         Array.isArray(data.users)||Array.isArray(data.ests)||Array.isArray(data.grados)||
@@ -3657,7 +2841,7 @@ function cargarRespaldo(inp){
       );
       if(!tieneEstructura){
         inp.value='';
-        customAlert('⚠️ Archivo no reconocido.\n\nEste archivo no parece un respaldo válido del sistema académico. Asegúrese de cargar un archivo JSON generado por el sistema.');
+        alert('⚠️ Archivo no reconocido.\n\nEste archivo no parece un respaldo válido del sistema académico. Asegúrese de cargar un archivo JSON generado por el sistema.');
         return;
       }
       // ── Correcciones previas a migración (compatibilidad con respaldos muy antiguos) ──
@@ -3703,7 +2887,7 @@ function cargarRespaldo(inp){
       renderApp();
     }catch(e){
       inp.value='';
-      if(_parseOk) customAlert('Error al aplicar el respaldo: '+e.message+'\n\nSi el problema persiste, contacte al administrador del sistema.');
+      if(_parseOk) alert('Error al aplicar el respaldo: '+e.message+'\n\nSi el problema persiste, contacte al administrador del sistema.');
     }
   };
   r.readAsText(f,'UTF-8');
@@ -3731,7 +2915,7 @@ function cargarRespaldoGestor(inp){
       let data;
       try{data=JSON.parse(ev.target.result);}catch(pe){
         inp.value='';
-        customAlert('Archivo inválido: no es un JSON válido.\nVerifique que sea un respaldo del Gestor Académico YC.');
+        alert('Archivo inválido: no es un JSON válido.\nVerifique que sea un respaldo del Gestor Académico YC.');
         return;
       }
       // Validación flexible
@@ -3740,7 +2924,7 @@ function cargarRespaldoGestor(inp){
       );
       if(!esRespaldoGestor){
         inp.value='';
-        customAlert('⚠️ Archivo no reconocido.\nEste archivo no es un respaldo válido del Gestor Académico YC.\n\nCargue un archivo JSON generado desde el panel del Gestor.');
+        alert('⚠️ Archivo no reconocido.\nEste archivo no es un respaldo válido del Gestor Académico YC.\n\nCargue un archivo JSON generado desde el panel del Gestor.');
         return;
       }
       // Migrar al esquema actual (agrega plataformas nuevas, módulos nuevos, campos nuevos)
@@ -3765,7 +2949,7 @@ function cargarRespaldoGestor(inp){
       renderGestorAdmin();
     }catch(e){
       inp.value='';
-      customAlert('Error al cargar respaldo del Gestor: '+e.message);
+      alert('Error al cargar respaldo del Gestor: '+e.message);
     }
   };
   r.readAsText(f,'UTF-8');
@@ -3788,8 +2972,8 @@ function attachLogoListeners(){
   if(fi) fi.addEventListener('change',function(){
     const file=this.files[0];if(!file) return;
     const ext=(file.name.split('.').pop()||'').toLowerCase();
-    if(!['png','jpg','jpeg'].includes(ext)){customAlert('⚠️ Solo se permiten archivos PNG o JPG.');this.value='';return;}
-    if(file.size>2*1024*1024){customAlert('⚠️ El archivo supera el límite de 2 MB. Comprima la imagen e intente de nuevo.');this.value='';return;}
+    if(!['png','jpg','jpeg'].includes(ext)){alert('⚠️ Solo se permiten archivos PNG o JPG.');this.value='';return;}
+    if(file.size>2*1024*1024){alert('⚠️ El archivo supera el límite de 2 MB. Comprima la imagen e intente de nuevo.');this.value='';return;}
     fileToB64(file,b64=>{
       updDB(d=>{d.logo=b64;return d;});
       _clearLogoCache();
@@ -3875,16 +3059,16 @@ function guardarPesosAreas(){
   const aKeys=Object.keys(areas);
   const pesosA={};let totalA=0;
   aKeys.forEach(a=>{const el=document.getElementById('paA_'+btoa(a).replace(/=/g,''));const v=Number(el?.value||0);pesosA[a]=v;totalA+=v;});
-  if(Math.abs(totalA-100)>1){customAlert('Los pesos de las áreas deben sumar 100%. Actualmente suman '+totalA+'%.');return;}
+  if(Math.abs(totalA-100)>1){alert('Los pesos de las áreas deben sumar 100%. Actualmente suman '+totalA+'%.');return;}
   const pesosS={};
   aKeys.forEach(a=>{const asigs=[...areas[a]];if(asigs.length<2)return;const aKey=btoa(a).replace(/=/g,'');let totalS=0;const sp={};
     asigs.forEach(m=>{const el=document.getElementById('paS_'+aKey+'_'+btoa(m).replace(/=/g,''));const v=Number(el?.value||0);sp[m]=v;totalS+=v;});
-    if(Math.abs(totalS-100)>1){customAlert('Los pesos de las asignaturas del área "'+a+'" deben sumar 100%. Actualmente suman '+totalS+'%.');throw new Error('stop');}
+    if(Math.abs(totalS-100)>1){alert('Los pesos de las asignaturas del área "'+a+'" deben sumar 100%. Actualmente suman '+totalS+'%.');throw new Error('stop');}
     pesosS[a]=sp;
   });
   updDB(d=>{if(!d.config)d.config={};d.config.pesosArea=pesosA;d.config.pesosAsig=pesosS;return d;});
   _pushDB();
-  customAlert('✅ Pesos guardados correctamente. Los promedios y rankings se recalcularán con la nueva configuración.');
+  alert('✅ Pesos guardados correctamente. Los promedios y rankings se recalcularán con la nueva configuración.');
   renderApp();
 }
 function htmlConfigBase(){
@@ -3946,7 +3130,7 @@ function htmlConfigBase(){
             <div style="font-size:0.74rem;color:#888">Aparece automáticamente en todos los PDFs. Puede reemplazarlo con otro.</div>
           </div>
           <button class="btn btn-gray" style="font-size:0.8rem" onclick="document.getElementById('fileEscudoColombia').click()">🔄 Reemplazar</button>
-          <input type="file" id="fileEscudoColombia" accept="image/*" style="display:none" onchange="fileToB64(this.files[0],b64=>{updDB(d=>{d.escudoColombia=b64;return d;});renderApp();customAlert('✅ Escudo Colombia personalizado cargado')})">
+          <input type="file" id="fileEscudoColombia" accept="image/*" style="display:none" onchange="fileToB64(this.files[0],b64=>{updDB(d=>{d.escudoColombia=b64;return d;});renderApp();alert('✅ Escudo Colombia personalizado cargado')})">
           ${db.escudoColombia?`
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-size:0.76rem;color:#003366">Personalizado:</span>
@@ -4146,11 +3330,11 @@ function guardarConfigPedagogica(){
   const np=parseInt(document.getElementById('cfgNumPer')?.value||4);
   const pesos=Array.from({length:np},(_,i)=>parseInt(document.getElementById('pesPer_'+i)?.value||Math.floor(100/np)));
   const total=pesos.reduce((a,b)=>a+b,0);
-  if(Math.abs(total-100)>1){customAlert('Los pesos de los períodos deben sumar 100%. Actualmente: '+total+'%');return;}
+  if(Math.abs(total-100)>1){alert('Los pesos de los períodos deben sumar 100%. Actualmente: '+total+'%');return;}
   const pctCrit=parseFloat(document.getElementById('cfgPctInasistCritica')?.value||25);
   const pctPrev=parseFloat(document.getElementById('cfgPctInasistPreventiva')?.value||20);
   if(pctCrit<=0 || pctCrit>100 || pctPrev<=0 || pctPrev>=pctCrit){
-    customAlert('Los porcentajes de inasistencia deben ser válidos y cumplir: 0 < Preventiva < Crítica ≤ 100');
+    alert('Los porcentajes de inasistencia deben ser válidos y cumplir: 0 < Preventiva < Crítica ≤ 100');
     return;
   }
   updDB(d=>{
@@ -4178,7 +3362,7 @@ function guardarConfigPedagogica(){
         cols.push({key,nom,pct});
       });
       const totalPct=cols.reduce((s,c)=>s+c.pct,0);
-      if(Math.abs(totalPct-100)>1){customAlert('Los porcentajes deben sumar 100%. Actualmente: '+Math.round(totalPct)+'%.');return;}
+      if(Math.abs(totalPct-100)>1){alert('Los porcentajes deben sumar 100%. Actualmente: '+Math.round(totalPct)+'%.');return;}
       d.config.columnasBase=cols;
       const sC=cols.find(c=>c.key==='s');const sbC=cols.find(c=>c.key==='sb');const hC=cols.find(c=>c.key==='h');
       if(sC){d.config.nomSer=sC.nom;d.config.pctSer=parseFloat((sC.pct/100).toFixed(4));}
@@ -4198,7 +3382,7 @@ function guardarConfigPedagogica(){
   });
   _pushDB();
   fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Configuración pedagógica actualizada en '+(db.nombre||'institución'),meta:{modulo:'config-pedagogica'}})}).catch(()=>{});
-  customAlert('✅ Configuración pedagógica e inasistencias guardada. Los cambios se reflejarán en planillas, asistencia e informes.');
+  alert('✅ Configuración pedagógica e inasistencias guardada. Los cambios se reflejarán en planillas, asistencia e informes.');
   renderApp();
 }
 
@@ -4206,16 +3390,16 @@ function guardarConfigCalif(){
   const vSer=document.getElementById('cfgPctSer')?.value;
   const vSaber=document.getElementById('cfgPctSaber')?.value;
   const vHacer=document.getElementById('cfgPctHacer')?.value;
-  if(!vSer||!vSaber||!vHacer){customAlert('Ingrese los porcentajes de SER, SABER y HACER antes de guardar.');return;}
+  if(!vSer||!vSaber||!vHacer){alert('Ingrese los porcentajes de SER, SABER y HACER antes de guardar.');return;}
   const pS=parseFloat(vSer)/100;
   const pSb=parseFloat(vSaber)/100;
   const pH=parseFloat(vHacer)/100;
   const total=Math.round((pS+pSb+pH)*100);
-  if(Math.abs(total-100)>1){customAlert('Los porcentajes deben sumar 100%. Actualmente suman '+total+'%.');return;}
+  if(Math.abs(total-100)>1){alert('Los porcentajes deben sumar 100%. Actualmente suman '+total+'%.');return;}
   const eS=parseFloat(document.getElementById('cfgEscalaS')?.value||4.7);
   const eA=parseFloat(document.getElementById('cfgEscalaA')?.value||4.0);
   const eB=parseFloat(document.getElementById('cfgEscalaB')?.value||3.0);
-  if(eS<=eA||eA<=eB||eB<=0){customAlert('Los umbrales deben cumplir: SUPERIOR > ALTO > BÁSICO > 0');return;}
+  if(eS<=eA||eA<=eB||eB<=0){alert('Los umbrales deben cumplir: SUPERIOR > ALTO > BÁSICO > 0');return;}
   const depto=(document.getElementById('cfgDepto')?.value||'').trim();
   const res=(document.getElementById('cfgResolucion')?.value||'').trim();
   updDB(d=>{
@@ -4229,7 +3413,7 @@ function guardarConfigCalif(){
     return d;
   });
   _pushDB();
-  customAlert('✅ Configuración académica guardada correctamente.');
+  alert('✅ Configuración académica guardada correctamente.');
   renderApp();
 }
 function agregarColBase(){
@@ -4281,11 +3465,11 @@ function guardarInfoInst(){
   });
   _pushDB();
   fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Información institucional actualizada en '+(db.nombre||'institución'),meta:{modulo:'info-inst',anio:db.anio}})}).catch(()=>{});
-  customAlert('✅ Institución actualizada correctamente.');renderApp();
+  alert('✅ Institución actualizada correctamente.');renderApp();
 }
 function guardarGrado(){
   const n=document.getElementById('cfgGradoN').value.trim();const d=document.getElementById('cfgGradoD').value.trim();
-  if(!n){customAlert('Ingrese nombre del grado');return;}
+  if(!n){alert('Ingrese nombre del grado');return;}
   updDB(db=>{db.grados.push({n,d});return db;});renderApp();
 }
 function editarGrado(idx){
@@ -4321,7 +3505,7 @@ function editarGrado(idx){
 function _guardarEditGrado(idx){
   const nn=(document.getElementById('_editGradoNombre')?.value||'').trim();
   const nd=(document.getElementById('_editGradoDir')?.value||'').trim();
-  if(!nn){customAlert('El nombre del grado no puede estar vacío.');return;}
+  if(!nn){alert('El nombre del grado no puede estar vacío.');return;}
   const nombreAnterior=db.grados[idx]?.n||'';
   updDB(d=>{
     if(d.grados[idx]) d.grados[idx]={...d.grados[idx],n:nn,d:nd};
@@ -4341,10 +3525,10 @@ function setLinkClaseGrado(idx){
   const nl=prompt('🔗 Link de clase virtual para el grado: '+g.n+'\n\nPegue la URL de Meet, Zoom, Teams u otra plataforma.\nDeje en blanco para quitar el link.',g.linkClase||'');
   if(nl===null) return;
   updDB(d=>{if(d.grados[idx]) d.grados[idx].linkClase=nl.trim();return d;});
-  customAlert(nl.trim()?'✅ Link de clase virtual guardado para '+g.n+'.\n\nLos estudiantes online de este grado verán el botón para unirse.':'✅ Link eliminado del grado '+g.n+'.');
+  alert(nl.trim()?'✅ Link de clase virtual guardado para '+g.n+'.\n\nLos estudiantes online de este grado verán el botón para unirse.':'✅ Link eliminado del grado '+g.n+'.');
   renderApp();
 }
-async function eliminarGrado(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(db=>{db.grados.splice(idx,1);return db;});renderApp();}
+function eliminarGrado(idx){if(!confirm('¿Eliminar?')) return;updDB(db=>{db.grados.splice(idx,1);return db;});renderApp();}
 
 // ============================================================
 // CARGA ACADÉMICA
@@ -4448,9 +3632,9 @@ function htmlCarga(){
   </div>`;
 }
 function cargarFotoDoc(inp){fileToB64(inp.files[0],b64=>{cargaFotoTemp=b64;document.getElementById('fotoPreviewArea').innerHTML=`<img src="${b64}" class="photo-preview">`;});}
-async function guardarDocente(){
+function guardarDocente(){
   const n=document.getElementById('dNom').value.trim();const u=document.getElementById('dUsr').value.trim();const p=document.getElementById('dPas').value.trim();
-  if(!n||!u||!p){customAlert('Complete nombre, usuario y contraseña');return;}
+  if(!n||!u||!p){alert('Complete nombre, usuario y contraseña');return;}
   const decreto=document.getElementById('dDecre')?.value||'';
   const modalidadDecre=decreto==='1278'?(document.getElementById('dModDecre')?.value||''):'';
   const nivelFormacion=document.getElementById('dNivForm')?.value.trim()||'';
@@ -4458,9 +3642,8 @@ async function guardarDocente(){
   const nivelPosgrado=document.getElementById('dNivPos')?.value||'';
   const tituloPosgrado=nivelPosgrado?(document.getElementById('dTitPos')?.value.trim()||''):'';
   const gradoEscalafon=document.getElementById('dEscala')?.value||'';
-  const pHash=await _hashPassword(p);
   updDB(db=>{
-    const nu={u,p:pHash,r:'docente',n:n.toUpperCase(),cedula:document.getElementById('dCed').value.trim(),
+    const nu={u,p,r:'docente',n:n.toUpperCase(),cedula:document.getElementById('dCed').value.trim(),
       telefono:document.getElementById('dTel').value.trim(),correo:document.getElementById('dCorreo').value.trim(),
       areaBase:document.getElementById('dArea').value.trim(),cargo:document.getElementById('dCargo').value,
       decreto,modalidadDecre,tipoPregrado,nivelFormacion,nivelPosgrado,tituloPosgrado,gradoEscalafon,foto:cargaFotoTemp};
@@ -4479,7 +3662,7 @@ function editarDocente(u){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
       <div style="grid-column:1/-1"><label class="lbl">Nombre completo *</label><input id="_edNom" value="${user.n||''}" placeholder="Nombre completo" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div><label class="lbl">Usuario *</label><input id="_edUsr" value="${user.u||''}" placeholder="Usuario" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
-      <div><label class="lbl">Contraseña</label><input id="_edPas" value="" placeholder="Dejar en blanco para mantener la actual" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
+      <div><label class="lbl">Contraseña</label><input id="_edPas" value="${user.p||''}" placeholder="Contraseña" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div><label class="lbl">Cédula</label><input id="_edCed" value="${user.cedula||''}" placeholder="Número de cédula" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div><label class="lbl">Teléfono</label><input id="_edTel" value="${user.telefono||''}" placeholder="Teléfono" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div><label class="lbl">Correo electrónico</label><input id="_edCorreo" type="email" value="${user.correo||user.email||''}" placeholder="correo@..." style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
@@ -4529,54 +3712,51 @@ function editarDocente(u){
       </div>
     </div>
     <div style="display:flex;gap:8px">
-      <button onclick="_guardarEdicionDocente('${u}')" style="flex:1;background:#27ae60;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold">💾 Guardar Cambios</button>
+      <button onclick="(function(){
+        const n=document.getElementById('_edNom').value.trim();
+        const usr=document.getElementById('_edUsr').value.trim();
+        if(!n||!usr){alert('Nombre y usuario son obligatorios');return;}
+        updDB(function(d){
+          const idx=d.users.findIndex(x=>x.u==='${u}');
+          const _edDecreVal=document.getElementById('_edDecre')?.value||d.users[idx].decreto||'';
+          const _edModDecreVal=_edDecreVal==='1278'?(document.getElementById('_edModDecre')?.value||d.users[idx].modalidadDecre||''):'';
+          if(idx!==-1) d.users[idx]={...d.users[idx],
+            n:n.toUpperCase(),
+            u:usr,
+            p:document.getElementById('_edPas').value.trim()||d.users[idx].p,
+            cedula:document.getElementById('_edCed').value.trim(),
+            telefono:document.getElementById('_edTel').value.trim(),
+            correo:document.getElementById('_edCorreo').value.trim(),
+            email:document.getElementById('_edCorreo').value.trim(),
+            areaBase:document.getElementById('_edArea').value.trim(),
+            cargo:document.getElementById('_edCargo').value,
+            decreto:_edDecreVal,
+            modalidadDecre:_edModDecreVal,
+            tipoPregrado:document.getElementById('_edTipoPre')?.value||d.users[idx].tipoPregrado||'',
+            nivelFormacion:document.getElementById('_edNivForm')?.value.trim()||d.users[idx].nivelFormacion||'',
+            nivelPosgrado:document.getElementById('_edNivPos')?.value||d.users[idx].nivelPosgrado||'',
+            tituloPosgrado:document.getElementById('_edNivPos')?.value?(document.getElementById('_edTitPos')?.value.trim()||d.users[idx].tituloPosgrado||''):'',
+            gradoEscalafon:document.getElementById('_edEscala')?.value||d.users[idx].gradoEscalafon||'',
+            foto:window._editDocFoto!==undefined?window._editDocFoto:d.users[idx].foto
+          };
+          return d;
+        });
+        window._editDocFoto=undefined;
+        document.getElementById('_editDocOv').remove();
+        renderApp();
+      })()" style="flex:1;background:#27ae60;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold">💾 Guardar Cambios</button>
       <button onclick="window._editDocFoto=undefined;document.getElementById('_editDocOv').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer">Cancelar</button>
     </div>
   </div>`;
   window._editDocFoto=undefined;
   document.body.appendChild(ov);
 }
-async function _guardarEdicionDocente(u){
-  const n=document.getElementById('_edNom').value.trim();
-  const usr=document.getElementById('_edUsr').value.trim();
-  if(!n||!usr){customAlert('Nombre y usuario son obligatorios');return;}
-  const passNueva=document.getElementById('_edPas').value.trim();
-  const pHash=passNueva?await _hashPassword(passNueva):null;
-  updDB(function(d){
-    const idx=d.users.findIndex(x=>x.u===u);
-    const _edDecreVal=document.getElementById('_edDecre')?.value||d.users[idx].decreto||'';
-    const _edModDecreVal=_edDecreVal==='1278'?(document.getElementById('_edModDecre')?.value||d.users[idx].modalidadDecre||''):'';
-    if(idx!==-1) d.users[idx]={...d.users[idx],
-      n:n.toUpperCase(),
-      u:usr,
-      p:pHash||d.users[idx].p,
-      cedula:document.getElementById('_edCed').value.trim(),
-      telefono:document.getElementById('_edTel').value.trim(),
-      correo:document.getElementById('_edCorreo').value.trim(),
-      email:document.getElementById('_edCorreo').value.trim(),
-      areaBase:document.getElementById('_edArea').value.trim(),
-      cargo:document.getElementById('_edCargo').value,
-      decreto:_edDecreVal,
-      modalidadDecre:_edModDecreVal,
-      tipoPregrado:document.getElementById('_edTipoPre')?.value||d.users[idx].tipoPregrado||'',
-      nivelFormacion:document.getElementById('_edNivForm')?.value.trim()||d.users[idx].nivelFormacion||'',
-      nivelPosgrado:document.getElementById('_edNivPos')?.value||d.users[idx].nivelPosgrado||'',
-      tituloPosgrado:document.getElementById('_edNivPos')?.value?(document.getElementById('_edTitPos')?.value.trim()||d.users[idx].tituloPosgrado||''):'',
-      gradoEscalafon:document.getElementById('_edEscala')?.value||d.users[idx].gradoEscalafon||'',
-      foto:window._editDocFoto!==undefined?window._editDocFoto:d.users[idx].foto
-    };
-    return d;
-  });
-  window._editDocFoto=undefined;
-  document.getElementById('_editDocOv').remove();
-  renderApp();
-}
-async function eliminarDocente(u){if(!await customConfirm('¿Eliminar?')) return;updDB(db=>{db.users=db.users.filter(x=>x.u!==u);return db;});renderApp();}
+function eliminarDocente(u){if(!confirm('¿Eliminar?')) return;updDB(db=>{db.users=db.users.filter(x=>x.u!==u);return db;});renderApp();}
 function guardarCarga(){
   const d=document.getElementById('cDoc')?.value;const g=document.getElementById('cGra')?.value;
   const m=document.getElementById('cMat')?.value.trim();const a=document.getElementById('cArea')?.value.trim();
   const ih=parseFloat(document.getElementById('cIH')?.value)||0;
-  if(!d||!g||!m){customAlert('Complete campos requeridos');return;}
+  if(!d||!g||!m){alert('Complete campos requeridos');return;}
   const dn=db.users.find(x=>x.u===d)?.n||'';
   updDB(db=>{db.carga.push({id:Date.now(),d,dn,g,m,a:a||'',ih});return db;});renderApp();
 }
@@ -4610,7 +3790,7 @@ function _guardarEditCarga(id){
   const mat=document.getElementById('_ecMat')?.value.trim()||'';
   const area=document.getElementById('_ecArea')?.value.trim()||'';
   const ih=parseFloat(document.getElementById('_ecIH')?.value)||0;
-  if(!docU||!gra||!mat){customAlert('Docente, grado y asignatura son obligatorios');return;}
+  if(!docU||!gra||!mat){alert('Docente, grado y asignatura son obligatorios');return;}
   const dn=db.users.find(x=>x.u===docU)?.n||docU;
   updDB(d=>{
     const idx=d.carga.findIndex(x=>x.id===id);
@@ -4620,7 +3800,7 @@ function _guardarEditCarga(id){
   document.getElementById('_editCargaOv').style.display='none';
   renderApp();
 }
-async function eliminarCarga(id){if(!await customConfirm('¿Eliminar?')) return;updDB(db=>{db.carga=db.carga.filter(x=>x.id!==id);return db;});renderApp();}
+function eliminarCarga(id){if(!confirm('¿Eliminar?')) return;updDB(db=>{db.carga=db.carga.filter(x=>x.id!==id);return db;});renderApp();}
 
 // ============================================================
 // ESTUDIANTES
@@ -4720,17 +3900,12 @@ RODRÍGUEZ MARIA"></textarea>
     <div id="estTablaWrap">${htmlEstTabla(fgrado)}</div>
   </div>`;
 }
-let _estTablaPagina=1;
-let _estTablaGradoPrevio=null;
 function htmlEstTabla(grado){
-  if(grado!==_estTablaGradoPrevio){ _estTablaPagina=1; _estTablaGradoPrevio=grado; }
-  const todosEsts=db.ests.filter(x=>x.g===grado).sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
-  if(!todosEsts.length) return `<p class="empty">No hay estudiantes. Registre estudiantes usando el formulario de arriba.</p>`;
-  const _pagEst=_paginar(todosEsts,_estTablaPagina,30);
-  const ests=_pagEst.items;
+  const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
+  if(!ests.length) return `<p class="empty">No hay estudiantes. Registre estudiantes usando el formulario de arriba.</p>`;
   const _privT=_getPlatTipo()==='privada';
   const rows=ests.map((e,i)=>`<tr>
-    <td>${(_pagEst.pagina-1)*_pagEst.porPagina+i+1}</td>
+    <td>${i+1}</td>
     <td style="text-align:left">
       <div style="display:flex;align-items:center;gap:7px">
         ${e.foto?`<img src="${e.foto}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid #003366;flex-shrink:0" onclick="abrirZoomFoto('${e.foto}','${fmtNombreEst(e)}',event)">`:`<span style="width:32px;height:32px;border-radius:50%;background:#c5d8f0;border:2px solid #003366;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0">👤</span>`}
@@ -4753,11 +3928,9 @@ function htmlEstTabla(grado){
     ${_privT?`<button class="btn-sm" style="background:${(() => {const ps=_getPazSalvoEst(e);return ps.ok?'#27ae60':'#c0392b';})()}" title="Paz y Salvo" onclick="abrirPazSalvoModal('${String(e.id)}')">⚖️</button>`:''}
     <button class="btn-sm" style="background:#c0392b" title="Eliminar" onclick="eliminarEst('${String(e.id)}')">🗑</button>
     </td></tr>`).join('');
-  return `<p style="color:#666;font-size:0.85rem;margin-bottom:8px">Total: <b>${todosEsts.length}</b> estudiante(s) en <b>${grado}</b>${_privT?' · <span style="font-size:0.8rem;color:#8e44ad">🏢 Institución Privada</span>':''} · <span style="font-size:0.8rem;color:#555">Orden: Apellido Apellido Nombre Nombre</span></p>
-  <div class="over"><table><thead><tr><th>#</th><th style="text-align:left">Nombre Completo</th><th>Grado</th>${_privT?'<th>Pensión</th>':''}<th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>
-  ${_htmlPaginacion(_pagEst.pagina,_pagEst.totalPaginas,_pagEst.total,'_cambiarPaginaEstudiantes')}`;
+  return `<p style="color:#666;font-size:0.85rem;margin-bottom:8px">Total: <b>${ests.length}</b> estudiante(s) en <b>${grado}</b>${_privT?' · <span style="font-size:0.8rem;color:#8e44ad">🏢 Institución Privada</span>':''} · <span style="font-size:0.8rem;color:#555">Orden: Apellido Apellido Nombre Nombre</span></p>
+  <div class="over"><table><thead><tr><th>#</th><th style="text-align:left">Nombre Completo</th><th>Grado</th>${_privT?'<th>Pensión</th>':''}<th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
-function _cambiarPaginaEstudiantes(p){ _estTablaPagina=p; renderEstTabla(); }
 function renderEstTabla(){
   const g=document.getElementById('estFiltroGrado')?.value||db.grados[0]?.n||'';
   const wrap=document.getElementById('estTablaWrap');if(wrap) wrap.innerHTML=htmlEstTabla(g);
@@ -4772,7 +3945,7 @@ function fmtNombreEst(e){
 function procesarPegadoEstudiantes(){
   const g = document.getElementById('estGradoPaste').value;
   const texto = document.getElementById('estListaPaste').value;
-  if(!g || !texto.trim()) { customAlert('Seleccione grado y pegue la lista.'); return; }
+  if(!g || !texto.trim()) { alert('Seleccione grado y pegue la lista.'); return; }
   
   const lineas = texto.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
   if(!lineas.length) return;
@@ -4820,7 +3993,7 @@ function guardarEstudiantes(){
   const nm1=(document.getElementById('estNm1')?.value||'').trim().toUpperCase();
   const nm2=(document.getElementById('estNm2')?.value||'').trim().toUpperCase();
   const modal=document.getElementById('estModalidad')?.value||'presencial';
-  if(!ap1||!nm1||!g){customAlert('Complete grado, primer apellido y primer nombre');return;}
+  if(!ap1||!nm1||!g){alert('Complete grado, primer apellido y primer nombre');return;}
   const nombreCompleto=[ap1,ap2,nm1,nm2].filter(Boolean).join(' ');
   // IDs siempre como string para evitar errores de comparación en onclick
   updDB(db=>{db.ests.push({id:'est_'+Date.now(),n:nombreCompleto,g,modalidad:modal,
@@ -4908,7 +4081,7 @@ function _abrirCamaraEstudiante(){
   wrap.style.display='block';
   navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false})
     .then(s=>{window._editEstCamStream=s;vid.srcObject=s;})
-    .catch(()=>customAlert('No se pudo acceder a la cámara.'));
+    .catch(()=>alert('No se pudo acceder a la cámara.'));
 }
 function _cerrarCamaraEstudiante(){
   if(window._editEstCamStream){window._editEstCamStream.getTracks().forEach(t=>t.stop());window._editEstCamStream=null;}
@@ -4934,7 +4107,7 @@ function _guardarEditEst(id){
   const nm2=(document.getElementById('_editEstNm2')?.value||'').trim().toUpperCase();
   const ng=document.getElementById('_editEstGrado')?.value||'';
   const modal=document.getElementById('_editEstModalidad')?.value||'presencial';
-  if(!ap1.trim()||!nm1.trim()){customAlert('Ingrese al menos el primer apellido y primer nombre.');return;}
+  if(!ap1.trim()||!nm1.trim()){alert('Ingrese al menos el primer apellido y primer nombre.');return;}
   _cerrarCamaraEstudiante();
   const foto=window._editEstFotoB64||'';
   const nombreCompleto=[ap1,ap2,nm1,nm2].filter(Boolean).join(' ');
@@ -4944,9 +4117,9 @@ function _guardarEditEst(id){
   document.getElementById('_editEstOv')?.remove();
   renderApp();
 }
-async function eliminarEst(id){
+function eliminarEst(id){
   id=String(id);
-  if(!await customConfirm('¿Eliminar estudiante? Esta acción no se puede deshacer.')) return;
+  if(!confirm('¿Eliminar estudiante? Esta acción no se puede deshacer.')) return;
   updDB(db=>{db.ests=db.ests.filter(x=>String(x.id)!==id);return db;});
   renderApp();
 }
@@ -5122,7 +4295,7 @@ function renderHorario(){
   const wrap=document.getElementById('tablaHorario');if(wrap) wrap.innerHTML=html;
 }
 
-async function setCelda(grado,dia,franja,value){
+function setCelda(grado,dia,franja,value){
   if(!db.horarios) db.horarios={};if(!db.horarios[grado]) db.horarios[grado]={};
   const key=getCeldaKey(dia,franja);
   if(!value){db.horarios[grado][key]={mat:'',cId:null,docU:'',dn:''};renderHorario();return;}
@@ -5135,7 +4308,7 @@ async function setCelda(grado,dia,franja,value){
     if(v&&v.docU===docU&&docU){cruce=true;}
   });
   if(cruce){
-    if(!await customConfirm('⚠️ El docente '+dn+' ya tiene clase en este horario en otro grado. ¿Continuar de todas formas?')) return;
+    if(!confirm('⚠️ El docente '+dn+' ya tiene clase en este horario en otro grado. ¿Continuar de todas formas?')) return;
   }
   db.horarios[grado][key]={mat,cId,docU,dn};
   renderHorario();
@@ -5193,8 +4366,8 @@ function guardarConfigHorario(){
   renderHorario();
 }
 
-async function autoGenerarHorario(){
-  if(!await customConfirm('⚡ Se generará el horario automáticamente para todos los grados basado en la carga académica. Los horarios actuales serán reemplazados. ¿Continuar?')) return;
+function autoGenerarHorario(){
+  if(!confirm('⚡ Se generará el horario automáticamente para todos los grados basado en la carga académica. Los horarios actuales serán reemplazados. ¿Continuar?')) return;
   const cfg=getHorConfig();const franjas=calcFranjas(cfg).filter(f=>f.tipo==='clase');
   const DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes'];
   const slots=[];
@@ -5231,12 +4404,12 @@ async function autoGenerarHorario(){
     });
     return db;
   });
-  customAlert('✅ Horario generado. Revise y ajuste si es necesario.');
+  alert('✅ Horario generado. Revise y ajuste si es necesario.');
   renderHorario();
 }
 
-async function reajustarHorario(){
-  if(!await customConfirm('🔄 Se revisarán y corregirán los cruces de docentes en el horario actual. ¿Continuar?')) return;
+function reajustarHorario(){
+  if(!confirm('🔄 Se revisarán y corregirán los cruces de docentes en el horario actual. ¿Continuar?')) return;
   const cfg=getHorConfig();const franjas=calcFranjas(cfg).filter(f=>f.tipo==='clase');
   const DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes'];
   updDB(db=>{
@@ -5270,12 +4443,12 @@ async function reajustarHorario(){
     });
     return db;
   });
-  customAlert(cruces>0?'🔄 Se corrigieron '+cruces+' cruce(s) de docentes.':'✅ No se encontraron cruces.');
+  alert(cruces>0?'🔄 Se corrigieron '+cruces+' cruce(s) de docentes.':'✅ No se encontraron cruces.');
   renderHorario();
 }
 
 function guardarHorario(){
-  saveDB();customAlert('✅ Horario guardado correctamente.');
+  saveDB();alert('✅ Horario guardado correctamente.');
 }
 
 function pdfHorario(){
@@ -5380,7 +4553,7 @@ function htmlHorarioReadOnly(grado){
 }
 
 function pdfHorarioGrado(grado){
-  if(!grado){customAlert('Grado no especificado.');return;}
+  if(!grado){alert('Grado no especificado.');return;}
   const cfg=getHorConfig();const franjas=calcFranjas(cfg);
   const DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes'];
   const horG=((db.horarios||{})[grado])||{};
@@ -5621,8 +4794,8 @@ function restaurarRegistro(tipo, id, extraMeta) {
   }
 }
 
-async function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
-  if (!await customConfirm('⚠️ ¿ELIMINAR DEFINITIVAMENTE?\nEsta acción borrará permanentemente el registro de la base de datos y no se podrá recuperar.')) return;
+function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
+  if (!confirm('⚠️ ¿ELIMINAR DEFINITIVAMENTE?\nEsta acción borrará permanentemente el registro de la base de datos y no se podrá recuperar.')) return;
 
   updDB(d => {
     if (tipo === 'descriptor') {
@@ -5651,8 +4824,8 @@ async function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
   }
 }
 
-async function vaciarPapelera() {
-  if (!await customConfirm('⚠️ ¿VACIAR TODA LA PAPELERA DE RECICLAJE?\nSe eliminarán de forma permanente todos los elementos borrados.')) return;
+function vaciarPapelera() {
+  if (!confirm('⚠️ ¿VACIAR TODA LA PAPELERA DE RECICLAJE?\nSe eliminarán de forma permanente todos los elementos borrados.')) return;
   const isAdmin = sesion && sesion.r === 'admin';
   const u = (sesion && sesion.u) || '';
 
@@ -5670,7 +4843,7 @@ async function vaciarPapelera() {
     return d;
   });
 
-  customAlert('✅ Papelera vaciada correctamente.');
+  alert('✅ Papelera vaciada correctamente.');
   renderApp();
   cerrarModalPapelera();
 }
@@ -5751,12 +4924,9 @@ function abrirModalPapelera(filtroTipo) {
   eliminados.sort((a, b) => (b.deletedAt || '').localeCompare(a.deletedAt || ''));
 
   let fTipo = filtroTipo || window._papeleraFiltroTipo || 'todos';
-  if (filtroTipo && filtroTipo !== window._papeleraFiltroTipo) window._papeleraPagina = 1;
   window._papeleraFiltroTipo = fTipo;
 
   const listaFiltrada = fTipo === 'todos' ? eliminados : eliminados.filter(x => x.tipo === fTipo);
-  const _pagPap = _paginar(listaFiltrada, window._papeleraPagina || 1, 20);
-  window._papeleraPagina = _pagPap.pagina;
 
   let modal = document.getElementById('_papeleraModal');
   if (!modal) {
@@ -5774,7 +4944,7 @@ function abrirModalPapelera(filtroTipo) {
     'estudiante': '#d35400'
   };
 
-  const rowsHtml = _pagPap.items.length ? _pagPap.items.map(item => {
+  const rowsHtml = listaFiltrada.length ? listaFiltrada.map(item => {
     const fStr = item.deletedAt ? new Date(item.deletedAt).toLocaleString('es-CO') : '—';
     const bColor = tiposBadge[item.tipo] || '#555';
     const jsonMeta = encodeURIComponent(JSON.stringify(item.extraMeta || {}));
@@ -5831,7 +5001,6 @@ function abrirModalPapelera(filtroTipo) {
             </tbody>
           </table>
         </div>
-        ${_htmlPaginacion(_pagPap.pagina,_pagPap.totalPaginas,_pagPap.total,'_cambiarPaginaPapelera')}
       </div>
       <div style="padding:10px 18px;background:#f5f7fa;border-top:1px solid #e0e8f0;display:flex;justify-content:flex-end;border-radius:0 0 12px 12px">
         <button class="btn btn-gray" style="padding:7px 18px;font-size:0.83rem" onclick="cerrarModalPapelera()">Cerrar</button>
@@ -5845,7 +5014,6 @@ function cerrarModalPapelera() {
   const modal = document.getElementById('_papeleraModal');
   if (modal) modal.style.display = 'none';
 }
-function _cambiarPaginaPapelera(p){ window._papeleraPagina = p; abrirModalPapelera(); }
 
 // ============================================================
 // DESCRIPTORES (FILTRADO POR CARGA ACADÉMICA Y AISLAMIENTO)
@@ -6141,7 +5309,7 @@ function guardarDesc(){
 
   const inputs = Array.from(document.querySelectorAll('.descTxtInput')).map(i => i.value.trim()).filter(Boolean);
   if (!mat || !inputs.length) {
-    customAlert('Complete el campo de asignatura e ingrese al menos un indicador');
+    alert('Complete el campo de asignatura e ingrese al menos un indicador');
     return;
   }
 
@@ -6229,7 +5397,7 @@ function editarDesc(id){
   if (!d) return;
   const isAdmin = sesion && sesion.r === 'admin';
   if (!isAdmin && d.doc !== sesion.u) {
-    customAlert('Solo puede editar los descriptores creados por su usuario.');
+    alert('Solo puede editar los descriptores creados por su usuario.');
     return;
   }
 
@@ -6246,16 +5414,16 @@ function editarDesc(id){
   setTimeout(_filtrarDescReg, 60);
 }
 
-async function eliminarDesc(id){
+function eliminarDesc(id){
   const d = (db.descriptores || []).find(x => x.id === id);
   if (!d) return;
   const isAdmin = sesion && sesion.r === 'admin';
   if (!isAdmin && d.doc !== sesion.u) {
-    customAlert('Solo puede eliminar los descriptores creados por su usuario.');
+    alert('Solo puede eliminar los descriptores creados por su usuario.');
     return;
   }
 
-  if (!await customConfirm('¿Mover este descriptor a la papelera de reciclaje?')) return;
+  if (!confirm('¿Mover este descriptor a la papelera de reciclaje?')) return;
   softDeleteRegistro('descriptor', id);
 }
 
@@ -6269,17 +5437,17 @@ function replicarUltimosDescs(){
   const gradsDest = chks.map(c => c.value).filter(g => g !== gradSrc);
 
   if (!gradsDest.length) {
-    customAlert('Seleccione al menos un grupo destino asignado en su carga académica diferente al origen.');
+    alert('Seleccione al menos un grupo destino asignado en su carga académica diferente al origen.');
     return;
   }
   if (!mat) {
-    customAlert('Seleccione primero una asignatura.');
+    alert('Seleccione primero una asignatura.');
     return;
   }
 
   const srcDescs = (db.descriptores || []).filter(d => !d.deletedAt && d.doc === doc && String(d.per) === String(per) && d.mat === mat && d.gra === gradSrc);
   if (!srcDescs.length) {
-    customAlert('No hay descriptores guardados para este docente/periodo/asignatura/grado origen.\nGuarde primero el descriptor y luego replique.');
+    alert('No hay descriptores guardados para este docente/periodo/asignatura/grado origen.\nGuarde primero el descriptor y luego replique.');
     return;
   }
 
@@ -6318,10 +5486,10 @@ function agregarCampoDesc(){
   document.getElementById('descItemsContainer').insertAdjacentHTML('beforeend', html);
 }
 
-async function eliminarDescsSeleccionados(){
+function eliminarDescsSeleccionados(){
   const chks=Array.from(document.querySelectorAll('.chkDelDesc:checked'));
-  if(!chks.length){customAlert('No hay descriptores seleccionados.');return;}
-  if(!await customConfirm('¿Eliminar '+chks.length+' descriptores?')) return;
+  if(!chks.length){alert('No hay descriptores seleccionados.');return;}
+  if(!confirm('¿Eliminar '+chks.length+' descriptores?')) return;
   const ids = chks.map(c=>Number(c.value));
   updDB(d=>{
     d.descriptores=d.descriptores.filter(x=>!ids.includes(x.id));
@@ -6345,7 +5513,7 @@ async function eliminarDescsSeleccionados(){
 
 async function generarDescDesdeArchivoIA(){
   const fileInput = document.getElementById('descFileIA');
-  if(!fileInput.files.length){customAlert('Seleccione un archivo primero.');return;}
+  if(!fileInput.files.length){alert('Seleccione un archivo primero.');return;}
   const file = fileInput.files[0];
   
   _showToast('Extrayendo texto del archivo y procesando con IA...', 'info', 4000);
@@ -6382,10 +5550,10 @@ async function generarDescDesdeArchivoIA(){
         });
         _showToast('Descriptores extraidos.', '#27ae60', 3000);
       } else {
-        customAlert("La IA no pudo extraer descriptores.");
+        alert("La IA no pudo extraer descriptores.");
       }
     } catch(err) {
-      customAlert("Error en IA: " + err.message);
+      alert("Error en IA: " + err.message);
     }
   };
   
@@ -6397,7 +5565,7 @@ async function generarDescDesdeArchivoIA(){
 }
 
 function descargarDescriptoresPDF(){
-  if(typeof window.jspdf === 'undefined'){customAlert('Librería PDF no cargada');return;}
+  if(typeof window.jspdf === 'undefined'){alert('Librería PDF no cargada');return;}
   const doc = new window.jspdf.jsPDF('l');
   doc.setFontSize(14);
   doc.text('Listado de Descriptores', 10, 15);
@@ -6429,46 +5597,6 @@ function descargarDescriptoresPDF(){
 // PLANILLA
 // ============================================================
 let planPer='1',planCId='';
-// ── 🎯 Mi Panel: dashboard de inicio compacto para el Docente ──
-function htmlPanelDocente(){
-  const mats=db.carga.filter(c=>c.d===sesion.u);
-  const _numPerD=(db.config&&db.config.numPeriodos)||4;
-  const perA=db.periodosActivos||Array(_numPerD).fill(true);
-  const perActual=perA.lastIndexOf(true)+1||1;
-  const pendientes=[];
-  mats.forEach(function(c){
-    const ests=db.ests.filter(function(e){return e.g===c.g;});
-    if(!ests.length) return;
-    const faltantes=ests.filter(function(e){return calcNotaDef(e.nts,c.id,perActual)<=0;}).length;
-    if(faltantes>0) pendientes.push({carga:c,faltantes:faltantes,total:ests.length});
-  });
-  const totalEst=mats.reduce(function(s,c){return s+db.ests.filter(function(e){return e.g===c.g;}).length;},0);
-  const kpis=[
-    {ico:'📚',val:mats.length,lbl:'Asignaturas a cargo',col:'#1a3a5c'},
-    {ico:'👥',val:totalEst,lbl:'Estudiantes (todas)',col:'#1a5276'},
-    {ico:'📝',val:pendientes.length,lbl:'Planillas incompletas P'+perActual,col:pendientes.length?'#c0392b':'#1e8449'},
-  ];
-  const tarjetas=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px">
-    ${kpis.map(function(k){return `<div style="background:${k.col};color:#fff;border-radius:12px;padding:16px 10px;text-align:center;box-shadow:0 3px 10px rgba(0,0,0,.15)">
-      <div style="font-size:1.8rem;line-height:1">${k.ico}</div>
-      <div style="font-size:1.65rem;font-weight:900;margin:5px 0">${k.val}</div>
-      <div style="font-size:0.72rem;opacity:.9">${k.lbl}</div>
-    </div>`;}).join('')}
-  </div>`;
-  const listaPend=pendientes.length?`<div class="over"><table><thead><tr><th>Asignatura</th><th>Grado</th><th>Faltan</th><th></th></tr></thead><tbody>
-    ${pendientes.map(function(p){return `<tr>
-      <td style="text-align:left">${p.carga.m}</td>
-      <td>${p.carga.g}</td>
-      <td style="color:#c0392b;font-weight:bold">${p.faltantes}/${p.total}</td>
-      <td><button class="btn-sm" style="background:#1a5276" onclick="planCId='${p.carga.id}';planPer='${perActual}';pag='planilla';renderApp()">Ir a Planilla</button></td>
-    </tr>`;}).join('')}
-  </tbody></table></div>`:`<div class="info-box" style="border-left-color:#1e8449">🎉 ¡Todas sus planillas del Período ${perActual} están completas!</div>`;
-  return `<h3 class="sec-title">🎯 Mi Panel — ${sesion.n}</h3>
-  <div class="card">
-    ${mats.length?tarjetas:'<p class="empty">No tiene asignaturas a cargo todavía. Contacte al rector(a) para que le asigne cursos.</p>'}
-    ${mats.length?`<h4 style="color:#1a3a5c;margin:14px 0 10px;font-size:0.93rem">📝 Planillas pendientes por completar (Período ${perActual})</h4>${listaPend}`:''}
-  </div>`;
-}
 function htmlPlanilla(){
   const _numPer=_getNumPer();
   const mats=db.carga.filter(x=>sesion.r==='admin'||x.d===sesion.u);
@@ -6644,14 +5772,14 @@ function togglePeriodo(n){
     }
     d.periodosActivos[n-1]=!d.periodosActivos[n-1];
     const estado=d.periodosActivos[n-1]?'ABIERTO':'CERRADO';
-    setTimeout(()=>customAlert('✅ Periodo '+n+' ahora está '+estado+'.'),100);
+    setTimeout(()=>alert('✅ Periodo '+n+' ahora está '+estado+'.'),100);
     return d;
   });
   renderApp();
 }
 function cambiarPlanCId(v){planCId=v;renderApp();}
 
-// Toast no-bloqueante para la planilla (evita customAlert() en handlers de touch)
+// Toast no-bloqueante para la planilla (evita alert() en handlers de touch)
 function _toastPlan(msg,bg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(0);background:'+(bg||'#1a3a5c')+';color:#fff;padding:12px 22px;border-radius:24px;font-size:0.88rem;font-weight:bold;z-index:100000;box-shadow:0 4px 20px rgba(0,0,0,.4);pointer-events:none;text-align:center;max-width:88vw;transition:opacity .4s';
@@ -6716,7 +5844,7 @@ function abrirPopupNota(estId,campo,btnEl){
     ];
     html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
     cualOpts.forEach(function(o){
-      html+='<button class="nota-btn" onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+o.val+')" style="padding:8px 4px;font-size:0.78rem;font-weight:bold;background:'+o.color+';color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation;line-height:1.3">'+o.lbl+'<br><span style="font-size:0.62rem;opacity:0.85">'+o.desc+'</span></button>';
+      html+='<button onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+o.val+')" style="padding:8px 4px;font-size:0.78rem;font-weight:bold;background:'+o.color+';color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation;line-height:1.3">'+o.lbl+'<br><span style="font-size:0.62rem;opacity:0.85">'+o.desc+'</span></button>';
     });
     html+='</div></div>';
     html+='<div style="font-size:0.73rem;text-align:center;color:#7f8c8d;margin-bottom:8px">— o ingrese nota exacta —</div>';
@@ -6731,7 +5859,7 @@ function abrirPopupNota(estId,campo,btnEl){
     let v=min;
     while(v<=max+0.001){
       const vf=parseFloat(v.toFixed(1));
-      html+='<button class="nota-btn" onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+vf+')" style="flex:1;padding:8px 1px;font-size:0.82rem;font-weight:bold;background:'+col+';color:#fff;border:none;border-radius:5px;cursor:pointer;min-width:28px;min-height:38px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">'+vf.toFixed(1)+'</button>';
+      html+='<button onpointerdown="event.preventDefault();event.stopPropagation();seleccionarNotaRapido(\''+estId+'\',\''+campo+'\','+vf+')" style="flex:1;padding:8px 1px;font-size:0.82rem;font-weight:bold;background:'+col+';color:#fff;border:none;border-radius:5px;cursor:pointer;min-width:28px;min-height:38px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">'+vf.toFixed(1)+'</button>';
       v=parseFloat((v+0.1).toFixed(1));
     }
     html+='</div>';
@@ -6741,7 +5869,6 @@ function abrirPopupNota(estId,campo,btnEl){
   popup.innerHTML=html;
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNota, 'Seleccionar nota');
 
   function posicionarPopup(){
     const p=document.getElementById('popupNota');if(!p) return;
@@ -6775,7 +5902,7 @@ let _vozNotaRec=null;
 
 function iniciarVozNota(estId,campo){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Use Chrome o Edge para dictado por voz.');return;}
+  if(!SR){alert('Use Chrome o Edge para dictado por voz.');return;}
   const statusEl=document.getElementById('vozNotaStatus');
   const btn=document.getElementById('vozNotaBtn');
   if(_vozNotaRec){try{_vozNotaRec.stop();}catch(e){}_vozNotaRec=null;
@@ -6835,7 +5962,6 @@ function cerrarPopupNota(){
   const p=document.getElementById('popupNota');
   if(!p) return;
   if(p._cleanRepos) p._cleanRepos();
-  _liberarAccesibilidadPopup(p);
   p.remove();
 }
 
@@ -6889,54 +6015,11 @@ function _reaplicarPendientes(){
   _actualizarIndicadorPendientes();
 }
 
-// ── Auditoría: registra en d.logNotas quién cambió una nota, de qué valor a qué valor y cuándo ──
-// Debe llamarse DENTRO del callback de updDB (recibe el borrador mutable "d").
-function _registrarCambioNota(d,info){
-  if(info.valorAnterior===info.valorNuevo) return; // sin cambio real, no se registra
-  if(!Array.isArray(d.logNotas)) d.logNotas=[];
-  d.logNotas.push({
-    id:'ln_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
-    fecha:new Date().toISOString(),
-    usuario:sesion?sesion.u:'—',
-    usuarioNombre:sesion?(sesion.n||sesion.u):'—',
-    estId:info.estId,
-    estNombre:info.estNombre||'',
-    cId:info.cId,
-    per:info.per,
-    campo:info.campo,
-    valorAnterior:info.valorAnterior,
-    valorNuevo:info.valorNuevo
-  });
-  // Se conservan como máximo los últimos 1000 registros para no crecer indefinidamente
-  if(d.logNotas.length>1000) d.logNotas=d.logNotas.slice(d.logNotas.length-1000);
-}
-// ── Alertas automáticas a padres: si una asignatura ACABA de cruzar a bajo desempeño
-// (antes ≥3.0, ahora <3.0) por este guardado puntual, se reutiliza exactamente el mismo
-// mecanismo (notificación interna + correo) del módulo manual "🔔 Alertas Académicas
-// Tempranas" — así el acudiente se entera sin que nadie tenga que recordar enviarlo.
-// Debe llamarse DESPUÉS de que updDB() ya haya terminado (usa el "db" global actualizado).
-function _dispararAlertaBajoDesempenoSiAplica(estId,cId,per,baseAntes,baseDespues){
-  if(!(baseAntes>=3&&baseDespues<3)) return; // solo al cruzar hacia bajo desempeño, no en cada guardado
-  const est=db.ests.find(x=>x.id===estId);if(!est) return;
-  const carga=db.carga.find(x=>x.id===cId);if(!carga) return;
-  const msgN=`⚠️ Alerta Académica automática P${per}: ${est.n} (${est.g}) bajó a desempeño BAJO en ${carga.m}.`;
-  fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({kind:'alerta-academica',actor:'Sistema (automático)',message:msgN,
-      meta:{estId:est.id,estNombre:est.n,grado:est.g,areasP:1,periodo:per,acudiente:est.acudiente||'',asignatura:carga.m,automatica:true,fecha:new Date().toISOString()}})
-  }).catch(()=>{});
-  if(est.email){
-    const cuerpo=`Estimado/a ${est.acudiente||'Acudiente'},\n\nLe informamos que su acudido/a ${est.n}, estudiante del grado ${est.g} de ${db.nombre||'nuestra institución'}, acaba de presentar desempeño BAJO en la asignatura ${carga.m} durante el Período ${per} del año ${db.anio||''}.\n\nLe invitamos a comunicarse con el director(a) de grupo o con rectoría para acordar un plan de mejoramiento.\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
-    fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({to:est.email,subject:`⚠️ Alerta Académica automática — ${carga.m} — ${est.n}`,text:cuerpo})
-    }).catch(()=>{});
-  }
-}
 function _aplicarNotasPendientesEnDB(){
   const keys=Object.keys(_notasPendientes);
   if(!keys.length) return;
   const pending=JSON.parse(JSON.stringify(_notasPendientes));
   _notasPendientes={};
-  const _pendAlertas=[]; // {estId,cId,per,baseAntes,baseDespues} — se disparan DESPUÉS de updDB()
   updDB(function(d){
     keys.forEach(function(k){
       const p=pending[k];
@@ -6950,18 +6033,11 @@ function _aplicarNotasPendientesEnDB(){
       const numVal=Math.min(5,Math.max(0,parseFloat(p.valor)||0));
       if(!nts[cId]) nts[cId]={};
       if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
-      const ndAntes=nts[cId][per];
-      const baseAntes=_baseNota(ndAntes,d.config||{});
-      const valorAnterior=nts[cId][per][p.campo];
       nts[cId][per][p.campo]=numVal;
-      const baseDespues=_baseNota(nts[cId][per],d.config||{});
       d.ests[idx]=Object.assign({},e,{nts});
-      _registrarCambioNota(d,{estId:p.estId,estNombre:e.n,cId,per,campo:p.campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
-      _pendAlertas.push({estId:p.estId,cId,per,baseAntes,baseDespues});
     });
     return d;
   });
-  _pendAlertas.forEach(function(a){_dispararAlertaBajoDesempenoSiAplica(a.estId,a.cId,a.per,a.baseAntes,a.baseDespues);});
 }
 
 function seleccionarNotaRapido(estId,campo,valor){
@@ -7015,9 +6091,9 @@ function seleccionarNota(estId,campo,valor){
 // del grado en la columna indicada (SER, SABER, HACER, RECUP. o NIVELACIÓN).
 function replicarColumna(campo){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   const ests=db.ests.filter(x=>x.g===carga.g);
-  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  if(!ests.length){alert('No hay estudiantes en este grado.');return;}
   const nombreCampo={s:'SER',sb:'SABER',h:'HACER',rec:'RECUPERACIÓN',niv:'NIVELACIÓN'}[campo]||campo.toUpperCase();
   const old=document.getElementById('popupNota');if(old)old.remove();
   _popupActive=true;
@@ -7051,7 +6127,6 @@ function replicarColumna(campo){
   popup.innerHTML=html;
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNota, 'Aplicar nota a un campo');
 }
 
 function aplicarReplicaColumna(campo,valor){
@@ -7088,16 +6163,16 @@ function aplicarReplicaColumna(campo,valor){
   _actualizarIndicadorPendientes();
   let msg='✅ Nota '+numVal.toFixed(1)+' aplicada a '+aplicados+' estudiante(s).';
   if(omitidos>0) msg+='\n⚠️ '+omitidos+' estudiante(s) omitido(s) por no ser elegibles para nivelación.';
-  customAlert(msg);
+  alert(msg);
   renderApp();
 }
 
 
 function replicarColumnaSeleccionados(campo){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  if(!ests.length){alert('No hay estudiantes en este grado.');return;}
   const old=document.getElementById('popupNota');if(old)old.remove();
   _popupActive=true;
   const popup=document.createElement('div');
@@ -7148,7 +6223,6 @@ function replicarColumnaSeleccionados(campo){
   popup.setAttribute('data-nota-replica','');
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNota, 'Replicar nota a varios estudiantes');
 }
 
 function seleccionarNotaReplica(campo,valor){
@@ -7175,12 +6249,12 @@ function actualizarContadorReplica(){
 function aplicarReplicaSeleccionados(campo){
   const popup=document.getElementById('popupNota');
   const valorStr=popup?popup.getAttribute('data-nota-replica'):'';
-  if(valorStr===''||valorStr===null){customAlert('Primero seleccione una nota (paso 1).');return;}
+  if(valorStr===''||valorStr===null){alert('Primero seleccione una nota (paso 1).');return;}
   const valor=parseFloat(valorStr);
   const checks=document.querySelectorAll('.replic-est:checked');
   // IDs como strings para evitar problemas de tipo (e.id puede ser "est_xxx" o número)
   const ids=new Set(Array.from(checks).map(c=>String(c.value)));
-  if(!ids.size){customAlert('Seleccione al menos un estudiante.');return;}
+  if(!ids.size){alert('Seleccione al menos un estudiante.');return;}
   const carga=db.carga.find(x=>x.id===Number(planCId));
   if(!carga){cerrarPopupNota();return;}
   const numVal=Math.min(5,Math.max(0,valor));
@@ -7212,7 +6286,7 @@ function aplicarReplicaSeleccionados(campo){
   _actualizarIndicadorPendientes();
   let msg='✅ Nota '+numVal.toFixed(1)+' aplicada a '+aplicados+' estudiante(s) seleccionado(s).';
   if(omitidos>0)msg+='\n⚠️ '+omitidos+' omitido(s) por no ser elegibles para nivelación.';
-  customAlert(msg);
+  alert(msg);
   renderApp();
 }
 
@@ -7220,11 +6294,11 @@ function aplicarReplicaSeleccionados(campo){
 // ===== PLANILLA CSV DOWNLOAD/UPLOAD =====
 function pdfPlanillaGrado(){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura');return;}
+  if(!carga){alert('Seleccione una asignatura');return;}
   // Aplicar notas pendientes antes de generar el PDF para que aparezcan las notas actuales
   if(typeof _aplicarNotasPendientesEnDB==='function'&&Object.keys(_notasPendientes||{}).length)_aplicarNotasPendientesEnDB();
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes');return;}
+  if(!ests.length){alert('No hay estudiantes');return;}
   const per=Number(planPer);
   const doc=getPDF('l');
   doc.setFontSize(8);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
@@ -7291,7 +6365,7 @@ function descargarPlanillaXLSX(enBlanco){
   const _dlMsg=document.getElementById('_xlsxMsg');
   function _showXlsxErr(msg){
     if(_dlMsg){_dlMsg.textContent=msg;_dlMsg.style.display='block';_dlMsg.style.background='#fdecea';_dlMsg.style.color='#922b21';}
-    else customAlert(msg);
+    else alert(msg);
     console.error('descargarPlanillaXLSX:',msg);
   }
   // Esperar hasta 3s a que cargue la librería si aún no está disponible
@@ -7304,11 +6378,11 @@ function descargarPlanillaXLSX(enBlanco){
     return;
   }
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   if(!enBlanco&&typeof _aplicarNotasPendientesEnDB==='function'&&Object.keys(_notasPendientes||{}).length)_aplicarNotasPendientesEnDB();
   const per=Number(planPer);
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes registrados en el grado '+carga.g+'.');return;}
+  if(!ests.length){alert('No hay estudiantes registrados en el grado '+carga.g+'.');return;}
   const _cfgXls=db.config||{};
   const _colsXls=_resolverColumnas(_cfgXls);
   // ── Estructura de columnas (izquierda a derecha) ────────────────────────────
@@ -7362,7 +6436,7 @@ function descargarPlanillaXLSX(enBlanco){
     _xlsxDescargarBlob(wb,fileName);
     const _dlInfo='✅ Planilla descargada: '+ests.length+' estudiante(s) | Grado: '+carga.g+' | Asig: '+carga.m+' | P'+per+(enBlanco?' (EN BLANCO)':'');
     if(_dlMsg){_dlMsg.textContent=_dlInfo;_dlMsg.style.display='block';_dlMsg.style.background='#eafaf1';_dlMsg.style.color='#1a5276';}
-    else customAlert(_dlInfo);
+    else alert(_dlInfo);
     console.log('✅ Excel planilla:',fileName,'|',ests.length,'est.');
   }catch(ex){
     console.error('[XLSX planilla] Error:',ex.stack||ex.message||ex);
@@ -7372,9 +6446,9 @@ function descargarPlanillaXLSX(enBlanco){
 
 function descargarPlanillaCSV(){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura');return;}
+  if(!carga){alert('Seleccione una asignatura');return;}
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes');return;}
+  if(!ests.length){alert('No hay estudiantes');return;}
   const per=Number(planPer);
   const _cfgCsv=db.config||{};
   const _colsCsv=_resolverColumnas(_cfgCsv);
@@ -7396,14 +6470,14 @@ function cargarPlanillaCSV(inp){
   r.onload=ev=>{
     try{
       const allLines=ev.target.result.split(/\r?\n/).filter(l=>l.trim()&&!l.startsWith('#')&&!l.startsWith('sep='));
-      if(!allLines.length){customAlert('Archivo vacío o sin datos válidos.');return;}
+      if(!allLines.length){alert('Archivo vacío o sin datos válidos.');return;}
       // Buscar fila de encabezado (contiene ID o ESTUDIANTE)
       let hdrIdx=-1;
       for(let i=0;i<Math.min(allLines.length,6);i++){
         const lu=allLines[i].toUpperCase();
         if(lu.includes('ID_ESTUDIANTE')||lu.includes('ESTUDIANTE')||lu.includes('NOMBRE')){hdrIdx=i;break;}
       }
-      if(hdrIdx===-1){customAlert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
+      if(hdrIdx===-1){alert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
       const hdrCols=allLines[hdrIdx].split(',').map(c=>c.trim().toUpperCase().replace(/ *\([^)]*\)/g,'').trim());
       const _cfg=db.config||{};const _colsCsv2=_resolverColumnas(_cfg);
       // Construir mapa de columnas por nombre de encabezado
@@ -7415,9 +6489,9 @@ function cargarPlanillaCSV(inp){
         else if(h.startsWith('NIVEL')) colMap['niv']=i;
         else _colsCsv2.forEach(col=>{const cn=(col.nom||'').toUpperCase();if(cn&&(h===cn||h.startsWith(cn.substring(0,Math.min(6,cn.length))))) colMap[col.key]=i;});
       });
-      if(!('id' in colMap)&&!('nombre' in colMap)){customAlert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
+      if(!('id' in colMap)&&!('nombre' in colMap)){alert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
       const carga2=db.carga.find(x=>x.id===Number(planCId));
-      if(!carga2){customAlert('Seleccione una asignatura primero.');return;}
+      if(!carga2){alert('Seleccione una asignatura primero.');return;}
       const per=Number(planPer);const cId=Number(planCId);
       const pv=v=>{const n=parseFloat(String(v||'').replace(',','.'));return isNaN(n)?0:Math.min(5,Math.max(0,n));};
       let importados=0;
@@ -7439,15 +6513,15 @@ function cargarPlanillaCSV(inp){
         }
         return d;
       });
-      customAlert(importados>0?'✅ Planilla importada: '+importados+' estudiantes actualizados.':'⚠️ No se importó ningún estudiante. Verifique que el archivo corresponde al grado y asignatura seleccionados.');
+      alert(importados>0?'✅ Planilla importada: '+importados+' estudiantes actualizados.':'⚠️ No se importó ningún estudiante. Verifique que el archivo corresponde al grado y asignatura seleccionados.');
       inp.value='';renderApp();
-    }catch(err){customAlert('Error al leer el archivo: '+err.message);}
+    }catch(err){alert('Error al leer el archivo: '+err.message);}
   };r.readAsText(f,'UTF-8');
 }
 
 function guardarPlanilla(){
   const numPend=Object.keys(_notasPendientes).length;
-  if(numPend===0){customAlert('ℹ️ No hay notas pendientes por guardar.');return;}
+  if(numPend===0){alert('ℹ️ No hay notas pendientes por guardar.');return;}
   // 1. Aplicar notas pendientes en la BD local (updDB → saveDB → schedules pushDB)
   _aplicarNotasPendientesEnDB();
   // 2. Limpiar indicador de pendientes
@@ -7456,27 +6530,20 @@ function guardarPlanilla(){
   renderApp();
   // 4. Forzar push inmediato a la nube (sin esperar el debounce de 350ms)
   _pushDB();
-  customAlert('✅ '+numPend+' nota(s) guardadas correctamente.\nNOTA, DEFINITIVA y columnas adicionales actualizadas.');
+  alert('✅ '+numPend+' nota(s) guardadas correctamente.\nNOTA, DEFINITIVA y columnas adicionales actualizadas.');
 }
 
 
 
 function saveNota(estId,campo,valor){
   const numVal=Math.min(5,Math.max(0,parseFloat(valor)||0));
-  let _baseAntes=0,_baseDespues=0;
   updDB(d=>{
     const idx=d.ests.findIndex(x=>x.id===estId);if(idx===-1) return d;
     const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
     const cId=Number(planCId);const per=Number(planPer);
     if(!nts[cId]) nts[cId]={};if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
-    _baseAntes=_baseNota(nts[cId][per],d.config||{});
-    const valorAnterior=nts[cId][per][campo];
-    nts[cId][per][campo]=numVal;d.ests[idx]={...e,nts};
-    _baseDespues=_baseNota(nts[cId][per],d.config||{});
-    _registrarCambioNota(d,{estId,estNombre:e.n,cId,per,campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
-    return d;
+    nts[cId][per][campo]=numVal;d.ests[idx]={...e,nts};return d;
   });
-  _dispararAlertaBajoDesempenoSiAplica(estId,Number(planCId),Number(planPer),_baseAntes,_baseDespues);
   const e=db.ests.find(x=>x.id===estId);
   if(e){
     const cId=Number(planCId),per=Number(planPer);
@@ -7487,417 +6554,6 @@ function saveNota(estId,campo,valor){
     if(bEl){bEl.textContent=base.toFixed(1);bEl.style.color=base<3?'#c0392b':'#333';}
     if(dEl){dEl.textContent=defF.toFixed(1);dEl.style.color=colorNota(defF);}
   }
-}
-
-// ============================================================
-// 📜 HISTORIAL DE CAMBIOS EN NOTAS (auditoría — solo consulta, admin)
-// Muestra quién cambió cada nota, de qué valor a qué valor y cuándo,
-// usando el registro que _registrarCambioNota va guardando en
-// db.logNotas cada vez que se guarda una nota en la Planilla
-// (tanto en modo autoguardado como en modo manual "Guardar Cambios").
-// ============================================================
-function _nombreColumnaLog(campo){
-  const cfg=db.config||{};
-  const cols=(cfg.columnasBase&&cfg.columnasBase.length)?cfg.columnasBase:[{key:'s',nom:cfg.nomSer||'SER'},{key:'sb',nom:cfg.nomSaber||'SABER'},{key:'h',nom:cfg.nomHacer||'HACER'},{key:'rec',nom:'RECUPERACIÓN'},{key:'niv',nom:'NIVELACIÓN'}];
-  const c=cols.find(x=>x.key===campo);
-  return c?c.nom:campo.toUpperCase();
-}
-let _logNotasFiltroCId='', _logNotasFiltroPer='', _logNotasBusq='';
-function htmlLogNotas(){
-  const log=(db.logNotas||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
-  const matsOpts=db.carga.map(c=>`<option value="${c.id}"${_logNotasFiltroCId==String(c.id)?' selected':''}>${c.m} (${c.g})</option>`).join('');
-  const numPer=_getNumPer();
-  let filtrado=log;
-  if(_logNotasFiltroCId) filtrado=filtrado.filter(l=>String(l.cId)===String(_logNotasFiltroCId));
-  if(_logNotasFiltroPer) filtrado=filtrado.filter(l=>String(l.per)===String(_logNotasFiltroPer));
-  if(_logNotasBusq.trim()) filtrado=filtrado.filter(l=>(l.estNombre||'').toLowerCase().includes(_logNotasBusq.trim().toLowerCase()));
-  const mostrar=filtrado.slice(0,300);
-  const rows=mostrar.map(l=>{
-    const carga=db.carga.find(c=>String(c.id)===String(l.cId));
-    const subio=l.valorNuevo>l.valorAnterior;
-    return `<tr>
-      <td style="font-size:0.76rem;white-space:nowrap">${new Date(l.fecha).toLocaleString('es-CO',{dateStyle:'short',timeStyle:'short'})}</td>
-      <td style="text-align:left;font-size:0.82rem">${l.estNombre||l.estId}</td>
-      <td style="font-size:0.78rem">${carga?carga.m:'—'}</td>
-      <td>${l.per}</td>
-      <td style="font-size:0.78rem">${_nombreColumnaLog(l.campo)}</td>
-      <td style="font-weight:bold;color:${subio?'#1e8449':'#c0392b'}">${l.valorAnterior.toFixed(1)} → ${l.valorNuevo.toFixed(1)}</td>
-      <td style="font-size:0.78rem">${l.usuarioNombre||l.usuario}</td>
-    </tr>`;
-  }).join('');
-  return `<h3 class="sec-title">📜 Historial de Cambios en Notas</h3>
-  <div class="card">
-    <p style="font-size:0.82rem;color:#666;margin-bottom:14px">Registro de auditoría: quién cambió cada nota, de qué valor a qué valor y cuándo. Se conservan los últimos 1000 cambios de toda la institución.</p>
-    <div class="grid3" style="margin-bottom:14px">
-      <div><label class="lbl">Asignatura</label><select onchange="_logNotasFiltroCId=this.value;renderApp()"><option value="">Todas</option>${matsOpts}</select></div>
-      <div><label class="lbl">Periodo</label><select onchange="_logNotasFiltroPer=this.value;renderApp()"><option value="">Todos</option>${Array.from({length:numPer},(_,i)=>i+1).map(n=>`<option value="${n}"${_logNotasFiltroPer===String(n)?' selected':''}>Periodo ${n}</option>`).join('')}</select></div>
-      <div><label class="lbl">Buscar estudiante</label><input value="${_logNotasBusq}" placeholder="Nombre..." oninput="_logNotasBusq=this.value;renderApp()"></div>
-    </div>
-    ${mostrar.length?`<div class="over"><table><thead><tr><th>Fecha</th><th>Estudiante</th><th>Asignatura</th><th>Per.</th><th>Columna</th><th>Cambio</th><th>Modificado por</th></tr></thead><tbody>${rows}</tbody></table></div>
-    ${filtrado.length>300?`<p style="font-size:0.75rem;color:#888;margin-top:8px">Mostrando los 300 más recientes de ${filtrado.length} resultados. Use los filtros para acotar la búsqueda.</p>`:''}`:'<p class="empty">No hay cambios registrados con estos filtros.</p>'}
-  </div>`;
-}
-
-// ============================================================
-// 📝 NOTAS DE ACTIVIDADES EN CLASE
-// Módulo independiente de la Planilla donde el docente registra
-// notas de actividades cotidianas (Actividad en clase, Talleres,
-// Actividad en casa, Participación en clases, Evaluación) con
-// fecha y hora. Puede agregar tantas columnas de cada tipo como
-// necesite (Taller 1, Taller 2...); el NOMBRE de cada columna es
-// un catálogo compartido por toda la institución, para que sea el
-// mismo entre docentes. El promedio resultante puede sincronizarse
-// —si el docente lo decide— con la columna que elija de la
-// Planilla, donde se computa automáticamente con el % configurado
-// para esa columna junto con las demás notas. Si no sincroniza, la
-// Planilla sigue funcionando exactamente igual que siempre.
-// ============================================================
-let notaActPer='1', notaActCId='';
-const TIPOS_NOTAS_ACT=['Actividad en clase','Talleres','Actividad en casa','Participación en clases','Evaluación'];
-
-function _colsActCatalogoPorTipo(tipo){
-  return (db.notasActColumnas||[]).filter(c=>c.tipo===tipo).sort((a,b)=>a.numero-b.numero);
-}
-function _colsActAsignadas(cId,per){
-  const key=cId+'_'+per;
-  const ids=(db.notasActAsignadas||{})[key]||[];
-  return ids.map(id=>(db.notasActColumnas||[]).find(c=>c.id===id)).filter(Boolean);
-}
-function _valorNotaAct(cId,per,colId,estId){
-  const key=cId+'_'+per+'_'+colId+'_'+estId;
-  return (db.notasAct||{})[key]||null;
-}
-function _promedioNotasActEst(cId,per,estId){
-  const cols=_colsActAsignadas(cId,per);
-  if(!cols.length) return null;
-  let s=0,n=0;
-  cols.forEach(c=>{
-    const v=_valorNotaAct(cId,per,c.id,estId);
-    if(v&&typeof v.valor==='number'){s+=v.valor;n++;}
-  });
-  return n?parseFloat((s/n).toFixed(2)):null;
-}
-
-function htmlNotasActividades(){
-  const isAdmin=sesion.r==='admin';
-  const mats=db.carga.filter(x=>isAdmin||x.d===sesion.u);
-  if(!notaActCId&&mats.length) notaActCId=String(mats[0].id);
-  const matsOpts=mats.map(c=>`<option value="${c.id}"${notaActCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
-  const carga=notaActCId?db.carga.find(x=>x.id===Number(notaActCId)):null;
-  const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
-  const numPer=_getNumPer();
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const cols=carga?_colsActAsignadas(cId,per):[];
-
-  let tabla='';
-  if(!mats.length) tabla=`<p class="empty">No tiene asignaturas a cargo.</p>`;
-  else if(!carga) tabla=`<p class="empty">Seleccione una asignatura.</p>`;
-  else if(!ests.length) tabla=`<p class="empty">No hay estudiantes en este grado.</p>`;
-  else if(!cols.length) tabla=`<div class="warn-box">ℹ️ Aún no ha agregado columnas de notas para esta asignatura y periodo. Use el botón "➕ Agregar nota" para comenzar.</div>`;
-  else {
-    const headCols=cols.map(c=>`<th style="font-size:0.76rem;background:#003366;color:#fff">${c.nombre}<br><button title="Quitar esta columna de esta asignatura/periodo (no borra los datos ya registrados)" onclick="quitarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.85);color:#c0392b;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">✕ quitar</button></th>`).join('');
-    const rows=ests.map(e=>{
-      const cells=cols.map(c=>{
-        const v=_valorNotaAct(cId,per,c.id,e.id);
-        const val=v&&typeof v.valor==='number'?v.valor:null;
-        const fh=v&&v.fecha?`<br><span style="font-size:0.6rem;color:#888">${v.fecha}${v.hora?' '+v.hora:''}</span>`:'';
-        return `<td style="border:1px solid #ddd;padding:3px 4px;text-align:center">
-          <button class="nota-btn" onclick="abrirPopupNotaAct('${e.id}','${c.id}')" style="background:${val!=null?colorNota(val):'#eee'};color:${val!=null?'#fff':'#888'};font-weight:bold;font-size:0.82rem;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;min-width:44px;min-height:34px">${val!=null?val.toFixed(1):'—'}</button>${fh}
-        </td>`;
-      }).join('');
-      const prom=_promedioNotasActEst(cId,per,e.id);
-      return `<tr>
-        <td style="text-align:left;font-weight:500;border:1px solid #ddd;padding:4px 6px;font-size:0.82rem">${e.n}</td>
-        ${cells}
-        <td style="font-weight:bold;border:1px solid #ddd;padding:5px 6px;text-align:center;color:${prom!=null?colorNota(prom):'#aaa'}">${prom!=null?prom.toFixed(2):'—'}</td>
-      </tr>`;
-    }).join('');
-    tabla=`<div class="over"><table><thead><tr>
-      <th style="font-size:0.78rem">Estudiante</th>${headCols}<th style="font-size:0.78rem;background:#1a5276;color:#fff">PROMEDIO</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>`;
-  }
-
-  return `<h3 class="sec-title">📝 Notas de Actividades en Clase</h3>
-  <div class="card">
-    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">Registre aquí notas de actividades cotidianas (talleres, participación, actividades en casa/clase, evaluaciones) con fecha y hora. El promedio resultante puede sincronizarse, si usted lo desea, con la columna que elija en la Planilla de Calificaciones — si no lo hace, la Planilla sigue funcionando exactamente igual que siempre.</p>
-    <div class="grid2" style="margin-bottom:15px">
-      <div><label class="lbl">Periodo</label><select id="notaActPerSel" onchange="cambiarNotaActPer(this.value)">
-        ${Array.from({length:numPer},(_,i)=>i+1).map(n=>`<option value="${n}"${notaActPer===String(n)?' selected':''}>Periodo ${n}</option>`).join('')}
-      </select></div>
-      <div><label class="lbl">Asignatura</label><select id="notaActCIdSel" onchange="cambiarNotaActCId(this.value)">${matsOpts}</select></div>
-    </div>
-    ${carga?`<div class="info-box"><b>Grado:</b> ${carga.g} | <b>Área:</b> ${carga.a} | <b>Docente:</b> ${carga.dn}</div>`:''}
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
-      <button class="btn btn-blue" ${carga?'':'disabled'} onclick="abrirModalAgregarColNotaAct()">➕ Agregar nota</button>
-      <button class="btn btn-green" ${(carga&&cols.length)?'':'disabled'} onclick="abrirModalSincronizarNotaAct()" title="Sincroniza el promedio de este módulo con la columna que elija en la Planilla">🔄 Sincronizar con Planilla</button>
-      <button class="btn btn-teal" ${(carga&&cols.length)?'':'disabled'} onclick="descargarNotasActExcel()" title="Descarga un Excel con las columnas actuales para llenar fuera de línea">📥 Descargar Excel</button>
-      <button class="btn btn-orange" ${(carga&&cols.length)?'':'disabled'} onclick="document.getElementById('fileNotasActExcel').click()" title="Carga un Excel previamente descargado desde aquí">📤 Cargar Excel</button>
-      <input type="file" id="fileNotasActExcel" accept=".xlsx,.xls" style="display:none" onchange="cargarNotasActExcel(this)">
-    </div>
-    <div id="_nacXlsxMsg" style="display:none;border-radius:6px;padding:8px 12px;font-size:0.8rem;margin-bottom:10px"></div>
-    ${tabla}
-  </div>`;
-}
-function cambiarNotaActPer(v){notaActPer=v;renderApp();}
-function cambiarNotaActCId(v){notaActCId=v;renderApp();}
-
-// ── Modal: agregar columna (nueva o existente del catálogo compartido por tipo) ──
-function abrirModalAgregarColNotaAct(){
-  const old=document.getElementById('modalNotaAct');if(old)old.remove();
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const yaAsignadas=(db.notasActAsignadas||{})[cId+'_'+per]||[];
-  const opts=TIPOS_NOTAS_ACT.map(t=>`<option value="${t}">${t}</option>`).join('');
-  const modal=document.createElement('div');
-  modal.id='modalNotaAct';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto">
-    <h4 style="color:#003366;margin-bottom:12px">➕ Agregar nota</h4>
-    <label class="lbl">Tipo de actividad</label>
-    <select id="nacTipo" onchange="_actualizarListaColExistentesNAC()" style="width:100%;margin-bottom:10px">${opts}</select>
-    <div id="nacExistentesWrap" style="margin-bottom:10px"></div>
-    <div style="display:flex;gap:8px;margin-top:14px">
-      <button class="btn btn-green" style="flex:1" onclick="_confirmarAgregarColNAC()">✔ Agregar</button>
-      <button class="btn btn-gray" style="flex:1" onclick="document.getElementById('modalNotaAct').remove()">✕ Cancelar</button>
-    </div>
-  </div>`;
-  document.body.appendChild(modal);
-  window._nacYaAsignadas=yaAsignadas;
-  _actualizarListaColExistentesNAC();
-}
-function _actualizarListaColExistentesNAC(){
-  const tipoSel=document.getElementById('nacTipo');if(!tipoSel) return;
-  const tipo=tipoSel.value;
-  const existentes=_colsActCatalogoPorTipo(tipo).filter(c=>!(window._nacYaAsignadas||[]).includes(c.id));
-  const wrap=document.getElementById('nacExistentesWrap');
-  if(!wrap) return;
-  const sigNum=(_colsActCatalogoPorTipo(tipo).reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
-  wrap.innerHTML=`
-    <label class="lbl">Columna</label>
-    <select id="nacColSel">
-      <option value="__nueva__">➕ Crear nueva: "${tipo} ${sigNum}"</option>
-      ${existentes.map(c=>`<option value="${c.id}">${c.nombre} (reutilizar)</option>`).join('')}
-    </select>
-    <div style="font-size:0.72rem;color:#888;margin-top:4px">El nombre de las columnas es compartido por todos los docentes. Si crea una nueva, quedará disponible para los demás.</div>`;
-}
-function _confirmarAgregarColNAC(){
-  const tipo=document.getElementById('nacTipo').value;
-  const sel=document.getElementById('nacColSel').value;
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const key=cId+'_'+per;
-  updDB(d=>{
-    d.notasActColumnas=d.notasActColumnas||[];
-    d.notasActAsignadas=d.notasActAsignadas||{};
-    let colId=sel;
-    if(sel==='__nueva__'){
-      const sigNum=(d.notasActColumnas.filter(c=>c.tipo===tipo).reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
-      colId='nac_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-      d.notasActColumnas.push({id:colId,tipo,numero:sigNum,nombre:tipo+' '+sigNum});
-    }
-    const arr=d.notasActAsignadas[key]||[];
-    if(!arr.includes(colId)) arr.push(colId);
-    d.notasActAsignadas[key]=arr;
-    return d;
-  });
-  document.getElementById('modalNotaAct').remove();
-  renderApp();
-}
-async function quitarColNotaAct(colId){
-  if(!await customConfirm('¿Quitar esta columna de esta asignatura y periodo?\n\nLos datos ya registrados NO se eliminan, solo deja de mostrarse aquí. Puede volver a agregarla cuando la necesite.')) return;
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const key=cId+'_'+per;
-  updDB(d=>{
-    d.notasActAsignadas=d.notasActAsignadas||{};
-    d.notasActAsignadas[key]=(d.notasActAsignadas[key]||[]).filter(id=>id!==colId);
-    return d;
-  });
-  renderApp();
-}
-
-// ── Popup: ingresar nota + fecha + hora de la actividad ──
-function abrirPopupNotaAct(estId,colId){
-  const old=document.getElementById('popupNotaAct');if(old)old.remove();
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const v=_valorNotaAct(cId,per,colId,estId)||{};
-  const hoy=new Date();
-  const fechaDef=v.fecha||hoy.toISOString().slice(0,10);
-  const horaDef=v.hora||hoy.toTimeString().slice(0,5);
-  const popup=document.createElement('div');
-  popup.id='popupNotaAct';
-  popup.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
-  popup.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:320px;width:100%">
-    <h4 style="color:#003366;margin-bottom:12px">🎯 Registrar nota</h4>
-    <label class="lbl">Nota (0.0 – 5.0)</label>
-    <input type="number" id="nacValor" min="0" max="5" step="0.1" value="${v.valor!=null?v.valor:''}" style="width:100%;margin-bottom:10px;padding:8px;font-size:1rem;text-align:center">
-    <label class="lbl">Fecha</label>
-    <input type="date" id="nacFecha" value="${fechaDef}" style="width:100%;margin-bottom:10px">
-    <label class="lbl">Hora</label>
-    <input type="time" id="nacHora" value="${horaDef}" style="width:100%;margin-bottom:14px">
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-green" style="flex:1" onclick="_guardarNotaAct('${estId}','${colId}')">💾 Guardar</button>
-      <button class="btn btn-gray" style="flex:1" onclick="cerrarPopupNotaAct()">✕ Cerrar</button>
-    </div>
-  </div>`;
-  document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNotaAct, 'Registrar nota de actividad');
-}
-function cerrarPopupNotaAct(){
-  const p=document.getElementById('popupNotaAct');
-  if(!p) return;
-  _liberarAccesibilidadPopup(p);
-  p.remove();
-}
-function _guardarNotaAct(estId,colId){
-  const valor=Math.min(5,Math.max(0,parseFloat(document.getElementById('nacValor').value)||0));
-  const fecha=document.getElementById('nacFecha').value||new Date().toISOString().slice(0,10);
-  const hora=document.getElementById('nacHora').value||'';
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const key=cId+'_'+per+'_'+colId+'_'+estId;
-  updDB(d=>{
-    d.notasAct=d.notasAct||{};
-    d.notasAct[key]={valor,fecha,hora};
-    return d;
-  });
-  cerrarPopupNotaAct();
-  renderApp();
-}
-
-// ── Sincronización del promedio del módulo con una columna elegida de la Planilla ──
-function abrirModalSincronizarNotaAct(){
-  const old=document.getElementById('modalSyncNAC');if(old)old.remove();
-  const _cfgP=db.config||{};
-  const cols=(_cfgP.columnasBase&&_cfgP.columnasBase.length)?_cfgP.columnasBase:[{key:'s',nom:_cfgP.nomSer||'SER'},{key:'sb',nom:_cfgP.nomSaber||'SABER'},{key:'h',nom:_cfgP.nomHacer||'HACER'}];
-  const opts=cols.map(c=>`<button class="btn" style="background:#1a5276;color:#fff;margin:4px" onclick="_confirmarSyncNAC('${c.key}')">${c.nom}</button>`).join('');
-  const modal=document.createElement('div');
-  modal.id='modalSyncNAC';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%;text-align:center">
-    <h4 style="color:#003366;margin-bottom:8px">🔄 Sincronizar con Planilla</h4>
-    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">¿Con cuál columna de la Planilla desea sincronizar el promedio de este módulo? La nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás columnas.</p>
-    <div style="display:flex;flex-wrap:wrap;justify-content:center">${opts}</div>
-    <button class="btn btn-gray" style="margin-top:14px" onclick="document.getElementById('modalSyncNAC').remove()">✕ Cancelar</button>
-  </div>`;
-  document.body.appendChild(modal);
-}
-function _confirmarSyncNAC(colKey){
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const carga=db.carga.find(x=>x.id===cId);
-  const modal=document.getElementById('modalSyncNAC');if(modal)modal.remove();
-  if(!carga){customAlert('Asignatura no encontrada.');return;}
-  const ests=db.ests.filter(x=>x.g===carga.g);
-  let n=0;
-  updDB(d=>{
-    ests.forEach(est=>{
-      const prom=_promedioNotasActEst(cId,per,est.id);
-      if(prom==null) return;
-      const idx=d.ests.findIndex(x=>x.id===est.id);if(idx===-1) return;
-      const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
-      if(!nts[cId]) nts[cId]={};if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
-      nts[cId][per][colKey]=Math.round(prom*10)/10;
-      d.ests[idx]={...e,nts};
-      n++;
-    });
-    return d;
-  });
-  _pushDB();
-  customAlert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nLa nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás notas.');
-  renderApp();
-}
-
-// ── Exportar / importar masivo en Excel (mismo patrón que la Planilla) ──
-function descargarNotasActExcel(){
-  const _msg=document.getElementById('_nacXlsxMsg');
-  function _showMsg(txt,bg,clr){if(_msg){_msg.textContent=txt;_msg.style.display='block';_msg.style.background=bg||'#eafaf1';_msg.style.color=clr||'#1a5276';}else customAlert(txt);}
-  if(typeof XLSX==='undefined'){_showMsg('❌ Librería Excel no disponible. Recargue la página.','#fdecea','#922b21');return;}
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const carga=db.carga.find(x=>x.id===cId);
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
-  const cols=_colsActAsignadas(cId,per);
-  if(!cols.length){customAlert('Esta asignatura y periodo no tienen columnas de notas agregadas todavía.');return;}
-  const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  const encabezado=['ID_SISTEMA','NOMBRE COMPLETO',...cols.map(c=>c.nombre)];
-  const camposRow=['#ID_SISTEMA','#NOMBRE',...cols.map(c=>c.id)];
-  const instRow=['INSTRUCCIONES: Complete solo las columnas de notas ('+cols.map(c=>c.nombre).join('/')+') con valores de 0.0 a 5.0. NO modifique ID_SISTEMA ni NOMBRE. Guarde como .xlsx y cargue de vuelta con "📤 Cargar Excel".'];
-  const infoRow=['Institucion: '+(db.nombre||'')+'  |  Grado: '+carga.g+'  |  Asignatura: '+carga.m+'  |  Periodo: '+per+'  |  Anio: '+db.anio];
-  const dataRows=ests.map(function(e){
-    const fila=[String(e.id||''),String(e.n||'')];
-    cols.forEach(function(c){
-      const v=_valorNotaAct(cId,per,c.id,e.id);
-      fila.push(v&&typeof v.valor==='number'?v.valor:'');
-    });
-    return fila;
-  });
-  try{
-    const ws=XLSX.utils.aoa_to_sheet([instRow,infoRow,[],encabezado,camposRow].concat(dataRows));
-    ws['!cols']=[{wch:8},{wch:40}].concat(cols.map(function(){return {wch:16};}));
-    const wb=XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb,ws,'Notas Actividades');
-    const fileName='NotasActividades_'+carga.m.replace(/[^a-zA-Z0-9]/g,'_')+'_'+carga.g.replace(/[^a-zA-Z0-9]/g,'_')+'_P'+per+'_'+db.anio+'.xlsx';
-    _xlsxDescargarBlob(wb,fileName);
-    _showMsg('✅ Excel descargado: '+ests.length+' estudiante(s), '+cols.length+' columna(s).');
-  }catch(ex){
-    _showMsg('❌ Error al generar el Excel: '+(ex.message||ex),'#fdecea','#922b21');
-  }
-}
-function cargarNotasActExcel(inp){
-  const f=inp.files[0];if(!f) return;
-  const _msg=document.getElementById('_nacXlsxMsg');
-  function _showMsg(txt,bg,clr){if(_msg){_msg.textContent=txt;_msg.style.display='block';_msg.style.background=bg||'#fef9e7';_msg.style.color=clr||'#7d6608';}else customAlert(txt);}
-  if(typeof XLSX==='undefined'){_showMsg('❌ Librería Excel no disponible. Recargue la página.','#fdecea','#922b21');return;}
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const carga=db.carga.find(x=>x.id===cId);
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
-  const cols=_colsActAsignadas(cId,per);
-  if(!cols.length){customAlert('Esta asignatura y periodo no tienen columnas de notas agregadas. Agréguelas primero con "➕ Agregar nota".');inp.value='';return;}
-  _showMsg('⏳ Leyendo archivo "'+f.name+'"...','#fef9e7','#7d6608');
-  const reader=new FileReader();
-  reader.onload=function(ev){
-    try{
-      const wb=XLSX.read(ev.target.result,{type:'array',cellDates:false,cellNF:false,cellText:false});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
-      let keysRow=-1;
-      for(let i=0;i<Math.min(rows.length,10);i++){
-        const r=(rows[i]||[]).map(function(c){return String(c==null?'':c).trim();});
-        if(r.includes('#ID_SISTEMA')){keysRow=i;break;}
-      }
-      if(keysRow===-1){_showMsg('❌ Formato no reconocido. Descargue el Excel desde "📥 Descargar Excel" y úselo como plantilla.','#fdecea','#922b21');inp.value='';return;}
-      const keys=(rows[keysRow]||[]).map(function(c){return String(c==null?'':c).trim();});
-      const idCol=keys.indexOf('#ID_SISTEMA');
-      const colIdxPorColumna={}; // colId -> índice de columna en el Excel
-      cols.forEach(function(c){const idx=keys.indexOf(c.id);if(idx!==-1) colIdxPorColumna[c.id]=idx;});
-      const dataRows=rows.slice(keysRow+1).filter(function(r){return r&&r[idCol];});
-      const pv=function(v){
-        const s=String(v==null?'':v).replace(/,/,'.').trim();
-        if(s===''||s==='-') return null;
-        const n=parseFloat(s);
-        return isNaN(n)?null:Math.min(5,Math.max(0,n));
-      };
-      let n=0,hoy=new Date().toISOString().slice(0,10);
-      updDB(function(d){
-        d.notasAct=d.notasAct||{};
-        dataRows.forEach(function(r){
-          const estId=String(r[idCol]||'');
-          if(!estId) return;
-          Object.keys(colIdxPorColumna).forEach(function(colId){
-            const val=pv(r[colIdxPorColumna[colId]]);
-            if(val==null) return; // celda vacía → no se toca (se conserva lo que ya había)
-            const key=cId+'_'+per+'_'+colId+'_'+estId;
-            const previo=d.notasAct[key];
-            d.notasAct[key]={valor:val,fecha:previo?previo.fecha:hoy,hora:previo?previo.hora:''};
-            n++;
-          });
-        });
-        return d;
-      });
-      _showMsg('✅ Se importaron '+n+' nota(s) desde "'+f.name+'".');
-      inp.value='';
-      renderApp();
-    }catch(ex){
-      _showMsg('❌ Error al leer el Excel: '+(ex.message||ex),'#fdecea','#922b21');
-      inp.value='';
-    }
-  };
-  reader.readAsArrayBuffer(f);
 }
 
 // ============================================================
@@ -8088,12 +6744,12 @@ function cargarEstudiantesBoletinSel(){
 }
 function pdfBoletinIndividual(){
   var estId=document.getElementById('infEstudianteIndividual')?.value;
-  if(!estId){customAlert('Seleccione un estudiante para descargar su boletín individual.');return;}
+  if(!estId){alert('Seleccione un estudiante para descargar su boletín individual.');return;}
   var per=Number(document.getElementById('infPer')?.value||1);
   var plantilla=window.boletinPlantilla||'clasico';
   // Filtrar para solo el estudiante seleccionado
   var est=db.ests.find(function(e){return String(e.id)===String(estId);});
-  if(!est){customAlert('Estudiante no encontrado.');return;}
+  if(!est){alert('Estudiante no encontrado.');return;}
   // Generar boletín individual usando la función existente de boletines pero para un solo estudiante
   _generarPdfBoletin([est],per,plantilla);
 }
@@ -8113,13 +6769,13 @@ function _generarPdfBoletin(estudiantes,per,plantilla){
   pdfBoletines();
   window._boletinEstudiantesOverride=null;
 }
-async function descargarTodosBoletinesGrados(){
+function descargarTodosBoletinesGrados(){
   var per=Number(document.getElementById('infPer')?.value||1);
   var plantilla=window.boletinPlantilla||'clasico';
   var isAdmin=sesion.r==='admin';
   var gradosDB=isAdmin?db.grados:db.grados.filter(g=>gradosDelDocente(sesion.u).includes(g.n));
-  if(!gradosDB.length){customAlert('No hay grados disponibles.');return;}
-  if(!await customConfirm('Se generarán boletines de '+gradosDB.length+' grado(s) para el periodo P'+per+'. Puede tomar unos segundos. ¿Continuar?')) return;
+  if(!gradosDB.length){alert('No hay grados disponibles.');return;}
+  if(!confirm('Se generarán boletines de '+gradosDB.length+' grado(s) para el periodo P'+per+'. Puede tomar unos segundos. ¿Continuar?')) return;
   gradosDB.forEach(function(g,i){
     setTimeout(function(){
       var fakeGrado=document.getElementById('infGrado');
@@ -8144,11 +6800,11 @@ function cargarObsEstudiantes(){
 function guardarObsDirector(id){
   const txt=document.getElementById('obs_'+id)?.value||'';
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===id);if(idx!==-1) d.ests[idx].obsDirector=txt;return d;});
-  customAlert('Guardado.');
+  alert('Guardado.');
 }
 function guardarTodasObs(grado){
   updDB(d=>{db.ests.filter(x=>x.g===grado).forEach(e=>{const txt=document.getElementById('obs_'+e.id)?.value||'';const idx=d.ests.findIndex(x=>x.id===e.id);if(idx!==-1) d.ests[idx].obsDirector=txt;});return d;});
-  customAlert('Todas guardadas.');
+  alert('Todas guardadas.');
 }
 function cargarEstsCert(){
   const grado=document.getElementById('infGrado')?.value||'';const tipo=document.getElementById('tipoCert')?.value||'notas';
@@ -8292,7 +6948,7 @@ function pdfConsolidadoGeneral(){
   const per=Number(document.getElementById('infPerGen')?.value||1);
   const mats=db.carga.filter(x=>x.g===grado);
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF('l');
   doc.setFontSize(9);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
   doc.text('CONSOLIDADO GENERAL — TODAS LAS ÁREAS',148,10,{align:'center'});
@@ -8384,7 +7040,7 @@ function pdfEstadisticasGrado(){
   const per=Number(document.getElementById('infPerEst')?.value||1);
   const mats=db.carga.filter(x=>x.g===grado);
   const ests=db.ests.filter(x=>x.g===grado);
-  if(!ests.length){customAlert('Sin datos.');return;}
+  if(!ests.length){alert('Sin datos.');return;}
   const doc=getPDF('l');
   doc.setFontSize(9);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
   doc.text('ESTADÍSTICAS ACADÉMICAS — TODAS LAS ÁREAS',148,10,{align:'center'});
@@ -8464,7 +7120,7 @@ function pdfConsolidadoDir(){
   const mats=db.carga.filter(x=>x.g===grado);
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const infoG=db.grados.find(x=>x.n===grado)||{d:'',n:grado};
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF('l');
   doc.setFontSize(9);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
   doc.text('SEGUIMIENTO ACADÉMICO — DIRECTOR DE GRUPO',148,10,{align:'center'});
@@ -8498,13 +7154,11 @@ function pdfConsolidadoDir(){
 // PDF HELPERS
 // ============================================================
 const ROT1='REPÚBLICA DE COLOMBIA';
-// Normaliza espacios dobles/múltiples y saltos de línea sueltos que vienen de la configuración institucional
-function _normEspacios(t){return String(t||'').replace(/\s+/g,' ').trim();}
-function getROT2(){return _normEspacios(db.depto)}
-function getROT3(){return _normEspacios(db.nombre||(db.corregimiento?'INSTITUCIÓN EDUCATIVA DE '+db.corregimiento:'INSTITUCIÓN EDUCATIVA')).toUpperCase();}
-function getROT4(){return _normEspacios(db.resolucion)}
-function getROT5(){return _normEspacios(db.encabezado)}
-function getROT6(){return _normEspacios(db.piePagina)}
+function getROT2(){return db.depto||''}
+function getROT3(){return (db.nombre||(db.corregimiento?'INSTITUCIÓN EDUCATIVA DE '+db.corregimiento:'INSTITUCIÓN EDUCATIVA')).toUpperCase();}
+function getROT4(){return db.resolucion||''}
+function getROT5(){return db.encabezado||''}
+function getROT6(){return db.piePagina||''}
 
 function getPDF(orient,formato){const{jsPDF}=window.jspdf;
   // Tamaño oficio Colombia: 216 × 330 mm. Por defecto A4.
@@ -8545,14 +7199,14 @@ function addFooterPDF(doc){
   doc.setTextColor(0);
 }
 function xlsxConsolidado(){
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no cargada. Recargue la página.');return;}
   const grado=document.getElementById('infGrado')?.value||'';
   const per=Number(document.getElementById('infPer')?.value||1);
-  if(!grado){customAlert('Seleccione un grado.');return;}
+  if(!grado){alert('Seleccione un grado.');return;}
   const isAdmin=sesion&&(sesion.r==='admin'||(gestorSesion&&gestorEnPlataforma));
   const mats=db.carga.filter(x=>x.g===grado&&(isAdmin||x.d===sesion.u));
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!mats.length||!ests.length){customAlert('No hay datos para este grado y período.');return;}
+  if(!mats.length||!ests.length){alert('No hay datos para este grado y período.');return;}
   const inst=db.nombre||getROT3();const anio=db.anio||new Date().getFullYear();
   // Encabezado: #, Estudiante, [asignatura por docente], PROMEDIO, PUESTO, SITUACIÓN
   const encab=['#','ESTUDIANTE',...mats.map(m=>m.m.toUpperCase()+'\n('+m.dn.split(' ')[0]+')'),'PROMEDIO','PUESTO','SITUACIÓN'];
@@ -8602,7 +7256,7 @@ function pdfConsolidado(){
   const isAdmin=sesion.r==='admin';
   const mats=db.carga.filter(x=>x.g===grado&&(isAdmin||x.d===sesion.u));
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF('l');
   doc.setFontSize(8);doc.setFont('helvetica','bold');
   doc.text(`CONSOLIDADO — GRADO ${grado} — PERIODO ${per} — AÑO ${db.anio}`,148,10,{align:'center'});
@@ -8628,7 +7282,7 @@ function pdfConsolidado(){
 
 function pdfBoletines(){
   const gradoEl=document.getElementById('infGrado');const perEl=document.getElementById('infPer');
-  if(!gradoEl||!perEl){customAlert('Use el botón desde la pestaña Boletines.');return;}
+  if(!gradoEl||!perEl){alert('Use el botón desde la pestaña Boletines.');return;}
   _generarBoletinesPDF(gradoEl.value,Number(perEl.value),false);
 }
 function pdfInformeFinalAnio(){
@@ -8646,7 +7300,7 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     let s=0,n=0;mats.forEach(c=>{s+=calcNotaDef(e.nts,c.id,per);n++;});
     return{...e,promPer:n?s/n:0};
   }).sort((a,b)=>b.promPer-a.promPer);
-  if(!ests.length){customAlert('No hay estudiantes.');return;}
+  if(!ests.length){alert('No hay estudiantes.');return;}
   const infoG=db.grados.find(x=>x.n===grado)||{d:'SIN ASIGNAR',n:grado};
   // Tamaño OFICIO + plantilla seleccionada (clasico/compacto/moderno/formal)
   const doc=getPDF('p','oficio');
@@ -8674,24 +7328,24 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     // Zona de texto: entre los dos escudos → de x=30 a x=186 = 156mm, centro=108
     const _hL2=30,_hR2=186,_hCX2=(_hL2+_hR2)/2,_hMW2=_hR2-_hL2-4;
     doc.setTextColor(0,51,102);
-    doc.setFontSize(7.5);doc.setFont('helvetica','bold');
+    doc.setFontSize(6.5);doc.setFont('helvetica','bold');
     doc.text('REPÚBLICA DE COLOMBIA',_hCX2,_hY+4,{align:'center',maxWidth:_hMW2});
-    const _depLabel=db.depto?'DEPARTAMENTO DE '+_normEspacios(db.depto).toUpperCase():(getROT2()||'');
-    if(_depLabel){doc.setFontSize(7);doc.text(_depLabel,_hCX2,_hY+8,{align:'center',maxWidth:_hMW2});}
-    doc.setFontSize(9);doc.setFont('helvetica','bold');
+    const _depLabel=db.depto?'DEPARTAMENTO DE '+(db.depto).toUpperCase():(getROT2()||'');
+    if(_depLabel){doc.setFontSize(6);doc.text(_depLabel,_hCX2,_hY+8,{align:'center',maxWidth:_hMW2});}
+    doc.setFontSize(8);doc.setFont('helvetica','bold');
     const _brot3=doc.splitTextToSize(getROT3()||(db.nombre||'INSTITUCIÓN EDUCATIVA'),_hMW2);
-    doc.text(_brot3,_hCX2,_hY+13,{align:'center'});
-    let _hNext=_hY+13+(_brot3.length*4.4);
-    doc.setFontSize(6);doc.setFont('helvetica','normal');doc.setTextColor(40);
-    if(getROT4()){const _r4=doc.splitTextToSize(getROT4(),_hMW2);doc.text(_r4,_hCX2,_hNext,{align:'center'});_hNext+=_r4.length*3.3;}
-    if(getROT5()){const _r5=doc.splitTextToSize(getROT5(),_hMW2);doc.text(_r5,_hCX2,_hNext,{align:'center'});_hNext+=_r5.length*3.3;}
-    if(getROT6()){const _r6=doc.splitTextToSize(getROT6(),_hMW2);doc.text(_r6,_hCX2,_hNext,{align:'center'});_hNext+=_r6.length*3.3;}
-    doc.setFontSize(6);doc.text('Dane: '+(db.dane||'')+'   Nit: '+(db.nit||''),_hCX2,_hNext+1.8,{align:'center',maxWidth:_hMW2});
-    _hNext+=5.5;
+    doc.text(_brot3,_hCX2,_hY+12.5,{align:'center'});
+    let _hNext=_hY+12.5+(_brot3.length*4.2);
+    doc.setFontSize(5.2);doc.setFont('helvetica','normal');doc.setTextColor(40);
+    if(getROT4()){const _r4=doc.splitTextToSize(getROT4(),_hMW2);doc.text(_r4,_hCX2,_hNext,{align:'center'});_hNext+=_r4.length*3.0;}
+    if(getROT5()){const _r5=doc.splitTextToSize(getROT5(),_hMW2);doc.text(_r5,_hCX2,_hNext,{align:'center'});_hNext+=_r5.length*3.0;}
+    if(getROT6()){const _r6=doc.splitTextToSize(getROT6(),_hMW2);doc.text(_r6,_hCX2,_hNext,{align:'center'});_hNext+=_r6.length*3.0;}
+    doc.setFontSize(5.2);doc.text('Dane: '+(db.dane||'')+'   Nit: '+(db.nit||''),_hCX2,_hNext+1.5,{align:'center',maxWidth:_hMW2});
+    _hNext+=5;
     doc.setTextColor(0);doc.setLineWidth(0.5);doc.line(10,_hNext,206,_hNext);
     const tituloDoc=incluirResumenFinal?'INFORME FINAL DEL AÑO — EVALUACIÓN Y DESEMPEÑO ACADÉMICO':'INFORME DE EVALUACIÓN Y DESEMPEÑO ACADÉMICO';
     const _titY=_hNext+6;
-    doc.setFontSize(10.5);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
+    doc.setFontSize(9.5);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
     const _titLines=doc.splitTextToSize(tituloDoc,_hMW2);
     doc.text(_titLines,_hCX2,_titY,{align:'center'});
     doc.setTextColor(0);
@@ -8702,7 +7356,7 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     const _cx=(_lm+_rm)/2; // centro horizontal
     // ── Fila del estudiante ──
     doc.setFillColor(220,232,255);doc.rect(_lm,_tableStart-6,_tw,6,'F');
-    doc.setFontSize(8);doc.setFont('helvetica','bold');doc.setTextColor(0,30,80);
+    doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(0,30,80);
     doc.text('ESTUDIANTE: '+e.n+'   AÑO: '+db.anio+'   GRADO: '+grado+'   PERIODO: '+per+'   PUESTO: '+pu+'°',_cx,_tableStart-1.4,{align:'center',maxWidth:_tw-4});
     doc.setLineWidth(0.3);doc.rect(_lm,_tableStart-6,_tw,6);doc.setTextColor(0);
     // Solo columnas del periodo seleccionado
@@ -8733,13 +7387,13 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     doc.autoTable({
       head:tableHead,body:tableBody,startY:_tableStart,
       margin:{left:_lm,right:216-_rm},
-      styles:{fontSize:7.5,cellPadding:0.7,overflow:'linebreak',minCellHeight:3.2},
-      headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold',halign:'center',fontSize:7.5,cellPadding:0.8},
+      styles:{fontSize:5.8,cellPadding:0.4,overflow:'linebreak',minCellHeight:2.5},
+      headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold',halign:'center',fontSize:5.8,cellPadding:0.5},
       columnStyles:{
         0:{fontStyle:'bold',cellWidth:33,halign:'left'},
         1:{cellWidth:54,halign:'left'},
-        2:{halign:'center',cellWidth:8,fontSize:7},
-        3:{cellWidth:40,halign:'left',fontSize:7},
+        2:{halign:'center',cellWidth:8,fontSize:5.5},
+        3:{cellWidth:40,halign:'left',fontSize:5.5},
         4:{halign:'center',cellWidth:15,fontStyle:'bold'},
         5:{halign:'center',cellWidth:46,fontStyle:'bold'}
       },
@@ -8757,8 +7411,8 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
               const _dtxt=(raw[0]||'').replace('~D~','');
               try{
                 const _dlines=data.doc.splitTextToSize('  >> '+_dtxt,_tw-4);
-                data.cell.styles.minCellHeight=Math.max(4.5,_dlines.length*3.4+1.8);
-              }catch(e){data.cell.styles.minCellHeight=9;}
+                data.cell.styles.minCellHeight=Math.max(4,_dlines.length*2.8+1.5);
+              }catch(e){data.cell.styles.minCellHeight=8;}
             }
           }
           if(raw[1]&&typeof raw[1]==='string'&&raw[1].startsWith('\u2192')){
@@ -8790,9 +7444,9 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
             doc.rect(_lm,data.cell.y,_tw,data.cell.height,'F');
             doc.setDrawColor(210,200,140);doc.setLineWidth(0.15);
             doc.rect(_lm,data.cell.y,_tw,data.cell.height);
-            doc.setFontSize(7);doc.setFont('helvetica','italic');doc.setTextColor(60,40,0);
+            doc.setFontSize(6);doc.setFont('helvetica','italic');doc.setTextColor(60,40,0);
             const lines=doc.splitTextToSize('  >> '+txt,_tw-4);
-            doc.text(lines,_lm+2,data.cell.y+3.6);
+            doc.text(lines,_lm+2,data.cell.y+3.2);
             doc.setTextColor(0);doc.setFont('helvetica','normal');doc.setDrawColor(0);doc.setLineWidth(0.1);
           }
           // CARITA EMOJI para grados de transicion / preescolar (ajustada a la celda)
@@ -8833,63 +7487,50 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
       }
     });
     let fy=doc.lastAutoTable.finalY+1;
-    // ── Control de margen inferior: si un bloque no cabe, se desplaza a una página nueva ──
-    const pageH=doc.internal.pageSize.height;
-    const _margenInferior=28; // reserva de espacio para no invadir el margen inferior/firmas
-    const _asegurarEspacio=(alturaNecesaria)=>{
-      if(fy+alturaNecesaria>pageH-_margenInferior){doc.addPage();fy=16;}
-    };
     // ── Promedios por periodo del estudiante y promedio del curso ──
     const perProms=[1,2,3,4].map(p=>calcPromedioEstPer(e.id,grado,p));
     const promAnualEst=parseFloat((perProms.reduce((a,b)=>a+b,0)/4).toFixed(2));
     const promsGradoP=db.ests.filter(x=>x.g===grado).map(x=>calcPromedioEstPer(x.id,grado,per));
     const promCurso=promsGradoP.length?parseFloat((promsGradoP.reduce((a,b)=>a+b,0)/promsGradoP.length).toFixed(2)):0;
-    _asegurarEspacio(7);
     doc.setFillColor(220,238,255);doc.rect(_lm,fy,_tw,6,'F');
     doc.setLineWidth(0.3);doc.rect(_lm,fy,_tw,6);
-    doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
+    doc.setFontSize(6);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
     const pLabel=perProms.map((p,i)=>'P'+(i+1)+': '+p.toFixed(2)).join('   ');
-    doc.text('PROMEDIOS:  '+pLabel+'   |   PROM. ANUAL: '+promAnualEst.toFixed(2)+'   PROM. CURSO P'+per+': '+promCurso.toFixed(2),_cx,fy+4.2,{align:'center',maxWidth:_tw-4});
+    doc.text('PROMEDIOS:  '+pLabel+'   |   PROM. ANUAL: '+promAnualEst.toFixed(2)+'   PROM. CURSO P'+per+': '+promCurso.toFixed(2),_cx,fy+4.2,{align:'center'});
     doc.setTextColor(0);fy+=8;
     // Usar áreas del periodo si es boletin por periodo, o anual si es informe final
     const areasPerd=incluirResumenFinal?getAreasPerdidas(e.id,grado):getAreasPerdidasPeriodo(e.id,grado,per);
     if(areasPerd.length>0){
-      doc.setFontSize(7.5);doc.setFont('helvetica','bold');
-      const lblAreas=incluirResumenFinal?'BAJO DESEMPEÑO ANUAL: ':'BAJO DESEMPEÑO P'+per+': ';
+      doc.setFontSize(6.5);doc.setFont('helvetica','bold');
+      const lblAreas=incluirResumenFinal?'⚠ BAJO DESEMPEÑO ANUAL: ':'⚠ BAJO DESEMPEÑO P'+per+': ';
       const _areasTxt=lblAreas+areasPerd.join('  |  ');
       const _areasLines=doc.splitTextToSize(_areasTxt,_tw-8);
-      const _areasH=Math.max(7.5,_areasLines.length*4.6+3);
-      // Si el bloque de bajo desempeño no cabe en lo que resta de la página, se desplaza a una nueva
-      _asegurarEspacio(_areasH);
+      const _areasH=Math.max(7,_areasLines.length*4.2+3);
       doc.setFillColor(255,230,230);doc.rect(_lm,fy,_tw,_areasH,'F');
       doc.setTextColor(192,57,43);
-      doc.text(_areasLines,_lm+4,fy+4.4);
+      doc.text(_areasLines,_lm+4,fy+4);
       doc.setTextColor(0);fy+=_areasH+1;
     }
     if(incluirResumenFinal){
       const promAnioGral=calcPromedioEst(e.id,grado);
       const estadoFinal=areasPerd.length===0?'APROBADO(A)':areasPerd.length<=2?'APROBADO(A) CON ÁREAS POR NIVELAR':'REPROBADO(A)';
-      _asegurarEspacio(8);
       doc.setFillColor(240,246,255);doc.rect(_lm,fy,_tw,7,'F');doc.setLineWidth(0.3);doc.rect(_lm,fy,_tw,7);
-      doc.setFontSize(8);doc.setFont('helvetica','bold');
-      doc.text('PROMEDIO GENERAL: '+promAnioGral.toFixed(2)+'   ESTADO FINAL: '+estadoFinal+' (Áreas perd.: '+areasPerd.length+')',_cx,fy+4.8,{align:'center',maxWidth:_tw-4});
+      doc.setFontSize(7);doc.setFont('helvetica','bold');
+      doc.text('PROMEDIO GENERAL: '+promAnioGral.toFixed(2)+'   ESTADO FINAL: '+estadoFinal+' (Áreas perd.: '+areasPerd.length+')',_cx,fy+4.8,{align:'center'});
       fy+=9;
     }
-    _asegurarEspacio(6);
-    doc.setFontSize(7);doc.setFont('helvetica','normal');
-    doc.setFillColor(248,248,248);doc.rect(_lm,fy,_tw,5.5,'F');
-    doc.setLineWidth(0.2);doc.rect(_lm,fy,_tw,5.5);
-    doc.text('BAJO (0.0–2.9)   |   BÁSICO (3.0–3.9)   |   ALTO (4.0–4.6)   |   SUPERIOR (4.7–5.0)',_cx,fy+3.7,{align:'center',maxWidth:_tw-4});
-    fy+=7.5;
+    doc.setFontSize(6);doc.setFont('helvetica','normal');
+    doc.setFillColor(248,248,248);doc.rect(_lm,fy,_tw,5,'F');
+    doc.setLineWidth(0.2);doc.rect(_lm,fy,_tw,5);
+    doc.text('BAJO (0.0–2.9)   |   BÁSICO (3.0–3.9)   |   ALTO (4.0–4.6)   |   SUPERIOR (4.7–5.0)',_cx,fy+3.4,{align:'center'});
+    fy+=7;
     if(e.obsDirector){
-      doc.setFontSize(8);doc.setFont('helvetica','bold');
-      const obsL=doc.splitTextToSize(e.obsDirector,_tw-4);
-      _asegurarEspacio(4+obsL.length*4+2);
-      doc.text('OBSERVACIÓN DEL DIRECTOR DE GRUPO:',_lm,fy);fy+=4.5;
-      doc.setFont('helvetica','normal');doc.setFontSize(7.5);
-      doc.text(obsL,_lm,fy);fy+=obsL.length*4+2;
+      doc.setFontSize(7);doc.setFont('helvetica','bold');doc.text('OBSERVACIÓN DEL DIRECTOR DE GRUPO:',_lm,fy);fy+=4;
+      doc.setFont('helvetica','normal');doc.setFontSize(6.5);
+      const obsL=doc.splitTextToSize(e.obsDirector,_tw-4);doc.text(obsL,_lm,fy);fy+=obsL.length*3.5+2;
     }
     // ── Firmas: siempre al fondo sin conflicto ──
+    const pageH=doc.internal.pageSize.height;
     // Si el contenido llega muy abajo, añadir nueva página para las firmas
     if(fy>pageH-32){doc.addPage();fy=16;}
     const firmaY=Math.max(fy+6,pageH-26);
@@ -8902,10 +7543,10 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     doc.setLineWidth(0.4);
     doc.line(_fL1,firmaY,_fL2,firmaY);
     doc.line(_fR1,firmaY,_fR2,firmaY);
-    doc.setFontSize(7.5);doc.setFont('helvetica','bold');
+    doc.setFontSize(6.5);doc.setFont('helvetica','bold');
     doc.text((db.rectora||'RECTOR(A)').toUpperCase(),_fLcx,firmaY+4,{align:'center',maxWidth:_fL2-_fL1});
     doc.text((infoG.d||'DIRECTOR DE GRUPO').toUpperCase(),_fRcx,firmaY+4,{align:'center',maxWidth:_fR2-_fR1});
-    doc.setFont('helvetica','normal');doc.setFontSize(7);
+    doc.setFont('helvetica','normal');doc.setFontSize(6);
     doc.text('RECTOR(A)',_fLcx,firmaY+8.5,{align:'center'});
     doc.text('DIRECTOR(A) DE GRUPO',_fRcx,firmaY+8.5,{align:'center'});
     addFooterPDF(doc);
@@ -9368,7 +8009,7 @@ function htmlMaterialPanel(){
 function guardarActa(){
   const tipo=document.getElementById('actaTipo')?.value;const fecha=document.getElementById('actaFecha')?.value;
   const contenido=document.getElementById('actaContenido')?.value;
-  if(!tipo||!contenido){customAlert('Complete tipo y contenido.');return;}
+  if(!tipo||!contenido){alert('Complete tipo y contenido.');return;}
   updDB(d=>{
     const acta={tipo,fecha,grado:document.getElementById('actaGrado')?.value||'',
       area:document.getElementById('actaArea')?.value||'',docente:document.getElementById('actaDocente')?.value||'',
@@ -9382,7 +8023,7 @@ function guardarActa(){
     else d.actas.push(acta);
     return d;
   });
-  actaEditId=null;customAlert('Acta guardada.');navTo('actas');
+  actaEditId=null;alert('Acta guardada.');navTo('actas');
 }
 function guardarActaYPdf(){guardarActa();setTimeout(()=>pdfActa(db.actas.length-1),500);}
 function editarActa(idx){
@@ -9395,19 +8036,19 @@ function editarActa(idx){
     setTimeout(()=>{const c=document.getElementById('contenido');if(c)c.scrollTop=0;},80);
   }
 }
-async function eliminarActa(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{d.actas.splice(idx,1);return d;});navTo('actas');}
+function eliminarActa(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.actas.splice(idx,1);return d;});navTo('actas');}
 function cargarActaPdfArchivo(inp){
   const f=inp.files[0];if(!f) return;const nombreInput=document.getElementById('actaPdfNombre')?.value||f.name;
   const r=new FileReader();r.onload=ev=>{
     updDB(d=>{if(!d.actasPdf) d.actasPdf=[];d.actasPdf.push({nombre:nombreInput||f.name,fecha:new Date().toLocaleDateString('es-CO'),data:ev.target.result});return d;});
-    customAlert('PDF cargado.');navTo('actas');
+    alert('PDF cargado.');navTo('actas');
   };r.readAsDataURL(f);
 }
 function descargarActaPdf(idx){
   const a=db.actasPdf[idx];if(!a) return;
   const link=document.createElement('a');link.href=a.data;link.download=a.nombre.endsWith('.pdf')?a.nombre:a.nombre+'.pdf';link.click();
 }
-async function eliminarActaPdf(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{d.actasPdf.splice(idx,1);return d;});navTo('actas');}
+function eliminarActaPdf(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.actasPdf.splice(idx,1);return d;});navTo('actas');}
 function pdfActaCitacion(acta){
   const doc=getPDF();
   const pw=doc.internal.pageSize.width;
@@ -9569,8 +8210,8 @@ function descargarPlan(idx,tipo){
   const p=arr[idx];if(!p) return;
   const link=document.createElement('a');link.href=p.data;link.download=p.filename||p.nombre;link.click();
 }
-async function eliminarPlan(idx,tipo){
-  if(!await customConfirm('¿Eliminar?')) return;
+function eliminarPlan(idx,tipo){
+  if(!confirm('¿Eliminar?')) return;
   updDB(d=>{if(tipo==='planes') d.planesArea.splice(idx,1); else d.planeaciones.splice(idx,1);return d;});
   actaTab='planes';navTo('actas');
 }
@@ -9599,8 +8240,8 @@ function agregarLink(){
   const asigVal=document.getElementById('linkAsig')?.value||'';
   const parts=asigVal.split('|');const asig=parts[0]||'';const grado=parts[1]||'';
   const per=document.getElementById('linkPer')?.value||'1';
-  if(!nombre||!url){customAlert('Ingrese nombre y URL.');return;}
-  if(!url.startsWith('http')){customAlert('La URL debe comenzar con http:// o https://');return;}
+  if(!nombre||!url){alert('Ingrese nombre y URL.');return;}
+  if(!url.startsWith('http')){alert('La URL debe comenzar con http:// o https://');return;}
   updDB(d=>{if(!d.materialEstudiantes) d.materialEstudiantes=[];
     d.materialEstudiantes.push({categoria:'link',tipoLink,nombre,url,asig,grado,per,docente:sesion.n,fecha:new Date().toLocaleDateString('es-CO')});return d;});
   actaTab='material';navTo('actas');
@@ -9609,8 +8250,8 @@ function descargarMaterial(idx){
   const m=(db.materialEstudiantes||[])[idx];if(!m||!m.data) return;
   const link=document.createElement('a');link.href=m.data;link.download=m.filename||m.nombre;link.click();
 }
-async function eliminarMaterial(idx){
-  if(!await customConfirm('¿Eliminar?')) return;
+function eliminarMaterial(idx){
+  if(!confirm('¿Eliminar?')) return;
   updDB(d=>{d.materialEstudiantes.splice(idx,1);return d;});actaTab='material';navTo('actas');
 }
 
@@ -9686,11 +8327,11 @@ function agregarObservacion(estId,per){
   });
   cargarListaObservador();
 }
-async function editarObservacion(estId,obsIdx){
+function editarObservacion(estId,obsIdx){
   const e=db.ests.find(x=>x.id===estId);if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];if(!obs) return;
   // Solo puede editar si es el mismo docente o admin
-  if(sesion.r!=='admin'&&obs.doc!==sesion.n){customAlert('Solo puede editar sus propias observaciones.');return;}
+  if(sesion.r!=='admin'&&obs.doc!==sesion.n){alert('Solo puede editar sus propias observaciones.');return;}
   const nt=prompt('Editar:',obs.txt);if(nt===null) return;
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones[obsIdx].txt=nt.trim();return d;});
   cargarListaObservador();
@@ -9699,23 +8340,23 @@ async function editarObservacion(estId,obsIdx){
 /*function eliminarObservacion(estId,obsIdx){
   const e=db.ests.find(x=>x.id===estId);if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];
-  if(sesion.r!=='admin'&&obs&&obs.doc!==sesion.n){customAlert('Solo puede eliminar sus propias observaciones.');return;}
-  if(!await customConfirm('¿Eliminar?')) return;
+  if(sesion.r!=='admin'&&obs&&obs.doc!==sesion.n){alert('Solo puede eliminar sus propias observaciones.');return;}
+  if(!confirm('¿Eliminar?')) return;
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones.splice(obsIdx,1);return d;});
   cargarListaObservador();
 }*/
 //HASTA ACÁ SE HIZO EL CAMBIO
 
 //ACÁ COMIENZA EL CAMBIO HECHO
-async function eliminarObservacion(estId, obsIdx){
+function eliminarObservacion(estId, obsIdx){
   const e = db.ests.find(x => x.id === estId);
   if(!e) return;
   const obs = (e.observaciones || [])[obsIdx];
   if(sesion.r !== 'admin' && obs && obs.doc !== sesion.n){
-    customAlert('Solo puede eliminar sus propias observaciones.');
+    alert('Solo puede eliminar sus propias observaciones.');
     return;
   }
-  if(!await customConfirm('¿Desea enviar esta observación a la papelera de reciclaje?')) return;
+  if(!confirm('¿Desea enviar esta observación a la papelera de reciclaje?')) return;
 
   // 1. Guardar copia en la papelera del sistema antes de eliminar
   if (typeof moverAPapelera === 'function') {
@@ -9749,15 +8390,15 @@ async function eliminarObservacion(estId, obsIdx){
 // ── ANÁLISIS PSICOPEDAGÓGICO CON ADÁN ──────────────────────────────────────
 function analizarObsAdan(estId, per){
   const e=db.ests.find(x=>String(x.id)===String(estId));
-  if(!e){customAlert('Estudiante no encontrado.');return;}
+  if(!e){alert('Estudiante no encontrado.');return;}
   const todas=(e.observaciones||[]);
   if(!todas.length){
-    customAlert('Este estudiante no tiene observaciones registradas aún. Primero agregue observaciones en el Observador.');
+    alert('Este estudiante no tiene observaciones registradas aún. Primero agregue observaciones en el Observador.');
     return;
   }
   const perSel=per||'';
   const obs=perSel?todas.filter(o=>String(o.per)===String(perSel)):todas;
-  if(!obs.length){customAlert('No hay observaciones registradas en el Período '+perSel+' para este estudiante.');return;}
+  if(!obs.length){alert('No hay observaciones registradas en el Período '+perSel+' para este estudiante.');return;}
   const resumen=obs.map(function(o,i){
     return (i+1)+'. [P'+o.per+' – '+(o.fecha||'—')+'] ('+(o.tipo||'General').toUpperCase()+') '+o.txt+' — Registrado por: '+o.doc;
   }).join('\n');
@@ -9819,7 +8460,7 @@ function pdfListaGrado(){
   const grado=document.getElementById('estFiltroGrado')?.value||db.grados[0]?.n||'';
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const infoG=db.grados.find(x=>x.n===grado)||{d:'',n:grado};
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF();const startY=addHeaderRot(doc,`LISTA — GRADO ${grado}`,`Año: ${db.anio} | Director(a): ${infoG.d||'—'} | Total: ${ests.length}`,8);
   doc.autoTable({startY:startY+3,head:[['#','NOMBRE DEL ESTUDIANTE','FIRMA','OBSERVACIONES']],
     body:ests.map((e,i)=>[i+1,e.n,'','']),styles:{fontSize:8,cellPadding:3},
@@ -9842,7 +8483,7 @@ function pdfListaTodos(){
     const sy=addHeaderRot(doc,`LISTA — GRADO ${g.n}`,`Director(a): ${g.d||'—'} | Total: ${ests.length}`,8);
     doc.autoTable({startY:sy+3,head:[['#','NOMBRE DEL ESTUDIANTE','FIRMA','OBSERVACIONES']],body:ests.map((e,i)=>[i+1,e.n,'','']),styles:{fontSize:8,cellPadding:3},headStyles:{fillColor:[0,51,102],textColor:255},columnStyles:{0:{cellWidth:10,halign:'center'},1:{cellWidth:95},2:{cellWidth:40},3:{cellWidth:45}}});
   });
-  if(first){customAlert('Sin estudiantes.');return;}
+  if(first){alert('Sin estudiantes.');return;}
   doc.save(`Listas_Todos_Grados_${db.anio}.pdf`);
 }
 
@@ -9854,7 +8495,7 @@ function descargarCarnet(u){
   const doc=getPDF();generarCarnetEnDoc(doc,user,30,160,90);doc.save(`Carnet_${user.n.replace(/\s+/g,'_')}.pdf`);
 }
 function descargarTodosLosCarnet(){
-  const docentes=db.users.filter(u=>u.r==='docente');if(!docentes.length){customAlert('Sin docentes.');return;}
+  const docentes=db.users.filter(u=>u.r==='docente');if(!docentes.length){alert('Sin docentes.');return;}
   const doc=getPDF();const ancho=160,alto=90,gap=10;let y=20;
   docentes.forEach((u,i)=>{if(i>0&&y+alto>285){doc.addPage();y=20;}generarCarnetEnDoc(doc,u,y,ancho,alto);y+=alto+gap;});
   doc.save(`Carnets_INETIS_${db.anio}.pdf`);
@@ -9980,25 +8621,24 @@ function htmlEleccionesAdmin(){
     </div>
   </div>`;
 }
-async function cambiarPassElecciones(){
+function cambiarPassElecciones(){
   const nueva=(document.getElementById('elecNuevaPass')?.value||'').trim();
-  if(nueva.length<4){customAlert('La contraseña debe tener al menos 4 caracteres.');return;}
-  const hash=await _hashPassword(nueva);
+  if(nueva.length<4){alert('La contraseña debe tener al menos 4 caracteres.');return;}
   updDB(d=>{
     if(!Array.isArray(d.users)) d.users=[];
     const idx=d.users.findIndex(x=>x.r==='elecciones');
-    if(idx>=0) d.users[idx].p=hash;
-    else d.users.push({u:'elecciones',p:hash,r:'elecciones',n:'MÓDULO ELECCIONES'});
+    if(idx>=0) d.users[idx].p=nueva;
+    else d.users.push({u:'elecciones',p:nueva,r:'elecciones',n:'MÓDULO ELECCIONES'});
     return d;
   });
-  customAlert('✅ Contraseña del módulo de Elecciones actualizada correctamente a: '+nueva);
+  alert('✅ Contraseña del módulo de Elecciones actualizada a: '+nueva);
   renderApp();
 }
-async function reiniciarElecciones(){
-  if(!await customConfirm('¿REINICIAR TODO el módulo de elecciones? Se borrarán candidatos, votantes y votos. Esta acción NO se puede deshacer.')) return;
-  if(!await customConfirm(`Confirme nuevamente: ¿Reiniciar elecciones del año ${db.anio}?`)) return;
+function reiniciarElecciones(){
+  if(!confirm('¿REINICIAR TODO el módulo de elecciones? Se borrarán candidatos, votantes y votos. Esta acción NO se puede deshacer.')) return;
+  if(!confirm(`Confirme nuevamente: ¿Reiniciar elecciones del año ${db.anio}?`)) return;
   updDB(d=>{d.elecciones[d.anio]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};return d;});
-  customAlert('Módulo de elecciones reiniciado.');renderApp();
+  alert('Módulo de elecciones reiniciado.');renderApp();
 }
 function mostrarTabElecAdmin(tab,btn){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));if(btn) btn.classList.add('active');
@@ -10030,20 +8670,20 @@ function agregarCandidato(tipo){
   const nom=document.getElementById(tipo==='personero'?'pNombre':'cNombre').value.trim();
   const gra=document.getElementById(tipo==='personero'?'pGrado':'cGrado').value.trim();
   const foto=tipo==='personero'?(window._fotoP||''):(window._fotoC||'');
-  if(!nom){customAlert('Ingrese el nombre');return;}
+  if(!nom){alert('Ingrese el nombre');return;}
   updDB(d=>{const anioE=d.anio;if(!d.elecciones) d.elecciones={};if(!d.elecciones[anioE]) d.elecciones[anioE]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
     if(tipo==='personero') d.elecciones[anioE].personeros.push({nombre:nom.toUpperCase(),grado:gra,foto});
     else d.elecciones[anioE].contralores.push({nombre:nom.toUpperCase(),grado:gra,foto});return d;});
   window._fotoP='';window._fotoC='';renderApp();
 }
-async function eliminarCandidato(tipo,idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{if(tipo==='personero') d.elecciones[d.anio].personeros.splice(idx,1);else d.elecciones[d.anio].contralores.splice(idx,1);return d;});renderApp();}
+function eliminarCandidato(tipo,idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{if(tipo==='personero') d.elecciones[d.anio].personeros.splice(idx,1);else d.elecciones[d.anio].contralores.splice(idx,1);return d;});renderApp();}
 function sincronizarVotantes(){
   updDB(d=>{const anioE=d.anio;if(!d.elecciones) d.elecciones={};if(!d.elecciones[anioE]) d.elecciones[anioE]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
     const yaReg=(d.elecciones[anioE].votantes||[]).map(v=>v.nombre);
     d.ests.forEach(e=>{if(!yaReg.includes(e.n)) d.elecciones[anioE].votantes.push({nombre:e.n,grado:e.g,votoP:false,votoC:false});});return d;});
-  customAlert('Sincronizado.');renderApp();
+  alert('Sincronizado.');renderApp();
 }
-async function eliminarVotante(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{d.elecciones[d.anio].votantes.splice(idx,1);return d;});mostrarTabElecAdmin('votantes',null);}
+function eliminarVotante(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.elecciones[d.anio].votantes.splice(idx,1);return d;});mostrarTabElecAdmin('votantes',null);}
 function agregarVotanteManual(){
   const nom=prompt('Nombre:');if(!nom) return;const gra=prompt('Grado:');if(gra===null) return;
   updDB(d=>{d.elecciones[d.anio].votantes.push({nombre:nom.toUpperCase(),grado:gra,votoP:false,votoC:false});return d;});mostrarTabElecAdmin('votantes',null);
@@ -10078,7 +8718,6 @@ function renderElecciones(){
     <div class="flex-gap" style="margin-bottom:20px;justify-content:center">
       <button class="btn btn-navy" onclick="elecStep='votacion';renderElecContenido()">🗳️ VOTACIÓN</button>
       <button class="btn btn-blue" onclick="elecStep='resultados';renderElecContenido()">📊 RESULTADOS</button>
-      <button class="btn btn-gray" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
       <button class="btn btn-red" onclick="cerrarSesion()">🚪 SALIR</button>
     </div>
     <div id="elecContenido"></div>
@@ -10156,8 +8795,8 @@ function buscarEstVotante(){
 }
 function seleccionarVotante(nombre){
   const anioE=db.anio;const el=(db.elecciones||{})[anioE]||{votantes:[]};
-  const v=(el.votantes||[]).find(x=>x.nombre===nombre);if(!v){customAlert('No encontrado.');return;}
-  if(v.votoP&&v.votoC){customAlert('Ya ejerció su voto.');return;}
+  const v=(el.votantes||[]).find(x=>x.nombre===nombre);if(!v){alert('No encontrado.');return;}
+  if(v.votoP&&v.votoC){alert('Ya ejerció su voto.');return;}
   elecVotante=v;elecStep='votar-personero';elecSelP=null;elecSelC=null;renderElecContenido();
 }
 function agregarVotanteModal(){
@@ -10165,9 +8804,9 @@ function agregarVotanteModal(){
   updDB(d=>{d.elecciones[d.anio].votantes.push({nombre:nom.toUpperCase(),grado:gra,votoP:false,votoC:false});return d;});
   seleccionarVotante(nom.toUpperCase());
 }
-function confirmarVotoPersonero(){if(elecSelP===null){customAlert('Seleccione candidato');return;}elecStep='votar-contralor';renderElecContenido();}
+function confirmarVotoPersonero(){if(elecSelP===null){alert('Seleccione candidato');return;}elecStep='votar-contralor';renderElecContenido();}
 function confirmarVotoContralor(){
-  if(elecSelC===null){customAlert('Seleccione candidato');return;}
+  if(elecSelC===null){alert('Seleccione candidato');return;}
   const anioE=db.anio;
   updDB(d=>{const el=d.elecciones[anioE];
     if(!el.votos.personero) el.votos.personero={};if(!el.votos.contralor) el.votos.contralor={};
@@ -10185,9 +8824,9 @@ function confirmarVotoContralor(){
 // ──────────────────────────────────────────────
 // MODO DE VOTACIÓN (admin toggle)
 // ──────────────────────────────────────────────
-async function establecerModoVotacion(modo){
+function establecerModoVotacion(modo){
   const label=modo==='online'?'100% Online (estudiantes votan desde su portal)':'Presencial + Online para ausentes';
-  if(!await customConfirm('¿Activar modo "'+label+'"? Los votos ya registrados no se borran.')) return;
+  if(!confirm('¿Activar modo "'+label+'"? Los votos ya registrados no se borran.')) return;
   updDB(d=>{
     if(!d.elecciones) d.elecciones={};
     if(!d.elecciones[d.anio]) d.elecciones[d.anio]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
@@ -10294,10 +8933,10 @@ function _estElecRenderPaso(est,el){
 function _estElecIr(paso){window._estElecStep=paso;const w=document.getElementById('estElecPasos');if(w){const est=db.ests.find(e=>e.id===sesion.estId)||{};const el=(db.elecciones||{})[db.anio]||{};w.innerHTML=_estElecRenderPaso(est,el);}}
 function _estElecSelPFn(idx){_estElecSelP=idx;_estElecIr('personero');}
 function _estElecSelCFn(idx){_estElecSelC=idx;_estElecIr('contralor');}
-function _estElecConfPFn(){if(_estElecSelP===null){customAlert('Selecciona un candidato o voto en blanco.');return;}_estElecIr('contralor');}
-async function _estElecConfCFn(estId){
-  if(_estElecSelC===null){customAlert('Selecciona un candidato o voto en blanco.');return;}
-  if(!await customConfirm('¿Confirmas tu voto? Esta acción es definitiva y no se puede modificar.')) return;
+function _estElecConfPFn(){if(_estElecSelP===null){alert('Selecciona un candidato o voto en blanco.');return;}_estElecIr('contralor');}
+function _estElecConfCFn(estId){
+  if(_estElecSelC===null){alert('Selecciona un candidato o voto en blanco.');return;}
+  if(!confirm('¿Confirmas tu voto? Esta acción es definitiva y no se puede modificar.')) return;
   const anioE=db.anio;
   updDB(d=>{
     if(!d.elecciones) d.elecciones={};
@@ -10436,7 +9075,7 @@ Formato: usa negrillas, listas organizadas y una presentación clara y profesion
 
 function _guardarPlaneacionIA(silent){
   const lastAssistMsg=_iaMsgs.filter(m=>m.role==='assistant'&&!m.loading&&m.content&&m.content.length>50).pop();
-  if(!lastAssistMsg){if(!silent)customAlert('No hay planeación generada aún.');return;}
+  if(!lastAssistMsg){if(!silent)alert('No hay planeación generada aún.');return;}
   const meta=window._iaPlaneacionMeta||{};
   const id='plan_'+Date.now();
   updDB(d=>{
@@ -10458,7 +9097,7 @@ function _guardarPlaneacionIA(silent){
   });
   window._iaEsPlaneacion=false;
   if(!silent){
-    customAlert('✅ Planeación guardada en "📋 Planeaciones Terminadas". Puede verla, editarla y descargarla desde el módulo de Actividades.');
+    alert('✅ Planeación guardada en "📋 Planeaciones Terminadas". Puede verla, editarla y descargarla desde el módulo de Actividades.');
   } else {
     // Notificación discreta no intrusiva
     const chip=document.createElement('div');
@@ -10641,7 +9280,7 @@ function _editarPlaneacionIA(id){
 function _guardarEdicionPlaneIA(id){
   const tit=(document.getElementById('_planeEditTit')?.value||'').trim();
   const txt=(document.getElementById('_planeEditTxt')?.value||'').trim();
-  if(!txt){customAlert('El contenido no puede estar vacío.');return;}
+  if(!txt){alert('El contenido no puede estar vacío.');return;}
   updDB(d=>{
     const idx=(d.planeacionesIA||[]).findIndex(x=>x.id===id);
     if(idx>=0){d.planeacionesIA[idx].contenido=txt;if(tit)d.planeacionesIA[idx].titulo=tit;d.planeacionesIA[idx].editado=new Date().toLocaleDateString('es-CO');}
@@ -10649,7 +9288,7 @@ function _guardarEdicionPlaneIA(id){
   });
   document.getElementById('_planeEditOv').style.display='none';
   const ov=document.getElementById('_planeOv');if(ov)ov.style.display='none';
-  customAlert('✅ Planeación actualizada.');
+  alert('✅ Planeación actualizada.');
   renderApp();
 }
 
@@ -10666,8 +9305,8 @@ function _descargarPlaneIAGuardadaWord(id){
   _descargarPlaneIAWord(-1,p.contenido);
 }
 
-async function _eliminarPlaneacionIA(id){
-  if(!await customConfirm('¿Eliminar esta planeación definitivamente?')) return;
+function _eliminarPlaneacionIA(id){
+  if(!confirm('¿Eliminar esta planeación definitivamente?')) return;
   updDB(d=>{d.planeacionesIA=(d.planeacionesIA||[]).filter(x=>x.id!==id);return d;});
   renderApp();
 }
@@ -11016,7 +9655,7 @@ function iaLimpiar(){
 function iaIniciarVoz(){
   if(_iaVozActiva){iaDetenerVoz();return;}
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
+  if(!SR){alert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
   _iaRecognition=new SR();
   _iaRecognition.lang='es-CO';
   _iaRecognition.continuous=false;
@@ -11168,7 +9807,7 @@ const MODULOS_VOZ={
 
 function iniciarNavVoz(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
+  if(!SR){alert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
   _navVozRecognition=new SR();
   _navVozRecognition.lang='es-CO';
   _navVozRecognition.continuous=true;
@@ -11477,7 +10116,7 @@ function _pmTipoChange(){
 
 function _pmPreviewFoto(inp){
   const f=inp.files[0];if(!f) return;
-  if(f.size>5*1024*1024){customAlert('La foto no puede superar 5 MB.');inp.value='';return;}
+  if(f.size>5*1024*1024){alert('La foto no puede superar 5 MB.');inp.value='';return;}
   const r=new FileReader();
   r.onload=ev=>{
     const img=document.getElementById('pm_fotoPreview');
@@ -11490,7 +10129,7 @@ async function _leerArchivo(inpId){
   const inp=document.getElementById(inpId);
   if(!inp||!inp.files||!inp.files[0]) return null;
   const f=inp.files[0];
-  if(f.size>5*1024*1024){customAlert('El archivo '+f.name+' supera 5 MB. Use un archivo más pequeño.');return null;}
+  if(f.size>5*1024*1024){alert('El archivo '+f.name+' supera 5 MB. Use un archivo más pequeño.');return null;}
   return new Promise(res=>{
     const r=new FileReader();
     r.onload=ev=>res({nombre:f.name,tipo:f.type,datos:ev.target.result});
@@ -11800,7 +10439,7 @@ function cambiarEstadoPM(id,estado,btn){
       return;
     }
   }
-  customAlert((estado==='APROBADA'?'✅ Solicitud APROBADA':'❌ Solicitud RECHAZADA')+' correctamente.');
+  alert((estado==='APROBADA'?'✅ Solicitud APROBADA':'❌ Solicitud RECHAZADA')+' correctamente.');
   navTo('pre-matricula-admin');
 }
 
@@ -11817,16 +10456,16 @@ async function _enviarCredencialesMail(email,nombre,inst){
   }catch(e){if(btn){btn.disabled=false;btn.textContent='❌ Sin conexión al servidor de correo';btn.style.background='#c0392b';}}
 }
 
-async function eliminarPM(id){
-  if(!await customConfirm('¿Eliminar esta solicitud de pre-matrícula? Esta acción no se puede deshacer.')) return;
+function eliminarPM(id){
+  if(!confirm('¿Eliminar esta solicitud de pre-matrícula? Esta acción no se puede deshacer.')) return;
   updDB(d=>{d.preMatriculas=(d.preMatriculas||[]).filter(x=>x.id!==id);return d;});
   navTo('pre-matricula-admin');
 }
 
 function exportarPMExcel(){
   const lista=db.preMatriculas||[];
-  if(!lista.length){customAlert('No hay solicitudes para exportar.');return;}
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no disponible.');return;}
+  if(!lista.length){alert('No hay solicitudes para exportar.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no disponible.');return;}
   const rows=lista.map(s=>({
     'Fecha':s.fechaSolicitud,
     'Estado':s.estado,
@@ -11894,7 +10533,7 @@ function abrirPortalConRol(platId){
 }
 function renderPortalInstitucion(platId,rolPre){
     var p=gestorDB.platforms.find(function(x){return x.id===platId;});
-    if(!p){customAlert('Institución no encontrada.');return;}
+    if(!p){alert('Institución no encontrada.');return;}
     var escudo=p.escudo?('<img src="'+p.escudo+'" style="height:70px;max-width:120px;object-fit:contain">'):'<div style="font-size:3rem">&#x1F3EB;</div>';
     var tienePreMat=moduloActivo('pre-matricula',platId);
     var preMatBtn=tienePreMat?'<div style="margin-top:14px;text-align:center"><button class="btn btn-green" style="font-size:0.88rem" onclick="abrirPreMatriculaPublica()">&#x1F4DD; Pre-Matrícula / Inscripción Online</button></div>':'';
@@ -11964,23 +10603,15 @@ function renderPortalInstitucion(platId,rolPre){
   }
   async function doLoginPortal(platId){
     const p=gestorDB.platforms.find(x=>x.id===platId);
-    if(!p){customAlert('Institución no encontrada.');return;}
+    if(!p){alert('Institución no encontrada.');return;}
     const rol=document.getElementById('pRol').value;
     const user=document.getElementById('pUser').value.trim();
     const pass=document.getElementById('pPass').value;
-    if(!user){customAlert('Complete los campos de usuario y contraseña.');return;}
+    if(!user){alert('Complete los campos de usuario y contraseña.');return;}
     const platDB=await _fetchPlatDB(p.sk);
     let sesionData=null;
     if(rol==='elecciones'){
-      if(user==='elecciones'){
-        const eu=platDB.users&&platDB.users.find(x=>x.r==='elecciones');
-        if(eu&&await _verificarPassword(pass,eu.p)){
-          sesionData={u:'elecciones',p:pass,r:'elecciones',n:'MÓDULO ELECCIONES'};
-          if(!_esHashPassword(eu.p)){eu.p=await _hashPassword(pass);_savePlatDBQuiet(p.sk,platDB);}
-        } else if(!eu&&pass==='inetis2026'){
-          sesionData={u:'elecciones',p:pass,r:'elecciones',n:'MÓDULO ELECCIONES'};
-        }
-      }
+      if(user==='elecciones'){const eu=platDB.users&&platDB.users.find(x=>x.r==='elecciones');if((eu&&eu.p===pass)||(!eu&&pass==='inetis2026')) sesionData={u:'elecciones',p:pass,r:'elecciones',n:'MÓDULO ELECCIONES'};}
     } else if(rol==='padre'){
       const est=platDB.ests&&platDB.ests.find(e=>{
         const uBase=(e.numDocAcud||'').toString().trim();
@@ -11999,19 +10630,16 @@ function renderPortalInstitucion(platId,rolPre){
       });
       if(est) sesionData={u:user,p:pass,r:'estudiante',n:est.n,estId:est.id,foto:est.foto||''};
     } else {
-      const found=platDB.users&&platDB.users.find(u=>u.u===user&&u.r===rol);
-      if(found&&await _verificarPassword(pass,found.p)){
-        sesionData=found;
-        if(!_esHashPassword(found.p)){found.p=await _hashPassword(pass);_savePlatDBQuiet(p.sk,platDB);}
-      }
+      const found=platDB.users&&platDB.users.find(u=>u.u===user&&u.p===pass&&u.r===rol);
+      if(found) sesionData=found;
     }
-    if(!sesionData){customAlert('❌ Usuario o contraseña incorrectos.\n\nVerifique sus credenciales.');return;}
-    if(p.bloqueada&&rol!=='admin'){customAlert('🔒 Esta plataforma está temporalmente bloqueada por el administrador del sistema. Comuníquese con su institución.');return;}
+    if(!sesionData){alert('❌ Usuario o contraseña incorrectos.\n\nVerifique sus credenciales.');return;}
+    if(p.bloqueada&&rol!=='admin'){alert('🔒 Esta plataforma está temporalmente bloqueada por el administrador del sistema. Comuníquese con su institución.');return;}
     db=platDB;
     window._currentPlatSK=p.sk;
     window._currentPlatId=platId;
     sesion=sesionData;
-    pag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla';
+    pag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
     _sseInit();
     _checkSchemaMigrationBanner();
     render();
@@ -12019,7 +10647,7 @@ function renderPortalInstitucion(platId,rolPre){
   function previewLogoGestor(inputId,previewId,hiddenId){
     const file=document.getElementById(inputId).files[0];
     if(!file)return;
-    if(file.size>300000){customAlert('La imagen debe ser menor a 300KB para mejor rendimiento.');return;}
+    if(file.size>300000){alert('La imagen debe ser menor a 300KB para mejor rendimiento.');return;}
     const reader=new FileReader();
     reader.onload=function(e){
       const data=e.target.result;
@@ -12030,14 +10658,14 @@ function renderPortalInstitucion(platId,rolPre){
   }
   function descargarHTMLInstitucion(platId){
     const p=gestorDB.platforms.find(x=>x.id===platId);
-    if(!p){customAlert('Institución no encontrada.');return;}
+    if(!p){alert('Institución no encontrada.');return;}
     try{
       const html='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
       const nombre='Portal_'+p.nombre.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]/g,'_')+'_offline.html';
       _descargarTextoComoArchivo(html,nombre,'text/html;charset=utf-8');
       mostrarAlerta('✅ Portal de "'+p.nombre+'" descargado correctamente.','ok');
     }catch(e){
-      customAlert('Error al descargar: '+e.message);
+      alert('Error al descargar: '+e.message);
     }
   }
   function descargarGestorCompleto(){
@@ -12046,7 +10674,7 @@ function renderPortalInstitucion(platId,rolPre){
       _descargarTextoComoArchivo(html,'GESTOR_ACADEMICO_YC_completo_offline.html','text/html;charset=utf-8');
       mostrarAlerta('✅ Sistema completo descargado correctamente.','ok');
     }catch(e){
-      customAlert('Error al descargar: '+e.message);
+      alert('Error al descargar: '+e.message);
     }
   }
 

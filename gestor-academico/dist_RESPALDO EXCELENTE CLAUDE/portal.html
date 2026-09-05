@@ -16,22 +16,6 @@
 })();
 </script>
 <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;🎓&lt;/text&gt;&lt;/svg&gt;">
-<!-- PWA: manifest, íconos y color de tema para poder "instalar" el portal -->
-<link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#003366">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Gestor YC">
-<script>
-// Registrar el Service Worker (habilita instalación como PWA y
-// una capa básica de resiliencia si la conexión falla momentáneamente).
-if('serviceWorker' in navigator){
-  window.addEventListener('load', function(){
-    navigator.serviceWorker.register('/sw.js').catch(function(){});
-  });
-}
-</script>
 <script src="modules/01-proteccion.js"></script>
 <script src="config.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
