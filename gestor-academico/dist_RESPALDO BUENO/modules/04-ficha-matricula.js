@@ -70,7 +70,7 @@ function guardarFichaMatricula(){
   var idRaw=document.getElementById('fm_estId').value;
   var nombres=document.getElementById('fm_nombres').value.trim();
   var apellidos=document.getElementById('fm_apellidos').value.trim();
-  if(!nombres||!apellidos){customAlert('Ingrese nombres y apellidos del estudiante.');return;}
+  if(!nombres||!apellidos){alert('Ingrese nombres y apellidos del estudiante.');return;}
   var campos=['nombres','apellidos','tipoDoc','numDoc','genero','fechaNac','lugarNac','grupoSang','eps','estrato','condicion','municipio','vereda','direccion','etnia','pueblo','victima','desplazado','ruv','estado','instAnterior','fechaMatricula','padre','madre','acudiente','parentesco','docAcud','numDocAcud','telAcud','telAlt','email','ocupacion','nivelEd','firmaEst','firmaAcud','firmaRect','obs'];
   var ficha={};
   campos.forEach(function(k){var el=document.getElementById('fm_'+k);if(el)ficha[k]=el.value;});
@@ -79,12 +79,12 @@ function guardarFichaMatricula(){
   ficha.fechaGuardado=new Date().toISOString();
   if(idRaw){
     updDB(function(d){var idx=d.ests.findIndex(function(x){return x.id==idRaw;});if(idx!==-1)d.ests[idx].ficha=ficha;return d;});
-    customAlert('✅ Ficha de matrícula guardada correctamente.');
+    alert('✅ Ficha de matrícula guardada correctamente.');
   } else {
     var grado=db.grados.length?db.grados[0].n:'';
     var nomComp=(nombres+' '+apellidos).toUpperCase();
     updDB(function(d){d.ests.push({id:Date.now()+Math.random(),n:nomComp,g:grado,nts:{},observaciones:[],ficha:ficha});return d;});
-    customAlert('✅ Estudiante y ficha de matrícula guardados.');
+    alert('✅ Estudiante y ficha de matrícula guardados.');
     renderApp();
   }
   cerrarFichaModal();
@@ -93,7 +93,7 @@ function guardarFichaMatricula(){
 function pdfFichaMatricula(){
   var nombres=document.getElementById('fm_nombres').value.trim();
   var apellidos=document.getElementById('fm_apellidos').value.trim();
-  if(!nombres&&!apellidos){customAlert('Complete los nombres y apellidos antes de imprimir.');return;}
+  if(!nombres&&!apellidos){alert('Complete los nombres y apellidos antes de imprimir.');return;}
   var doc=new window.jspdf.jsPDF({orientation:'portrait',unit:'mm',format:'letter'});
   var PW=215.9,ML=15,MR=15,MT=12,lw=PW-ML-MR;
   var y=MT;

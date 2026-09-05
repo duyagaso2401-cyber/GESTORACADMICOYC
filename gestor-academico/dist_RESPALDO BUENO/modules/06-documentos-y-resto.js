@@ -117,7 +117,7 @@ async function renderDocsModal(){
 async function subirDoc(clave, tipo, label, input){
   const archivo = input.files[0];
   if(!archivo) return;
-  if(archivo.size > 15*1024*1024){ customAlert('❌ El archivo no debe superar 15 MB.'); return; }
+  if(archivo.size > 15*1024*1024){ alert('❌ El archivo no debe superar 15 MB.'); return; }
 
   const reader = new FileReader();
   reader.onload = async e => {
@@ -139,7 +139,7 @@ async function subirDoc(clave, tipo, label, input){
 
 async function verDoc(clave){
   const d = await docsLeer(clave);
-  if(!d){ customAlert('Documento no encontrado.'); return; }
+  if(!d){ alert('Documento no encontrado.'); return; }
   const blob = base64ToBlob(d.base64, d.mime);
   const url = URL.createObjectURL(blob);
   window.open(url,'_blank');
@@ -147,7 +147,7 @@ async function verDoc(clave){
 
 async function descargarDoc(clave){
   const d = await docsLeer(clave);
-  if(!d){ customAlert('Documento no encontrado.'); return; }
+  if(!d){ alert('Documento no encontrado.'); return; }
   const blob = base64ToBlob(d.base64, d.mime);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -157,14 +157,14 @@ async function descargarDoc(clave){
 }
 
 async function eliminarDoc(clave){
-  if(!await customConfirm('¿Eliminar este documento? Esta acción no se puede deshacer.')) return;
+  if(!confirm('¿Eliminar este documento? Esta acción no se puede deshacer.')) return;
   await docsEliminar(clave);
   await renderDocsModal();
 }
 
 async function descargarTodosLosDocsZip(){
   const guardados = await docsListarPorEstudiante(_docsEstId);
-  if(!guardados.length){ customAlert('No hay documentos cargados para este estudiante.'); return; }
+  if(!guardados.length){ alert('No hay documentos cargados para este estudiante.'); return; }
   const est = db.ests.find(x=>String(x.id)===_docsEstId);
   const nombreEst = est ? est.n.replace(/[^a-zA-Z0-9]/g,'_') : 'estudiante';
 
@@ -179,7 +179,7 @@ async function descargarTodosLosDocsZip(){
     URL.revokeObjectURL(url); a.remove();
     await new Promise(r=>setTimeout(r,300));
   }
-  customAlert(`✅ Se descargaron ${guardados.length} documento(s) del estudiante.`);
+  alert(`✅ Se descargaron ${guardados.length} documento(s) del estudiante.`);
 }
 
 function base64ToBlob(b64, mime){
@@ -200,7 +200,7 @@ function cargarPlanillaExcel(inp){
   const _msg=document.getElementById('_xlsxMsg');
   function _showImportMsg(txt,bg,clr){
     if(_msg){_msg.textContent=txt;_msg.style.display='block';_msg.style.background=bg||'#fef9e7';_msg.style.color=clr||'#7d6608';}
-    else customAlert(txt);
+    else alert(txt);
   }
   // Esperar librería si aún carga
   if(typeof XLSX==='undefined'){
@@ -212,7 +212,7 @@ function cargarPlanillaExcel(inp){
     return;
   }
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   const per=Number(planPer);
   const cId=carga.id; // capturar como número para usar dentro del updDB
   const _cfgXl=db.config||{};const _colsXl=_resolverColumnas(_cfgXl);
@@ -718,7 +718,7 @@ function abrirConfigInasistenciasRapida(){
   if(nCrit === null) return;
   var numCrit = parseFloat(nCrit);
   if(isNaN(numCrit) || numCrit <= 0 || numCrit > 100){
-    customAlert('Ingrese un número válido entre 1 y 100.');
+    alert('Ingrese un número válido entre 1 y 100.');
     return;
   }
 
@@ -726,7 +726,7 @@ function abrirConfigInasistenciasRapida(){
   if(nPrev === null) return;
   var numPrev = parseFloat(nPrev);
   if(isNaN(numPrev) || numPrev <= 0 || numPrev >= numCrit){
-    customAlert('El porcentaje preventivo debe ser menor que el porcentaje crítico.');
+    alert('El porcentaje preventivo debe ser menor que el porcentaje crítico.');
     return;
   }
 
@@ -737,7 +737,7 @@ function abrirConfigInasistenciasRapida(){
     return d;
   });
 
-  customAlert('✅ Porcentajes actualizados:\n• Preventivo: '+numPrev+'%\n• Crítico (Reprobación): '+numCrit+'%');
+  alert('✅ Porcentajes actualizados:\n• Preventivo: '+numPrev+'%\n• Crítico (Reprobación): '+numCrit+'%');
   renderApp();
 }
 
@@ -940,7 +940,7 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
 
 function analizarInasistenciaAdan(estId, grado, cId){
   var est = (db.ests || []).find(function(e){ return String(e.id) === String(estId); });
-  if(!est){ customAlert('Estudiante no encontrado.'); return; }
+  if(!est){ alert('Estudiante no encontrado.'); return; }
 
   var pctCrit = Number(db.config?.pctInasistenciaCritica || 25);
   var pctPrev = Number(db.config?.pctInasistenciaPreventiva || 20);
@@ -985,11 +985,11 @@ Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(d.content){
-        customAlert('🧠 DIAGNÓSTICO PSICOPEDAGÓGICO (ADÁN IA):\n\n' + d.content);
+        alert('🧠 DIAGNÓSTICO PSICOPEDAGÓGICO (ADÁN IA):\n\n' + d.content);
       } else if(d.error){
         _showToast('Aviso de IA: ' + d.error, 'warn', 5000);
       } else {
-        customAlert('Respuesta de IA recibida.');
+        alert('Respuesta de IA recibida.');
       }
     })
     .catch(function(err){
@@ -999,7 +999,7 @@ Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
 }
 
 function descargarReportePsicopedagogicoPDF(grado, cId){
-  if(typeof window.jspdf === 'undefined'){ customAlert('Librería PDF no cargada.'); return; }
+  if(typeof window.jspdf === 'undefined'){ alert('Librería PDF no cargada.'); return; }
   var doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
   var PW = 215.9, PH = 279.4, MX = 14, MW = PW - MX * 2;
   var y = 14;
@@ -1104,8 +1104,8 @@ function marcarTodosPresentes(){
 
 function guardarAsistencia(){
   if(window._asistSubmitting) return;
-  if(!asistGrado||!asistCId){customAlert('Seleccione grado y asignatura.');return;}
-  if(!asistFecha){customAlert('Ingrese la fecha.');return;}
+  if(!asistGrado||!asistCId){alert('Seleccione grado y asignatura.');return;}
+  if(!asistFecha){alert('Ingrese la fecha.');return;}
   var actEl=document.getElementById('asistActividad');
   var actividad=actEl?actEl.value.trim():'';
   var ests=db.ests.filter(function(e){return !e.deletedAt && e.g===asistGrado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
@@ -1167,7 +1167,7 @@ function guardarAsistencia(){
     _showToast('✅ Asistencia guardada: '+presentes.length+' presentes, '+ausentes.length+' ausentes, '+justificados.length+' justificados.', 'success', 3500);
     asistTabActivo='hist';
   } catch(e){
-    customAlert('Error al guardar asistencia: ' + (e.message || e));
+    alert('Error al guardar asistencia: ' + (e.message || e));
   } finally {
     window._asistSubmitting = false;
     renderApp();
@@ -1182,8 +1182,8 @@ function guardarAsistencia(){
   }
 }
 
-async function eliminarAsistencia(id){
-  if(!await customConfirm('¿Mover este registro de asistencia a la papelera?')) return;
+function eliminarAsistencia(id){
+  if(!confirm('¿Mover este registro de asistencia a la papelera?')) return;
   softDeleteRegistro('asistencia', id, { id: id });
   renderApp();
 }
@@ -1202,7 +1202,7 @@ function editarAsistencia(id){
 
 function descargarAsistenciaRegistradaPDF(id){
   var reg=(db.asistencia||[]).find(function(a){return a.id===id;});
-  if(!reg){customAlert('Registro no encontrado.');return;}
+  if(!reg){alert('Registro no encontrado.');return;}
   var c=db.carga.find(function(x){return x.id===reg.cargaId;})||{m:'—',a:'—'};
   var gn=function(eid){var e=db.ests.find(function(x){return String(x.id)===String(eid);});return e?e.n:String(eid);};
   var inst=db.nombre||'Institución Educativa';
@@ -1283,7 +1283,7 @@ function verDetalleAsistencia(id){
   var reg=(db.asistencia||[]).find(function(a){return a.id===id;});if(!reg) return;
   var c=db.carga.find(function(x){return x.id===reg.cargaId;});
   var gn=function(eid){var e=db.ests.find(function(x){return x.id===eid;});return e?e.n:String(eid);};
-  customAlert('ASISTENCIA\nFecha: '+reg.fecha+' '+reg.hora+'\nGrado: '+reg.grado+' | Asignatura: '+(c?c.m:'?')+'\nActividad: '+(reg.actividad||'?')+'\n\nPRESENTES ('+reg.presentes.length+'):\n'+(reg.presentes.map(gn).join(', ')||'?')+'\n\nAUSENTES ('+reg.ausentes.length+'):\n'+(reg.ausentes.map(gn).join(', ')||'?')+'\n\nJUSTIFICADOS ('+reg.justificados.length+'):\n'+(reg.justificados.map(gn).join(', ')||'?'));
+  alert('ASISTENCIA\nFecha: '+reg.fecha+' '+reg.hora+'\nGrado: '+reg.grado+' | Asignatura: '+(c?c.m:'?')+'\nActividad: '+(reg.actividad||'?')+'\n\nPRESENTES ('+reg.presentes.length+'):\n'+(reg.presentes.map(gn).join(', ')||'?')+'\n\nAUSENTES ('+reg.ausentes.length+'):\n'+(reg.ausentes.map(gn).join(', ')||'?')+'\n\nJUSTIFICADOS ('+reg.justificados.length+'):\n'+(reg.justificados.map(gn).join(', ')||'?'));
 }
 
 function verReporteAsistencia(){
@@ -1378,9 +1378,9 @@ function descargarPlanillaAsistenciaPDF(){
   var anio=db.anio||new Date().getFullYear();
   var ests=db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
   var c=db.carga.find(function(x){return x.id===cIdV;});
-  if(!ests.length){customAlert('No hay estudiantes en el grado seleccionado.');return;}
+  if(!ests.length){alert('No hay estudiantes en el grado seleccionado.');return;}
   var workDays=_getWorkDays(anio,mes,frec,sub);
-  if(!workDays.length){customAlert('No hay días hábiles en el período seleccionado.');return;}
+  if(!workDays.length){alert('No hay días hábiles en el período seleccionado.');return;}
   var{jsPDF}=window.jspdf;
   var doc=new jsPDF('l','mm','a4');
   var W=297,H=210,ML=10,MR=10;
@@ -1520,9 +1520,9 @@ function descargarPlanillaAsistenciaExcel(){
   var anio=db.anio||new Date().getFullYear();
   var ests=db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
   var c=db.carga.find(function(x){return x.id===cIdV;});
-  if(!ests.length){customAlert('No hay estudiantes en el grado seleccionado.');return;}
+  if(!ests.length){alert('No hay estudiantes en el grado seleccionado.');return;}
   var workDays=_getWorkDays(anio,mes,frec,sub);
-  if(!workDays.length){customAlert('No hay días hábiles en el período seleccionado.');return;}
+  if(!workDays.length){alert('No hay días hábiles en el período seleccionado.');return;}
 
   var inst=(db.nombre||'INSTITUCIÓN EDUCATIVA').toUpperCase();
   var daneNit=[(db.dane?'Dane: '+db.dane:''),(db.nit?'Nit: '+db.nit:'')].filter(Boolean).join('     ');
@@ -1569,7 +1569,7 @@ function descargarReporteAsistenciaPDF(){
   var ests=db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
   var regs=(db.asistencia||[]).filter(function(a){return a.grado===grado&&a.cargaId===cIdV;});
   var c=db.carga.find(function(x){return x.id===cIdV;});
-  if(!ests.length||!regs.length){customAlert('No hay datos de asistencia para los filtros seleccionados.');return;}
+  if(!ests.length||!regs.length){alert('No hay datos de asistencia para los filtros seleccionados.');return;}
   var total=regs.length;
   var{jsPDF}=window.jspdf;var doc=new jsPDF('p','mm','a4');
   doc.setFillColor(0,51,102);doc.rect(0,0,210,28,'F');
@@ -1596,7 +1596,7 @@ function descargarReporteAsistenciaExcel(){
   var ests=db.ests.filter(function(e){return e.g===grado;}).sort(function(a,b){return a.n.localeCompare(b.n);});
   var regs=(db.asistencia||[]).filter(function(a){return a.grado===grado&&a.cargaId===cIdV;});
   var c=db.carga.find(function(x){return x.id===cIdV;});
-  if(!ests.length||!regs.length){customAlert('No hay datos de asistencia para los filtros seleccionados.');return;}
+  if(!ests.length||!regs.length){alert('No hay datos de asistencia para los filtros seleccionados.');return;}
   var total=regs.length;
   var rows=ests.map(function(e,i){
     var pres=regs.filter(function(r){return r.presentes.includes(e.id);}).length;
@@ -1625,11 +1625,11 @@ function cargarPlanillaAsistencia(){
   //   últimas cols: P, A, J, %  →  ignoradas (son resumen)
   // ─────────────────────────────────────────────────────────────────────────
   var file=document.getElementById('planillaAsistFile');
-  if(!file||!file.files||!file.files[0]){customAlert('Seleccione un archivo Excel primero.');return;}
+  if(!file||!file.files||!file.files[0]){alert('Seleccione un archivo Excel primero.');return;}
   var gradoSel=document.getElementById('descAsistGrado')?.value||asistGrado;
   var cIdV=Number(document.getElementById('descAsistCId')?.value||asistCId);
-  if(!gradoSel){customAlert('Seleccione un grado antes de importar.');return;}
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  if(!gradoSel){alert('Seleccione un grado antes de importar.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no cargada. Recargue la página.');return;}
 
   var reader=new FileReader();
   reader.onload=function(ev){
@@ -1662,7 +1662,7 @@ function cargarPlanillaAsistencia(){
         return r.some(function(c){return String(c).toUpperCase().includes('NOMBRE');});
       });
       if(hIdx===-1){
-        customAlert('❌ No se encontró la fila de encabezado con "NOMBRE".\nUse la planilla generada desde el botón "📊 Planilla Excel".');
+        alert('❌ No se encontró la fila de encabezado con "NOMBRE".\nUse la planilla generada desde el botón "📊 Planilla Excel".');
         return;
       }
       var header=rows[hIdx];
@@ -1688,7 +1688,7 @@ function cargarPlanillaAsistencia(){
       }
       if(!daysCols.length){
         var muestra=header.slice(DAYS_START,DAYS_START+6).map(function(v){return '"'+String(v)+'"';}).join(', ');
-        customAlert('❌ No se encontraron columnas de días.\n\nEncabezados desde col C: '+muestra+
+        alert('❌ No se encontraron columnas de días.\n\nEncabezados desde col C: '+muestra+
           '\n\nDescargue una nueva planilla con "📊 Planilla Excel", escriba P/A/J bajo cada día y vuelva a importar.');
         return;
       }
@@ -1756,7 +1756,7 @@ function cargarPlanillaAsistencia(){
       });
 
       if(!totalMarcas){
-        customAlert('⚠️ No se encontraron marcas (P/A/J) en la planilla.\n\n'+
+        alert('⚠️ No se encontraron marcas (P/A/J) en la planilla.\n\n'+
           'Días detectados en el encabezado: '+daysCols.length+
           ' (cols '+daysCols[0].col+'–'+daysCols[daysCols.length-1].col+')\n'+
           'Filas de estudiantes revisadas: '+(rows.length-hIdx-1)+'\n\n'+
@@ -1810,11 +1810,11 @@ function cargarPlanillaAsistencia(){
         msg+='\n\n⚠️ '+noEncontrados.length+' estudiante(s) no encontrados en grado "'+gradoSel+'":\n'+
           noEncontrados.slice(0,6).join('\n')+(noEncontrados.length>6?'\n…y '+(noEncontrados.length-6)+' más':'');
       }
-      customAlert(msg);
+      alert(msg);
       renderApp();
     }catch(err){
       console.error('[Asistencia Import]',err);
-      customAlert('❌ Error al leer el archivo: '+err.message+'\nVerifique que sea un archivo .xlsx válido.');
+      alert('❌ Error al leer el archivo: '+err.message+'\nVerifique que sea un archivo .xlsx válido.');
     }
   };
   reader.readAsArrayBuffer(file.files[0]);
@@ -1881,7 +1881,7 @@ function htmlCentrosInteres(){
 function crearCI(){
   var n=(document.getElementById('ciNombre')||{value:''}).value.trim();
   var r=(document.getElementById('ciResponsable')||{value:''}).value.trim();
-  if(!n||!r){customAlert('Complete nombre y responsable.');return;}
+  if(!n||!r){alert('Complete nombre y responsable.');return;}
   var fc=(document.getElementById('ciFechaCreacion')||{value:''}).value;
   var fe=(document.getElementById('ciFechaEntrega')||{value:''}).value;
   var desc=(document.getElementById('ciDescripcion')||{value:''}).value.trim();
@@ -1890,33 +1890,33 @@ function crearCI(){
   if(!ets.length) ets.push('Ejecucion');
   var ci={id:'ci'+Date.now(),nombre:n,responsable:r,fechaCreacion:fc,fechaEntrega:fe,descripcion:desc,etapas:ets,etapaActual:0,evidencias:[],creadoPor:sesion.u};
   updDB(function(d){if(!d.centrosInteres)d.centrosInteres=[];d.centrosInteres.push(ci);return d;});
-  customAlert('Centro de Interes "'+n+'" creado.');renderApp();
+  alert('Centro de Interes "'+n+'" creado.');renderApp();
 }
-async function eliminarCI(i){
+function eliminarCI(i){
   var ci=(db.centrosInteres||[])[i];if(!ci) return;
-  if(!await customConfirm('Eliminar "'+ci.nombre+'" y todas sus evidencias?')) return;
+  if(!confirm('Eliminar "'+ci.nombre+'" y todas sus evidencias?')) return;
   updDB(function(d){d.centrosInteres=(d.centrosInteres||[]).filter(function(_,idx){return idx!==i;});return d;});
   renderApp();
 }
 function avanzarEtapaCI(i){
   var ci=(db.centrosInteres||[])[i];if(!ci) return;
-  if(ci.etapaActual>=ci.etapas.length-1){customAlert('Ya esta en la ultima etapa.');return;}
+  if(ci.etapaActual>=ci.etapas.length-1){alert('Ya esta en la ultima etapa.');return;}
   updDB(function(d){d.centrosInteres[i].etapaActual++;return d;});
-  customAlert('Etapa avanzada a: '+ci.etapas[ci.etapaActual+1]);renderApp();
+  alert('Etapa avanzada a: '+ci.etapas[ci.etapaActual+1]);renderApp();
 }
 function agregarEvidenciaCI(i){
   var tipo=(document.getElementById('evTipo_'+i)||{value:'video'}).value;
   var titulo=((document.getElementById('evTitulo_'+i)||{value:''}).value).trim();
   var link=((document.getElementById('evLink_'+i)||{value:''}).value).trim();
-  if(!titulo||!link){customAlert('Complete titulo y enlace.');return;}
-  if(!link.startsWith('http')){customAlert('El enlace debe comenzar con http');return;}
+  if(!titulo||!link){alert('Complete titulo y enlace.');return;}
+  if(!link.startsWith('http')){alert('El enlace debe comenzar con http');return;}
   updDB(function(d){
     if(!d.centrosInteres[i]) return d;
     if(!d.centrosInteres[i].evidencias) d.centrosInteres[i].evidencias=[];
     d.centrosInteres[i].evidencias.push({tipo:tipo,titulo:titulo,link:link,fecha:new Date().toISOString().slice(0,10)});
     return d;
   });
-  customAlert('Evidencia "'+titulo+'" agregada.');renderApp();
+  alert('Evidencia "'+titulo+'" agregada.');renderApp();
 }
 function editarCI(i){
   var ci=(db.centrosInteres||[])[i];if(!ci) return;
@@ -1988,7 +1988,7 @@ function htmlContacto(){
 }
 function enviarMensajeRectora(){
   const txt=document.getElementById('msgRect').value.trim();
-  if(!txt){customAlert('Escriba un mensaje');return;}
+  if(!txt){alert('Escriba un mensaje');return;}
   fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({kind:'mensaje',actor:sesion.n,message:'Mensaje de '+sesion.n+': '+txt,meta:{u:sesion.u}})})
     .then(r=>r.json()).then(()=>{document.getElementById('msgStatus').textContent='✅ Mensaje enviado a rectora.';document.getElementById('msgRect').value='';})
@@ -2033,20 +2033,20 @@ function _esPensionBloqueada(est){
 function descargarBoletinPadre(estId){
   estId=String(estId);
   const est=db.ests.find(function(e){return String(e.id)===estId;});
-  if(!est){customAlert('❌ No se encontró el estudiante. Intente recargar la página.');return;}
+  if(!est){alert('❌ No se encontró el estudiante. Intente recargar la página.');return;}
   if(_esPensionBloqueada(est)){
     const vp=(gestorDB.platforms||[]).find(function(x){return x.id===window._currentPlatId;})||{};
-    customAlert('⛔ Acceso bloqueado\n\nEl boletín de notas no está disponible porque la pensión se encuentra pendiente de pago.\n\nValor mensualidad: $'+(vp.valorPension?Number(vp.valorPension).toLocaleString('es-CO'):'—')+'\n\nContacte a la institución para regularizar su estado.');
+    alert('⛔ Acceso bloqueado\n\nEl boletín de notas no está disponible porque la pensión se encuentra pendiente de pago.\n\nValor mensualidad: $'+(vp.valorPension?Number(vp.valorPension).toLocaleString('es-CO'):'—')+'\n\nContacte a la institución para regularizar su estado.');
     return;
   }
-  if(!window.jspdf||!window.jspdf.jsPDF){customAlert('⚠️ El módulo de generación de PDF no está disponible. Por favor recargue la página e intente de nuevo.');return;}
+  if(!window.jspdf||!window.jspdf.jsPDF){alert('⚠️ El módulo de generación de PDF no está disponible. Por favor recargue la página e intente de nuevo.');return;}
   try{
     const _np=_getNumPer();
     window._boletinEstudiantesOverride=[est];
     _generarBoletinesPDF(est.g,_np,false);
   }catch(err){
     window._boletinEstudiantesOverride=null;
-    customAlert('❌ Error al generar el boletín: '+(err&&err.message?err.message:String(err))+'\n\nContacte al administrador de la institución.');
+    alert('❌ Error al generar el boletín: '+(err&&err.message?err.message:String(err))+'\n\nContacte al administrador de la institución.');
   }
 }
 function togglePensionAlDia(estId){
@@ -2058,8 +2058,8 @@ function togglePensionAlDia(estId){
 function pdfConsolidadoEst(estId){
   estId=String(estId);
   const est=db.ests.find(e=>String(e.id)===estId);
-  if(!est){customAlert('No se encontró el estudiante.');return;}
-  if(_esPensionBloqueada(est)){customAlert('⛔ Acceso bloqueado. Pensión pendiente de pago.');return;}
+  if(!est){alert('No se encontró el estudiante.');return;}
+  if(_esPensionBloqueada(est)){alert('⛔ Acceso bloqueado. Pensión pendiente de pago.');return;}
   const numPer=_getNumPer();
   const cargaGrado=db.carga.filter(c=>c.g===est.g);
   const doc=getPDF();
@@ -2204,7 +2204,6 @@ function renderPadre(){
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${moduloActivo('pre-matricula')?`<button style="background:#27ae60;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="abrirPreMatriculaLogueado()">📝 Pre-Matrícula</button>`:''}
       ${moduloActivo('buzon-sugerencias')?`<button style="background:#8e44ad;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="abrirModalBuzonSugerencias(false)">📮 Sugerencias</button>`:''}
-      <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
       <button style="background:#c0392b;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="cerrarSesion()">🚪 Salir</button>
     </div>
   </div>
@@ -2665,7 +2664,6 @@ function renderEstudiante(){
   <div class="topbar"><span><b>Estudiante:</b> ${est.n}</span><div class="topbar-btns">
     ${moduloActivo('pre-matricula')?'<button class="tbtn" style="background:#27ae60" onclick="abrirPreMatriculaLogueado()">📝 Pre-Matrícula</button>':''}
     ${moduloActivo('buzon-sugerencias')?'<button class="tbtn" style="background:#8e44ad" onclick="abrirModalBuzonSugerencias(false)">📮 Sugerencias</button>':''}
-    <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
     <button class="tbtn" style="background:#c0392b" onclick="cerrarSesion()">🚪 Salir</button></div></div>
   <div class="main">
     ${panelModalidad}
@@ -2805,7 +2803,7 @@ function _verObservadorCompleto(estId){
 function subirActividadEst(){
   const f=document.getElementById('actEstFile').files[0];
   const desc=document.getElementById('actEstDesc').value.trim();
-  if(!f||!desc){customAlert('Seleccione archivo y escriba descripción.');return;}
+  if(!f||!desc){alert('Seleccione archivo y escriba descripción.');return;}
   const r=new FileReader();
   r.onload=ev=>{
     updDB(d=>{d.materialEstudiantes=d.materialEstudiantes||[];
@@ -2821,7 +2819,7 @@ function subirActividadEst(){
 // CARGA MASIVA CSV DE ESTUDIANTES (con tipo y número de documento)
 // ============================================================
 function descargarPlantillaXLSX(){
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no cargada. Recargue la página.');return;}
   const encab=['GRADO','TIPO_DOC','NUM_DOC','APELLIDOS','NOMBRES','FECHA_NAC','TEL_ACUDIENTE','ACUDIENTE','TIPO_DOC_ACU','NUM_DOC_ACU','EMAIL'];
   const ejemplos=[
     ['6°1','T.I.','1098765432','PÉREZ MENDOZA','JUAN CARLOS','2012-05-14','3001234567','MARÍA MENDOZA','C.C.','45678912','acudiente@correo.com'],
@@ -2856,12 +2854,12 @@ function descargarPlantillaCSV(){
   const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(ej);a.download='PLANTILLA_ESTUDIANTES_INETIS.csv';a.click();
 }
 function exportarEstudiantesXLSX(){
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no cargada. Recargue la página.');return;}
   const ests=[...db.ests].sort((a,b)=>{
     const gc=String(a.g).localeCompare(String(b.g),undefined,{numeric:true});
     return gc!==0?gc:a.n.localeCompare(b.n);
   });
-  if(!ests.length){customAlert('No hay estudiantes registrados.');return;}
+  if(!ests.length){alert('No hay estudiantes registrados.');return;}
   const encab=['#','GRADO','APELLIDOS','NOMBRES','NOMBRE COMPLETO','TIPO DOC','NUM DOC','FECHA NAC','TEL ACUDIENTE','ACUDIENTE','TIPO DOC ACU','NUM DOC ACU','EMAIL'];
   const filas=ests.map((e,i)=>[
     i+1,
@@ -2912,9 +2910,9 @@ function exportarEstudiantesXLSX(){
 }
 
 function exportarDocentesXLSX(){
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no cargada. Recargue la página.');return;}
   const docentes=db.users.filter(u=>u.r==='docente');
-  if(!docentes.length){customAlert('No hay docentes registrados.');return;}
+  if(!docentes.length){alert('No hay docentes registrados.');return;}
   const inst=db.nombre||getROT3();
   const anio=db.anio||new Date().getFullYear();
   const encab=['#','NOMBRE','CÉDULA','USUARIO','CARGO','DECRETO','GRADO ESCALAFÓN','MODALIDAD','TIPO PREGRADO','TÍTULO PREGRADO','NIVEL POSGRADO','TÍTULO POSGRADO','ÁREA BASE','TELÉFONO','CORREO'];
@@ -2969,9 +2967,9 @@ function exportarDocentesXLSX(){
 }
 
 function exportarDocentesPDF(){
-  if(typeof window.jspdf==='undefined'){customAlert('Librería PDF no cargada. Recargue la página.');return;}
+  if(typeof window.jspdf==='undefined'){alert('Librería PDF no cargada. Recargue la página.');return;}
   const docentes=db.users.filter(u=>u.r==='docente');
-  if(!docentes.length){customAlert('No hay docentes registrados.');return;}
+  if(!docentes.length){alert('No hay docentes registrados.');return;}
   const inst=db.nombre||getROT3();
   const anio=db.anio||new Date().getFullYear();
   const doc=getPDF('l');
@@ -3047,7 +3045,7 @@ function cargarEstMasivoArchivo(inp){
 }
 function cargarEstMasivoExcel(inp){
   const f=inp.files[0];if(!f) return;
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no disponible. Recargue la página.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no disponible. Recargue la página.');return;}
   const st=document.getElementById('masivoStatus');
   if(st) st.innerHTML='⏳ Procesando archivo Excel...';
   const r=new FileReader();
@@ -3059,7 +3057,7 @@ function cargarEstMasivoExcel(inp){
       for(const sn of wb.SheetNames){if(/estud|datos|list|plan/i.test(sn)){sheetName=sn;break;}}
       const ws=wb.Sheets[sheetName];
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      if(!rows.length){customAlert('Hoja de Excel vacía.');return;}
+      if(!rows.length){alert('Hoja de Excel vacía.');return;}
       // Encontrar fila de encabezado
       let hdrIdx=0;
       for(let i=0;i<Math.min(rows.length,5);i++){
@@ -3083,7 +3081,7 @@ function cargarEstMasivoExcel(inp){
         else if(h==='EMAIL'||h==='CORREO') cm.email=i;
       });
       if(!('grado' in cm)||!('nom' in cm)||!('ape' in cm)){
-        customAlert('No se encontraron las columnas GRADO, APELLIDOS y NOMBRES. Verifique que usa la plantilla descargada del sistema.');return;
+        alert('No se encontraron las columnas GRADO, APELLIDOS y NOMBRES. Verifique que usa la plantilla descargada del sistema.');return;
       }
       const rv=v=>String(v||'').trim();
       let creados=0,omitidos=0,errores=[];
@@ -3110,7 +3108,7 @@ function cargarEstMasivoExcel(inp){
       const msg='✅ '+creados+' estudiante(s) creados'+(omitidos?' | ⏭️ '+omitidos+' ya existían (omitidos)':'')+(errores.length?' | ⚠️ '+errores.length+' error(es): '+errores.slice(0,3).join(' · '):'');
       if(st) st.innerHTML=msg;
       setTimeout(renderApp,1200);
-    }catch(ex){if(st) st.innerHTML='❌ Error: '+ex.message;customAlert('Error al procesar el archivo Excel: '+ex.message);}
+    }catch(ex){if(st) st.innerHTML='❌ Error: '+ex.message;alert('Error al procesar el archivo Excel: '+ex.message);}
   };
   r.readAsBinaryString(f);
 }
@@ -3120,7 +3118,7 @@ function cargarEstMasivo(inp){
   r.onload=ev=>{
     const txt=String(ev.target.result||'');
     const lines=txt.split(/\r?\n/).filter(l=>l.trim());
-    if(!lines.length){customAlert('Archivo vacío');return;}
+    if(!lines.length){alert('Archivo vacío');return;}
     // Quitar BOM
     if(lines[0].charCodeAt(0)===0xFEFF) lines[0]=lines[0].slice(1);
     let start=0;
@@ -3195,9 +3193,9 @@ function vistaPreviaPromocion(){
   });
   wrap.innerHTML='<div class="over"><table><thead><tr><th>Estudiante</th><th>Grado actual</th><th>Áreas perd.</th><th>Decisión</th><th>Grado nuevo</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
-async function ejecutarPromocion(){
+function ejecutarPromocion(){
   const auto=db.autoPromocion!==false;
-  if(!await customConfirm('¿Ejecutar cierre de año? '+(auto?'Los estudiantes promovidos serán movidos al grado siguiente automáticamente.':'En modo manual solo se calcularán los resultados — luego deberá moverlos uno a uno.'))) return;
+  if(!confirm('¿Ejecutar cierre de año? '+(auto?'Los estudiantes promovidos serán movidos al grado siguiente automáticamente.':'En modo manual solo se calcularán los resultados — luego deberá moverlos uno a uno.'))) return;
   const decisiones=[];
   updDB(d=>{
     d.historiales=d.historiales||{};
@@ -3221,7 +3219,7 @@ async function ejecutarPromocion(){
   });
   const prom=decisiones.filter(d=>d.decision==='PROMOVIDO').length;
   const rep=decisiones.filter(d=>d.decision==='REPROBADO').length;
-  customAlert('Cierre de año ejecutado.\n✅ Promovidos: '+prom+'\n❌ Reprobados: '+rep+(auto?'\n\nEstudiantes promovidos movidos al grado siguiente.':'\n\nModo manual: vea la vista previa para decidir.'));
+  alert('Cierre de año ejecutado.\n✅ Promovidos: '+prom+'\n❌ Reprobados: '+rep+(auto?'\n\nEstudiantes promovidos movidos al grado siguiente.':'\n\nModo manual: vea la vista previa para decidir.'));
   vistaPreviaPromocion();
 }
 
@@ -3240,7 +3238,7 @@ function descargarHTMLOffline(){
   try{
     const html='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
     _descargarTextoComoArchivo(html,'INETIS_Sistema_Academico_2026.html','text/html;charset=utf-8');
-  }catch(e){customAlert('No se pudo descargar el HTML: '+e.message);}
+  }catch(e){alert('No se pudo descargar el HTML: '+e.message);}
 }
 
 // ── Helper robusto de descarga ──
@@ -3271,7 +3269,7 @@ function _descargarTextoComoArchivo(texto,nombre,tipo){
         setTimeout(function(){try{document.body.removeChild(a);}catch(ex){}},5000);
       };
       reader.readAsDataURL(blob);
-    }catch(e2){customAlert('No se pudo descargar el archivo: '+e2.message);}
+    }catch(e2){alert('No se pudo descargar el archivo: '+e2.message);}
   }
 }
 
@@ -3590,16 +3588,7 @@ function htmlTablero(){
     </div>
   </div>
 
-  ${_htmlBIDirectivo(ests,grados,carga,asistencia)}
-
-  <div class="card" id="_histComparativaCard" style="margin-top:14px">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-      <h4 style="color:#1a3a5c;margin:0;font-size:0.93rem">📈 Comparativa Histórica (año a año)</h4>
-      <button class="btn-sm" style="background:#8e44ad" onclick="_cargarComparativaHistorica()">🔄 Calcular Comparativa</button>
-    </div>
-    <p style="font-size:0.76rem;color:#888;margin:0 0 10px">Compara el promedio institucional y el % de aprobación entre el año lectivo actual y los años archivados de esta institución.</p>
-    <div id="_histComparativaBox"><p style="text-align:center;color:#bbb;padding:16px;font-size:0.85rem">Pulse "Calcular Comparativa" para traer los datos de los años anteriores (puede tardar unos segundos).</p></div>
-  </div>`;
+  ${_htmlBIDirectivo(ests,grados,carga,asistencia)}`;
 }
 
 function _htmlBIDirectivo(ests,grados,carga,asistencia){
@@ -4123,8 +4112,8 @@ async function enviarComunicadoGeneral(){
   const msg=(document.getElementById('comMensaje').value||'').trim();
   const grado=document.getElementById('comGrado').value;
   const envEmail=document.getElementById('comEnviarEmail').checked;
-  if(!asunto){customAlert('Escriba un asunto para el comunicado.');document.getElementById('comAsunto').focus();return;}
-  if(!msg){customAlert('Escriba el contenido del comunicado.');document.getElementById('comMensaje').focus();return;}
+  if(!asunto){alert('Escriba un asunto para el comunicado.');document.getElementById('comAsunto').focus();return;}
+  if(!msg){alert('Escriba el contenido del comunicado.');document.getElementById('comMensaje').focus();return;}
   const tipoLabel={'aviso':'📢 Aviso General','comunicado':'📋 Circular','rector-message':'🏫 Mensaje Rectoría'}[tipo]||'📬 Comunicado';
   const gradoSufijo=grado?` · Grado ${grado}`:'';
   const mensajeCompleto=`${asunto}\n\n${msg}`;
@@ -4180,7 +4169,7 @@ async function enviarComunicadoGeneral(){
     document.getElementById('comAsunto').value='';
     document.getElementById('comMensaje').value='';
     setTimeout(()=>{progreso.style.display='none';barra.style.width='0%';},4000);
-    customAlert('✅ Comunicado publicado correctamente. Los acudientes y estudiantes lo verán en su portal al actualizar.');
+    alert('✅ Comunicado publicado correctamente. Los acudientes y estudiantes lo verán en su portal al actualizar.');
   }
 }
 
@@ -4326,7 +4315,7 @@ function guardarObsAula(estId,per){
   const tipo=document.getElementById('obsAulaTipo_'+estId)?.value||'Otro';
   const txt=(document.getElementById('obsAulaTxt_'+estId)?.value||'').trim();
   const fecha=document.getElementById('obsAulaFechaObs_'+estId)?.value||new Date().toLocaleDateString('es-CO');
-  if(!txt){customAlert('Escriba el texto de la observación.');return;}
+  if(!txt){alert('Escriba el texto de la observación.');return;}
 
   const estIdNum=isNaN(Number(estId))?estId:Number(estId);
   const newId = 'obs_' + estId + '_' + Date.now();
@@ -4367,7 +4356,7 @@ function guardarEdicionObsAula(estId, obsId, obsIdx){
   const nFecha = (document.getElementById('editObsFecha_' + obsId)?.value || '').trim();
   const nTxt = (document.getElementById('editObsTxt_' + obsId)?.value || '').trim();
 
-  if(!nTxt){ customAlert('El texto de la observación no puede estar vacío.'); return; }
+  if(!nTxt){ alert('El texto de la observación no puede estar vacío.'); return; }
 
   updDB(d=>{
     const est = (d.ests||[]).find(e=>String(e.id)===String(estId));
@@ -4390,8 +4379,8 @@ function guardarEdicionObsAula(estId, obsId, obsIdx){
   renderObsAulaLista();
 }
 
-async function eliminarObsAula(estId, obsId, obsIdx){
-  if(!await customConfirm('¿Mover esta observación de aula a la papelera de reciclaje?')) return;
+function eliminarObsAula(estId, obsId, obsIdx){
+  if(!confirm('¿Mover esta observación de aula a la papelera de reciclaje?')) return;
   softDeleteRegistro('observacion', obsId, { estId, obsId, obsIdx });
   renderObsAulaLista();
 }
@@ -4491,8 +4480,8 @@ async function enviarAvisoDocente(){
   const grado=document.getElementById('docComGrado').value;
   const asig=document.getElementById('docComAsig').value;
   const fecha=document.getElementById('docComFecha').value;
-  if(!asunto){customAlert('Escriba un asunto para el aviso.');document.getElementById('docComAsunto').focus();return;}
-  if(!msg){customAlert('Escriba el contenido del aviso.');document.getElementById('docComMensaje').focus();return;}
+  if(!asunto){alert('Escriba un asunto para el aviso.');document.getElementById('docComAsunto').focus();return;}
+  if(!msg){alert('Escriba el contenido del aviso.');document.getElementById('docComMensaje').focus();return;}
   const gradoLabel=grado||'Todos mis grados';
   const actor=`${sesion.n}, ${db.nombre||'Institución'}`;
   let mensajeCompleto=asunto+'\n\n'+msg;
@@ -4677,7 +4666,7 @@ function toggleAllAlertas(val){
 async function enviarAlertasSeleccionadas(){
   const periodo=parseInt(document.getElementById('at-periodo')?.value||1);
   const selIdxs=Array.from(document.querySelectorAll('.at-chk:checked')).map(chk=>parseInt(chk.dataset.idx));
-  if(!selIdxs.length){customAlert('No hay estudiantes seleccionados.');return;}
+  if(!selIdxs.length){alert('No hay estudiantes seleccionados.');return;}
   const progDiv=document.getElementById('at-progress');
   const progBar=document.getElementById('at-progress-bar');
   const progTxt=document.getElementById('at-progress-txt');
@@ -4958,7 +4947,7 @@ function abrirCamaraPerfil(){
   wrap.style.display='block';
   navigator.mediaDevices.getUserMedia({video:true}).then(stream=>{
     video.srcObject=stream;window._camaraStream=stream;
-  }).catch(()=>customAlert('No se pudo acceder a la cámara. Verifique los permisos del navegador.'));
+  }).catch(()=>alert('No se pudo acceder a la cámara. Verifique los permisos del navegador.'));
 }
 function cerrarCamaraPerfil(){
   if(window._camaraStream) window._camaraStream.getTracks().forEach(t=>t.stop());
@@ -4985,14 +4974,14 @@ function tomarFotoCamara(){
 function actualizarPerfilEst(){
   const u=(document.getElementById('_estPUser')||{}).value||'';
   const p=(document.getElementById('_estPPass')||{}).value||'';
-  if(!u.trim()||!p.trim()){customAlert('Complete el usuario y la contraseña.');return;}
+  if(!u.trim()||!p.trim()){alert('Complete el usuario y la contraseña.');return;}
   updDB(d=>{
     const idx=d.ests.findIndex(x=>x.id==sesion.estId);
     if(idx>=0){d.ests[idx].u=u.trim();d.ests[idx].p=p.trim();}
     return d;
   });
   sesion={...sesion,u:u.trim(),p:p.trim()};
-  customAlert('✅ Credenciales actualizadas correctamente.\n\nUse el nuevo usuario y contraseña en su próximo inicio de sesión.');
+  alert('✅ Credenciales actualizadas correctamente.\n\nUse el nuevo usuario y contraseña en su próximo inicio de sesión.');
   renderEstudiante();
 }
 function cargarFotoPerfilEst(inp){
@@ -5011,14 +5000,14 @@ function cargarFotoPerfilEst(inp){
 function actualizarPerfilPadre(){
   const u=(document.getElementById('_padrePUser')||{}).value||'';
   const p=(document.getElementById('_padrePPass')||{}).value||'';
-  if(!u.trim()||!p.trim()){customAlert('Complete el usuario y la contraseña.');return;}
+  if(!u.trim()||!p.trim()){alert('Complete el usuario y la contraseña.');return;}
   updDB(d=>{
     const idx=d.ests.findIndex(x=>x.id==sesion.estId);
     if(idx>=0){d.ests[idx].uAcud=u.trim();d.ests[idx].pAcud=p.trim();}
     return d;
   });
   sesion={...sesion,u:u.trim(),p:p.trim()};
-  customAlert('✅ Credenciales de acudiente actualizadas correctamente.\n\nUse el nuevo usuario y contraseña en su próximo inicio de sesión.');
+  alert('✅ Credenciales de acudiente actualizadas correctamente.\n\nUse el nuevo usuario y contraseña en su próximo inicio de sesión.');
   renderPadre();
 }
 function cargarFotoPerfilPadre(inp){
@@ -5108,7 +5097,7 @@ function htmlAusentismo(){
 }
 function enviarAusentismo(){
   const nombre=document.getElementById('aus_nombre')?.value.trim();
-  if(!nombre){customAlert('Complete su nombre.');return;}
+  if(!nombre){alert('Complete su nombre.');return;}
   const tipos=TIPOS_PERMISO.filter(t=>{
     const cb=document.getElementById('tp_'+t.replace(/\s/g,'_'));
     return cb&&cb.checked;
@@ -5118,7 +5107,7 @@ function enviarAusentismo(){
     const nd=document.getElementById('nd_'+t.replace(/\s/g,'_'));
     diasPorTipo[t]=nd?parseFloat(nd.value)||0:0;
   });
-  if(!tipos.length){customAlert('Seleccione al menos un tipo de permiso.');return;}
+  if(!tipos.length){alert('Seleccione al menos un tipo de permiso.');return;}
   const solicitud={
     id:Date.now(),doc:sesion.u,docNombre:sesion.n,
     municipio:document.getElementById('aus_municipio')?.value||'',
@@ -5171,12 +5160,12 @@ function enviarAusentismo(){
       }
     }catch(e){}
   })();
-  customAlert('✅ Solicitud enviada al Rector(a). El rector recibirá notificación.\nRecibirá respuesta de aprobación/rechazo en esta sección.');
+  alert('✅ Solicitud enviada al Rector(a). El rector recibirá notificación.\nRecibirá respuesta de aprobación/rechazo en esta sección.');
   pag='ausentismo';renderApp();
 }
 function imprimirPermisoH03(id){
   const sol=(db.ausentismos||[]).find(s=>s.id===id);
-  if(!sol){customAlert('Solicitud no encontrada');return;}
+  if(!sol){alert('Solicitud no encontrada');return;}
   const{jsPDF}=window.jspdf;const doc=new jsPDF('p','mm','a4');
   const W=210,CX=W/2;
   let y=14;
@@ -5341,7 +5330,7 @@ function guardarMencion(){
   const cat=document.getElementById('mencCat')?.value;
   const tipoId=document.getElementById('mencTipo')?.value;
   const texto=document.getElementById('mencTexto')?.value.trim();
-  if(!estId||!texto){customAlert('Seleccione un estudiante y complete el texto del diploma.');return;}
+  if(!estId||!texto){alert('Seleccione un estudiante y complete el texto del diploma.');return;}
   const est=db.ests.find(e=>String(e.id)===String(estId));
   const tipo=CATEGORIAS_MENCIONES[cat]?.tipos.find(t=>t.id===tipoId);
   updDB(d=>{
@@ -5353,13 +5342,13 @@ function guardarMencion(){
   renderApp();
   setTimeout(()=>actualizarTiposMencion(),100);
 }
-async function eliminarMencion(id){
-  if(!await customConfirm('¿Eliminar esta mención?')) return;
+function eliminarMencion(id){
+  if(!confirm('¿Eliminar esta mención?')) return;
   updDB(d=>{d.menciones=(d.menciones||[]).filter(m=>m.id!==id);return d;});renderApp();
 }
 function generarDiplomaPDF(id){
   const mencion=(db.menciones||[]).find(m=>m.id===id);
-  if(!mencion){customAlert('Mención no encontrada.');return;}
+  if(!mencion){alert('Mención no encontrada.');return;}
   const{jsPDF}=window.jspdf;const doc=new jsPDF('l','mm','a4');
   const W=297,H=210,CX=W/2,CY=H/2;
   // Fondo
@@ -5469,10 +5458,10 @@ function htmlVerCredenciales(){
 function _resetPassDocente(u){
   const nueva=prompt('Nueva contraseña para el usuario "'+u+'":\n\n(Por seguridad, el sistema ya no puede mostrar la contraseña actual — solo permite definir una nueva y comunicársela al docente.)');
   if(nueva===null) return;
-  if(nueva.trim().length<4){customAlert('La contraseña debe tener al menos 4 caracteres.');return;}
+  if(nueva.trim().length<4){alert('La contraseña debe tener al menos 4 caracteres.');return;}
   _hashPassword(nueva.trim()).then(hash=>{
     updDB(d=>{const idx=d.users.findIndex(x=>x.u===u);if(idx!==-1) d.users[idx].p=hash;return d;});
-    customAlert('✅ Contraseña actualizada. Comuníquele al docente su nueva contraseña:\n\n'+nueva.trim());
+    alert('✅ Contraseña actualizada. Comuníquele al docente su nueva contraseña:\n\n'+nueva.trim());
     renderApp();
   });
 }
@@ -5519,7 +5508,7 @@ function _abrirModalCred(estId){
 function _autoCredEst(estId){
   estId=String(estId);
   const e=db.ests.find(x=>String(x.id)===estId);
-  if(!e||!e.numDoc){customAlert('El estudiante no tiene número de documento. Ingrese el usuario manualmente.');return;}
+  if(!e||!e.numDoc){alert('El estudiante no tiene número de documento. Ingrese el usuario manualmente.');return;}
   const u=document.getElementById('_crUEst');const p=document.getElementById('_crPEst');
   if(u) u.value=e.numDoc;if(p) p.value=e.numDoc;
 }
@@ -5531,7 +5520,7 @@ function _guardarCred(estId){
   const uAcud=(document.getElementById('_crUAcud')?.value||'').trim();
   const telAcud=(document.getElementById('_crTelAcud')?.value||'').trim();
   const emailAcud=(document.getElementById('_crEmailAcud')?.value||'').trim();
-  if(!uEst||!pEst){customAlert('Ingrese el usuario y contraseña del estudiante.');return;}
+  if(!uEst||!pEst){alert('Ingrese el usuario y contraseña del estudiante.');return;}
   updDB(db=>{
     const e=db.ests.find(x=>String(x.id)===estId);
     if(e){
@@ -5544,11 +5533,11 @@ function _guardarCred(estId){
     return db;
   });
   document.getElementById('_credOv')?.remove();
-  customAlert('✅ Credenciales guardadas.\n\n👤 Estudiante: Usuario = '+uEst+'\n👨‍👩‍👦 Acudiente: Usuario = '+(uAcud||'—')+' | Contraseña = '+uEst);
+  alert('✅ Credenciales guardadas.\n\n👤 Estudiante: Usuario = '+uEst+'\n👨‍👩‍👦 Acudiente: Usuario = '+(uAcud||'—')+' | Contraseña = '+uEst);
   navTo('ver-credenciales');
 }
-async function _asignarCredTodos(){
-  if(!await customConfirm('¿Asignar automáticamente las credenciales a todos los estudiantes que tengan número de documento registrado?\n\nSolo se actualizarán quienes tengan número de documento.')) return;
+function _asignarCredTodos(){
+  if(!confirm('¿Asignar automáticamente las credenciales a todos los estudiantes que tengan número de documento registrado?\n\nSolo se actualizarán quienes tengan número de documento.')) return;
   let count=0;
   updDB(db=>{
     db.ests.forEach(e=>{
@@ -5556,7 +5545,7 @@ async function _asignarCredTodos(){
     });
     return db;
   });
-  customAlert('✅ Credenciales asignadas a '+count+' estudiante(s).\n\nEl usuario y contraseña inicial es el número de documento de cada estudiante.');
+  alert('✅ Credenciales asignadas a '+count+' estudiante(s).\n\nEl usuario y contraseña inicial es el número de documento de cada estudiante.');
   navTo('ver-credenciales');
 }
 
@@ -6053,7 +6042,7 @@ function generarManualPDF(rol){
       {t:'5. ELECCIONES',c:'Si el módulo está activo, vote por su candidato a Personero y Contralor.'},
     ]}
   };
-  const manual=manuales[rol];if(!manual){customAlert('Manual no disponible.');return;}
+  const manual=manuales[rol];if(!manual){alert('Manual no disponible.');return;}
   const instNombre=getROT3();
   // Portada
   doc.setFillColor(0,30,80);doc.rect(0,0,210,297,'F');
@@ -6237,7 +6226,7 @@ function responderPermiso(id,decision){
   const docNombre=sol?.docNombre||'el/la docente';
   const msg=decision==='Aprobado'?`✅ El rector(a) APROBÓ el permiso de ${docNombre}.`:`❌ El rector(a) RECHAZÓ el permiso de ${docNombre}.${motivoRec?' Motivo: '+motivoRec:''}`;
   try{fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'respuesta-permiso',actor:db.rectora||'Rector(a)',message:msg,meta:{docente:docNombre,decision,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}
-  customAlert(`${decision==='Aprobado'?'✅':'❌'} Permiso ${decision.toLowerCase()}. El docente recibirá notificación.\n\nSi tiene WhatsApp configurado, también se enviará mensaje al celular: ${sol?.celular||'(no registrado)'}`);
+  alert(`${decision==='Aprobado'?'✅':'❌'} Permiso ${decision.toLowerCase()}. El docente recibirá notificación.\n\nSi tiene WhatsApp configurado, también se enviará mensaje al celular: ${sol?.celular||'(no registrado)'}`);
   renderApp();
 }
 
@@ -6572,7 +6561,7 @@ function verEstudiantesPorGrado(grado){
 
 function verHistorialEstudiante(estId){
   const est=(db.ests||[]).find(e=>e.id===estId||(typeof estId==='string'&&String(e.id)===estId));
-  if(!est){customAlert('Estudiante no encontrado.');return;}
+  if(!est){alert('Estudiante no encontrado.');return;}
 
   // ── Notas académicas por materia y período ──
   const matsG=(db.carga||[]).filter(c=>c.g===est.g);
@@ -6712,7 +6701,7 @@ function verHistorialEstudiante(estId){
 function pdfHistorialIndividualObs(estId){
   const {jsPDF}=window.jspdf;
   const est=(db.ests||[]).find(e=>e.id===estId||(typeof estId==='string'&&String(e.id)===estId));
-  if(!est){customAlert('Estudiante no encontrado.');return;}
+  if(!est){alert('Estudiante no encontrado.');return;}
   const obs=(est.observaciones||[]).slice().reverse();
   const total=obs.length;
   const por={1:0,2:0,3:0,4:0};
@@ -7129,7 +7118,7 @@ function htmlHistoricoAnios(){
 }
 function verDatosHistorico(anio){
   const hist=(db.historialAnios||[]).find(h=>h.anio===anio);
-  if(!hist||!hist.datos){customAlert('No hay datos para el año '+anio);return;}
+  if(!hist||!hist.datos){alert('No hay datos para el año '+anio);return;}
   const d=hist.datos;
   const ests=d.ests||[];const grados=d.grados||[];const carga=d.carga||[];
   let html=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto" id="_histModalOv" onclick="if(event.target===this)this.remove()">
@@ -7157,13 +7146,13 @@ function verDatosHistorico(anio){
   </div></div>`;
   const div=document.createElement('div');div.innerHTML=html;document.body.appendChild(div.firstChild);
 }
-async function eliminarHistoricoAnio(anio){
-  if(!await customConfirm('¿Eliminar el histórico del año '+anio+'? Esta acción no se puede deshacer.')) return;
+function eliminarHistoricoAnio(anio){
+  if(!confirm('¿Eliminar el histórico del año '+anio+'? Esta acción no se puede deshacer.')) return;
   updDB(d=>{d.historialAnios=(d.historialAnios||[]).filter(h=>h.anio!==anio);return d;});
-  customAlert('✅ Histórico del año '+anio+' eliminado.');renderApp();
+  alert('✅ Histórico del año '+anio+' eliminado.');renderApp();
 }
 async function archivarAñoActual(){
-  if(!await customConfirm(`¿Desea archivar el año lectivo ${db.anio}?\n\n• Se guardará una copia completa de todos los datos actuales en el histórico\n• Los datos actuales NO se eliminan\n• El archivo también quedará guardado en la nube\n\n¿Continuar?`)) return;
+  if(!confirm(`¿Desea archivar el año lectivo ${db.anio}?\n\n• Se guardará una copia completa de todos los datos actuales en el histórico\n• Los datos actuales NO se eliminan\n• El archivo también quedará guardado en la nube\n\n¿Continuar?`)) return;
   const snapshot={
     anio:db.anio,
     fechaArchivo:new Date().toISOString().slice(0,10),
@@ -7190,7 +7179,7 @@ async function archivarAñoActual(){
   if(platId) {
     try{ await _archivarAnioEnNube(platId, db.anio); }catch(e){}
   }
-  customAlert(`✅ Año ${db.anio} archivado correctamente.\n\nPuede consultarlo en el módulo "Histórico Años" o en el selector de año de la barra superior.`);
+  alert(`✅ Año ${db.anio} archivado correctamente.\n\nPuede consultarlo en el módulo "Histórico Años" o en el selector de año de la barra superior.`);
   renderApp();
 }
 async function exportarHistoricoAnio(anio){
@@ -7209,7 +7198,7 @@ async function exportarHistoricoAnio(anio){
       }catch(e){}
     }
   }
-  if(!exportData){customAlert('No se encontraron datos para el año '+anio+'.\nPrimero archívelo usando "Archivar Año Actual".');return;}
+  if(!exportData){alert('No se encontraron datos para el año '+anio+'.\nPrimero archívelo usando "Archivar Año Actual".');return;}
   const blob=new Blob([JSON.stringify(exportData,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Historico_${anio}_${db.nombre||'IE'}.json`;a.click();
 }
@@ -7218,7 +7207,7 @@ function verHistoricoAnios(){navTo('historico-anios');}
 // ── MÓDULO: AUTENTICACIÓN BIOMÉTRICA (WebAuthn / Huella / Face ID) ──
 async function registrarHuella(){
   if(!window.navigator.credentials||!window.PublicKeyCredential){
-    customAlert('⚠️ Tu navegador o dispositivo no soporta autenticación biométrica (WebAuthn).\nUsa Chrome, Edge o Safari en un dispositivo con lector de huellas o Face ID.');return;
+    alert('⚠️ Tu navegador o dispositivo no soporta autenticación biométrica (WebAuthn).\nUsa Chrome, Edge o Safari en un dispositivo con lector de huellas o Face ID.');return;
   }
   try{
     const challenge=new Uint8Array(32);crypto.getRandomValues(challenge);
@@ -7231,11 +7220,11 @@ async function registrarHuella(){
     }});
     const credId=btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
     updDB(d=>{d.users=(d.users||[]).map(u=>u.u===sesion.u?{...u,webAuthnId:credId,webAuthnTS:new Date().toISOString()}:u);return d;});
-    customAlert('✅ ¡Huella / Face ID registrado exitosamente!\n\nAhora puede usar "🔑 Huella / Face ID" en la pantalla de ingreso.');
+    alert('✅ ¡Huella / Face ID registrado exitosamente!\n\nAhora puede usar "🔑 Huella / Face ID" en la pantalla de ingreso.');
     renderApp();
   }catch(e){
-    if(e.name==='NotAllowedError') customAlert('❌ No se pudo registrar la huella. El usuario canceló o el dispositivo no lo permite.');
-    else customAlert('❌ Error al registrar biométrico: '+e.message);
+    if(e.name==='NotAllowedError') alert('❌ No se pudo registrar la huella. El usuario canceló o el dispositivo no lo permite.');
+    else alert('❌ Error al registrar biométrico: '+e.message);
   }
 }
 // ── Calcula la página destino según el rol del usuario ──
@@ -7252,13 +7241,13 @@ function _pagPorRol(rol){
 // identifica al usuario por el rawId devuelto y establece la sesión con su rol real.
 async function loginBiometricoPortal(platId){
   if(!window.navigator.credentials||!window.PublicKeyCredential){
-    customAlert('⚠️ Autenticación biométrica no soportada en este navegador.\nUse Chrome, Edge o Safari en un dispositivo con lector de huellas o Face ID.');return;
+    alert('⚠️ Autenticación biométrica no soportada en este navegador.\nUse Chrome, Edge o Safari en un dispositivo con lector de huellas o Face ID.');return;
   }
   const plat=gestorDB.platforms.find(x=>x.id===platId);
-  if(!plat){customAlert('Institución no encontrada.');return;}
-  if(plat.bloqueada){customAlert('🔒 Esta plataforma está temporalmente bloqueada. Comuníquese con su institución.');return;}
+  if(!plat){alert('Institución no encontrada.');return;}
+  if(plat.bloqueada){alert('🔒 Esta plataforma está temporalmente bloqueada. Comuníquese con su institución.');return;}
   let platDB;
-  try{platDB=await _fetchPlatDB(plat.sk);}catch(e){customAlert('❌ Error cargando datos de la institución.');return;}
+  try{platDB=await _fetchPlatDB(plat.sk);}catch(e){alert('❌ Error cargando datos de la institución.');return;}
 
   // Recopilar todas las credenciales biométricas registradas en esta plataforma
   const credMap={}; // base64CredId -> user
@@ -7266,7 +7255,7 @@ async function loginBiometricoPortal(platId){
     if(u.webAuthnId) credMap[u.webAuthnId]=u;
   }
   if(!Object.keys(credMap).length){
-    customAlert('⚠️ No hay huellas / Face ID registrados en esta institución.\n\nInicie sesión con usuario y contraseña, luego vaya a Mi Perfil → Registrar Huella.');return;
+    alert('⚠️ No hay huellas / Face ID registrados en esta institución.\n\nInicie sesión con usuario y contraseña, luego vaya a Mi Perfil → Registrar Huella.');return;
   }
 
   try{
@@ -7281,7 +7270,7 @@ async function loginBiometricoPortal(platId){
     // Identificar usuario por rawId devuelto
     const usedId=btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
     const user=credMap[usedId];
-    if(!user){customAlert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
+    if(!user){alert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
     // Establecer sesión con el rol real del usuario — NO sobreescribir con admin
     db=platDB;
     window._currentPlatSK=plat.sk;
@@ -7295,8 +7284,8 @@ async function loginBiometricoPortal(platId){
     _checkSchemaMigrationBanner();
     render();
   }catch(e){
-    if(e.name==='NotAllowedError') customAlert('❌ Autenticación biométrica cancelada por el usuario.');
-    else customAlert('❌ Error en autenticación biométrica: '+e.message);
+    if(e.name==='NotAllowedError') alert('❌ Autenticación biométrica cancelada por el usuario.');
+    else alert('❌ Error en autenticación biométrica: '+e.message);
   }
 }
 
@@ -7305,7 +7294,7 @@ async function loginBiometricoPortal(platId){
 // biométrica registrada y establece la sesión con su rol real.
 async function loginBiometrico(){
   if(!window.navigator.credentials||!window.PublicKeyCredential){
-    customAlert('⚠️ Autenticación biométrica no soportada en este navegador.');return;
+    alert('⚠️ Autenticación biométrica no soportada en este navegador.');return;
   }
   // Recopilar credenciales de TODAS las plataformas activas
   const credMap={}; // base64CredId -> {user, plat, platDB}
@@ -7319,7 +7308,7 @@ async function loginBiometrico(){
     }catch(e){}
   }
   if(!Object.keys(credMap).length){
-    customAlert('⚠️ No hay huellas / Face ID registrados en el sistema.\n\nInicie sesión con usuario y contraseña, luego vaya a Mi Perfil → Registrar Huella.');return;
+    alert('⚠️ No hay huellas / Face ID registrados en el sistema.\n\nInicie sesión con usuario y contraseña, luego vaya a Mi Perfil → Registrar Huella.');return;
   }
   try{
     const challenge=new Uint8Array(32);crypto.getRandomValues(challenge);
@@ -7332,7 +7321,7 @@ async function loginBiometrico(){
     });
     const usedId=btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
     const found=credMap[usedId];
-    if(!found){customAlert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
+    if(!found){alert('❌ No se encontró el usuario asociado a esta credencial biométrica.');return;}
     const {user,plat,platDB}=found;
     // Establecer sesión con el rol real del usuario — NO sobreescribir con admin
     db=platDB;
@@ -7347,8 +7336,8 @@ async function loginBiometrico(){
     _checkSchemaMigrationBanner();
     render();
   }catch(e){
-    if(e.name==='NotAllowedError') customAlert('❌ Autenticación biométrica cancelada por el usuario.');
-    else customAlert('❌ Error en autenticación biométrica: '+e.message);
+    if(e.name==='NotAllowedError') alert('❌ Autenticación biométrica cancelada por el usuario.');
+    else alert('❌ Error en autenticación biométrica: '+e.message);
   }
 }
 
@@ -7356,15 +7345,15 @@ async function loginBiometrico(){
 async function _loginBiometricoConDB(platDB,plat){
   const uInput=document.getElementById('iUser')||document.getElementById('pUser');
   const u=uInput?.value.trim()||'';
-  if(!u){customAlert('Ingrese su usuario primero, luego use Huella / Face ID.');return null;}
+  if(!u){alert('Ingrese su usuario primero, luego use Huella / Face ID.');return null;}
   const user=(platDB.users||[]).find(x=>x.u===u);
-  if(!user||!user.webAuthnId){customAlert('Este usuario no tiene huella/Face ID registrado.\nInicie sesión con contraseña y vaya a Mi Perfil → Registrar Huella.');return null;}
+  if(!user||!user.webAuthnId){alert('Este usuario no tiene huella/Face ID registrado.\nInicie sesión con contraseña y vaya a Mi Perfil → Registrar Huella.');return null;}
   try{
     const challenge=new Uint8Array(32);crypto.getRandomValues(challenge);
     const rawId=Uint8Array.from(atob(user.webAuthnId),c=>c.charCodeAt(0));
     await navigator.credentials.get({publicKey:{challenge,allowCredentials:[{type:'public-key',id:rawId}],userVerification:'required',timeout:60000}});
     return user;
-  }catch(e){customAlert('❌ Autenticación biométrica fallida: '+e.message);return null;}
+  }catch(e){alert('❌ Autenticación biométrica fallida: '+e.message);return null;}
 }
 
 // ── MÓDULO: RECUPERACIÓN DE CONTRASEÑA GESTOR ──
@@ -7605,10 +7594,10 @@ function _agregarBotonHuellaPerfil(){
     ${tieneHuella?`<button class="btn-sm" style="background:#c0392b;margin-left:6px" onclick="quitarHuella()">✕ Quitar</button>`:''}
   </div>`;
 }
-async function quitarHuella(){
-  if(!await customConfirm('¿Quitar el registro biométrico?')) return;
+function quitarHuella(){
+  if(!confirm('¿Quitar el registro biométrico?')) return;
   updDB(d=>{d.users=(d.users||[]).map(u=>u.u===sesion.u?{...u,webAuthnId:null,webAuthnTS:null}:u);return d;});
-  customAlert('✅ Huella eliminada.');renderApp();
+  alert('✅ Huella eliminada.');renderApp();
 }
 
 
@@ -7697,7 +7686,7 @@ function solicitarCertificadoEmail(estId){
   estId=String(estId);
   const est=db.ests.find(x=>String(x.id)===estId);if(!est) return;
   const email=db.emailInst||'';
-  if(!email){customAlert('La institución no tiene correo registrado. Contáctela directamente.');return;}
+  if(!email){alert('La institución no tiene correo registrado. Contáctela directamente.');return;}
   const nombre=fmtNombreEst(est);
   const subject=encodeURIComponent(`Solicitud de certificado — ${nombre}`);
   const body=encodeURIComponent(`Estimados,\n\nSolicito certificado de estudios para el/la estudiante:\nNombre: ${nombre}\nGrado: ${est.g}\n\nQuedo atento/a.\n\nSaludos.`);
@@ -7707,7 +7696,7 @@ function solicitarCertificadoWsp(estId){
   estId=String(estId);
   const est=db.ests.find(x=>String(x.id)===estId);if(!est) return;
   const tel=(db.telInst||'').replace(/\D/g,'');
-  if(!tel){customAlert('La institución no tiene teléfono registrado. Contáctela directamente.');return;}
+  if(!tel){alert('La institución no tiene teléfono registrado. Contáctela directamente.');return;}
   const nombre=fmtNombreEst(est);
   const msg=encodeURIComponent(`Hola, solicito certificado de estudios para:\nNombre: ${nombre}\nGrado: ${est.g}\n\nQuedo atento/a. Gracias.`);
   window.open(`https://wa.me/57${tel}?text=${msg}`,'_blank');
@@ -7830,7 +7819,7 @@ function htmlQuizzesEstudiante(est){
   }).join('');
 }
 function iniciarQuizEstudiante(evalId,estId){
-  const ev=(db.evaluaciones||[]).find(x=>x.id===evalId);if(!ev||!ev.preguntas?.length){customAlert('Quiz no disponible.');return;}
+  const ev=(db.evaluaciones||[]).find(x=>x.id===evalId);if(!ev||!ev.preguntas?.length){alert('Quiz no disponible.');return;}
   const est=db.ests.find(x=>x.id==estId);if(!est) return;
   const intento=((db.evalRespuestas||[]).filter(r=>r.evalId===evalId&&r.estId===estId).length)+1;
   const tiempoSeg=(ev.tiempoMin||30)*60;
@@ -7981,7 +7970,7 @@ function enviarEvalDocente(evalId,estId,grado){
     const sel=document.querySelector(`input[name="evd_${evalId}_${pi}"]:checked`);
     return sel?sel.value:null;
   });
-  if(resps.some(r=>r==null)){customAlert('Por favor responde todas las preguntas.');return;}
+  if(resps.some(r=>r==null)){alert('Por favor responde todas las preguntas.');return;}
   // Se guarda con un ref parcial del ID (últimos 4 dígitos) para evitar repetición pero sin nombre
   const estRef=String(estId).slice(-4);
   updDB(db2=>{
@@ -7989,7 +7978,7 @@ function enviarEvalDocente(evalId,estId,grado){
     if(evx){if(!Array.isArray(evx.resp)) evx.resp=[];evx.resp.push({curso:grado,estRef,resps,fecha:new Date().toISOString().slice(0,10)});}
     return db2;
   });
-  customAlert('✅ ¡Gracias! Tu evaluación ha sido enviada de forma anónima.');
+  alert('✅ ¡Gracias! Tu evaluación ha sido enviada de forma anónima.');
   renderApp();
 }
 
@@ -8161,15 +8150,15 @@ function guardarActividad(){
   const penal=parseFloat(document.getElementById('actPenal')?.value||'0')||0;
   const drive=(document.getElementById('actDrive')?.value||'').trim();
   const desc=(document.getElementById('actDesc')?.value||'').trim();
-  if(!titulo||!grado){customAlert('Ingrese título y grado.');return;}
-  if(!asig){customAlert('Seleccione la asignatura.');return;}
-  if(!periodo){customAlert('Seleccione el período.');return;}
-  if(tipo==='interactiva'&&(!window._actPregs||!window._actPregs.length)){customAlert('Agregue al menos una pregunta para la actividad interactiva.');return;}
+  if(!titulo||!grado){alert('Ingrese título y grado.');return;}
+  if(!asig){alert('Seleccione la asignatura.');return;}
+  if(!periodo){alert('Seleccione el período.');return;}
+  if(tipo==='interactiva'&&(!window._actPregs||!window._actPregs.length)){alert('Agregue al menos una pregunta para la actividad interactiva.');return;}
   if(tipo==='interactiva'){
     for(let i=0;i<window._actPregs.length;i++){
       const p=window._actPregs[i];
-      if(!p.p.trim()){customAlert('La pregunta '+(i+1)+' no tiene enunciado.');return;}
-      if(p.tipo==='seleccion'&&(p.opts||[]).some(o=>!o.trim())){customAlert('Complete todas las opciones de la pregunta '+(i+1)+'.');return;}
+      if(!p.p.trim()){alert('La pregunta '+(i+1)+' no tiene enunciado.');return;}
+      if(p.tipo==='seleccion'&&(p.opts||[]).some(o=>!o.trim())){alert('Complete todas las opciones de la pregunta '+(i+1)+'.');return;}
     }
   }
   const preguntas=tipo==='interactiva'?(window._actPregs||[]).map(p=>({...p})):[];
@@ -8182,9 +8171,9 @@ function guardarActividad(){
     return db2;
   });
   window._actPregs=[];window._actArchivoB64=null;window._actArchivoNombre=null;window._actArchivoMime=null;
-  customAlert('✅ Actividad publicada.');renderApp();
+  alert('✅ Actividad publicada.');renderApp();
 }
-async function eliminarActividad(actId){if(!await customConfirm('¿Eliminar actividad y sus entregas?')) return;
+function eliminarActividad(actId){if(!confirm('¿Eliminar actividad y sus entregas?')) return;
   updDB(db2=>{db2.actividades=(db2.actividades||[]).filter(x=>x.id!=actId);db2.actEntregas=(db2.actEntregas||[]).filter(x=>x.actId!=actId);return db2;});
   renderApp();
 }
@@ -8197,19 +8186,19 @@ function guardarLeccion(){
   const grado=document.getElementById('lecGrado')?.value||'';
   const tema=(document.getElementById('lecTema')?.value||'').trim();
   const obs=(document.getElementById('lecObs')?.value||'').trim();
-  if(!fecha||!tema){customAlert('Ingrese la fecha y el tema dictado.');return;}
-  if(!asig){customAlert('Seleccione la asignatura.');return;}
-  if(!grado){customAlert('Seleccione el grado.');return;}
+  if(!fecha||!tema){alert('Ingrese la fecha y el tema dictado.');return;}
+  if(!asig){alert('Seleccione la asignatura.');return;}
+  if(!grado){alert('Seleccione el grado.');return;}
   updDB(db2=>{
     if(!Array.isArray(db2.leccionario)) db2.leccionario=[];
     db2.leccionario.push({id:Date.now()+Math.random(),fecha,asignatura:asig,grado,tema,observaciones:obs,docente:sesion.u,docenteNombre:sesion.n,fechaCreacion:new Date().toISOString()});
     return db2;
   });
-  customAlert('✅ Registro guardado en el leccionario.');
+  alert('✅ Registro guardado en el leccionario.');
   renderApp();
 }
-async function eliminarLeccion(id){
-  if(!await customConfirm('¿Eliminar este registro del leccionario?')) return;
+function eliminarLeccion(id){
+  if(!confirm('¿Eliminar este registro del leccionario?')) return;
   updDB(db2=>{db2.leccionario=(db2.leccionario||[]).filter(x=>String(x.id)!==String(id));return db2;});
   renderApp();
 }
@@ -8219,7 +8208,7 @@ async function eliminarLeccion(id){
 window._actArchivoB64=null;window._actArchivoNombre=null;window._actArchivoMime=null;
 function _leerArchivoAct(input){
   const f=input.files[0];if(!f) return;
-  if(f.size>6*1024*1024){customAlert('Archivo muy grande. Máximo 6 MB.');input.value='';return;}
+  if(f.size>6*1024*1024){alert('Archivo muy grande. Máximo 6 MB.');input.value='';return;}
   const rd=new FileReader();
   rd.onload=e=>{window._actArchivoB64=e.target.result;window._actArchivoNombre=f.name;window._actArchivoMime=f.type;
     const el=document.getElementById('actArchivoNombre');
@@ -8233,14 +8222,14 @@ function _limpiarArchivoAct(){
 }
 function _descargarArchivoAct(actId){
   const act=(db.actividades||[]).find(a=>String(a.id)===String(actId));
-  if(!act?.archivoB64){customAlert('No hay archivo adjunto.');return;}
+  if(!act?.archivoB64){alert('No hay archivo adjunto.');return;}
   const lk=document.createElement('a');lk.href=act.archivoB64;lk.download=act.archivoNombre||'archivo';
   document.body.appendChild(lk);lk.click();document.body.removeChild(lk);
 }
 function _descargarArchivoEntrega(actId,estId){
   estId=String(estId);
   const e=(db.actEntregas||[]).find(x=>String(x.actId)===String(actId)&&String(x.estId)===estId);
-  if(!e?.archivoB64){customAlert('No hay archivo en esta entrega.');return;}
+  if(!e?.archivoB64){alert('No hay archivo en esta entrega.');return;}
   const lk=document.createElement('a');lk.href=e.archivoB64;lk.download=e.archivoNombre||'entrega';
   document.body.appendChild(lk);lk.click();document.body.removeChild(lk);
 }
@@ -8341,7 +8330,7 @@ function editarActividad(actId){
 }
 function _leerArchivoEdit(input){
   const f=input.files[0];if(!f) return;
-  if(f.size>6*1024*1024){customAlert('Máximo 6 MB.');input.value='';return;}
+  if(f.size>6*1024*1024){alert('Máximo 6 MB.');input.value='';return;}
   const rd=new FileReader();
   rd.onload=e=>{window._editActArchivoB64=e.target.result;window._editActArchivoNombre=f.name;
     const el=document.getElementById('eaActArchivoNombre');
@@ -8358,7 +8347,7 @@ function _guardarEdicionActividad(actId){
   const penal=parseFloat(document.getElementById('eaActPenal')?.value||'0')||0;
   const drive=(document.getElementById('eaActDrive')?.value||'').trim();
   const desc=(document.getElementById('eaActDesc')?.value||'').trim();
-  if(!titulo||!asig||!grado||!periodo){customAlert('Complete los campos obligatorios.');return;}
+  if(!titulo||!asig||!grado||!periodo){alert('Complete los campos obligatorios.');return;}
   updDB(db2=>{
     const idx=db2.actividades.findIndex(a=>String(a.id)===String(actId));if(idx===-1) return db2;
     const base=db2.actividades[idx];
@@ -8370,7 +8359,7 @@ function _guardarEdicionActividad(actId){
   });
   window._editActArchivoB64=null;window._editActArchivoNombre=null;
   document.getElementById('_editActOv')?.remove();
-  customAlert('✅ Actividad actualizada.');renderApp();
+  alert('✅ Actividad actualizada.');renderApp();
 }
 // ====================================================
 // ENTREGAS — estudiante: enviar, editar, eliminar
@@ -8378,7 +8367,7 @@ function _guardarEdicionActividad(actId){
 window._entregaArchivoB64=null;window._entregaArchivoNombre=null;
 function _leerArchivoEntrega(input){
   const f=input.files[0];if(!f) return;
-  if(f.size>6*1024*1024){customAlert('Máximo 6 MB.');input.value='';return;}
+  if(f.size>6*1024*1024){alert('Máximo 6 MB.');input.value='';return;}
   const rd=new FileReader();
   rd.onload=e=>{window._entregaArchivoB64=e.target.result;window._entregaArchivoNombre=f.name;
     const el=document.getElementById('entregaArchivoNombre');
@@ -8439,11 +8428,11 @@ function _guardarEntregaEst(actId,estId){
   });
   window._entregaArchivoB64=null;window._entregaArchivoNombre=null;
   document.getElementById('_entregaOv')?.remove();
-  customAlert('✅ Entrega guardada.');renderApp();
+  alert('✅ Entrega guardada.');renderApp();
 }
-async function _eliminarEntregaEst(actId,estId){
+function _eliminarEntregaEst(actId,estId){
   estId=String(estId);
-  if(!await customConfirm('¿Eliminar tu entrega? El docente no podrá verla.')) return;
+  if(!confirm('¿Eliminar tu entrega? El docente no podrá verla.')) return;
   updDB(db2=>{db2.actEntregas=(db2.actEntregas||[]).filter(e=>!(String(e.actId)===String(actId)&&String(e.estId)===estId));return db2;});
   renderApp();
 }
@@ -8453,7 +8442,7 @@ async function _eliminarEntregaEst(actId,estId){
 function _iniciarActividadInteractiva(actId,estId){
   estId=String(estId);
   const act=(db.actividades||[]).find(a=>String(a.id)===String(actId));
-  if(!act?.preguntas?.length){customAlert('Esta actividad no tiene preguntas configuradas todavía.');return;}
+  if(!act?.preguntas?.length){alert('Esta actividad no tiene preguntas configuradas todavía.');return;}
   const preguntas=act.preguntas;
   let pregIdx=0;const respuestas={};
   const ov=document.createElement('div');ov.id='_actInterOv';
@@ -8615,7 +8604,7 @@ function _guardarCalificacionesAct(actId){
     return db2;
   });
   document.getElementById('_calActOv')?.remove();
-  customAlert('✅ Calificaciones guardadas.');renderApp();
+  alert('✅ Calificaciones guardadas.');renderApp();
 }
 
 // ============================================================
@@ -8743,10 +8732,10 @@ function guardarQuiz(){
   const tiempo=parseInt(document.getElementById('qzTiempo')?.value||'30');
   const intentos=parseInt(document.getElementById('qzIntentos')?.value||'1');
   const fechaLim=document.getElementById('qzFechaLim')?.value||'';
-  if(!titulo||!grado){customAlert('Ingrese título y grado.');return;}
-  if(!asig){customAlert('Seleccione la asignatura.');return;}
-  if(!periodo){customAlert('Seleccione el período.');return;}
-  if(!_qzPregs.length){customAlert('Agregue al menos una pregunta.');return;}
+  if(!titulo||!grado){alert('Ingrese título y grado.');return;}
+  if(!asig){alert('Seleccione la asignatura.');return;}
+  if(!periodo){alert('Seleccione el período.');return;}
+  if(!_qzPregs.length){alert('Agregue al menos una pregunta.');return;}
   const pregs=_qzPregs.map(p=>({...p}));
   updDB(db2=>{
     if(!Array.isArray(db2.evaluaciones)) db2.evaluaciones=[];
@@ -8754,7 +8743,7 @@ function guardarQuiz(){
     return db2;
   });
   _qzPregs=[];
-  customAlert('✅ Quiz publicado.');renderApp();
+  alert('✅ Quiz publicado.');renderApp();
 }
 function _qzBuildPrompt(){
   const asig=document.getElementById('qzAsig')?.value||'';
@@ -8765,7 +8754,7 @@ function _qzBuildPrompt(){
   const temaTxt=titulo?` sobre "${titulo}"`:' sobre el siguiente tema: [describe el tema aquí]';
   return `Adán, por favor genera un quiz de 5 preguntas de opción múltiple (con 4 opciones A/B/C/D)${asigTxt}${temaTxt}${gradoTxt}. Para cada pregunta: marca claramente la respuesta correcta con ✓ y agrega una retroalimentación breve que explique el por qué. Presenta el resultado de forma organizada y lista para usar en clase.`;
 }
-async function eliminarQuiz(evalId){if(!await customConfirm('¿Eliminar evaluación y todas sus respuestas?')) return;
+function eliminarQuiz(evalId){if(!confirm('¿Eliminar evaluación y todas sus respuestas?')) return;
   updDB(db2=>{db2.evaluaciones=(db2.evaluaciones||[]).filter(x=>x.id!=evalId);db2.evalRespuestas=(db2.evalRespuestas||[]).filter(x=>x.evalId!=evalId);return db2;});
   renderApp();
 }
@@ -8873,8 +8862,8 @@ function guardarEvalDocente(){
   const titulo=(document.getElementById('evdTitulo')?.value||'').trim();
   const cursosEl=document.getElementById('evdCursos');
   const cursos=cursosEl?Array.from(cursosEl.selectedOptions).map(o=>o.value):[];
-  if(!titulo){customAlert('Ingrese título.');return;}
-  if(!_evdPregs.length){customAlert('Agregue al menos una pregunta.');return;}
+  if(!titulo){alert('Ingrese título.');return;}
+  if(!_evdPregs.length){alert('Agregue al menos una pregunta.');return;}
   const pregs=_evdPregs.map(p=>({...p}));
   updDB(db2=>{
     if(!Array.isArray(db2.evalDocente)) db2.evalDocente=[];
@@ -8882,9 +8871,9 @@ function guardarEvalDocente(){
     return db2;
   });
   _evdPregs=[];
-  customAlert('✅ Encuesta publicada. Los estudiantes podrán responderla desde su panel.');renderApp();
+  alert('✅ Encuesta publicada. Los estudiantes podrán responderla desde su panel.');renderApp();
 }
-async function eliminarEvalDocente(evalId){if(!await customConfirm('¿Eliminar encuesta y todas sus respuestas?')) return;
+function eliminarEvalDocente(evalId){if(!confirm('¿Eliminar encuesta y todas sus respuestas?')) return;
   updDB(db2=>{db2.evalDocente=(db2.evalDocente||[]).filter(x=>x.id!=evalId);return db2;});
   renderApp();
 }
@@ -9006,7 +8995,7 @@ function docCalifican_markAll(state){
 }
 function guardarDriveEvalDocente(){
   const link=(document.getElementById('driveEvalLink')?.value||'').trim();
-  if(!link){customAlert('Ingrese un enlace válido de Google Drive.');return;}
+  if(!link){alert('Ingrese un enlace válido de Google Drive.');return;}
   const acceso=[];
   document.querySelectorAll('[id^="evalAcc_"]').forEach(el=>{if(el.checked) acceso.push(el.id.replace('evalAcc_',''));});
   updDB(db2=>{
@@ -9015,7 +9004,7 @@ function guardarDriveEvalDocente(){
     db2.config.driveEvalAcceso=acceso;
     return db2;
   });
-  customAlert('✅ Enlace y accesos guardados correctamente.');renderApp();
+  alert('✅ Enlace y accesos guardados correctamente.');renderApp();
 }
 function htmlSeguimientoEvalDocenteDocente(){
   const link=db.config?.driveEvalDesempeno||'';
@@ -9098,9 +9087,9 @@ function htmlBtnPazSalvo(est){
 // Abre modal para trasladar UN estudiante (desde botón 🔄 en la tabla)
 function abrirModalTrasladar1(estId){
   const e=db.ests.find(x=>String(x.id)===String(estId));
-  if(!e){customAlert('Estudiante no encontrado.');return;}
+  if(!e){alert('Estudiante no encontrado.');return;}
   const gradOpts=db.grados.filter(g=>g.n!==e.g).map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
-  if(!gradOpts){customAlert('No hay otros grados disponibles para trasladar.');return;}
+  if(!gradOpts){alert('No hay otros grados disponibles para trasladar.');return;}
   let ov=document.getElementById('_trasladoModal');if(ov)ov.remove();
   ov=document.createElement('div');ov.id='_trasladoModal';
   ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;padding:16px';
@@ -9133,9 +9122,9 @@ function abrirModalTrasladar1(estId){
 }
 function _ejecutarTraslado1(estId){
   const gradDest=(document.getElementById('_trasladoGradoDest')?.value||'').trim();
-  if(!gradDest){customAlert('Seleccione el grado destino.');return;}
+  if(!gradDest){alert('Seleccione el grado destino.');return;}
   const e=db.ests.find(x=>String(x.id)===String(estId));
-  if(!e){customAlert('Estudiante no encontrado.');return;}
+  if(!e){alert('Estudiante no encontrado.');return;}
   const gradOrigen=e.g;
   updDB(d=>{
     const idx=d.ests.findIndex(x=>String(x.id)===String(estId));
@@ -9150,7 +9139,7 @@ function _ejecutarTraslado1(estId){
 // Abre modal para traslado masivo entre grados
 function abrirModalTrasladarMasivo(){
   const gradOpts=db.grados.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
-  if(db.grados.length<2){customAlert('Se necesitan al menos 2 grados para realizar un traslado.');return;}
+  if(db.grados.length<2){alert('Se necesitan al menos 2 grados para realizar un traslado.');return;}
   let ov=document.getElementById('_trasladoMasivoModal');if(ov)ov.remove();
   ov=document.createElement('div');ov.id='_trasladoMasivoModal';
   ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.65);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto';
@@ -9203,10 +9192,10 @@ function _tmSelecTodos(sel){
 function _ejecutarTrasladoMasivo(){
   const gDest=(document.getElementById('_tmGradoDest')?.value||'').trim();
   const gOrigen=(document.getElementById('_tmGradoOrigen')?.value||'').trim();
-  if(!gDest){customAlert('Seleccione el grado destino.');return;}
-  if(gOrigen===gDest){customAlert('El grado de origen y destino son iguales. Seleccione grados distintos.');return;}
+  if(!gDest){alert('Seleccione el grado destino.');return;}
+  if(gOrigen===gDest){alert('El grado de origen y destino son iguales. Seleccione grados distintos.');return;}
   const selIds=new Set([...document.querySelectorAll('#_tmEstLista input[type=checkbox]:checked')].map(c=>String(c.value)));
-  if(!selIds.size){customAlert('Seleccione al menos un estudiante para trasladar.');return;}
+  if(!selIds.size){alert('Seleccione al menos un estudiante para trasladar.');return;}
   let count=0;
   updDB(d=>{
     d.ests=d.ests.map(e=>{

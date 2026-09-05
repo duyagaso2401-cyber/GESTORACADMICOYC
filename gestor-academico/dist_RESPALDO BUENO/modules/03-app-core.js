@@ -509,7 +509,7 @@ function _getSKParaAnio(baseSK, anio){
 // Cambia de año lectivo (solo lectura para históricos)
 async function switchAnioLectivoVer(anio){
   const platId=gestorEnPlataforma||window._currentPlatId;
-  if(!platId){customAlert('No hay plataforma activa.');return;}
+  if(!platId){alert('No hay plataforma activa.');return;}
   const plat=gestorDB.platforms.find(x=>x.id===platId);
   if(!plat) return;
   if(anio===plat.anioActivo){
@@ -528,7 +528,7 @@ async function switchAnioLectivoVer(anio){
     const hLocal=(db.historialAnios||[]).find(h=>h.anio===anio);
     if(hLocal&&hLocal.datos) histData=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio:anio}));
   }
-  if(!histData){customAlert('No se encontraron datos para el año '+anio+'. Asegúrese de haberlo archivado primero.');return;}
+  if(!histData){alert('No se encontraron datos para el año '+anio+'. Asegúrese de haberlo archivado primero.');return;}
   // Abrir modal de visualización (solo lectura)
   _mostrarAnioHistoricoModal(anio,histData,plat);
 }
@@ -536,19 +536,19 @@ async function switchAnioLectivoVer(anio){
 // Inicia un nuevo año lectivo para la plataforma activa
 async function iniciarNuevoAnioLectivo(){
   const platId=gestorEnPlataforma||window._currentPlatId;
-  if(!platId){customAlert('No hay plataforma activa.');return;}
+  if(!platId){alert('No hay plataforma activa.');return;}
   const plat=gestorDB.platforms.find(x=>x.id===platId);
   if(!plat) return;
   const anioActual=plat.anioActivo||db.anio||String(new Date().getFullYear());
   const sugerido=String(parseInt(anioActual)+1);
   const nuevoAnio=prompt(`Ingrese el año lectivo a iniciar (ej. ${sugerido}):`,sugerido);
-  if(!nuevoAnio||!/^\d{4}$/.test(nuevoAnio.trim())){customAlert('Año inválido.');return;}
+  if(!nuevoAnio||!/^\d{4}$/.test(nuevoAnio.trim())){alert('Año inválido.');return;}
   const anio=nuevoAnio.trim();
   if(plat.aniosDisponibles&&plat.aniosDisponibles.includes(anio)){
-    if(!await customConfirm(`El año ${anio} ya existe. ¿Desea activarlo como año actual?`)) return;
+    if(!confirm(`El año ${anio} ya existe. ¿Desea activarlo como año actual?`)) return;
     await _activarAnioLectivo(platId,anio);return;
   }
-  if(!await customConfirm(`¿Iniciar el año lectivo ${anio}?\n\n• El año ${anioActual} se archivará automáticamente\n• Se creará una nueva BD para ${anio}\n• Se copiarán: institución, grados, usuarios, carga académica\n• Notas, asistencia, observaciones → quedan en el histórico\n\n¿Continuar?`)) return;
+  if(!confirm(`¿Iniciar el año lectivo ${anio}?\n\n• El año ${anioActual} se archivará automáticamente\n• Se creará una nueva BD para ${anio}\n• Se copiarán: institución, grados, usuarios, carga académica\n• Notas, asistencia, observaciones → quedan en el histórico\n\n¿Continuar?`)) return;
   // 1. Archivar el año actual en la nube
   await _archivarAnioEnNube(platId,anioActual);
   // 2. Crear nueva BD para el nuevo año
@@ -586,7 +586,7 @@ async function _activarAnioLectivo(platId,anio){
   const plat=gestorDB.platforms.find(x=>x.id===platId);if(!plat) return;
   const baseSK=plat.sk.replace(/_hist_.*/,'');
   const anioActual=plat.anioActivo;
-  if(!await customConfirm(`¿Activar el año ${anio} como año actual?\n\nEl año ${anioActual} se archivará y se cargará el año ${anio}.`)) return;
+  if(!confirm(`¿Activar el año ${anio} como año actual?\n\nEl año ${anioActual} se archivará y se cargará el año ${anio}.`)) return;
   await _archivarAnioEnNube(platId,anioActual);
   // Cargar datos del año solicitado
   const histSK=baseSK+'_hist_'+anio;
@@ -596,7 +596,7 @@ async function _activarAnioLectivo(platId,anio){
     const hLocal=(db.historialAnios||[]).find(h=>h.anio===anio);
     if(hLocal&&hLocal.datos) histData=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio:anio}));
   }
-  if(!histData){customAlert('No se pudieron encontrar los datos del año '+anio);return;}
+  if(!histData){alert('No se pudieron encontrar los datos del año '+anio);return;}
   // Guardar como año activo
   try{await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:baseSK,data:histData})});localStorage.setItem(baseSK,JSON.stringify(histData));}catch(e){}
   updGestorDB(function(g){const p=g.platforms.find(x=>x.id===platId);if(p){p.anioActivo=anio;if(!p.aniosDisponibles.includes(anio))p.aniosDisponibles.push(anio);p.aniosDisponibles=p.aniosDisponibles.sort();}return g;});
@@ -674,72 +674,6 @@ function _mostrarAnioHistoricoModal(anio,data,plat){
   document.body.appendChild(div);
 }
 
-// ── Comparativa histórica año a año (Tablero del rector/admin) ──
-// Trae, uno por uno, los datos de cada año lectivo archivado y calcula el
-// promedio institucional y % de aprobación reutilizando calcPromedioEst()/
-// calcNotaDef() ya existentes. Como esas funciones leen la variable global
-// "db", se intercambia temporalmente por cada año (de forma síncrona, sin
-// await de por medio) y se restaura de inmediato tras calcular ese año.
-async function _cargarComparativaHistorica(){
-  const box=document.getElementById('_histComparativaBox');
-  if(!box) return;
-  box.innerHTML='<p style="text-align:center;color:#888;padding:20px">⏳ Cargando datos de años anteriores...</p>';
-  const platId=window._currentPlatId||gestorEnPlataforma;
-  const plat=gestorDB.platforms.find(x=>x.id===platId);
-  if(!plat){box.innerHTML='<p class="empty">No se pudo determinar la institución activa.</p>';return;}
-  const anios=(plat.aniosDisponibles&&plat.aniosDisponibles.length?plat.aniosDisponibles:[plat.anioActivo]).slice().sort();
-  const dbReal=db; // referencia real, se restaura tras cada cálculo
-  const resultados=[];
-  for(const anio of anios){
-    let data=null;
-    if(anio===plat.anioActivo){
-      data=dbReal;
-    } else {
-      const histSK=_getSKParaAnio(plat.sk,anio);
-      try{
-        const r=await fetch((typeof API_BASE!=='undefined'?API_BASE:'')+'/api/inetis/db?sk='+encodeURIComponent(histSK));
-        if(r.ok){const j=await r.json();if(j&&j.data) data=_migrateDB(j.data);}
-      }catch(e){}
-      if(!data){
-        const hLocal=(dbReal.historialAnios||[]).find(h=>h.anio===anio);
-        if(hLocal&&hLocal.datos) data=_migrateDB(Object.assign({},DDB,hLocal.datos,{anio}));
-      }
-    }
-    if(!data){continue;}
-    // ── Cálculo síncrono con intercambio temporal de "db" ──
-    db=data;
-    let sum=0,cnt=0,apr=0;
-    (data.ests||[]).forEach(function(e){
-      const mats=(data.carga||[]).filter(function(c){return c.g===e.g;});
-      if(!mats.length) return;
-      const numPer=(data.config&&data.config.numPeriodos)||4;
-      const tieneN=mats.some(function(m){for(let p=1;p<=numPer;p++) if(calcNotaDef(e.nts,m.id,p)>0) return true;return false;});
-      if(!tieneN) return;
-      const pr=calcPromedioEst(e.id,e.g);
-      sum+=pr;cnt++;if(pr>=3.0)apr++;
-    });
-    db=dbReal; // restaurar de inmediato
-    resultados.push({anio,prom:cnt?parseFloat((sum/cnt).toFixed(2)):0,pctApr:cnt?Math.round(apr/cnt*100):0,cnt,esActivo:anio===plat.anioActivo});
-  }
-  if(!resultados.length){box.innerHTML='<p class="empty">No se encontraron datos de ningún año lectivo.</p>';return;}
-  const maxProm=5;
-  box.innerHTML=resultados.map(function(r){
-    const colorP=r.prom>=4?'#1a5276':r.prom>=3?'#b7770d':'#c0392b';
-    return `<div style="margin-bottom:14px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-        <b style="font-size:0.85rem;color:#1a3a5c">📅 ${r.anio}${r.esActivo?' <span style="background:#27ae60;color:#fff;border-radius:8px;padding:1px 8px;font-size:0.68rem">ACTIVO</span>':''}</b>
-        <span style="font-size:0.78rem;color:#888">${r.cnt} estudiante(s) con notas</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;background:#eee;border-radius:6px;height:20px;overflow:hidden;position:relative">
-          <div style="background:${colorP};height:100%;width:${Math.min(100,(r.prom/maxProm)*100)}%;border-radius:6px;transition:width .4s"></div>
-        </div>
-        <span style="font-weight:bold;color:${colorP};min-width:44px;text-align:right">${r.prom.toFixed(2)}</span>
-      </div>
-      <div style="font-size:0.74rem;color:#888;margin-top:2px">✅ ${r.pctApr}% de aprobación</div>
-    </div>`;
-  }).join('');
-}
 function _exportarDatosHistorico(anio){
   const histData=(db.historialAnios||[]).find(h=>h.anio===anio);
   const exportData=histData?histData.datos:db;
@@ -848,20 +782,20 @@ async function abrirModalImportarAnio(){
 async function _ejecutarImportacionAnio(modalId){
   const sel=document.getElementById('_importAnioSel');
   const anioOrigen=sel?sel.value:'';
-  if(!anioOrigen){customAlert('Seleccione un año de origen.');return;}
+  if(!anioOrigen){alert('Seleccione un año de origen.');return;}
   const impCarga=document.getElementById('_impCarga')?.checked;
   const impGrados=document.getElementById('_impGrados')?.checked;
   const impEsts=document.getElementById('_impEsts')?.checked;
   const impDescs=document.getElementById('_impDescs')?.checked;
   const impUsers=document.getElementById('_impUsers')?.checked;
-  if(!impCarga&&!impGrados&&!impEsts&&!impDescs&&!impUsers){customAlert('Seleccione al menos una opción.');return;}
+  if(!impCarga&&!impGrados&&!impEsts&&!impDescs&&!impUsers){alert('Seleccione al menos una opción.');return;}
 
   const btn=document.querySelector(`#${modalId} button[onclick*="_ejecutarImportacion"]`);
   if(btn){btn.textContent='⏳ Cargando datos...';btn.disabled=true;}
 
   const origen=await _cargarDatosAnioOrigen(anioOrigen);
   if(!origen){
-    customAlert('No se pudieron cargar los datos del año '+anioOrigen+'.\nVerifique que el año esté archivado en el sistema.');
+    alert('No se pudieron cargar los datos del año '+anioOrigen+'.\nVerifique que el año esté archivado en el sistema.');
     if(btn){btn.textContent='📥 Importar Ahora';btn.disabled=false;}
     return;
   }
@@ -1009,7 +943,7 @@ async function _ejecutarImportacionAnio(modalId){
   renderApp();
   setTimeout(function(){
     _showToast('✅ Importación completada','success',4000);
-    customAlert('✅ Importación completada exitosamente:\n\n• '+resumen.join('\n• ')+'\n\nRevise los datos importados en cada módulo.');
+    alert('✅ Importación completada exitosamente:\n\n• '+resumen.join('\n• ')+'\n\nRevise los datos importados en cada módulo.');
   },300);
 }
 
@@ -1060,7 +994,7 @@ function moduloActivo(modId,platId){
   }
 async function entrarPlataforma(platId){
   const plat=gestorDB.platforms.find(x=>x.id===platId);
-  if(!plat){customAlert('Plataforma no encontrada');return;}
+  if(!plat){alert('Plataforma no encontrada');return;}
   gestorEnPlataforma=platId;
   window._currentPlatSK=plat.sk;
   window._currentPlatId=platId;
@@ -1144,13 +1078,13 @@ async function doLoginGestor(){
       updGestorDB(d=>{d.superAdmin.p=nuevoHash;return d;});
     }
     gestorSesion={logged:true};_gestorPag='plataformas';renderGestorAdmin();_initGestorNotifPoll();
-  } else {customAlert('Credenciales de Administrador General incorrectas.');}
+  } else {alert('Credenciales de Administrador General incorrectas.');}
 }
 async function doLoginInstitucional(){
   const rol=document.getElementById('iRol')?.value;
   const u=document.getElementById('iUser')?.value.trim();
   const p=document.getElementById('iPass')?.value.trim();
-  if(!rol||!u){customAlert('Complete los campos de usuario y contraseña.');return;}
+  if(!rol||!u){alert('Complete los campos de usuario y contraseña.');return;}
   for(const plat of gestorDB.platforms){
     if(!plat.activa) continue;
     const platDB=await _fetchPlatDB(plat.sk);
@@ -1179,13 +1113,13 @@ async function doLoginInstitucional(){
       }
     }
     if(sesionData){
-      const pagTarget=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla';
+      const pagTarget=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
       window._pendingLogin={sesionData,platDB,plat,pag:pagTarget};
       if(rol==='docente'){try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'login',actor:sesionData.n,message:'El/La docente '+sesionData.n+' ingresó al sistema',meta:{u:sesionData.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}}
       renderBienvenidaInstitucion(plat.id);return;
     }
   }
-  customAlert('❌ No se encontraron credenciales válidas en ninguna plataforma.\n\nVerifique usuario, contraseña y rol.');
+  alert('❌ No se encontraron credenciales válidas en ninguna plataforma.\n\nVerifique usuario, contraseña y rol.');
 }
 function renderBienvenidaInstitucion(platId){
   const pl=gestorDB.platforms.find(x=>x.id===platId);
@@ -1294,7 +1228,7 @@ function renderBienvenidaInstitucion(platId){
 }
 async function abrirPreMatriculaPortalIntermedio(platId){
   const p=gestorDB.platforms.find(x=>x.id===platId);
-  if(!p){customAlert('Institución no encontrada.');return;}
+  if(!p){alert('Institución no encontrada.');return;}
   window._currentPlatSK=p.sk;
   window._currentPlatId=platId;
   window._portalOrigenPlatId=platId;
@@ -1341,7 +1275,6 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#27ae60;font-size:0.74rem" onclick="descargarRespaldoGestor()" title="Descargar respaldo JSON del sistema gestor">💾 Respaldo</button>
         <button class="tbtn" style="background:#e67e22;font-size:0.74rem" onclick="document.getElementById('fileRespaldoGestor').click()" title="Cargar respaldo JSON del sistema gestor">📂 Cargar</button>
         <input type="file" id="fileRespaldoGestor" accept=".json" style="display:none" onchange="cargarRespaldoGestor(this)">
-        <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
         <button class="tbtn" style="background:#c0392b" onclick="cerrarGestorSesion()">🚪 Salir</button>
       </div>
     </div>
@@ -1667,7 +1600,7 @@ window._gestorIAVozRec=null;
 function gestorIAsugerencia(txt){const ta=document.getElementById('gestorIAinput');if(ta){ta.value=txt;gestorIAenviar();}}
 function gestorIAVoz(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Use Chrome o Edge para voz.');return;}
+  if(!SR){alert('Use Chrome o Edge para voz.');return;}
   const btn=document.getElementById('gestorIAVozBtn');
   if(window._gestorIAVozRec){try{window._gestorIAVozRec.stop();}catch(e){}window._gestorIAVozRec=null;if(btn){btn.textContent='🎙️ Voz';btn.style.background='#6c3483';}return;}
   const rec=new SR();rec.lang='es-CO';rec.continuous=false;rec.interimResults=false;
@@ -1819,7 +1752,7 @@ function guardarLimiteSesion(platId){
     if(plat){plat.limitesSesion=nuevo;nombrePlat=plat.nombre;}
     return g;
   });
-  customAlert('✅ Límites de tiempo de sesión actualizados para '+nombrePlat+'.');
+  alert('✅ Límites de tiempo de sesión actualizados para '+nombrePlat+'.');
   renderGestorAdmin();
 }
 // ============================================================
@@ -1828,78 +1761,27 @@ function guardarLimiteSesion(platId){
 // por los usuarios de TODAS las instituciones, con el promedio
 // general de satisfacción.
 // ============================================================
-let _gestorSugFiltro='todas';
 function htmlGestorSugerencias(){
-  const todas=(gestorDB.sugerencias||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
-  todas.forEach(s=>{if(!s.estado) s.estado='pendiente';}); // compat: sugerencias antiguas sin estado
+  const sugs=(gestorDB.sugerencias||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
   const estrellasView=n=>'★'.repeat(n)+'☆'.repeat(5-n);
-  const conCalif=todas.filter(s=>s.calificacion>0);
+  const conCalif=sugs.filter(s=>s.calificacion>0);
   const promGeneral=conCalif.length?(conCalif.reduce((s,x)=>s+x.calificacion,0)/conCalif.length).toFixed(2):'—';
-  const nPend=todas.filter(s=>s.estado==='pendiente').length;
-  const nRev=todas.filter(s=>s.estado==='en_revision').length;
-  const nRes=todas.filter(s=>s.estado==='resuelta').length;
-  const sugs=_gestorSugFiltro==='todas'?todas:todas.filter(s=>s.estado===_gestorSugFiltro);
-  const estadoInfo={pendiente:{label:'🟡 Pendiente',color:'#b7770d',bg:'#fef9e7'},en_revision:{label:'🔵 En revisión',color:'#1a5276',bg:'#eaf4fe'},resuelta:{label:'🟢 Resuelta',color:'#1e8449',bg:'#eafaf1'}};
-  const filas=sugs.map(s=>{
-    const ei=estadoInfo[s.estado]||estadoInfo.pendiente;
-    return `
-    <div style="background:#fff;border-left:4px solid ${ei.color};border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.08)">
+  const filas=sugs.map(s=>`
+    <div style="background:#fff;border-left:4px solid #1a5276;border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.08)">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px">
         <b style="font-size:0.86rem;color:#003366">🏫 ${s.platNombre||'—'} · ${s.rol||'—'} · ${s.nombre||s.usuario||'Anónimo'}</b>
         <span style="color:#f1c40f;font-size:0.95rem">${s.calificacion?estrellasView(s.calificacion):'Sin calificación'}</span>
       </div>
       <div style="font-size:0.85rem;color:#333">${s.texto?s.texto:'<i style="color:#999">Sin comentario, solo calificación</i>'}</div>
-      <div style="font-size:0.72rem;color:#999;margin:5px 0 10px">${new Date(s.fecha).toLocaleString('es-CO')}</div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <span style="background:${ei.bg};color:${ei.color};border-radius:6px;padding:3px 10px;font-size:0.74rem;font-weight:700">${ei.label}</span>
-        <select style="font-size:0.76rem;padding:4px 8px;border-radius:6px;border:1px solid #ccc" onchange="_cambiarEstadoSugerencia('${s.id}',this.value)">
-          <option value="pendiente"${s.estado==='pendiente'?' selected':''}>🟡 Pendiente</option>
-          <option value="en_revision"${s.estado==='en_revision'?' selected':''}>🔵 En revisión</option>
-          <option value="resuelta"${s.estado==='resuelta'?' selected':''}>🟢 Resuelta</option>
-        </select>
-      </div>
-      ${s.respuesta?`<div style="background:#f0f6ff;border-left:3px solid #1a5276;border-radius:0 6px 6px 0;padding:8px 12px;margin-bottom:8px">
-        <div style="font-size:0.72rem;color:#1a5276;font-weight:700;margin-bottom:3px">💬 Respuesta del administrador general${s.respuestaFecha?' — '+new Date(s.respuestaFecha).toLocaleString('es-CO'):''}</div>
-        <div style="font-size:0.82rem;color:#333">${s.respuesta}</div>
-      </div>`:''}
-      <div style="display:flex;gap:6px">
-        <input type="text" id="sugResp_${s.id}" placeholder="${s.respuesta?'Editar respuesta...':'Escribir una respuesta para el usuario...'}" value="${(s.respuesta||'').replace(/"/g,'&quot;')}" style="flex:1;padding:6px 10px;font-size:0.8rem;border:1px solid #ccc;border-radius:6px">
-        <button class="btn-sm" style="background:#1a5276" onclick="_responderSugerencia('${s.id}')">💬 ${s.respuesta?'Actualizar':'Responder'}</button>
-      </div>
-    </div>`;}).join('');
+      <div style="font-size:0.72rem;color:#999;margin-top:5px">${new Date(s.fecha).toLocaleString('es-CO')}</div>
+    </div>`).join('');
   return `<h3 style="color:#003366;margin-bottom:6px">📮 Buzón de Sugerencias — Todas las Instituciones</h3>
-  <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Sugerencias y calificaciones (1 a 5) que los usuarios de cada institución dejaron de forma voluntaria antes de cerrar sesión o desde el módulo "Buzón de Sugerencias". Puede marcar cada una como en revisión o resuelta, y responderle directamente al usuario.</p>
+  <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Sugerencias y calificaciones (1 a 5) que los usuarios de cada institución dejaron de forma voluntaria antes de cerrar sesión o desde el módulo "Buzón de Sugerencias".</p>
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='todas';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#003366">${todas.length}</div><div style="font-size:0.78rem;color:#666">Total</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='pendiente';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#b7770d">${nPend}</div><div style="font-size:0.78rem;color:#666">🟡 Pendientes</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='en_revision';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1a5276">${nRev}</div><div style="font-size:0.78rem;color:#666">🔵 En revisión</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center;cursor:pointer" onclick="_gestorSugFiltro='resuelta';renderGestorAdmin()"><div style="font-size:1.6rem;font-weight:bold;color:#1e8449">${nRes}</div><div style="font-size:0.78rem;color:#666">🟢 Resueltas</div></div>
-    <div class="card" style="flex:1;min-width:140px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#f1c40f">${promGeneral}${promGeneral!=='—'?' / 5':''}</div><div style="font-size:0.78rem;color:#666">Satisfacción prom.</div></div>
+    <div class="card" style="flex:1;min-width:180px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#003366">${sugs.length}</div><div style="font-size:0.78rem;color:#666">Sugerencias recibidas</div></div>
+    <div class="card" style="flex:1;min-width:180px;text-align:center"><div style="font-size:1.6rem;font-weight:bold;color:#f1c40f">${promGeneral}${promGeneral!=='—'?' / 5':''}</div><div style="font-size:0.78rem;color:#666">Satisfacción promedio</div></div>
   </div>
-  ${_gestorSugFiltro!=='todas'?`<div style="margin-bottom:10px"><button class="btn-sm" style="background:#7f8c8d" onclick="_gestorSugFiltro='todas';renderGestorAdmin()">✕ Quitar filtro</button></div>`:''}
-  ${sugs.length?filas:'<div class="card"><p class="empty" style="padding:40px">No hay sugerencias con este filtro.</p></div>'}`;
-}
-async function _cambiarEstadoSugerencia(id,nuevoEstado){
-  try{ await _pullGestorDB(); }catch(e){}
-  updGestorDB(g=>{
-    const s=(g.sugerencias||[]).find(x=>x.id===id);
-    if(s) s.estado=nuevoEstado;
-    return g;
-  });
-  renderGestorAdmin();
-}
-async function _responderSugerencia(id){
-  const inp=document.getElementById('sugResp_'+id);
-  const texto=(inp&&inp.value||'').trim();
-  if(!texto){customAlert('Escriba una respuesta antes de enviar.');return;}
-  try{ await _pullGestorDB(); }catch(e){}
-  updGestorDB(g=>{
-    const s=(g.sugerencias||[]).find(x=>x.id===id);
-    if(s){s.respuesta=texto;s.respuestaFecha=new Date().toISOString();if(s.estado==='pendiente') s.estado='en_revision';}
-    return g;
-  });
-  customAlert('✅ Respuesta guardada. El usuario la verá la próxima vez que revise el Buzón de Sugerencias.');
-  renderGestorAdmin();
+  ${sugs.length?filas:'<div class="card"><p class="empty" style="padding:40px">Aún no se han recibido sugerencias.</p></div>'}`;
 }
 function htmlGestorNueva(){
   const platEdit=_gestorEditPlatId?gestorDB.platforms.find(x=>x.id===_gestorEditPlatId):null;
@@ -2004,7 +1886,7 @@ function htmlGestorConfig(){
 }
 async function crearNuevaPlataforma(){
   const nombre=document.getElementById('nPNombre')?.value.trim();
-  if(!nombre){customAlert('Ingrese el nombre de la institución');return;}
+  if(!nombre){alert('Ingrese el nombre de la institución');return;}
   const id='plat_'+Date.now();
   const sk='gestor_plat_'+id;
   const municipio=(document.getElementById('nPMunicipio')?.value.trim()||'').toUpperCase();
@@ -2030,13 +1912,13 @@ async function crearNuevaPlataforma(){
   if(tipo==='privada'&&pension) platDB.valorPension=pension;
   platDB.tipoInstitucion=tipo;
   updGestorDB(d=>{const escudoData=document.getElementById('nPEscudoData')?.value||'';d.platforms.push({id,nombre,municipio,depto,sk,activa:true,fechaCreacion:new Date().toISOString().split('T')[0],modulosActivos,modulosDesactivados,escudo:escudoData,tipo});return d;});
-  customAlert(`✅ Plataforma "${nombre}" creada exitosamente.\n\n🏛️ Tipo: ${tipo==='publica'?'Pública':'Privada'}\n🔑 Usuario admin: ${adminU}\n🔑 Contraseña: ${adminP}\n\nGuarde esta contraseña en un lugar seguro: por seguridad, el sistema solo almacena su versión cifrada y no podrá volver a mostrarla en texto plano.\n\nYa puede entrar a ella desde el panel.`);
+  alert(`✅ Plataforma "${nombre}" creada exitosamente.\n\n🏛️ Tipo: ${tipo==='publica'?'Pública':'Privada'}\n🔑 Usuario admin: ${adminU}\n🔑 Contraseña: ${adminP}\n\nGuarde esta contraseña en un lugar seguro: por seguridad, el sistema solo almacena su versión cifrada y no podrá volver a mostrarla en texto plano.\n\nYa puede entrar a ella desde el panel.`);
   _gestorPag='plataformas';renderGestorAdmin();
 }
 function abrirEditarPlat(platId){_gestorEditPlatId=platId;_gestorPag='editar';renderGestorAdmin();}
 async function guardarEditarPlat(){
   const plat=gestorDB.platforms.find(x=>x.id===_gestorEditPlatId);if(!plat) return;
-  const nombre=document.getElementById('nPNombre')?.value.trim();if(!nombre){customAlert('Ingrese el nombre');return;}
+  const nombre=document.getElementById('nPNombre')?.value.trim();if(!nombre){alert('Ingrese el nombre');return;}
   const municipio=(document.getElementById('nPMunicipio')?.value.trim()||'').toUpperCase();
   const depto=(document.getElementById('nPDepto')?.value.trim()||'');
   const rectora=(document.getElementById('nPRectora')?.value.trim()||'').toUpperCase();
@@ -2063,7 +1945,7 @@ async function guardarEditarPlat(){
   if(tipoE==='privada'&&pensionE) platDB.valorPension=pensionE;
   platDB.tipoInstitucion=tipoE;
   const escudoDataE=document.getElementById('nPEscudoData')?.value||'';updGestorDB(d=>{const idx=d.platforms.findIndex(x=>x.id===_gestorEditPlatId);if(idx>=0) d.platforms[idx]={...d.platforms[idx],nombre,municipio,depto,modulosActivos,modulosDesactivados,tipo:tipoE,...(escudoDataE?{escudo:escudoDataE}:{})};return d;});
-  customAlert(`✅ Plataforma "${nombre}" actualizada.\n🏛️ Tipo: ${tipoE==='publica'?'Pública':'Privada'}`);
+  alert(`✅ Plataforma "${nombre}" actualizada.\n🏛️ Tipo: ${tipoE==='publica'?'Pública':'Privada'}`);
   _gestorEditPlatId=null;_gestorPag='plataformas';renderGestorAdmin();
 }
 function toggleActivarPlat(platId){updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.activa=!p.activa;return d;});renderGestorAdmin();}
@@ -2072,13 +1954,13 @@ function toggleBloquearPlat(platId){
   if(!plat) return;
   const nuevoEstado=!plat.bloqueada;
   updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p)p.bloqueada=nuevoEstado;return d;});
-  customAlert(nuevoEstado?'🔒 Plataforma BLOQUEADA. Los docentes no podrán ingresar hasta que la desbloquee.':'🔓 Plataforma DESBLOQUEADA.');
+  alert(nuevoEstado?'🔒 Plataforma BLOQUEADA. Los docentes no podrán ingresar hasta que la desbloquee.':'🔓 Plataforma DESBLOQUEADA.');
   renderGestorAdmin();
 }
-async function eliminarPlataforma(platId){
+function eliminarPlataforma(platId){
   const plat=gestorDB.platforms.find(x=>x.id===platId);if(!plat) return;
-  if(plat.id==='inetis-sincelejito'){customAlert('⚠️ La plataforma base (INETIS Sincelejito) no se puede eliminar desde el gestor.');return;}
-  if(!await customConfirm(`⚠️ ¿Eliminar permanentemente "${plat.nombre}"?\n\nSe borrarán TODOS los datos. Esta acción no se puede deshacer.`)) return;
+  if(plat.id==='inetis-sincelejito'){alert('⚠️ La plataforma base (INETIS Sincelejito) no se puede eliminar desde el gestor.');return;}
+  if(!confirm(`⚠️ ¿Eliminar permanentemente "${plat.nombre}"?\n\nSe borrarán TODOS los datos. Esta acción no se puede deshacer.`)) return;
   try{localStorage.removeItem(plat.sk);}catch(e){}
   updGestorDB(d=>{d.platforms=d.platforms.filter(x=>x.id!==platId);return d;});
   renderGestorAdmin();
@@ -2128,13 +2010,13 @@ function guardarModulosModal(platId){
   const modulosDesactivados=TODOS_MODULOS.filter(m=>!document.getElementById('mMod_'+m.id)?.checked).map(m=>m.id);
   updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p){p.modulosActivos=modulosActivos;p.modulosDesactivados=modulosDesactivados;}return d;});
   const ov=document.getElementById('gModOv');if(ov)ov.remove();
-  customAlert('✅ Módulos actualizados correctamente.');
+  alert('✅ Módulos actualizados correctamente.');
   renderGestorAdmin();
 }
 async function guardarGestorConfig(){
   const oldP=document.getElementById('cfgGPassOld')?.value.trim();
   const newP=document.getElementById('cfgGPassNew')?.value.trim();
-  if(newP&&!(await _verificarPassword(oldP,gestorDB.superAdmin.p))){customAlert('❌ La contraseña actual no es correcta.');return;}
+  if(newP&&!(await _verificarPassword(oldP,gestorDB.superAdmin.p))){alert('❌ La contraseña actual no es correcta.');return;}
   const nombre=document.getElementById('cfgGNombre')?.value.trim();
   const usuario=document.getElementById('cfgGUser')?.value.trim();
   const cedula=document.getElementById('cfgGCedula')?.value.trim();
@@ -2159,7 +2041,7 @@ async function guardarGestorConfig(){
     return d;
   });
   window._cfgGFoto=undefined;
-  customAlert('✅ Configuración guardada correctamente.');
+  alert('✅ Configuración guardada correctamente.');
   renderGestorAdmin();
 }
 // ============================================================
@@ -2275,7 +2157,7 @@ function _avisoTiempoSesion(minRestantes){
   const hayPendientes=(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0);
   const msjPend=hayPendientes?'\n\n⚠️ Tiene notas SIN GUARDAR en la Planilla — pulse "GUARDAR CAMBIOS" ahora mismo para no perderlas.':'';
   const txt=minRestantes===1?'1 minuto':minRestantes+' minutos';
-  customAlert('⏰ Le queda(n) '+txt+' de sesión.\n\nPor política de la institución, la sesión se cerrará automáticamente al agotarse el tiempo para ahorrar recursos del sistema.\n\nGuarde los cambios que esté realizando.'+msjPend);
+  alert('⏰ Le queda(n) '+txt+' de sesión.\n\nPor política de la institución, la sesión se cerrará automáticamente al agotarse el tiempo para ahorrar recursos del sistema.\n\nGuarde los cambios que esté realizando.'+msjPend);
 }
 
 function _forzarCierrePorTiempo(){
@@ -2286,7 +2168,7 @@ function _forzarCierrePorTiempo(){
     }
   }catch(e){}
   _actualizarChipTiempoSesion(null);
-  customAlert('⏰ Su tiempo de sesión ha finalizado.\n\nLa sesión se cerrará ahora para liberar recursos del sistema. Vuelva a ingresar cuando lo necesite — el contador se reiniciará a cero.');
+  alert('⏰ Su tiempo de sesión ha finalizado.\n\nLa sesión se cerrará ahora para liberar recursos del sistema. Vuelva a ingresar cuando lo necesite — el contador se reiniciará a cero.');
   // Cierre directo (sin pedir sugerencia): es un cierre automático por tiempo, no una acción deliberada del usuario.
   // También garantiza el reinicio inmediato del contador para el próximo login.
   _cerrarSesionReal();
@@ -2361,10 +2243,7 @@ async function _enviarSugerenciaYSalir(desdeLogout){
     nombre:sesion?(sesion.n||''):'',
     texto,
     calificacion:calif,
-    fecha:new Date().toISOString(),
-    estado:'pendiente', // pendiente | en_revision | resuelta
-    respuesta:'',
-    respuestaFecha:null
+    fecha:new Date().toISOString()
   };
   updGestorDB(g=>{
     g.sugerencias=g.sugerencias||[];
@@ -2372,7 +2251,7 @@ async function _enviarSugerenciaYSalir(desdeLogout){
     return g;
   });
   const m=document.getElementById('modalBuzonSug');if(m)m.remove();
-  customAlert('✅ ¡Gracias por su sugerencia! Su comentario llegará al administrador general del sistema.');
+  alert('✅ ¡Gracias por su sugerencia! Su comentario llegará al administrador general del sistema.');
   if(desdeLogout) _cerrarSesionReal();
   else if(typeof pag!=='undefined'&&pag==='buzon-sugerencias') renderApp();
 }
@@ -2380,41 +2259,24 @@ function htmlBuzonSugerencias(){
   const isAdmin=sesion.r==='admin';
   const platId=window._currentPlatId||gestorEnPlataforma||null;
   const estrellasView=n=>'★'.repeat(n)+'☆'.repeat(5-n);
-  const estadoInfo={pendiente:{label:'🟡 Pendiente',color:'#b7770d',bg:'#fef9e7'},en_revision:{label:'🔵 En revisión',color:'#1a5276',bg:'#eaf4fe'},resuelta:{label:'🟢 Resuelta',color:'#1e8449',bg:'#eafaf1'}};
   const misSug=(gestorDB.sugerencias||[]).filter(s=>s.platId===platId).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
-  const propiasSug=misSug.filter(s=>s.usuario===sesion.u);
-  const _htmlTicket=s=>{
-    const ei=estadoInfo[s.estado||'pendiente']||estadoInfo.pendiente;
-    return `<div style="background:#f8f9fa;border-left:4px solid ${ei.color};border-radius:0 8px 8px 0;padding:10px 14px">
+  const listaAdmin=isAdmin?`
+    <h4 style="color:#003366;margin:22px 0 10px">📋 Sugerencias recibidas en esta institución (${misSug.length})</h4>
+    ${misSug.length?`<div style="display:flex;flex-direction:column;gap:10px">${misSug.map(s=>`
+      <div style="background:#f8f9fa;border-left:4px solid #1a5276;border-radius:0 8px 8px 0;padding:10px 14px">
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px">
           <b style="font-size:0.85rem;color:#003366">${s.nombre||s.usuario||'Anónimo'} · ${s.rol||''}</b>
           <span style="color:#f1c40f;font-size:0.9rem">${s.calificacion?estrellasView(s.calificacion):'—'}</span>
         </div>
         <div style="font-size:0.83rem;color:#333">${s.texto?s.texto:'<i style="color:#999">Sin comentario, solo calificación</i>'}</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-          <span style="background:${ei.bg};color:${ei.color};border-radius:6px;padding:2px 9px;font-size:0.7rem;font-weight:700">${ei.label}</span>
-          <span style="font-size:0.7rem;color:#999">${new Date(s.fecha).toLocaleString('es-CO')}</span>
-        </div>
-        ${s.respuesta?`<div style="background:#fff;border-left:3px solid #1a5276;border-radius:0 6px 6px 0;padding:7px 10px;margin-top:6px">
-          <div style="font-size:0.68rem;color:#1a5276;font-weight:700;margin-bottom:2px">💬 Respuesta del administrador general</div>
-          <div style="font-size:0.8rem;color:#333">${s.respuesta}</div>
-        </div>`:''}
-      </div>`;
-  };
-  const listaPropias=propiasSug.length?`
-    <h4 style="color:#003366;margin:22px 0 10px">📋 Mis sugerencias enviadas (${propiasSug.length})</h4>
-    <div style="display:flex;flex-direction:column;gap:10px">${propiasSug.map(_htmlTicket).join('')}</div>
-  `:'';
-  const listaAdmin=isAdmin?`
-    <h4 style="color:#003366;margin:22px 0 10px">📋 Sugerencias recibidas en esta institución (${misSug.length})</h4>
-    ${misSug.length?`<div style="display:flex;flex-direction:column;gap:10px">${misSug.map(_htmlTicket).join('')}</div>`:'<p class="empty">Aún no hay sugerencias registradas en esta institución.</p>'}
+        <div style="font-size:0.7rem;color:#999;margin-top:4px">${new Date(s.fecha).toLocaleString('es-CO')}</div>
+      </div>`).join('')}</div>`:'<p class="empty">Aún no hay sugerencias registradas en esta institución.</p>'}
   `:'';
   return `<h3 class="sec-title">📮 Buzón de Sugerencias</h3>
   <div class="card">
-    <p style="font-size:0.85rem;color:#666;margin-bottom:14px">¿Qué aspecto le gustaría que mejoremos? Cuéntenos también qué tan satisfecho(a) está con el uso de la plataforma. Su opinión es completamente opcional y llega directamente al administrador general del sistema, quien puede responderle aquí mismo.</p>
+    <p style="font-size:0.85rem;color:#666;margin-bottom:14px">¿Qué aspecto le gustaría que mejoremos? Cuéntenos también qué tan satisfecho(a) está con el uso de la plataforma. Su opinión es completamente opcional y llega directamente al administrador general del sistema.</p>
     ${_htmlFormularioSugerenciaInline(false)}
   </div>
-  ${listaPropias}
   ${listaAdmin}`;
 }
 
@@ -2983,32 +2845,32 @@ async function doLogin(){
   const p=document.getElementById('lPass').value.trim();
   if(rol==='elecciones'){
     if(u==='elecciones'&&p==='inetis2026'){sesion={u:'elecciones',p:'inetis2026',r:'elecciones',n:'MÓDULO ELECCIONES'};pag='elecciones';render();return;}
-    customAlert('Credenciales incorrectas.');return;
+    alert('Credenciales incorrectas.');return;
   }
   // Padre y Estudiante usan el documento de identidad
   if(rol==='padre'){
     const est=db.ests.find(e=>(e.numDocAcud||'').toString().trim()===u && (e.numDoc||e.numDocAcud||'').toString().trim()===p);
-    if(!est){customAlert('No se encontró acudiente con esos datos.\nUsuario = N° documento del acudiente\nClave = N° documento del estudiante');return;}
+    if(!est){alert('No se encontró acudiente con esos datos.\nUsuario = N° documento del acudiente\nClave = N° documento del estudiante');return;}
     sesion={u,p,r:'padre',n:est.acudiente||'ACUDIENTE',estId:est.id};pag='padre-home';
     _sseInit(); // Conectar SSE para que el padre reciba actualizaciones en tiempo real
     render();return;
   }
   if(rol==='estudiante'){
     const est=db.ests.find(e=>(e.numDoc||'').toString().trim()===u && (e.numDoc||'').toString().trim()===p);
-    if(!est){customAlert('No se encontró estudiante con ese documento.\nUsuario y clave = su número de documento');return;}
+    if(!est){alert('No se encontró estudiante con ese documento.\nUsuario y clave = su número de documento');return;}
     sesion={u,p,r:'estudiante',n:est.n,estId:est.id};pag='est-home';
     _sseInit(); // Conectar SSE para que el estudiante reciba actualizaciones en tiempo real
     render();return;
   }
   const user=db.users.find(x=>x.u===u&&x.r===rol);
-  if(!user||!(await _verificarPassword(p,user.p))){customAlert('Credenciales incorrectas.');return;}
+  if(!user||!(await _verificarPassword(p,user.p))){alert('Credenciales incorrectas.');return;}
   if(!_esHashPassword(user.p)){
     // Migración perezosa: la contraseña heredada coincidió, se re-guarda ya cifrada
     const nuevoHash=await _hashPassword(p);
     updDB(d=>{const idx=d.users.findIndex(x=>x.u===user.u);if(idx!==-1) d.users[idx].p=nuevoHash;return d;});
     user.p=nuevoHash;
   }
-  sesion=user;pag=user.r==='admin'?'tablero':user.r==='docente'?'panel-docente':'planilla';
+  sesion=user;pag='planilla';
   // Notificar a rectora cuando un docente entra al sistema
   if(rol==='docente'){
     try{
@@ -3053,180 +2915,6 @@ function _docenteCalificaEvalDesempeno(user){
   if(user.decreto!=='1278') return false;
   return ['Propiedad','Periodo de Prueba'].includes(user.modalidadDecre||'');
 }
-// ============================================================
-// MODO OSCURO — Alternar y persistir preferencia de tema
-// (Reutiliza las variables de color --bg-*, --text-*, etc. del CSS)
-// ============================================================
-function _temaActual(){
-  return document.documentElement.getAttribute('data-theme')==='dark' ? 'dark' : 'light';
-}
-function toggleTema(){
-  const nuevo = _temaActual()==='dark' ? 'light' : 'dark';
-  if(nuevo==='dark') document.documentElement.setAttribute('data-theme','dark');
-  else document.documentElement.removeAttribute('data-theme');
-  try{ localStorage.setItem('gestorYcTema', nuevo); }catch(e){}
-  const esOscuro = nuevo==='dark';
-  document.querySelectorAll('[data-theme-toggle]').forEach(function(btn){
-    btn.textContent = esOscuro ? '☀️ Modo claro' : '🌙 Modo oscuro';
-    btn.setAttribute('aria-pressed', esOscuro ? 'true' : 'false');
-  });
-}
-
-// ============================================================
-// MODALES PROPIOS — Reemplazo accesible de alert()/confirm() nativos
-// Diseño consistente con el resto del sistema (mismo estilo que
-// el modal del Buzón de Sugerencias): overlay + tarjeta centrada,
-// con foco atrapado, cierre con Escape y etiquetas ARIA.
-// ============================================================
-function _escaparHtmlModal(texto){
-  texto = String(texto===null||texto===undefined ? '' : texto);
-  const div = document.createElement('div');
-  div.textContent = texto;
-  return div.innerHTML;
-}
-function _cmCerrar(overlay, valor, resolve, elFocoPrevio){
-  if(overlay && overlay._cmKeydown) document.removeEventListener('keydown', overlay._cmKeydown, true);
-  if(overlay && overlay.parentNode) overlay.remove();
-  if(elFocoPrevio && typeof elFocoPrevio.focus==='function'){
-    try{ elFocoPrevio.focus(); }catch(e){}
-  }
-  resolve(valor);
-}
-function _cmAbrir(opts){
-  return new Promise(function(resolve){
-    const elFocoPrevio = document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className='cm-overlay';
-    const idUnico = 'cm_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-    const titleId = idUnico+'_t';
-    const descId = idUnico+'_d';
-    overlay.innerHTML = `
-      <div class="cm-box" role="alertdialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1">
-        <div class="cm-hd">
-          <span class="cm-icon" aria-hidden="true">${opts.icono}</span>
-          <h3 class="cm-title" id="${titleId}">${opts.titulo}</h3>
-        </div>
-        <div class="cm-bd" id="${descId}">${opts.mensajeHtml}</div>
-        <div class="cm-ft">
-          ${opts.esConfirm?`<button type="button" class="btn btn-gray" data-cm-accion="cancelar">${opts.textoCancelar}</button>`:''}
-          <button type="button" class="btn ${opts.esConfirm?'btn-blue':'btn-navy'}" data-cm-accion="aceptar">${opts.textoAceptar}</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const box = overlay.querySelector('.cm-box');
-    const btnAceptar = overlay.querySelector('[data-cm-accion="aceptar"]');
-    const btnCancelar = overlay.querySelector('[data-cm-accion="cancelar"]');
-    function cerrar(valor){ _cmCerrar(overlay, valor, resolve, elFocoPrevio); }
-    btnAceptar.addEventListener('click', function(){ cerrar(true); });
-    if(btnCancelar) btnCancelar.addEventListener('click', function(){ cerrar(false); });
-    overlay.addEventListener('mousedown', function(e){ if(e.target===overlay) cerrar(opts.esConfirm?false:true); });
-    function _trapFoco(e){
-      if(e.key==='Escape'){ e.preventDefault(); cerrar(opts.esConfirm?false:true); return; }
-      if(e.key!=='Tab') return;
-      const focusables = overlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-      if(!focusables.length) return;
-      const primero = focusables[0], ultimo = focusables[focusables.length-1];
-      if(e.shiftKey && document.activeElement===primero){ e.preventDefault(); ultimo.focus(); }
-      else if(!e.shiftKey && document.activeElement===ultimo){ e.preventDefault(); primero.focus(); }
-    }
-    overlay._cmKeydown = _trapFoco;
-    document.addEventListener('keydown', _trapFoco, true);
-    setTimeout(function(){ (btnAceptar||box).focus(); }, 10);
-  });
-}
-function customAlert(mensaje, titulo){
-  return _cmAbrir({
-    esConfirm:false,
-    mensajeHtml:_escaparHtmlModal(mensaje),
-    titulo: titulo || 'Aviso',
-    icono:'ℹ️',
-    textoAceptar:'Aceptar'
-  });
-}
-function customConfirm(mensaje, opts){
-  opts = opts || {};
-  return _cmAbrir({
-    esConfirm:true,
-    mensajeHtml:_escaparHtmlModal(mensaje),
-    titulo: opts.titulo || '¿Está seguro?',
-    icono: opts.icono || '⚠️',
-    textoAceptar: opts.textoAceptar || 'Sí, continuar',
-    textoCancelar: opts.textoCancelar || 'Cancelar'
-  });
-}
-
-// ============================================================
-// SKELETON DE CARGA — evita el parpadeo en blanco al cambiar de módulo
-// ============================================================
-function _htmlSkeletonContenido(){
-  const filas = [80,60,100,40,90,55,70].map(function(w){
-    return '<div class="skel-line w'+(w>=80?'80':w>=60?'60':'40')+'"></div>';
-  }).join('');
-  return '<div class="skel-wrap">'+
-    '<div class="skel-title"></div>'+
-    '<div class="skel-card">'+
-      '<div class="skel-row"><div class="skel-line"></div><div class="skel-line"></div><div class="skel-line"></div></div>'+
-      filas+
-      '<div class="skel-block"></div>'+
-    '</div>'+
-  '</div>';
-}
-function _mostrarSkeletonYNavegar(){
-  const cont = document.getElementById('contenido');
-  if(cont){
-    cont.setAttribute('aria-busy','true');
-    cont.innerHTML = _htmlSkeletonContenido();
-    requestAnimationFrame(function(){ setTimeout(renderApp, 0); });
-  } else {
-    renderApp();
-  }
-}
-
-// ============================================================
-// ACCESIBILIDAD DE POPUPS FLOTANTES (notas de la Planilla)
-// Añade rol/atributos ARIA, atrapa el foco con Tab y permite
-// cerrar con la tecla Escape, sin alterar su comportamiento.
-// ============================================================
-function _activarAccesibilidadPopup(popup, cerrarFn, etiqueta){
-  if(!popup) return;
-  popup.setAttribute('role','dialog');
-  popup.setAttribute('aria-modal','true');
-  popup.setAttribute('aria-label', etiqueta || 'Ventana emergente');
-  popup.setAttribute('tabindex','-1');
-  function _onKeydown(e){
-    if(e.key==='Escape'){
-      e.preventDefault();
-      if(typeof cerrarFn==='function') cerrarFn();
-      return;
-    }
-    if(e.key!=='Tab') return;
-    const focusables = popup.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-    if(!focusables.length) return;
-    const primero=focusables[0], ultimo=focusables[focusables.length-1];
-    if(e.shiftKey && document.activeElement===primero){ e.preventDefault(); ultimo.focus(); }
-    else if(!e.shiftKey && document.activeElement===ultimo){ e.preventDefault(); primero.focus(); }
-  }
-  popup._accesibilidadKeydown=_onKeydown;
-  document.addEventListener('keydown', _onKeydown, true);
-  setTimeout(function(){
-    const primerFocable = popup.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-    if(primerFocable) primerFocable.focus(); else popup.focus();
-  }, 10);
-}
-function _liberarAccesibilidadPopup(popup){
-  if(popup && popup._accesibilidadKeydown){
-    document.removeEventListener('keydown', popup._accesibilidadKeydown, true);
-  }
-}
-// Permite cerrar con Escape los modales de Ficha de Matrícula y Documentos
-document.addEventListener('keydown', function(e){
-  if(e.key!=='Escape') return;
-  const ficha=document.getElementById('fichaModal');
-  if(ficha && ficha.classList.contains('open')){ cerrarFichaModal(); return; }
-  const docs=document.getElementById('docsModal');
-  if(docs && docs.classList.contains('open')){ cerrarDocsModal(); return; }
-});
-
 function renderApp(){
   if(!sesion||!sesion.r){render();return;}
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
@@ -3262,7 +2950,6 @@ function renderApp(){
   if(sesion.r==='docente'&&_ma('aviso-docente')) menu.push({id:'aviso-docente',label:'📢 Avisos a Estudiantes'});
   if(sesion.r==='docente'&&_ma('obs-aula')) menu.push({id:'obs-aula',label:'📓 Obs. de Aula'});
   if(_ma('descriptores')) menu.push({id:'descriptores',label:'📝 Descriptores'});
-  if(sesion.r==='docente') menu.unshift({id:'panel-docente',label:'🎯 Mi Panel'});
   if(_ma('planilla')) menu.push({id:'planilla',label:'📊 Planilla'});
   if((isAdmin||sesion.r==='docente')&&_ma('notas-actividades')) menu.push({id:'notas-actividades',label:'📝 Notas de Actividades'});
   if(_ma('buzon-sugerencias')) menu.push({id:'buzon-sugerencias',label:'📮 Buzón de Sugerencias'});
@@ -3316,7 +3003,6 @@ function renderApp(){
   const sidebarItems=menu.map(m=>{const {icon,text}=_sbLabel(m.label);if(m.external)return `<a class="sb-btn" href="${m.href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit;background:linear-gradient(90deg,rgba(230,140,20,.13),transparent);border-left:3px solid #e68c14"><span class="sb-icon" style="color:#e68c14">${icon}</span><span style="color:#9a5e05">${text} ↗</span></a>`;return `<button class="sb-btn${pag===m.id?' active':''}" onclick="navTo('${m.id}');toggleSidebar(false)"><span class="sb-icon">${icon}</span><span>${text}</span></button>`;}).join('');
   let contenido='';
   if(pag==='tablero'&&isAdmin) contenido=htmlTablero();
-  else if(pag==='panel-docente'&&sesion.r==='docente') contenido=htmlPanelDocente();
   else if(pag==='alerta-temprana'&&isAdmin) contenido=htmlAlertaTemprana();
   else if(pag==='comunicado-general'&&isAdmin) contenido=htmlComunicadoGeneral();
   else if(pag==='adm-base'&&isAdmin) contenido=htmlConfigBase();
@@ -3404,7 +3090,6 @@ function renderApp(){
         <div class="sidebar-footer">
           <div class="sf-user">👤 ${sesion.n}</div>
           <div class="sf-rol">${_rolLabel}</div>
-          <button class="theme-toggle-btn" data-theme-toggle style="width:100%;justify-content:center;margin-bottom:6px" onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
           <button class="tbtn" style="background:#c0392b;width:100%;padding:7px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:6px;margin-top:2px" onclick="cerrarSesion()">🚪 Cerrar sesión</button>
         </div>
       </aside>
@@ -3495,7 +3180,7 @@ function navTo(id, push=true){
     url.searchParams.set('mod', id);
     window.history.pushState({mod: id}, '', url);
   }
-  _mostrarSkeletonYNavegar();
+  renderApp();
 }
 window.addEventListener('popstate', function(e){
   var url = new URL(window.location);
@@ -3548,12 +3233,12 @@ function cerrarSesion(){
 }
 async function actualizarPerfil(){
   const u=document.getElementById('pUser').value.trim();const p=document.getElementById('pPass').value.trim();
-  if(!u){customAlert('Complete el usuario');return;}
+  if(!u){alert('Complete el usuario');return;}
   const nuevoHash=p?await _hashPassword(p):null;
   updDB(d=>{d.users=d.users.map(x=>x.u===sesion.u?{...x,u,p:nuevoHash||x.p}:x);return d;});
   const dbUser=db.users.find(x=>x.u===u);
   sesion={...sesion,u,p:dbUser?dbUser.p:sesion.p};
-  customAlert('Credenciales actualizadas.'+(p?'':' (la contraseña no se modificó)'));renderApp();
+  alert('Credenciales actualizadas.'+(p?'':' (la contraseña no se modificó)'));renderApp();
 }
 // ─── DESCARGA DE RESPALDO COMPLETO (JSON + ZIP con todas las plataformas) ────
 function descargarRespaldo(){
@@ -3581,7 +3266,7 @@ function cargarRespaldo(inp){
     let _parseOk=false;
     try{
       let data;
-      try{data=JSON.parse(ev.target.result);_parseOk=true;}catch(pe){inp.value='';customAlert('Archivo inválido: no es un JSON válido.\n\nVerifique que el archivo sea un respaldo JSON del sistema.');return;}
+      try{data=JSON.parse(ev.target.result);_parseOk=true;}catch(pe){inp.value='';alert('Archivo inválido: no es un JSON válido.\n\nVerifique que el archivo sea un respaldo JSON del sistema.');return;}
       // ── Validación flexible: acepta cualquier respaldo de versiones anteriores o actuales ──
       const tieneEstructura=data&&typeof data==='object'&&(
         Array.isArray(data.users)||Array.isArray(data.ests)||Array.isArray(data.grados)||
@@ -3589,7 +3274,7 @@ function cargarRespaldo(inp){
       );
       if(!tieneEstructura){
         inp.value='';
-        customAlert('⚠️ Archivo no reconocido.\n\nEste archivo no parece un respaldo válido del sistema académico. Asegúrese de cargar un archivo JSON generado por el sistema.');
+        alert('⚠️ Archivo no reconocido.\n\nEste archivo no parece un respaldo válido del sistema académico. Asegúrese de cargar un archivo JSON generado por el sistema.');
         return;
       }
       // ── Correcciones previas a migración (compatibilidad con respaldos muy antiguos) ──
@@ -3635,7 +3320,7 @@ function cargarRespaldo(inp){
       renderApp();
     }catch(e){
       inp.value='';
-      if(_parseOk) customAlert('Error al aplicar el respaldo: '+e.message+'\n\nSi el problema persiste, contacte al administrador del sistema.');
+      if(_parseOk) alert('Error al aplicar el respaldo: '+e.message+'\n\nSi el problema persiste, contacte al administrador del sistema.');
     }
   };
   r.readAsText(f,'UTF-8');
@@ -3663,7 +3348,7 @@ function cargarRespaldoGestor(inp){
       let data;
       try{data=JSON.parse(ev.target.result);}catch(pe){
         inp.value='';
-        customAlert('Archivo inválido: no es un JSON válido.\nVerifique que sea un respaldo del Gestor Académico YC.');
+        alert('Archivo inválido: no es un JSON válido.\nVerifique que sea un respaldo del Gestor Académico YC.');
         return;
       }
       // Validación flexible
@@ -3672,7 +3357,7 @@ function cargarRespaldoGestor(inp){
       );
       if(!esRespaldoGestor){
         inp.value='';
-        customAlert('⚠️ Archivo no reconocido.\nEste archivo no es un respaldo válido del Gestor Académico YC.\n\nCargue un archivo JSON generado desde el panel del Gestor.');
+        alert('⚠️ Archivo no reconocido.\nEste archivo no es un respaldo válido del Gestor Académico YC.\n\nCargue un archivo JSON generado desde el panel del Gestor.');
         return;
       }
       // Migrar al esquema actual (agrega plataformas nuevas, módulos nuevos, campos nuevos)
@@ -3697,7 +3382,7 @@ function cargarRespaldoGestor(inp){
       renderGestorAdmin();
     }catch(e){
       inp.value='';
-      customAlert('Error al cargar respaldo del Gestor: '+e.message);
+      alert('Error al cargar respaldo del Gestor: '+e.message);
     }
   };
   r.readAsText(f,'UTF-8');
@@ -3720,8 +3405,8 @@ function attachLogoListeners(){
   if(fi) fi.addEventListener('change',function(){
     const file=this.files[0];if(!file) return;
     const ext=(file.name.split('.').pop()||'').toLowerCase();
-    if(!['png','jpg','jpeg'].includes(ext)){customAlert('⚠️ Solo se permiten archivos PNG o JPG.');this.value='';return;}
-    if(file.size>2*1024*1024){customAlert('⚠️ El archivo supera el límite de 2 MB. Comprima la imagen e intente de nuevo.');this.value='';return;}
+    if(!['png','jpg','jpeg'].includes(ext)){alert('⚠️ Solo se permiten archivos PNG o JPG.');this.value='';return;}
+    if(file.size>2*1024*1024){alert('⚠️ El archivo supera el límite de 2 MB. Comprima la imagen e intente de nuevo.');this.value='';return;}
     fileToB64(file,b64=>{
       updDB(d=>{d.logo=b64;return d;});
       _clearLogoCache();
@@ -3807,16 +3492,16 @@ function guardarPesosAreas(){
   const aKeys=Object.keys(areas);
   const pesosA={};let totalA=0;
   aKeys.forEach(a=>{const el=document.getElementById('paA_'+btoa(a).replace(/=/g,''));const v=Number(el?.value||0);pesosA[a]=v;totalA+=v;});
-  if(Math.abs(totalA-100)>1){customAlert('Los pesos de las áreas deben sumar 100%. Actualmente suman '+totalA+'%.');return;}
+  if(Math.abs(totalA-100)>1){alert('Los pesos de las áreas deben sumar 100%. Actualmente suman '+totalA+'%.');return;}
   const pesosS={};
   aKeys.forEach(a=>{const asigs=[...areas[a]];if(asigs.length<2)return;const aKey=btoa(a).replace(/=/g,'');let totalS=0;const sp={};
     asigs.forEach(m=>{const el=document.getElementById('paS_'+aKey+'_'+btoa(m).replace(/=/g,''));const v=Number(el?.value||0);sp[m]=v;totalS+=v;});
-    if(Math.abs(totalS-100)>1){customAlert('Los pesos de las asignaturas del área "'+a+'" deben sumar 100%. Actualmente suman '+totalS+'%.');throw new Error('stop');}
+    if(Math.abs(totalS-100)>1){alert('Los pesos de las asignaturas del área "'+a+'" deben sumar 100%. Actualmente suman '+totalS+'%.');throw new Error('stop');}
     pesosS[a]=sp;
   });
   updDB(d=>{if(!d.config)d.config={};d.config.pesosArea=pesosA;d.config.pesosAsig=pesosS;return d;});
   _pushDB();
-  customAlert('✅ Pesos guardados correctamente. Los promedios y rankings se recalcularán con la nueva configuración.');
+  alert('✅ Pesos guardados correctamente. Los promedios y rankings se recalcularán con la nueva configuración.');
   renderApp();
 }
 function htmlConfigBase(){
@@ -3878,7 +3563,7 @@ function htmlConfigBase(){
             <div style="font-size:0.74rem;color:#888">Aparece automáticamente en todos los PDFs. Puede reemplazarlo con otro.</div>
           </div>
           <button class="btn btn-gray" style="font-size:0.8rem" onclick="document.getElementById('fileEscudoColombia').click()">🔄 Reemplazar</button>
-          <input type="file" id="fileEscudoColombia" accept="image/*" style="display:none" onchange="fileToB64(this.files[0],b64=>{updDB(d=>{d.escudoColombia=b64;return d;});renderApp();customAlert('✅ Escudo Colombia personalizado cargado')})">
+          <input type="file" id="fileEscudoColombia" accept="image/*" style="display:none" onchange="fileToB64(this.files[0],b64=>{updDB(d=>{d.escudoColombia=b64;return d;});renderApp();alert('✅ Escudo Colombia personalizado cargado')})">
           ${db.escudoColombia?`
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-size:0.76rem;color:#003366">Personalizado:</span>
@@ -4078,11 +3763,11 @@ function guardarConfigPedagogica(){
   const np=parseInt(document.getElementById('cfgNumPer')?.value||4);
   const pesos=Array.from({length:np},(_,i)=>parseInt(document.getElementById('pesPer_'+i)?.value||Math.floor(100/np)));
   const total=pesos.reduce((a,b)=>a+b,0);
-  if(Math.abs(total-100)>1){customAlert('Los pesos de los períodos deben sumar 100%. Actualmente: '+total+'%');return;}
+  if(Math.abs(total-100)>1){alert('Los pesos de los períodos deben sumar 100%. Actualmente: '+total+'%');return;}
   const pctCrit=parseFloat(document.getElementById('cfgPctInasistCritica')?.value||25);
   const pctPrev=parseFloat(document.getElementById('cfgPctInasistPreventiva')?.value||20);
   if(pctCrit<=0 || pctCrit>100 || pctPrev<=0 || pctPrev>=pctCrit){
-    customAlert('Los porcentajes de inasistencia deben ser válidos y cumplir: 0 < Preventiva < Crítica ≤ 100');
+    alert('Los porcentajes de inasistencia deben ser válidos y cumplir: 0 < Preventiva < Crítica ≤ 100');
     return;
   }
   updDB(d=>{
@@ -4110,7 +3795,7 @@ function guardarConfigPedagogica(){
         cols.push({key,nom,pct});
       });
       const totalPct=cols.reduce((s,c)=>s+c.pct,0);
-      if(Math.abs(totalPct-100)>1){customAlert('Los porcentajes deben sumar 100%. Actualmente: '+Math.round(totalPct)+'%.');return;}
+      if(Math.abs(totalPct-100)>1){alert('Los porcentajes deben sumar 100%. Actualmente: '+Math.round(totalPct)+'%.');return;}
       d.config.columnasBase=cols;
       const sC=cols.find(c=>c.key==='s');const sbC=cols.find(c=>c.key==='sb');const hC=cols.find(c=>c.key==='h');
       if(sC){d.config.nomSer=sC.nom;d.config.pctSer=parseFloat((sC.pct/100).toFixed(4));}
@@ -4130,7 +3815,7 @@ function guardarConfigPedagogica(){
   });
   _pushDB();
   fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Configuración pedagógica actualizada en '+(db.nombre||'institución'),meta:{modulo:'config-pedagogica'}})}).catch(()=>{});
-  customAlert('✅ Configuración pedagógica e inasistencias guardada. Los cambios se reflejarán en planillas, asistencia e informes.');
+  alert('✅ Configuración pedagógica e inasistencias guardada. Los cambios se reflejarán en planillas, asistencia e informes.');
   renderApp();
 }
 
@@ -4138,16 +3823,16 @@ function guardarConfigCalif(){
   const vSer=document.getElementById('cfgPctSer')?.value;
   const vSaber=document.getElementById('cfgPctSaber')?.value;
   const vHacer=document.getElementById('cfgPctHacer')?.value;
-  if(!vSer||!vSaber||!vHacer){customAlert('Ingrese los porcentajes de SER, SABER y HACER antes de guardar.');return;}
+  if(!vSer||!vSaber||!vHacer){alert('Ingrese los porcentajes de SER, SABER y HACER antes de guardar.');return;}
   const pS=parseFloat(vSer)/100;
   const pSb=parseFloat(vSaber)/100;
   const pH=parseFloat(vHacer)/100;
   const total=Math.round((pS+pSb+pH)*100);
-  if(Math.abs(total-100)>1){customAlert('Los porcentajes deben sumar 100%. Actualmente suman '+total+'%.');return;}
+  if(Math.abs(total-100)>1){alert('Los porcentajes deben sumar 100%. Actualmente suman '+total+'%.');return;}
   const eS=parseFloat(document.getElementById('cfgEscalaS')?.value||4.7);
   const eA=parseFloat(document.getElementById('cfgEscalaA')?.value||4.0);
   const eB=parseFloat(document.getElementById('cfgEscalaB')?.value||3.0);
-  if(eS<=eA||eA<=eB||eB<=0){customAlert('Los umbrales deben cumplir: SUPERIOR > ALTO > BÁSICO > 0');return;}
+  if(eS<=eA||eA<=eB||eB<=0){alert('Los umbrales deben cumplir: SUPERIOR > ALTO > BÁSICO > 0');return;}
   const depto=(document.getElementById('cfgDepto')?.value||'').trim();
   const res=(document.getElementById('cfgResolucion')?.value||'').trim();
   updDB(d=>{
@@ -4161,7 +3846,7 @@ function guardarConfigCalif(){
     return d;
   });
   _pushDB();
-  customAlert('✅ Configuración académica guardada correctamente.');
+  alert('✅ Configuración académica guardada correctamente.');
   renderApp();
 }
 function agregarColBase(){
@@ -4213,11 +3898,11 @@ function guardarInfoInst(){
   });
   _pushDB();
   fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'config',actor:sesion&&sesion.n||'Admin',message:'Información institucional actualizada en '+(db.nombre||'institución'),meta:{modulo:'info-inst',anio:db.anio}})}).catch(()=>{});
-  customAlert('✅ Institución actualizada correctamente.');renderApp();
+  alert('✅ Institución actualizada correctamente.');renderApp();
 }
 function guardarGrado(){
   const n=document.getElementById('cfgGradoN').value.trim();const d=document.getElementById('cfgGradoD').value.trim();
-  if(!n){customAlert('Ingrese nombre del grado');return;}
+  if(!n){alert('Ingrese nombre del grado');return;}
   updDB(db=>{db.grados.push({n,d});return db;});renderApp();
 }
 function editarGrado(idx){
@@ -4253,7 +3938,7 @@ function editarGrado(idx){
 function _guardarEditGrado(idx){
   const nn=(document.getElementById('_editGradoNombre')?.value||'').trim();
   const nd=(document.getElementById('_editGradoDir')?.value||'').trim();
-  if(!nn){customAlert('El nombre del grado no puede estar vacío.');return;}
+  if(!nn){alert('El nombre del grado no puede estar vacío.');return;}
   const nombreAnterior=db.grados[idx]?.n||'';
   updDB(d=>{
     if(d.grados[idx]) d.grados[idx]={...d.grados[idx],n:nn,d:nd};
@@ -4273,10 +3958,10 @@ function setLinkClaseGrado(idx){
   const nl=prompt('🔗 Link de clase virtual para el grado: '+g.n+'\n\nPegue la URL de Meet, Zoom, Teams u otra plataforma.\nDeje en blanco para quitar el link.',g.linkClase||'');
   if(nl===null) return;
   updDB(d=>{if(d.grados[idx]) d.grados[idx].linkClase=nl.trim();return d;});
-  customAlert(nl.trim()?'✅ Link de clase virtual guardado para '+g.n+'.\n\nLos estudiantes online de este grado verán el botón para unirse.':'✅ Link eliminado del grado '+g.n+'.');
+  alert(nl.trim()?'✅ Link de clase virtual guardado para '+g.n+'.\n\nLos estudiantes online de este grado verán el botón para unirse.':'✅ Link eliminado del grado '+g.n+'.');
   renderApp();
 }
-async function eliminarGrado(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(db=>{db.grados.splice(idx,1);return db;});renderApp();}
+function eliminarGrado(idx){if(!confirm('¿Eliminar?')) return;updDB(db=>{db.grados.splice(idx,1);return db;});renderApp();}
 
 // ============================================================
 // CARGA ACADÉMICA
@@ -4382,7 +4067,7 @@ function htmlCarga(){
 function cargarFotoDoc(inp){fileToB64(inp.files[0],b64=>{cargaFotoTemp=b64;document.getElementById('fotoPreviewArea').innerHTML=`<img src="${b64}" class="photo-preview">`;});}
 async function guardarDocente(){
   const n=document.getElementById('dNom').value.trim();const u=document.getElementById('dUsr').value.trim();const p=document.getElementById('dPas').value.trim();
-  if(!n||!u||!p){customAlert('Complete nombre, usuario y contraseña');return;}
+  if(!n||!u||!p){alert('Complete nombre, usuario y contraseña');return;}
   const decreto=document.getElementById('dDecre')?.value||'';
   const modalidadDecre=decreto==='1278'?(document.getElementById('dModDecre')?.value||''):'';
   const nivelFormacion=document.getElementById('dNivForm')?.value.trim()||'';
@@ -4471,7 +4156,7 @@ function editarDocente(u){
 async function _guardarEdicionDocente(u){
   const n=document.getElementById('_edNom').value.trim();
   const usr=document.getElementById('_edUsr').value.trim();
-  if(!n||!usr){customAlert('Nombre y usuario son obligatorios');return;}
+  if(!n||!usr){alert('Nombre y usuario son obligatorios');return;}
   const passNueva=document.getElementById('_edPas').value.trim();
   const pHash=passNueva?await _hashPassword(passNueva):null;
   updDB(function(d){
@@ -4503,12 +4188,12 @@ async function _guardarEdicionDocente(u){
   document.getElementById('_editDocOv').remove();
   renderApp();
 }
-async function eliminarDocente(u){if(!await customConfirm('¿Eliminar?')) return;updDB(db=>{db.users=db.users.filter(x=>x.u!==u);return db;});renderApp();}
+function eliminarDocente(u){if(!confirm('¿Eliminar?')) return;updDB(db=>{db.users=db.users.filter(x=>x.u!==u);return db;});renderApp();}
 function guardarCarga(){
   const d=document.getElementById('cDoc')?.value;const g=document.getElementById('cGra')?.value;
   const m=document.getElementById('cMat')?.value.trim();const a=document.getElementById('cArea')?.value.trim();
   const ih=parseFloat(document.getElementById('cIH')?.value)||0;
-  if(!d||!g||!m){customAlert('Complete campos requeridos');return;}
+  if(!d||!g||!m){alert('Complete campos requeridos');return;}
   const dn=db.users.find(x=>x.u===d)?.n||'';
   updDB(db=>{db.carga.push({id:Date.now(),d,dn,g,m,a:a||'',ih});return db;});renderApp();
 }
@@ -4542,7 +4227,7 @@ function _guardarEditCarga(id){
   const mat=document.getElementById('_ecMat')?.value.trim()||'';
   const area=document.getElementById('_ecArea')?.value.trim()||'';
   const ih=parseFloat(document.getElementById('_ecIH')?.value)||0;
-  if(!docU||!gra||!mat){customAlert('Docente, grado y asignatura son obligatorios');return;}
+  if(!docU||!gra||!mat){alert('Docente, grado y asignatura son obligatorios');return;}
   const dn=db.users.find(x=>x.u===docU)?.n||docU;
   updDB(d=>{
     const idx=d.carga.findIndex(x=>x.id===id);
@@ -4552,7 +4237,7 @@ function _guardarEditCarga(id){
   document.getElementById('_editCargaOv').style.display='none';
   renderApp();
 }
-async function eliminarCarga(id){if(!await customConfirm('¿Eliminar?')) return;updDB(db=>{db.carga=db.carga.filter(x=>x.id!==id);return db;});renderApp();}
+function eliminarCarga(id){if(!confirm('¿Eliminar?')) return;updDB(db=>{db.carga=db.carga.filter(x=>x.id!==id);return db;});renderApp();}
 
 // ============================================================
 // ESTUDIANTES
@@ -4697,7 +4382,7 @@ function fmtNombreEst(e){
 function procesarPegadoEstudiantes(){
   const g = document.getElementById('estGradoPaste').value;
   const texto = document.getElementById('estListaPaste').value;
-  if(!g || !texto.trim()) { customAlert('Seleccione grado y pegue la lista.'); return; }
+  if(!g || !texto.trim()) { alert('Seleccione grado y pegue la lista.'); return; }
   
   const lineas = texto.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
   if(!lineas.length) return;
@@ -4745,7 +4430,7 @@ function guardarEstudiantes(){
   const nm1=(document.getElementById('estNm1')?.value||'').trim().toUpperCase();
   const nm2=(document.getElementById('estNm2')?.value||'').trim().toUpperCase();
   const modal=document.getElementById('estModalidad')?.value||'presencial';
-  if(!ap1||!nm1||!g){customAlert('Complete grado, primer apellido y primer nombre');return;}
+  if(!ap1||!nm1||!g){alert('Complete grado, primer apellido y primer nombre');return;}
   const nombreCompleto=[ap1,ap2,nm1,nm2].filter(Boolean).join(' ');
   // IDs siempre como string para evitar errores de comparación en onclick
   updDB(db=>{db.ests.push({id:'est_'+Date.now(),n:nombreCompleto,g,modalidad:modal,
@@ -4833,7 +4518,7 @@ function _abrirCamaraEstudiante(){
   wrap.style.display='block';
   navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false})
     .then(s=>{window._editEstCamStream=s;vid.srcObject=s;})
-    .catch(()=>customAlert('No se pudo acceder a la cámara.'));
+    .catch(()=>alert('No se pudo acceder a la cámara.'));
 }
 function _cerrarCamaraEstudiante(){
   if(window._editEstCamStream){window._editEstCamStream.getTracks().forEach(t=>t.stop());window._editEstCamStream=null;}
@@ -4859,7 +4544,7 @@ function _guardarEditEst(id){
   const nm2=(document.getElementById('_editEstNm2')?.value||'').trim().toUpperCase();
   const ng=document.getElementById('_editEstGrado')?.value||'';
   const modal=document.getElementById('_editEstModalidad')?.value||'presencial';
-  if(!ap1.trim()||!nm1.trim()){customAlert('Ingrese al menos el primer apellido y primer nombre.');return;}
+  if(!ap1.trim()||!nm1.trim()){alert('Ingrese al menos el primer apellido y primer nombre.');return;}
   _cerrarCamaraEstudiante();
   const foto=window._editEstFotoB64||'';
   const nombreCompleto=[ap1,ap2,nm1,nm2].filter(Boolean).join(' ');
@@ -4869,9 +4554,9 @@ function _guardarEditEst(id){
   document.getElementById('_editEstOv')?.remove();
   renderApp();
 }
-async function eliminarEst(id){
+function eliminarEst(id){
   id=String(id);
-  if(!await customConfirm('¿Eliminar estudiante? Esta acción no se puede deshacer.')) return;
+  if(!confirm('¿Eliminar estudiante? Esta acción no se puede deshacer.')) return;
   updDB(db=>{db.ests=db.ests.filter(x=>String(x.id)!==id);return db;});
   renderApp();
 }
@@ -5047,7 +4732,7 @@ function renderHorario(){
   const wrap=document.getElementById('tablaHorario');if(wrap) wrap.innerHTML=html;
 }
 
-async function setCelda(grado,dia,franja,value){
+function setCelda(grado,dia,franja,value){
   if(!db.horarios) db.horarios={};if(!db.horarios[grado]) db.horarios[grado]={};
   const key=getCeldaKey(dia,franja);
   if(!value){db.horarios[grado][key]={mat:'',cId:null,docU:'',dn:''};renderHorario();return;}
@@ -5060,7 +4745,7 @@ async function setCelda(grado,dia,franja,value){
     if(v&&v.docU===docU&&docU){cruce=true;}
   });
   if(cruce){
-    if(!await customConfirm('⚠️ El docente '+dn+' ya tiene clase en este horario en otro grado. ¿Continuar de todas formas?')) return;
+    if(!confirm('⚠️ El docente '+dn+' ya tiene clase en este horario en otro grado. ¿Continuar de todas formas?')) return;
   }
   db.horarios[grado][key]={mat,cId,docU,dn};
   renderHorario();
@@ -5118,8 +4803,8 @@ function guardarConfigHorario(){
   renderHorario();
 }
 
-async function autoGenerarHorario(){
-  if(!await customConfirm('⚡ Se generará el horario automáticamente para todos los grados basado en la carga académica. Los horarios actuales serán reemplazados. ¿Continuar?')) return;
+function autoGenerarHorario(){
+  if(!confirm('⚡ Se generará el horario automáticamente para todos los grados basado en la carga académica. Los horarios actuales serán reemplazados. ¿Continuar?')) return;
   const cfg=getHorConfig();const franjas=calcFranjas(cfg).filter(f=>f.tipo==='clase');
   const DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes'];
   const slots=[];
@@ -5156,12 +4841,12 @@ async function autoGenerarHorario(){
     });
     return db;
   });
-  customAlert('✅ Horario generado. Revise y ajuste si es necesario.');
+  alert('✅ Horario generado. Revise y ajuste si es necesario.');
   renderHorario();
 }
 
-async function reajustarHorario(){
-  if(!await customConfirm('🔄 Se revisarán y corregirán los cruces de docentes en el horario actual. ¿Continuar?')) return;
+function reajustarHorario(){
+  if(!confirm('🔄 Se revisarán y corregirán los cruces de docentes en el horario actual. ¿Continuar?')) return;
   const cfg=getHorConfig();const franjas=calcFranjas(cfg).filter(f=>f.tipo==='clase');
   const DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes'];
   updDB(db=>{
@@ -5195,12 +4880,12 @@ async function reajustarHorario(){
     });
     return db;
   });
-  customAlert(cruces>0?'🔄 Se corrigieron '+cruces+' cruce(s) de docentes.':'✅ No se encontraron cruces.');
+  alert(cruces>0?'🔄 Se corrigieron '+cruces+' cruce(s) de docentes.':'✅ No se encontraron cruces.');
   renderHorario();
 }
 
 function guardarHorario(){
-  saveDB();customAlert('✅ Horario guardado correctamente.');
+  saveDB();alert('✅ Horario guardado correctamente.');
 }
 
 function pdfHorario(){
@@ -5305,7 +4990,7 @@ function htmlHorarioReadOnly(grado){
 }
 
 function pdfHorarioGrado(grado){
-  if(!grado){customAlert('Grado no especificado.');return;}
+  if(!grado){alert('Grado no especificado.');return;}
   const cfg=getHorConfig();const franjas=calcFranjas(cfg);
   const DIAS=['Lunes','Martes','Miércoles','Jueves','Viernes'];
   const horG=((db.horarios||{})[grado])||{};
@@ -5546,8 +5231,8 @@ function restaurarRegistro(tipo, id, extraMeta) {
   }
 }
 
-async function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
-  if (!await customConfirm('⚠️ ¿ELIMINAR DEFINITIVAMENTE?\nEsta acción borrará permanentemente el registro de la base de datos y no se podrá recuperar.')) return;
+function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
+  if (!confirm('⚠️ ¿ELIMINAR DEFINITIVAMENTE?\nEsta acción borrará permanentemente el registro de la base de datos y no se podrá recuperar.')) return;
 
   updDB(d => {
     if (tipo === 'descriptor') {
@@ -5576,8 +5261,8 @@ async function eliminarRegistroDefinitivo(tipo, id, extraMeta) {
   }
 }
 
-async function vaciarPapelera() {
-  if (!await customConfirm('⚠️ ¿VACIAR TODA LA PAPELERA DE RECICLAJE?\nSe eliminarán de forma permanente todos los elementos borrados.')) return;
+function vaciarPapelera() {
+  if (!confirm('⚠️ ¿VACIAR TODA LA PAPELERA DE RECICLAJE?\nSe eliminarán de forma permanente todos los elementos borrados.')) return;
   const isAdmin = sesion && sesion.r === 'admin';
   const u = (sesion && sesion.u) || '';
 
@@ -5595,7 +5280,7 @@ async function vaciarPapelera() {
     return d;
   });
 
-  customAlert('✅ Papelera vaciada correctamente.');
+  alert('✅ Papelera vaciada correctamente.');
   renderApp();
   cerrarModalPapelera();
 }
@@ -6061,7 +5746,7 @@ function guardarDesc(){
 
   const inputs = Array.from(document.querySelectorAll('.descTxtInput')).map(i => i.value.trim()).filter(Boolean);
   if (!mat || !inputs.length) {
-    customAlert('Complete el campo de asignatura e ingrese al menos un indicador');
+    alert('Complete el campo de asignatura e ingrese al menos un indicador');
     return;
   }
 
@@ -6149,7 +5834,7 @@ function editarDesc(id){
   if (!d) return;
   const isAdmin = sesion && sesion.r === 'admin';
   if (!isAdmin && d.doc !== sesion.u) {
-    customAlert('Solo puede editar los descriptores creados por su usuario.');
+    alert('Solo puede editar los descriptores creados por su usuario.');
     return;
   }
 
@@ -6166,16 +5851,16 @@ function editarDesc(id){
   setTimeout(_filtrarDescReg, 60);
 }
 
-async function eliminarDesc(id){
+function eliminarDesc(id){
   const d = (db.descriptores || []).find(x => x.id === id);
   if (!d) return;
   const isAdmin = sesion && sesion.r === 'admin';
   if (!isAdmin && d.doc !== sesion.u) {
-    customAlert('Solo puede eliminar los descriptores creados por su usuario.');
+    alert('Solo puede eliminar los descriptores creados por su usuario.');
     return;
   }
 
-  if (!await customConfirm('¿Mover este descriptor a la papelera de reciclaje?')) return;
+  if (!confirm('¿Mover este descriptor a la papelera de reciclaje?')) return;
   softDeleteRegistro('descriptor', id);
 }
 
@@ -6189,17 +5874,17 @@ function replicarUltimosDescs(){
   const gradsDest = chks.map(c => c.value).filter(g => g !== gradSrc);
 
   if (!gradsDest.length) {
-    customAlert('Seleccione al menos un grupo destino asignado en su carga académica diferente al origen.');
+    alert('Seleccione al menos un grupo destino asignado en su carga académica diferente al origen.');
     return;
   }
   if (!mat) {
-    customAlert('Seleccione primero una asignatura.');
+    alert('Seleccione primero una asignatura.');
     return;
   }
 
   const srcDescs = (db.descriptores || []).filter(d => !d.deletedAt && d.doc === doc && String(d.per) === String(per) && d.mat === mat && d.gra === gradSrc);
   if (!srcDescs.length) {
-    customAlert('No hay descriptores guardados para este docente/periodo/asignatura/grado origen.\nGuarde primero el descriptor y luego replique.');
+    alert('No hay descriptores guardados para este docente/periodo/asignatura/grado origen.\nGuarde primero el descriptor y luego replique.');
     return;
   }
 
@@ -6238,10 +5923,10 @@ function agregarCampoDesc(){
   document.getElementById('descItemsContainer').insertAdjacentHTML('beforeend', html);
 }
 
-async function eliminarDescsSeleccionados(){
+function eliminarDescsSeleccionados(){
   const chks=Array.from(document.querySelectorAll('.chkDelDesc:checked'));
-  if(!chks.length){customAlert('No hay descriptores seleccionados.');return;}
-  if(!await customConfirm('¿Eliminar '+chks.length+' descriptores?')) return;
+  if(!chks.length){alert('No hay descriptores seleccionados.');return;}
+  if(!confirm('¿Eliminar '+chks.length+' descriptores?')) return;
   const ids = chks.map(c=>Number(c.value));
   updDB(d=>{
     d.descriptores=d.descriptores.filter(x=>!ids.includes(x.id));
@@ -6265,7 +5950,7 @@ async function eliminarDescsSeleccionados(){
 
 async function generarDescDesdeArchivoIA(){
   const fileInput = document.getElementById('descFileIA');
-  if(!fileInput.files.length){customAlert('Seleccione un archivo primero.');return;}
+  if(!fileInput.files.length){alert('Seleccione un archivo primero.');return;}
   const file = fileInput.files[0];
   
   _showToast('Extrayendo texto del archivo y procesando con IA...', 'info', 4000);
@@ -6302,10 +5987,10 @@ async function generarDescDesdeArchivoIA(){
         });
         _showToast('Descriptores extraidos.', '#27ae60', 3000);
       } else {
-        customAlert("La IA no pudo extraer descriptores.");
+        alert("La IA no pudo extraer descriptores.");
       }
     } catch(err) {
-      customAlert("Error en IA: " + err.message);
+      alert("Error en IA: " + err.message);
     }
   };
   
@@ -6317,7 +6002,7 @@ async function generarDescDesdeArchivoIA(){
 }
 
 function descargarDescriptoresPDF(){
-  if(typeof window.jspdf === 'undefined'){customAlert('Librería PDF no cargada');return;}
+  if(typeof window.jspdf === 'undefined'){alert('Librería PDF no cargada');return;}
   const doc = new window.jspdf.jsPDF('l');
   doc.setFontSize(14);
   doc.text('Listado de Descriptores', 10, 15);
@@ -6349,46 +6034,6 @@ function descargarDescriptoresPDF(){
 // PLANILLA
 // ============================================================
 let planPer='1',planCId='';
-// ── 🎯 Mi Panel: dashboard de inicio compacto para el Docente ──
-function htmlPanelDocente(){
-  const mats=db.carga.filter(c=>c.d===sesion.u);
-  const _numPerD=(db.config&&db.config.numPeriodos)||4;
-  const perA=db.periodosActivos||Array(_numPerD).fill(true);
-  const perActual=perA.lastIndexOf(true)+1||1;
-  const pendientes=[];
-  mats.forEach(function(c){
-    const ests=db.ests.filter(function(e){return e.g===c.g;});
-    if(!ests.length) return;
-    const faltantes=ests.filter(function(e){return calcNotaDef(e.nts,c.id,perActual)<=0;}).length;
-    if(faltantes>0) pendientes.push({carga:c,faltantes:faltantes,total:ests.length});
-  });
-  const totalEst=mats.reduce(function(s,c){return s+db.ests.filter(function(e){return e.g===c.g;}).length;},0);
-  const kpis=[
-    {ico:'📚',val:mats.length,lbl:'Asignaturas a cargo',col:'#1a3a5c'},
-    {ico:'👥',val:totalEst,lbl:'Estudiantes (todas)',col:'#1a5276'},
-    {ico:'📝',val:pendientes.length,lbl:'Planillas incompletas P'+perActual,col:pendientes.length?'#c0392b':'#1e8449'},
-  ];
-  const tarjetas=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px">
-    ${kpis.map(function(k){return `<div style="background:${k.col};color:#fff;border-radius:12px;padding:16px 10px;text-align:center;box-shadow:0 3px 10px rgba(0,0,0,.15)">
-      <div style="font-size:1.8rem;line-height:1">${k.ico}</div>
-      <div style="font-size:1.65rem;font-weight:900;margin:5px 0">${k.val}</div>
-      <div style="font-size:0.72rem;opacity:.9">${k.lbl}</div>
-    </div>`;}).join('')}
-  </div>`;
-  const listaPend=pendientes.length?`<div class="over"><table><thead><tr><th>Asignatura</th><th>Grado</th><th>Faltan</th><th></th></tr></thead><tbody>
-    ${pendientes.map(function(p){return `<tr>
-      <td style="text-align:left">${p.carga.m}</td>
-      <td>${p.carga.g}</td>
-      <td style="color:#c0392b;font-weight:bold">${p.faltantes}/${p.total}</td>
-      <td><button class="btn-sm" style="background:#1a5276" onclick="planCId='${p.carga.id}';planPer='${perActual}';pag='planilla';renderApp()">Ir a Planilla</button></td>
-    </tr>`;}).join('')}
-  </tbody></table></div>`:`<div class="info-box" style="border-left-color:#1e8449">🎉 ¡Todas sus planillas del Período ${perActual} están completas!</div>`;
-  return `<h3 class="sec-title">🎯 Mi Panel — ${sesion.n}</h3>
-  <div class="card">
-    ${mats.length?tarjetas:'<p class="empty">No tiene asignaturas a cargo todavía. Contacte al rector(a) para que le asigne cursos.</p>'}
-    ${mats.length?`<h4 style="color:#1a3a5c;margin:14px 0 10px;font-size:0.93rem">📝 Planillas pendientes por completar (Período ${perActual})</h4>${listaPend}`:''}
-  </div>`;
-}
 function htmlPlanilla(){
   const _numPer=_getNumPer();
   const mats=db.carga.filter(x=>sesion.r==='admin'||x.d===sesion.u);
@@ -6564,14 +6209,14 @@ function togglePeriodo(n){
     }
     d.periodosActivos[n-1]=!d.periodosActivos[n-1];
     const estado=d.periodosActivos[n-1]?'ABIERTO':'CERRADO';
-    setTimeout(()=>customAlert('✅ Periodo '+n+' ahora está '+estado+'.'),100);
+    setTimeout(()=>alert('✅ Periodo '+n+' ahora está '+estado+'.'),100);
     return d;
   });
   renderApp();
 }
 function cambiarPlanCId(v){planCId=v;renderApp();}
 
-// Toast no-bloqueante para la planilla (evita customAlert() en handlers de touch)
+// Toast no-bloqueante para la planilla (evita alert() en handlers de touch)
 function _toastPlan(msg,bg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(0);background:'+(bg||'#1a3a5c')+';color:#fff;padding:12px 22px;border-radius:24px;font-size:0.88rem;font-weight:bold;z-index:100000;box-shadow:0 4px 20px rgba(0,0,0,.4);pointer-events:none;text-align:center;max-width:88vw;transition:opacity .4s';
@@ -6661,7 +6306,6 @@ function abrirPopupNota(estId,campo,btnEl){
   popup.innerHTML=html;
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNota, 'Seleccionar nota');
 
   function posicionarPopup(){
     const p=document.getElementById('popupNota');if(!p) return;
@@ -6695,7 +6339,7 @@ let _vozNotaRec=null;
 
 function iniciarVozNota(estId,campo){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Use Chrome o Edge para dictado por voz.');return;}
+  if(!SR){alert('Use Chrome o Edge para dictado por voz.');return;}
   const statusEl=document.getElementById('vozNotaStatus');
   const btn=document.getElementById('vozNotaBtn');
   if(_vozNotaRec){try{_vozNotaRec.stop();}catch(e){}_vozNotaRec=null;
@@ -6755,7 +6399,6 @@ function cerrarPopupNota(){
   const p=document.getElementById('popupNota');
   if(!p) return;
   if(p._cleanRepos) p._cleanRepos();
-  _liberarAccesibilidadPopup(p);
   p.remove();
 }
 
@@ -6830,33 +6473,11 @@ function _registrarCambioNota(d,info){
   // Se conservan como máximo los últimos 1000 registros para no crecer indefinidamente
   if(d.logNotas.length>1000) d.logNotas=d.logNotas.slice(d.logNotas.length-1000);
 }
-// ── Alertas automáticas a padres: si una asignatura ACABA de cruzar a bajo desempeño
-// (antes ≥3.0, ahora <3.0) por este guardado puntual, se reutiliza exactamente el mismo
-// mecanismo (notificación interna + correo) del módulo manual "🔔 Alertas Académicas
-// Tempranas" — así el acudiente se entera sin que nadie tenga que recordar enviarlo.
-// Debe llamarse DESPUÉS de que updDB() ya haya terminado (usa el "db" global actualizado).
-function _dispararAlertaBajoDesempenoSiAplica(estId,cId,per,baseAntes,baseDespues){
-  if(!(baseAntes>=3&&baseDespues<3)) return; // solo al cruzar hacia bajo desempeño, no en cada guardado
-  const est=db.ests.find(x=>x.id===estId);if(!est) return;
-  const carga=db.carga.find(x=>x.id===cId);if(!carga) return;
-  const msgN=`⚠️ Alerta Académica automática P${per}: ${est.n} (${est.g}) bajó a desempeño BAJO en ${carga.m}.`;
-  fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({kind:'alerta-academica',actor:'Sistema (automático)',message:msgN,
-      meta:{estId:est.id,estNombre:est.n,grado:est.g,areasP:1,periodo:per,acudiente:est.acudiente||'',asignatura:carga.m,automatica:true,fecha:new Date().toISOString()}})
-  }).catch(()=>{});
-  if(est.email){
-    const cuerpo=`Estimado/a ${est.acudiente||'Acudiente'},\n\nLe informamos que su acudido/a ${est.n}, estudiante del grado ${est.g} de ${db.nombre||'nuestra institución'}, acaba de presentar desempeño BAJO en la asignatura ${carga.m} durante el Período ${per} del año ${db.anio||''}.\n\nLe invitamos a comunicarse con el director(a) de grupo o con rectoría para acordar un plan de mejoramiento.\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
-    fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({to:est.email,subject:`⚠️ Alerta Académica automática — ${carga.m} — ${est.n}`,text:cuerpo})
-    }).catch(()=>{});
-  }
-}
 function _aplicarNotasPendientesEnDB(){
   const keys=Object.keys(_notasPendientes);
   if(!keys.length) return;
   const pending=JSON.parse(JSON.stringify(_notasPendientes));
   _notasPendientes={};
-  const _pendAlertas=[]; // {estId,cId,per,baseAntes,baseDespues} — se disparan DESPUÉS de updDB()
   updDB(function(d){
     keys.forEach(function(k){
       const p=pending[k];
@@ -6870,18 +6491,13 @@ function _aplicarNotasPendientesEnDB(){
       const numVal=Math.min(5,Math.max(0,parseFloat(p.valor)||0));
       if(!nts[cId]) nts[cId]={};
       if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
-      const ndAntes=nts[cId][per];
-      const baseAntes=_baseNota(ndAntes,d.config||{});
       const valorAnterior=nts[cId][per][p.campo];
       nts[cId][per][p.campo]=numVal;
-      const baseDespues=_baseNota(nts[cId][per],d.config||{});
       d.ests[idx]=Object.assign({},e,{nts});
       _registrarCambioNota(d,{estId:p.estId,estNombre:e.n,cId,per,campo:p.campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
-      _pendAlertas.push({estId:p.estId,cId,per,baseAntes,baseDespues});
     });
     return d;
   });
-  _pendAlertas.forEach(function(a){_dispararAlertaBajoDesempenoSiAplica(a.estId,a.cId,a.per,a.baseAntes,a.baseDespues);});
 }
 
 function seleccionarNotaRapido(estId,campo,valor){
@@ -6935,9 +6551,9 @@ function seleccionarNota(estId,campo,valor){
 // del grado en la columna indicada (SER, SABER, HACER, RECUP. o NIVELACIÓN).
 function replicarColumna(campo){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   const ests=db.ests.filter(x=>x.g===carga.g);
-  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  if(!ests.length){alert('No hay estudiantes en este grado.');return;}
   const nombreCampo={s:'SER',sb:'SABER',h:'HACER',rec:'RECUPERACIÓN',niv:'NIVELACIÓN'}[campo]||campo.toUpperCase();
   const old=document.getElementById('popupNota');if(old)old.remove();
   _popupActive=true;
@@ -6971,7 +6587,6 @@ function replicarColumna(campo){
   popup.innerHTML=html;
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNota, 'Aplicar nota a un campo');
 }
 
 function aplicarReplicaColumna(campo,valor){
@@ -7008,16 +6623,16 @@ function aplicarReplicaColumna(campo,valor){
   _actualizarIndicadorPendientes();
   let msg='✅ Nota '+numVal.toFixed(1)+' aplicada a '+aplicados+' estudiante(s).';
   if(omitidos>0) msg+='\n⚠️ '+omitidos+' estudiante(s) omitido(s) por no ser elegibles para nivelación.';
-  customAlert(msg);
+  alert(msg);
   renderApp();
 }
 
 
 function replicarColumnaSeleccionados(campo){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  if(!ests.length){alert('No hay estudiantes en este grado.');return;}
   const old=document.getElementById('popupNota');if(old)old.remove();
   _popupActive=true;
   const popup=document.createElement('div');
@@ -7068,7 +6683,6 @@ function replicarColumnaSeleccionados(campo){
   popup.setAttribute('data-nota-replica','');
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNota, 'Replicar nota a varios estudiantes');
 }
 
 function seleccionarNotaReplica(campo,valor){
@@ -7095,12 +6709,12 @@ function actualizarContadorReplica(){
 function aplicarReplicaSeleccionados(campo){
   const popup=document.getElementById('popupNota');
   const valorStr=popup?popup.getAttribute('data-nota-replica'):'';
-  if(valorStr===''||valorStr===null){customAlert('Primero seleccione una nota (paso 1).');return;}
+  if(valorStr===''||valorStr===null){alert('Primero seleccione una nota (paso 1).');return;}
   const valor=parseFloat(valorStr);
   const checks=document.querySelectorAll('.replic-est:checked');
   // IDs como strings para evitar problemas de tipo (e.id puede ser "est_xxx" o número)
   const ids=new Set(Array.from(checks).map(c=>String(c.value)));
-  if(!ids.size){customAlert('Seleccione al menos un estudiante.');return;}
+  if(!ids.size){alert('Seleccione al menos un estudiante.');return;}
   const carga=db.carga.find(x=>x.id===Number(planCId));
   if(!carga){cerrarPopupNota();return;}
   const numVal=Math.min(5,Math.max(0,valor));
@@ -7132,7 +6746,7 @@ function aplicarReplicaSeleccionados(campo){
   _actualizarIndicadorPendientes();
   let msg='✅ Nota '+numVal.toFixed(1)+' aplicada a '+aplicados+' estudiante(s) seleccionado(s).';
   if(omitidos>0)msg+='\n⚠️ '+omitidos+' omitido(s) por no ser elegibles para nivelación.';
-  customAlert(msg);
+  alert(msg);
   renderApp();
 }
 
@@ -7140,11 +6754,11 @@ function aplicarReplicaSeleccionados(campo){
 // ===== PLANILLA CSV DOWNLOAD/UPLOAD =====
 function pdfPlanillaGrado(){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura');return;}
+  if(!carga){alert('Seleccione una asignatura');return;}
   // Aplicar notas pendientes antes de generar el PDF para que aparezcan las notas actuales
   if(typeof _aplicarNotasPendientesEnDB==='function'&&Object.keys(_notasPendientes||{}).length)_aplicarNotasPendientesEnDB();
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes');return;}
+  if(!ests.length){alert('No hay estudiantes');return;}
   const per=Number(planPer);
   const doc=getPDF('l');
   doc.setFontSize(8);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
@@ -7211,7 +6825,7 @@ function descargarPlanillaXLSX(enBlanco){
   const _dlMsg=document.getElementById('_xlsxMsg');
   function _showXlsxErr(msg){
     if(_dlMsg){_dlMsg.textContent=msg;_dlMsg.style.display='block';_dlMsg.style.background='#fdecea';_dlMsg.style.color='#922b21';}
-    else customAlert(msg);
+    else alert(msg);
     console.error('descargarPlanillaXLSX:',msg);
   }
   // Esperar hasta 3s a que cargue la librería si aún no está disponible
@@ -7224,11 +6838,11 @@ function descargarPlanillaXLSX(enBlanco){
     return;
   }
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!carga){alert('Seleccione una asignatura primero.');return;}
   if(!enBlanco&&typeof _aplicarNotasPendientesEnDB==='function'&&Object.keys(_notasPendientes||{}).length)_aplicarNotasPendientesEnDB();
   const per=Number(planPer);
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes registrados en el grado '+carga.g+'.');return;}
+  if(!ests.length){alert('No hay estudiantes registrados en el grado '+carga.g+'.');return;}
   const _cfgXls=db.config||{};
   const _colsXls=_resolverColumnas(_cfgXls);
   // ── Estructura de columnas (izquierda a derecha) ────────────────────────────
@@ -7282,7 +6896,7 @@ function descargarPlanillaXLSX(enBlanco){
     _xlsxDescargarBlob(wb,fileName);
     const _dlInfo='✅ Planilla descargada: '+ests.length+' estudiante(s) | Grado: '+carga.g+' | Asig: '+carga.m+' | P'+per+(enBlanco?' (EN BLANCO)':'');
     if(_dlMsg){_dlMsg.textContent=_dlInfo;_dlMsg.style.display='block';_dlMsg.style.background='#eafaf1';_dlMsg.style.color='#1a5276';}
-    else customAlert(_dlInfo);
+    else alert(_dlInfo);
     console.log('✅ Excel planilla:',fileName,'|',ests.length,'est.');
   }catch(ex){
     console.error('[XLSX planilla] Error:',ex.stack||ex.message||ex);
@@ -7292,9 +6906,9 @@ function descargarPlanillaXLSX(enBlanco){
 
 function descargarPlanillaCSV(){
   const carga=db.carga.find(x=>x.id===Number(planCId));
-  if(!carga){customAlert('Seleccione una asignatura');return;}
+  if(!carga){alert('Seleccione una asignatura');return;}
   const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('No hay estudiantes');return;}
+  if(!ests.length){alert('No hay estudiantes');return;}
   const per=Number(planPer);
   const _cfgCsv=db.config||{};
   const _colsCsv=_resolverColumnas(_cfgCsv);
@@ -7316,14 +6930,14 @@ function cargarPlanillaCSV(inp){
   r.onload=ev=>{
     try{
       const allLines=ev.target.result.split(/\r?\n/).filter(l=>l.trim()&&!l.startsWith('#')&&!l.startsWith('sep='));
-      if(!allLines.length){customAlert('Archivo vacío o sin datos válidos.');return;}
+      if(!allLines.length){alert('Archivo vacío o sin datos válidos.');return;}
       // Buscar fila de encabezado (contiene ID o ESTUDIANTE)
       let hdrIdx=-1;
       for(let i=0;i<Math.min(allLines.length,6);i++){
         const lu=allLines[i].toUpperCase();
         if(lu.includes('ID_ESTUDIANTE')||lu.includes('ESTUDIANTE')||lu.includes('NOMBRE')){hdrIdx=i;break;}
       }
-      if(hdrIdx===-1){customAlert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
+      if(hdrIdx===-1){alert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
       const hdrCols=allLines[hdrIdx].split(',').map(c=>c.trim().toUpperCase().replace(/ *\([^)]*\)/g,'').trim());
       const _cfg=db.config||{};const _colsCsv2=_resolverColumnas(_cfg);
       // Construir mapa de columnas por nombre de encabezado
@@ -7335,9 +6949,9 @@ function cargarPlanillaCSV(inp){
         else if(h.startsWith('NIVEL')) colMap['niv']=i;
         else _colsCsv2.forEach(col=>{const cn=(col.nom||'').toUpperCase();if(cn&&(h===cn||h.startsWith(cn.substring(0,Math.min(6,cn.length))))) colMap[col.key]=i;});
       });
-      if(!('id' in colMap)&&!('nombre' in colMap)){customAlert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
+      if(!('id' in colMap)&&!('nombre' in colMap)){alert('El archivo no tiene el formato correcto. Use el CSV descargado del sistema.');return;}
       const carga2=db.carga.find(x=>x.id===Number(planCId));
-      if(!carga2){customAlert('Seleccione una asignatura primero.');return;}
+      if(!carga2){alert('Seleccione una asignatura primero.');return;}
       const per=Number(planPer);const cId=Number(planCId);
       const pv=v=>{const n=parseFloat(String(v||'').replace(',','.'));return isNaN(n)?0:Math.min(5,Math.max(0,n));};
       let importados=0;
@@ -7359,15 +6973,15 @@ function cargarPlanillaCSV(inp){
         }
         return d;
       });
-      customAlert(importados>0?'✅ Planilla importada: '+importados+' estudiantes actualizados.':'⚠️ No se importó ningún estudiante. Verifique que el archivo corresponde al grado y asignatura seleccionados.');
+      alert(importados>0?'✅ Planilla importada: '+importados+' estudiantes actualizados.':'⚠️ No se importó ningún estudiante. Verifique que el archivo corresponde al grado y asignatura seleccionados.');
       inp.value='';renderApp();
-    }catch(err){customAlert('Error al leer el archivo: '+err.message);}
+    }catch(err){alert('Error al leer el archivo: '+err.message);}
   };r.readAsText(f,'UTF-8');
 }
 
 function guardarPlanilla(){
   const numPend=Object.keys(_notasPendientes).length;
-  if(numPend===0){customAlert('ℹ️ No hay notas pendientes por guardar.');return;}
+  if(numPend===0){alert('ℹ️ No hay notas pendientes por guardar.');return;}
   // 1. Aplicar notas pendientes en la BD local (updDB → saveDB → schedules pushDB)
   _aplicarNotasPendientesEnDB();
   // 2. Limpiar indicador de pendientes
@@ -7376,27 +6990,23 @@ function guardarPlanilla(){
   renderApp();
   // 4. Forzar push inmediato a la nube (sin esperar el debounce de 350ms)
   _pushDB();
-  customAlert('✅ '+numPend+' nota(s) guardadas correctamente.\nNOTA, DEFINITIVA y columnas adicionales actualizadas.');
+  alert('✅ '+numPend+' nota(s) guardadas correctamente.\nNOTA, DEFINITIVA y columnas adicionales actualizadas.');
 }
 
 
 
 function saveNota(estId,campo,valor){
   const numVal=Math.min(5,Math.max(0,parseFloat(valor)||0));
-  let _baseAntes=0,_baseDespues=0;
   updDB(d=>{
     const idx=d.ests.findIndex(x=>x.id===estId);if(idx===-1) return d;
     const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
     const cId=Number(planCId);const per=Number(planPer);
     if(!nts[cId]) nts[cId]={};if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
-    _baseAntes=_baseNota(nts[cId][per],d.config||{});
     const valorAnterior=nts[cId][per][campo];
     nts[cId][per][campo]=numVal;d.ests[idx]={...e,nts};
-    _baseDespues=_baseNota(nts[cId][per],d.config||{});
     _registrarCambioNota(d,{estId,estNombre:e.n,cId,per,campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
     return d;
   });
-  _dispararAlertaBajoDesempenoSiAplica(estId,Number(planCId),Number(planPer),_baseAntes,_baseDespues);
   const e=db.ests.find(x=>x.id===estId);
   if(e){
     const cId=Number(planCId),per=Number(planPer);
@@ -7550,11 +7160,7 @@ function htmlNotasActividades(){
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
       <button class="btn btn-blue" ${carga?'':'disabled'} onclick="abrirModalAgregarColNotaAct()">➕ Agregar nota</button>
       <button class="btn btn-green" ${(carga&&cols.length)?'':'disabled'} onclick="abrirModalSincronizarNotaAct()" title="Sincroniza el promedio de este módulo con la columna que elija en la Planilla">🔄 Sincronizar con Planilla</button>
-      <button class="btn btn-teal" ${(carga&&cols.length)?'':'disabled'} onclick="descargarNotasActExcel()" title="Descarga un Excel con las columnas actuales para llenar fuera de línea">📥 Descargar Excel</button>
-      <button class="btn btn-orange" ${(carga&&cols.length)?'':'disabled'} onclick="document.getElementById('fileNotasActExcel').click()" title="Carga un Excel previamente descargado desde aquí">📤 Cargar Excel</button>
-      <input type="file" id="fileNotasActExcel" accept=".xlsx,.xls" style="display:none" onchange="cargarNotasActExcel(this)">
     </div>
-    <div id="_nacXlsxMsg" style="display:none;border-radius:6px;padding:8px 12px;font-size:0.8rem;margin-bottom:10px"></div>
     ${tabla}
   </div>`;
 }
@@ -7621,8 +7227,8 @@ function _confirmarAgregarColNAC(){
   document.getElementById('modalNotaAct').remove();
   renderApp();
 }
-async function quitarColNotaAct(colId){
-  if(!await customConfirm('¿Quitar esta columna de esta asignatura y periodo?\n\nLos datos ya registrados NO se eliminan, solo deja de mostrarse aquí. Puede volver a agregarla cuando la necesite.')) return;
+function quitarColNotaAct(colId){
+  if(!confirm('¿Quitar esta columna de esta asignatura y periodo?\n\nLos datos ya registrados NO se eliminan, solo deja de mostrarse aquí. Puede volver a agregarla cuando la necesite.')) return;
   const cId=Number(notaActCId),per=Number(notaActPer);
   const key=cId+'_'+per;
   updDB(d=>{
@@ -7654,17 +7260,10 @@ function abrirPopupNotaAct(estId,colId){
     <input type="time" id="nacHora" value="${horaDef}" style="width:100%;margin-bottom:14px">
     <div style="display:flex;gap:8px">
       <button class="btn btn-green" style="flex:1" onclick="_guardarNotaAct('${estId}','${colId}')">💾 Guardar</button>
-      <button class="btn btn-gray" style="flex:1" onclick="cerrarPopupNotaAct()">✕ Cerrar</button>
+      <button class="btn btn-gray" style="flex:1" onclick="document.getElementById('popupNotaAct').remove()">✕ Cerrar</button>
     </div>
   </div>`;
   document.body.appendChild(popup);
-  _activarAccesibilidadPopup(popup, cerrarPopupNotaAct, 'Registrar nota de actividad');
-}
-function cerrarPopupNotaAct(){
-  const p=document.getElementById('popupNotaAct');
-  if(!p) return;
-  _liberarAccesibilidadPopup(p);
-  p.remove();
 }
 function _guardarNotaAct(estId,colId){
   const valor=Math.min(5,Math.max(0,parseFloat(document.getElementById('nacValor').value)||0));
@@ -7677,7 +7276,7 @@ function _guardarNotaAct(estId,colId){
     d.notasAct[key]={valor,fecha,hora};
     return d;
   });
-  cerrarPopupNotaAct();
+  const p=document.getElementById('popupNotaAct');if(p)p.remove();
   renderApp();
 }
 
@@ -7702,7 +7301,7 @@ function _confirmarSyncNAC(colKey){
   const cId=Number(notaActCId),per=Number(notaActPer);
   const carga=db.carga.find(x=>x.id===cId);
   const modal=document.getElementById('modalSyncNAC');if(modal)modal.remove();
-  if(!carga){customAlert('Asignatura no encontrada.');return;}
+  if(!carga){alert('Asignatura no encontrada.');return;}
   const ests=db.ests.filter(x=>x.g===carga.g);
   let n=0;
   updDB(d=>{
@@ -7719,105 +7318,8 @@ function _confirmarSyncNAC(colKey){
     return d;
   });
   _pushDB();
-  customAlert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nLa nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás notas.');
+  alert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nLa nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás notas.');
   renderApp();
-}
-
-// ── Exportar / importar masivo en Excel (mismo patrón que la Planilla) ──
-function descargarNotasActExcel(){
-  const _msg=document.getElementById('_nacXlsxMsg');
-  function _showMsg(txt,bg,clr){if(_msg){_msg.textContent=txt;_msg.style.display='block';_msg.style.background=bg||'#eafaf1';_msg.style.color=clr||'#1a5276';}else customAlert(txt);}
-  if(typeof XLSX==='undefined'){_showMsg('❌ Librería Excel no disponible. Recargue la página.','#fdecea','#922b21');return;}
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const carga=db.carga.find(x=>x.id===cId);
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
-  const cols=_colsActAsignadas(cId,per);
-  if(!cols.length){customAlert('Esta asignatura y periodo no tienen columnas de notas agregadas todavía.');return;}
-  const ests=db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n));
-  const encabezado=['ID_SISTEMA','NOMBRE COMPLETO',...cols.map(c=>c.nombre)];
-  const camposRow=['#ID_SISTEMA','#NOMBRE',...cols.map(c=>c.id)];
-  const instRow=['INSTRUCCIONES: Complete solo las columnas de notas ('+cols.map(c=>c.nombre).join('/')+') con valores de 0.0 a 5.0. NO modifique ID_SISTEMA ni NOMBRE. Guarde como .xlsx y cargue de vuelta con "📤 Cargar Excel".'];
-  const infoRow=['Institucion: '+(db.nombre||'')+'  |  Grado: '+carga.g+'  |  Asignatura: '+carga.m+'  |  Periodo: '+per+'  |  Anio: '+db.anio];
-  const dataRows=ests.map(function(e){
-    const fila=[String(e.id||''),String(e.n||'')];
-    cols.forEach(function(c){
-      const v=_valorNotaAct(cId,per,c.id,e.id);
-      fila.push(v&&typeof v.valor==='number'?v.valor:'');
-    });
-    return fila;
-  });
-  try{
-    const ws=XLSX.utils.aoa_to_sheet([instRow,infoRow,[],encabezado,camposRow].concat(dataRows));
-    ws['!cols']=[{wch:8},{wch:40}].concat(cols.map(function(){return {wch:16};}));
-    const wb=XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb,ws,'Notas Actividades');
-    const fileName='NotasActividades_'+carga.m.replace(/[^a-zA-Z0-9]/g,'_')+'_'+carga.g.replace(/[^a-zA-Z0-9]/g,'_')+'_P'+per+'_'+db.anio+'.xlsx';
-    _xlsxDescargarBlob(wb,fileName);
-    _showMsg('✅ Excel descargado: '+ests.length+' estudiante(s), '+cols.length+' columna(s).');
-  }catch(ex){
-    _showMsg('❌ Error al generar el Excel: '+(ex.message||ex),'#fdecea','#922b21');
-  }
-}
-function cargarNotasActExcel(inp){
-  const f=inp.files[0];if(!f) return;
-  const _msg=document.getElementById('_nacXlsxMsg');
-  function _showMsg(txt,bg,clr){if(_msg){_msg.textContent=txt;_msg.style.display='block';_msg.style.background=bg||'#fef9e7';_msg.style.color=clr||'#7d6608';}else customAlert(txt);}
-  if(typeof XLSX==='undefined'){_showMsg('❌ Librería Excel no disponible. Recargue la página.','#fdecea','#922b21');return;}
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const carga=db.carga.find(x=>x.id===cId);
-  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
-  const cols=_colsActAsignadas(cId,per);
-  if(!cols.length){customAlert('Esta asignatura y periodo no tienen columnas de notas agregadas. Agréguelas primero con "➕ Agregar nota".');inp.value='';return;}
-  _showMsg('⏳ Leyendo archivo "'+f.name+'"...','#fef9e7','#7d6608');
-  const reader=new FileReader();
-  reader.onload=function(ev){
-    try{
-      const wb=XLSX.read(ev.target.result,{type:'array',cellDates:false,cellNF:false,cellText:false});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
-      let keysRow=-1;
-      for(let i=0;i<Math.min(rows.length,10);i++){
-        const r=(rows[i]||[]).map(function(c){return String(c==null?'':c).trim();});
-        if(r.includes('#ID_SISTEMA')){keysRow=i;break;}
-      }
-      if(keysRow===-1){_showMsg('❌ Formato no reconocido. Descargue el Excel desde "📥 Descargar Excel" y úselo como plantilla.','#fdecea','#922b21');inp.value='';return;}
-      const keys=(rows[keysRow]||[]).map(function(c){return String(c==null?'':c).trim();});
-      const idCol=keys.indexOf('#ID_SISTEMA');
-      const colIdxPorColumna={}; // colId -> índice de columna en el Excel
-      cols.forEach(function(c){const idx=keys.indexOf(c.id);if(idx!==-1) colIdxPorColumna[c.id]=idx;});
-      const dataRows=rows.slice(keysRow+1).filter(function(r){return r&&r[idCol];});
-      const pv=function(v){
-        const s=String(v==null?'':v).replace(/,/,'.').trim();
-        if(s===''||s==='-') return null;
-        const n=parseFloat(s);
-        return isNaN(n)?null:Math.min(5,Math.max(0,n));
-      };
-      let n=0,hoy=new Date().toISOString().slice(0,10);
-      updDB(function(d){
-        d.notasAct=d.notasAct||{};
-        dataRows.forEach(function(r){
-          const estId=String(r[idCol]||'');
-          if(!estId) return;
-          Object.keys(colIdxPorColumna).forEach(function(colId){
-            const val=pv(r[colIdxPorColumna[colId]]);
-            if(val==null) return; // celda vacía → no se toca (se conserva lo que ya había)
-            const key=cId+'_'+per+'_'+colId+'_'+estId;
-            const previo=d.notasAct[key];
-            d.notasAct[key]={valor:val,fecha:previo?previo.fecha:hoy,hora:previo?previo.hora:''};
-            n++;
-          });
-        });
-        return d;
-      });
-      _showMsg('✅ Se importaron '+n+' nota(s) desde "'+f.name+'".');
-      inp.value='';
-      renderApp();
-    }catch(ex){
-      _showMsg('❌ Error al leer el Excel: '+(ex.message||ex),'#fdecea','#922b21');
-      inp.value='';
-    }
-  };
-  reader.readAsArrayBuffer(f);
 }
 
 // ============================================================
@@ -8008,12 +7510,12 @@ function cargarEstudiantesBoletinSel(){
 }
 function pdfBoletinIndividual(){
   var estId=document.getElementById('infEstudianteIndividual')?.value;
-  if(!estId){customAlert('Seleccione un estudiante para descargar su boletín individual.');return;}
+  if(!estId){alert('Seleccione un estudiante para descargar su boletín individual.');return;}
   var per=Number(document.getElementById('infPer')?.value||1);
   var plantilla=window.boletinPlantilla||'clasico';
   // Filtrar para solo el estudiante seleccionado
   var est=db.ests.find(function(e){return String(e.id)===String(estId);});
-  if(!est){customAlert('Estudiante no encontrado.');return;}
+  if(!est){alert('Estudiante no encontrado.');return;}
   // Generar boletín individual usando la función existente de boletines pero para un solo estudiante
   _generarPdfBoletin([est],per,plantilla);
 }
@@ -8033,13 +7535,13 @@ function _generarPdfBoletin(estudiantes,per,plantilla){
   pdfBoletines();
   window._boletinEstudiantesOverride=null;
 }
-async function descargarTodosBoletinesGrados(){
+function descargarTodosBoletinesGrados(){
   var per=Number(document.getElementById('infPer')?.value||1);
   var plantilla=window.boletinPlantilla||'clasico';
   var isAdmin=sesion.r==='admin';
   var gradosDB=isAdmin?db.grados:db.grados.filter(g=>gradosDelDocente(sesion.u).includes(g.n));
-  if(!gradosDB.length){customAlert('No hay grados disponibles.');return;}
-  if(!await customConfirm('Se generarán boletines de '+gradosDB.length+' grado(s) para el periodo P'+per+'. Puede tomar unos segundos. ¿Continuar?')) return;
+  if(!gradosDB.length){alert('No hay grados disponibles.');return;}
+  if(!confirm('Se generarán boletines de '+gradosDB.length+' grado(s) para el periodo P'+per+'. Puede tomar unos segundos. ¿Continuar?')) return;
   gradosDB.forEach(function(g,i){
     setTimeout(function(){
       var fakeGrado=document.getElementById('infGrado');
@@ -8064,11 +7566,11 @@ function cargarObsEstudiantes(){
 function guardarObsDirector(id){
   const txt=document.getElementById('obs_'+id)?.value||'';
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===id);if(idx!==-1) d.ests[idx].obsDirector=txt;return d;});
-  customAlert('Guardado.');
+  alert('Guardado.');
 }
 function guardarTodasObs(grado){
   updDB(d=>{db.ests.filter(x=>x.g===grado).forEach(e=>{const txt=document.getElementById('obs_'+e.id)?.value||'';const idx=d.ests.findIndex(x=>x.id===e.id);if(idx!==-1) d.ests[idx].obsDirector=txt;});return d;});
-  customAlert('Todas guardadas.');
+  alert('Todas guardadas.');
 }
 function cargarEstsCert(){
   const grado=document.getElementById('infGrado')?.value||'';const tipo=document.getElementById('tipoCert')?.value||'notas';
@@ -8212,7 +7714,7 @@ function pdfConsolidadoGeneral(){
   const per=Number(document.getElementById('infPerGen')?.value||1);
   const mats=db.carga.filter(x=>x.g===grado);
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF('l');
   doc.setFontSize(9);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
   doc.text('CONSOLIDADO GENERAL — TODAS LAS ÁREAS',148,10,{align:'center'});
@@ -8304,7 +7806,7 @@ function pdfEstadisticasGrado(){
   const per=Number(document.getElementById('infPerEst')?.value||1);
   const mats=db.carga.filter(x=>x.g===grado);
   const ests=db.ests.filter(x=>x.g===grado);
-  if(!ests.length){customAlert('Sin datos.');return;}
+  if(!ests.length){alert('Sin datos.');return;}
   const doc=getPDF('l');
   doc.setFontSize(9);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
   doc.text('ESTADÍSTICAS ACADÉMICAS — TODAS LAS ÁREAS',148,10,{align:'center'});
@@ -8384,7 +7886,7 @@ function pdfConsolidadoDir(){
   const mats=db.carga.filter(x=>x.g===grado);
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const infoG=db.grados.find(x=>x.n===grado)||{d:'',n:grado};
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF('l');
   doc.setFontSize(9);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
   doc.text('SEGUIMIENTO ACADÉMICO — DIRECTOR DE GRUPO',148,10,{align:'center'});
@@ -8465,14 +7967,14 @@ function addFooterPDF(doc){
   doc.setTextColor(0);
 }
 function xlsxConsolidado(){
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no cargada. Recargue la página.');return;}
   const grado=document.getElementById('infGrado')?.value||'';
   const per=Number(document.getElementById('infPer')?.value||1);
-  if(!grado){customAlert('Seleccione un grado.');return;}
+  if(!grado){alert('Seleccione un grado.');return;}
   const isAdmin=sesion&&(sesion.r==='admin'||(gestorSesion&&gestorEnPlataforma));
   const mats=db.carga.filter(x=>x.g===grado&&(isAdmin||x.d===sesion.u));
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!mats.length||!ests.length){customAlert('No hay datos para este grado y período.');return;}
+  if(!mats.length||!ests.length){alert('No hay datos para este grado y período.');return;}
   const inst=db.nombre||getROT3();const anio=db.anio||new Date().getFullYear();
   // Encabezado: #, Estudiante, [asignatura por docente], PROMEDIO, PUESTO, SITUACIÓN
   const encab=['#','ESTUDIANTE',...mats.map(m=>m.m.toUpperCase()+'\n('+m.dn.split(' ')[0]+')'),'PROMEDIO','PUESTO','SITUACIÓN'];
@@ -8522,7 +8024,7 @@ function pdfConsolidado(){
   const isAdmin=sesion.r==='admin';
   const mats=db.carga.filter(x=>x.g===grado&&(isAdmin||x.d===sesion.u));
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF('l');
   doc.setFontSize(8);doc.setFont('helvetica','bold');
   doc.text(`CONSOLIDADO — GRADO ${grado} — PERIODO ${per} — AÑO ${db.anio}`,148,10,{align:'center'});
@@ -8548,7 +8050,7 @@ function pdfConsolidado(){
 
 function pdfBoletines(){
   const gradoEl=document.getElementById('infGrado');const perEl=document.getElementById('infPer');
-  if(!gradoEl||!perEl){customAlert('Use el botón desde la pestaña Boletines.');return;}
+  if(!gradoEl||!perEl){alert('Use el botón desde la pestaña Boletines.');return;}
   _generarBoletinesPDF(gradoEl.value,Number(perEl.value),false);
 }
 function pdfInformeFinalAnio(){
@@ -8566,7 +8068,7 @@ function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     let s=0,n=0;mats.forEach(c=>{s+=calcNotaDef(e.nts,c.id,per);n++;});
     return{...e,promPer:n?s/n:0};
   }).sort((a,b)=>b.promPer-a.promPer);
-  if(!ests.length){customAlert('No hay estudiantes.');return;}
+  if(!ests.length){alert('No hay estudiantes.');return;}
   const infoG=db.grados.find(x=>x.n===grado)||{d:'SIN ASIGNAR',n:grado};
   // Tamaño OFICIO + plantilla seleccionada (clasico/compacto/moderno/formal)
   const doc=getPDF('p','oficio');
@@ -9288,7 +8790,7 @@ function htmlMaterialPanel(){
 function guardarActa(){
   const tipo=document.getElementById('actaTipo')?.value;const fecha=document.getElementById('actaFecha')?.value;
   const contenido=document.getElementById('actaContenido')?.value;
-  if(!tipo||!contenido){customAlert('Complete tipo y contenido.');return;}
+  if(!tipo||!contenido){alert('Complete tipo y contenido.');return;}
   updDB(d=>{
     const acta={tipo,fecha,grado:document.getElementById('actaGrado')?.value||'',
       area:document.getElementById('actaArea')?.value||'',docente:document.getElementById('actaDocente')?.value||'',
@@ -9302,7 +8804,7 @@ function guardarActa(){
     else d.actas.push(acta);
     return d;
   });
-  actaEditId=null;customAlert('Acta guardada.');navTo('actas');
+  actaEditId=null;alert('Acta guardada.');navTo('actas');
 }
 function guardarActaYPdf(){guardarActa();setTimeout(()=>pdfActa(db.actas.length-1),500);}
 function editarActa(idx){
@@ -9315,19 +8817,19 @@ function editarActa(idx){
     setTimeout(()=>{const c=document.getElementById('contenido');if(c)c.scrollTop=0;},80);
   }
 }
-async function eliminarActa(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{d.actas.splice(idx,1);return d;});navTo('actas');}
+function eliminarActa(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.actas.splice(idx,1);return d;});navTo('actas');}
 function cargarActaPdfArchivo(inp){
   const f=inp.files[0];if(!f) return;const nombreInput=document.getElementById('actaPdfNombre')?.value||f.name;
   const r=new FileReader();r.onload=ev=>{
     updDB(d=>{if(!d.actasPdf) d.actasPdf=[];d.actasPdf.push({nombre:nombreInput||f.name,fecha:new Date().toLocaleDateString('es-CO'),data:ev.target.result});return d;});
-    customAlert('PDF cargado.');navTo('actas');
+    alert('PDF cargado.');navTo('actas');
   };r.readAsDataURL(f);
 }
 function descargarActaPdf(idx){
   const a=db.actasPdf[idx];if(!a) return;
   const link=document.createElement('a');link.href=a.data;link.download=a.nombre.endsWith('.pdf')?a.nombre:a.nombre+'.pdf';link.click();
 }
-async function eliminarActaPdf(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{d.actasPdf.splice(idx,1);return d;});navTo('actas');}
+function eliminarActaPdf(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.actasPdf.splice(idx,1);return d;});navTo('actas');}
 function pdfActaCitacion(acta){
   const doc=getPDF();
   const pw=doc.internal.pageSize.width;
@@ -9489,8 +8991,8 @@ function descargarPlan(idx,tipo){
   const p=arr[idx];if(!p) return;
   const link=document.createElement('a');link.href=p.data;link.download=p.filename||p.nombre;link.click();
 }
-async function eliminarPlan(idx,tipo){
-  if(!await customConfirm('¿Eliminar?')) return;
+function eliminarPlan(idx,tipo){
+  if(!confirm('¿Eliminar?')) return;
   updDB(d=>{if(tipo==='planes') d.planesArea.splice(idx,1); else d.planeaciones.splice(idx,1);return d;});
   actaTab='planes';navTo('actas');
 }
@@ -9519,8 +9021,8 @@ function agregarLink(){
   const asigVal=document.getElementById('linkAsig')?.value||'';
   const parts=asigVal.split('|');const asig=parts[0]||'';const grado=parts[1]||'';
   const per=document.getElementById('linkPer')?.value||'1';
-  if(!nombre||!url){customAlert('Ingrese nombre y URL.');return;}
-  if(!url.startsWith('http')){customAlert('La URL debe comenzar con http:// o https://');return;}
+  if(!nombre||!url){alert('Ingrese nombre y URL.');return;}
+  if(!url.startsWith('http')){alert('La URL debe comenzar con http:// o https://');return;}
   updDB(d=>{if(!d.materialEstudiantes) d.materialEstudiantes=[];
     d.materialEstudiantes.push({categoria:'link',tipoLink,nombre,url,asig,grado,per,docente:sesion.n,fecha:new Date().toLocaleDateString('es-CO')});return d;});
   actaTab='material';navTo('actas');
@@ -9529,8 +9031,8 @@ function descargarMaterial(idx){
   const m=(db.materialEstudiantes||[])[idx];if(!m||!m.data) return;
   const link=document.createElement('a');link.href=m.data;link.download=m.filename||m.nombre;link.click();
 }
-async function eliminarMaterial(idx){
-  if(!await customConfirm('¿Eliminar?')) return;
+function eliminarMaterial(idx){
+  if(!confirm('¿Eliminar?')) return;
   updDB(d=>{d.materialEstudiantes.splice(idx,1);return d;});actaTab='material';navTo('actas');
 }
 
@@ -9606,11 +9108,11 @@ function agregarObservacion(estId,per){
   });
   cargarListaObservador();
 }
-async function editarObservacion(estId,obsIdx){
+function editarObservacion(estId,obsIdx){
   const e=db.ests.find(x=>x.id===estId);if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];if(!obs) return;
   // Solo puede editar si es el mismo docente o admin
-  if(sesion.r!=='admin'&&obs.doc!==sesion.n){customAlert('Solo puede editar sus propias observaciones.');return;}
+  if(sesion.r!=='admin'&&obs.doc!==sesion.n){alert('Solo puede editar sus propias observaciones.');return;}
   const nt=prompt('Editar:',obs.txt);if(nt===null) return;
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones[obsIdx].txt=nt.trim();return d;});
   cargarListaObservador();
@@ -9619,23 +9121,23 @@ async function editarObservacion(estId,obsIdx){
 /*function eliminarObservacion(estId,obsIdx){
   const e=db.ests.find(x=>x.id===estId);if(!e) return;
   const obs=(e.observaciones||[])[obsIdx];
-  if(sesion.r!=='admin'&&obs&&obs.doc!==sesion.n){customAlert('Solo puede eliminar sus propias observaciones.');return;}
-  if(!await customConfirm('¿Eliminar?')) return;
+  if(sesion.r!=='admin'&&obs&&obs.doc!==sesion.n){alert('Solo puede eliminar sus propias observaciones.');return;}
+  if(!confirm('¿Eliminar?')) return;
   updDB(d=>{const idx=d.ests.findIndex(x=>x.id===estId);if(idx!==-1) d.ests[idx].observaciones.splice(obsIdx,1);return d;});
   cargarListaObservador();
 }*/
 //HASTA ACÁ SE HIZO EL CAMBIO
 
 //ACÁ COMIENZA EL CAMBIO HECHO
-async function eliminarObservacion(estId, obsIdx){
+function eliminarObservacion(estId, obsIdx){
   const e = db.ests.find(x => x.id === estId);
   if(!e) return;
   const obs = (e.observaciones || [])[obsIdx];
   if(sesion.r !== 'admin' && obs && obs.doc !== sesion.n){
-    customAlert('Solo puede eliminar sus propias observaciones.');
+    alert('Solo puede eliminar sus propias observaciones.');
     return;
   }
-  if(!await customConfirm('¿Desea enviar esta observación a la papelera de reciclaje?')) return;
+  if(!confirm('¿Desea enviar esta observación a la papelera de reciclaje?')) return;
 
   // 1. Guardar copia en la papelera del sistema antes de eliminar
   if (typeof moverAPapelera === 'function') {
@@ -9669,15 +9171,15 @@ async function eliminarObservacion(estId, obsIdx){
 // ── ANÁLISIS PSICOPEDAGÓGICO CON ADÁN ──────────────────────────────────────
 function analizarObsAdan(estId, per){
   const e=db.ests.find(x=>String(x.id)===String(estId));
-  if(!e){customAlert('Estudiante no encontrado.');return;}
+  if(!e){alert('Estudiante no encontrado.');return;}
   const todas=(e.observaciones||[]);
   if(!todas.length){
-    customAlert('Este estudiante no tiene observaciones registradas aún. Primero agregue observaciones en el Observador.');
+    alert('Este estudiante no tiene observaciones registradas aún. Primero agregue observaciones en el Observador.');
     return;
   }
   const perSel=per||'';
   const obs=perSel?todas.filter(o=>String(o.per)===String(perSel)):todas;
-  if(!obs.length){customAlert('No hay observaciones registradas en el Período '+perSel+' para este estudiante.');return;}
+  if(!obs.length){alert('No hay observaciones registradas en el Período '+perSel+' para este estudiante.');return;}
   const resumen=obs.map(function(o,i){
     return (i+1)+'. [P'+o.per+' – '+(o.fecha||'—')+'] ('+(o.tipo||'General').toUpperCase()+') '+o.txt+' — Registrado por: '+o.doc;
   }).join('\n');
@@ -9739,7 +9241,7 @@ function pdfListaGrado(){
   const grado=document.getElementById('estFiltroGrado')?.value||db.grados[0]?.n||'';
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const infoG=db.grados.find(x=>x.n===grado)||{d:'',n:grado};
-  if(!ests.length){customAlert('Sin estudiantes.');return;}
+  if(!ests.length){alert('Sin estudiantes.');return;}
   const doc=getPDF();const startY=addHeaderRot(doc,`LISTA — GRADO ${grado}`,`Año: ${db.anio} | Director(a): ${infoG.d||'—'} | Total: ${ests.length}`,8);
   doc.autoTable({startY:startY+3,head:[['#','NOMBRE DEL ESTUDIANTE','FIRMA','OBSERVACIONES']],
     body:ests.map((e,i)=>[i+1,e.n,'','']),styles:{fontSize:8,cellPadding:3},
@@ -9762,7 +9264,7 @@ function pdfListaTodos(){
     const sy=addHeaderRot(doc,`LISTA — GRADO ${g.n}`,`Director(a): ${g.d||'—'} | Total: ${ests.length}`,8);
     doc.autoTable({startY:sy+3,head:[['#','NOMBRE DEL ESTUDIANTE','FIRMA','OBSERVACIONES']],body:ests.map((e,i)=>[i+1,e.n,'','']),styles:{fontSize:8,cellPadding:3},headStyles:{fillColor:[0,51,102],textColor:255},columnStyles:{0:{cellWidth:10,halign:'center'},1:{cellWidth:95},2:{cellWidth:40},3:{cellWidth:45}}});
   });
-  if(first){customAlert('Sin estudiantes.');return;}
+  if(first){alert('Sin estudiantes.');return;}
   doc.save(`Listas_Todos_Grados_${db.anio}.pdf`);
 }
 
@@ -9774,7 +9276,7 @@ function descargarCarnet(u){
   const doc=getPDF();generarCarnetEnDoc(doc,user,30,160,90);doc.save(`Carnet_${user.n.replace(/\s+/g,'_')}.pdf`);
 }
 function descargarTodosLosCarnet(){
-  const docentes=db.users.filter(u=>u.r==='docente');if(!docentes.length){customAlert('Sin docentes.');return;}
+  const docentes=db.users.filter(u=>u.r==='docente');if(!docentes.length){alert('Sin docentes.');return;}
   const doc=getPDF();const ancho=160,alto=90,gap=10;let y=20;
   docentes.forEach((u,i)=>{if(i>0&&y+alto>285){doc.addPage();y=20;}generarCarnetEnDoc(doc,u,y,ancho,alto);y+=alto+gap;});
   doc.save(`Carnets_INETIS_${db.anio}.pdf`);
@@ -9902,7 +9404,7 @@ function htmlEleccionesAdmin(){
 }
 async function cambiarPassElecciones(){
   const nueva=(document.getElementById('elecNuevaPass')?.value||'').trim();
-  if(nueva.length<4){customAlert('La contraseña debe tener al menos 4 caracteres.');return;}
+  if(nueva.length<4){alert('La contraseña debe tener al menos 4 caracteres.');return;}
   const hash=await _hashPassword(nueva);
   updDB(d=>{
     if(!Array.isArray(d.users)) d.users=[];
@@ -9911,14 +9413,14 @@ async function cambiarPassElecciones(){
     else d.users.push({u:'elecciones',p:hash,r:'elecciones',n:'MÓDULO ELECCIONES'});
     return d;
   });
-  customAlert('✅ Contraseña del módulo de Elecciones actualizada correctamente a: '+nueva);
+  alert('✅ Contraseña del módulo de Elecciones actualizada correctamente a: '+nueva);
   renderApp();
 }
-async function reiniciarElecciones(){
-  if(!await customConfirm('¿REINICIAR TODO el módulo de elecciones? Se borrarán candidatos, votantes y votos. Esta acción NO se puede deshacer.')) return;
-  if(!await customConfirm(`Confirme nuevamente: ¿Reiniciar elecciones del año ${db.anio}?`)) return;
+function reiniciarElecciones(){
+  if(!confirm('¿REINICIAR TODO el módulo de elecciones? Se borrarán candidatos, votantes y votos. Esta acción NO se puede deshacer.')) return;
+  if(!confirm(`Confirme nuevamente: ¿Reiniciar elecciones del año ${db.anio}?`)) return;
   updDB(d=>{d.elecciones[d.anio]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};return d;});
-  customAlert('Módulo de elecciones reiniciado.');renderApp();
+  alert('Módulo de elecciones reiniciado.');renderApp();
 }
 function mostrarTabElecAdmin(tab,btn){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));if(btn) btn.classList.add('active');
@@ -9950,20 +9452,20 @@ function agregarCandidato(tipo){
   const nom=document.getElementById(tipo==='personero'?'pNombre':'cNombre').value.trim();
   const gra=document.getElementById(tipo==='personero'?'pGrado':'cGrado').value.trim();
   const foto=tipo==='personero'?(window._fotoP||''):(window._fotoC||'');
-  if(!nom){customAlert('Ingrese el nombre');return;}
+  if(!nom){alert('Ingrese el nombre');return;}
   updDB(d=>{const anioE=d.anio;if(!d.elecciones) d.elecciones={};if(!d.elecciones[anioE]) d.elecciones[anioE]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
     if(tipo==='personero') d.elecciones[anioE].personeros.push({nombre:nom.toUpperCase(),grado:gra,foto});
     else d.elecciones[anioE].contralores.push({nombre:nom.toUpperCase(),grado:gra,foto});return d;});
   window._fotoP='';window._fotoC='';renderApp();
 }
-async function eliminarCandidato(tipo,idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{if(tipo==='personero') d.elecciones[d.anio].personeros.splice(idx,1);else d.elecciones[d.anio].contralores.splice(idx,1);return d;});renderApp();}
+function eliminarCandidato(tipo,idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{if(tipo==='personero') d.elecciones[d.anio].personeros.splice(idx,1);else d.elecciones[d.anio].contralores.splice(idx,1);return d;});renderApp();}
 function sincronizarVotantes(){
   updDB(d=>{const anioE=d.anio;if(!d.elecciones) d.elecciones={};if(!d.elecciones[anioE]) d.elecciones[anioE]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
     const yaReg=(d.elecciones[anioE].votantes||[]).map(v=>v.nombre);
     d.ests.forEach(e=>{if(!yaReg.includes(e.n)) d.elecciones[anioE].votantes.push({nombre:e.n,grado:e.g,votoP:false,votoC:false});});return d;});
-  customAlert('Sincronizado.');renderApp();
+  alert('Sincronizado.');renderApp();
 }
-async function eliminarVotante(idx){if(!await customConfirm('¿Eliminar?')) return;updDB(d=>{d.elecciones[d.anio].votantes.splice(idx,1);return d;});mostrarTabElecAdmin('votantes',null);}
+function eliminarVotante(idx){if(!confirm('¿Eliminar?')) return;updDB(d=>{d.elecciones[d.anio].votantes.splice(idx,1);return d;});mostrarTabElecAdmin('votantes',null);}
 function agregarVotanteManual(){
   const nom=prompt('Nombre:');if(!nom) return;const gra=prompt('Grado:');if(gra===null) return;
   updDB(d=>{d.elecciones[d.anio].votantes.push({nombre:nom.toUpperCase(),grado:gra,votoP:false,votoC:false});return d;});mostrarTabElecAdmin('votantes',null);
@@ -9998,7 +9500,6 @@ function renderElecciones(){
     <div class="flex-gap" style="margin-bottom:20px;justify-content:center">
       <button class="btn btn-navy" onclick="elecStep='votacion';renderElecContenido()">🗳️ VOTACIÓN</button>
       <button class="btn btn-blue" onclick="elecStep='resultados';renderElecContenido()">📊 RESULTADOS</button>
-      <button class="btn btn-gray" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
       <button class="btn btn-red" onclick="cerrarSesion()">🚪 SALIR</button>
     </div>
     <div id="elecContenido"></div>
@@ -10076,8 +9577,8 @@ function buscarEstVotante(){
 }
 function seleccionarVotante(nombre){
   const anioE=db.anio;const el=(db.elecciones||{})[anioE]||{votantes:[]};
-  const v=(el.votantes||[]).find(x=>x.nombre===nombre);if(!v){customAlert('No encontrado.');return;}
-  if(v.votoP&&v.votoC){customAlert('Ya ejerció su voto.');return;}
+  const v=(el.votantes||[]).find(x=>x.nombre===nombre);if(!v){alert('No encontrado.');return;}
+  if(v.votoP&&v.votoC){alert('Ya ejerció su voto.');return;}
   elecVotante=v;elecStep='votar-personero';elecSelP=null;elecSelC=null;renderElecContenido();
 }
 function agregarVotanteModal(){
@@ -10085,9 +9586,9 @@ function agregarVotanteModal(){
   updDB(d=>{d.elecciones[d.anio].votantes.push({nombre:nom.toUpperCase(),grado:gra,votoP:false,votoC:false});return d;});
   seleccionarVotante(nom.toUpperCase());
 }
-function confirmarVotoPersonero(){if(elecSelP===null){customAlert('Seleccione candidato');return;}elecStep='votar-contralor';renderElecContenido();}
+function confirmarVotoPersonero(){if(elecSelP===null){alert('Seleccione candidato');return;}elecStep='votar-contralor';renderElecContenido();}
 function confirmarVotoContralor(){
-  if(elecSelC===null){customAlert('Seleccione candidato');return;}
+  if(elecSelC===null){alert('Seleccione candidato');return;}
   const anioE=db.anio;
   updDB(d=>{const el=d.elecciones[anioE];
     if(!el.votos.personero) el.votos.personero={};if(!el.votos.contralor) el.votos.contralor={};
@@ -10105,9 +9606,9 @@ function confirmarVotoContralor(){
 // ──────────────────────────────────────────────
 // MODO DE VOTACIÓN (admin toggle)
 // ──────────────────────────────────────────────
-async function establecerModoVotacion(modo){
+function establecerModoVotacion(modo){
   const label=modo==='online'?'100% Online (estudiantes votan desde su portal)':'Presencial + Online para ausentes';
-  if(!await customConfirm('¿Activar modo "'+label+'"? Los votos ya registrados no se borran.')) return;
+  if(!confirm('¿Activar modo "'+label+'"? Los votos ya registrados no se borran.')) return;
   updDB(d=>{
     if(!d.elecciones) d.elecciones={};
     if(!d.elecciones[d.anio]) d.elecciones[d.anio]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
@@ -10214,10 +9715,10 @@ function _estElecRenderPaso(est,el){
 function _estElecIr(paso){window._estElecStep=paso;const w=document.getElementById('estElecPasos');if(w){const est=db.ests.find(e=>e.id===sesion.estId)||{};const el=(db.elecciones||{})[db.anio]||{};w.innerHTML=_estElecRenderPaso(est,el);}}
 function _estElecSelPFn(idx){_estElecSelP=idx;_estElecIr('personero');}
 function _estElecSelCFn(idx){_estElecSelC=idx;_estElecIr('contralor');}
-function _estElecConfPFn(){if(_estElecSelP===null){customAlert('Selecciona un candidato o voto en blanco.');return;}_estElecIr('contralor');}
-async function _estElecConfCFn(estId){
-  if(_estElecSelC===null){customAlert('Selecciona un candidato o voto en blanco.');return;}
-  if(!await customConfirm('¿Confirmas tu voto? Esta acción es definitiva y no se puede modificar.')) return;
+function _estElecConfPFn(){if(_estElecSelP===null){alert('Selecciona un candidato o voto en blanco.');return;}_estElecIr('contralor');}
+function _estElecConfCFn(estId){
+  if(_estElecSelC===null){alert('Selecciona un candidato o voto en blanco.');return;}
+  if(!confirm('¿Confirmas tu voto? Esta acción es definitiva y no se puede modificar.')) return;
   const anioE=db.anio;
   updDB(d=>{
     if(!d.elecciones) d.elecciones={};
@@ -10356,7 +9857,7 @@ Formato: usa negrillas, listas organizadas y una presentación clara y profesion
 
 function _guardarPlaneacionIA(silent){
   const lastAssistMsg=_iaMsgs.filter(m=>m.role==='assistant'&&!m.loading&&m.content&&m.content.length>50).pop();
-  if(!lastAssistMsg){if(!silent)customAlert('No hay planeación generada aún.');return;}
+  if(!lastAssistMsg){if(!silent)alert('No hay planeación generada aún.');return;}
   const meta=window._iaPlaneacionMeta||{};
   const id='plan_'+Date.now();
   updDB(d=>{
@@ -10378,7 +9879,7 @@ function _guardarPlaneacionIA(silent){
   });
   window._iaEsPlaneacion=false;
   if(!silent){
-    customAlert('✅ Planeación guardada en "📋 Planeaciones Terminadas". Puede verla, editarla y descargarla desde el módulo de Actividades.');
+    alert('✅ Planeación guardada en "📋 Planeaciones Terminadas". Puede verla, editarla y descargarla desde el módulo de Actividades.');
   } else {
     // Notificación discreta no intrusiva
     const chip=document.createElement('div');
@@ -10561,7 +10062,7 @@ function _editarPlaneacionIA(id){
 function _guardarEdicionPlaneIA(id){
   const tit=(document.getElementById('_planeEditTit')?.value||'').trim();
   const txt=(document.getElementById('_planeEditTxt')?.value||'').trim();
-  if(!txt){customAlert('El contenido no puede estar vacío.');return;}
+  if(!txt){alert('El contenido no puede estar vacío.');return;}
   updDB(d=>{
     const idx=(d.planeacionesIA||[]).findIndex(x=>x.id===id);
     if(idx>=0){d.planeacionesIA[idx].contenido=txt;if(tit)d.planeacionesIA[idx].titulo=tit;d.planeacionesIA[idx].editado=new Date().toLocaleDateString('es-CO');}
@@ -10569,7 +10070,7 @@ function _guardarEdicionPlaneIA(id){
   });
   document.getElementById('_planeEditOv').style.display='none';
   const ov=document.getElementById('_planeOv');if(ov)ov.style.display='none';
-  customAlert('✅ Planeación actualizada.');
+  alert('✅ Planeación actualizada.');
   renderApp();
 }
 
@@ -10586,8 +10087,8 @@ function _descargarPlaneIAGuardadaWord(id){
   _descargarPlaneIAWord(-1,p.contenido);
 }
 
-async function _eliminarPlaneacionIA(id){
-  if(!await customConfirm('¿Eliminar esta planeación definitivamente?')) return;
+function _eliminarPlaneacionIA(id){
+  if(!confirm('¿Eliminar esta planeación definitivamente?')) return;
   updDB(d=>{d.planeacionesIA=(d.planeacionesIA||[]).filter(x=>x.id!==id);return d;});
   renderApp();
 }
@@ -10936,7 +10437,7 @@ function iaLimpiar(){
 function iaIniciarVoz(){
   if(_iaVozActiva){iaDetenerVoz();return;}
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
+  if(!SR){alert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
   _iaRecognition=new SR();
   _iaRecognition.lang='es-CO';
   _iaRecognition.continuous=false;
@@ -11088,7 +10589,7 @@ const MODULOS_VOZ={
 
 function iniciarNavVoz(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){customAlert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
+  if(!SR){alert('Su navegador no soporta reconocimiento de voz.\nUse Chrome o Edge.');return;}
   _navVozRecognition=new SR();
   _navVozRecognition.lang='es-CO';
   _navVozRecognition.continuous=true;
@@ -11397,7 +10898,7 @@ function _pmTipoChange(){
 
 function _pmPreviewFoto(inp){
   const f=inp.files[0];if(!f) return;
-  if(f.size>5*1024*1024){customAlert('La foto no puede superar 5 MB.');inp.value='';return;}
+  if(f.size>5*1024*1024){alert('La foto no puede superar 5 MB.');inp.value='';return;}
   const r=new FileReader();
   r.onload=ev=>{
     const img=document.getElementById('pm_fotoPreview');
@@ -11410,7 +10911,7 @@ async function _leerArchivo(inpId){
   const inp=document.getElementById(inpId);
   if(!inp||!inp.files||!inp.files[0]) return null;
   const f=inp.files[0];
-  if(f.size>5*1024*1024){customAlert('El archivo '+f.name+' supera 5 MB. Use un archivo más pequeño.');return null;}
+  if(f.size>5*1024*1024){alert('El archivo '+f.name+' supera 5 MB. Use un archivo más pequeño.');return null;}
   return new Promise(res=>{
     const r=new FileReader();
     r.onload=ev=>res({nombre:f.name,tipo:f.type,datos:ev.target.result});
@@ -11720,7 +11221,7 @@ function cambiarEstadoPM(id,estado,btn){
       return;
     }
   }
-  customAlert((estado==='APROBADA'?'✅ Solicitud APROBADA':'❌ Solicitud RECHAZADA')+' correctamente.');
+  alert((estado==='APROBADA'?'✅ Solicitud APROBADA':'❌ Solicitud RECHAZADA')+' correctamente.');
   navTo('pre-matricula-admin');
 }
 
@@ -11737,16 +11238,16 @@ async function _enviarCredencialesMail(email,nombre,inst){
   }catch(e){if(btn){btn.disabled=false;btn.textContent='❌ Sin conexión al servidor de correo';btn.style.background='#c0392b';}}
 }
 
-async function eliminarPM(id){
-  if(!await customConfirm('¿Eliminar esta solicitud de pre-matrícula? Esta acción no se puede deshacer.')) return;
+function eliminarPM(id){
+  if(!confirm('¿Eliminar esta solicitud de pre-matrícula? Esta acción no se puede deshacer.')) return;
   updDB(d=>{d.preMatriculas=(d.preMatriculas||[]).filter(x=>x.id!==id);return d;});
   navTo('pre-matricula-admin');
 }
 
 function exportarPMExcel(){
   const lista=db.preMatriculas||[];
-  if(!lista.length){customAlert('No hay solicitudes para exportar.');return;}
-  if(typeof XLSX==='undefined'){customAlert('Librería Excel no disponible.');return;}
+  if(!lista.length){alert('No hay solicitudes para exportar.');return;}
+  if(typeof XLSX==='undefined'){alert('Librería Excel no disponible.');return;}
   const rows=lista.map(s=>({
     'Fecha':s.fechaSolicitud,
     'Estado':s.estado,
@@ -11814,7 +11315,7 @@ function abrirPortalConRol(platId){
 }
 function renderPortalInstitucion(platId,rolPre){
     var p=gestorDB.platforms.find(function(x){return x.id===platId;});
-    if(!p){customAlert('Institución no encontrada.');return;}
+    if(!p){alert('Institución no encontrada.');return;}
     var escudo=p.escudo?('<img src="'+p.escudo+'" style="height:70px;max-width:120px;object-fit:contain">'):'<div style="font-size:3rem">&#x1F3EB;</div>';
     var tienePreMat=moduloActivo('pre-matricula',platId);
     var preMatBtn=tienePreMat?'<div style="margin-top:14px;text-align:center"><button class="btn btn-green" style="font-size:0.88rem" onclick="abrirPreMatriculaPublica()">&#x1F4DD; Pre-Matrícula / Inscripción Online</button></div>':'';
@@ -11884,11 +11385,11 @@ function renderPortalInstitucion(platId,rolPre){
   }
   async function doLoginPortal(platId){
     const p=gestorDB.platforms.find(x=>x.id===platId);
-    if(!p){customAlert('Institución no encontrada.');return;}
+    if(!p){alert('Institución no encontrada.');return;}
     const rol=document.getElementById('pRol').value;
     const user=document.getElementById('pUser').value.trim();
     const pass=document.getElementById('pPass').value;
-    if(!user){customAlert('Complete los campos de usuario y contraseña.');return;}
+    if(!user){alert('Complete los campos de usuario y contraseña.');return;}
     const platDB=await _fetchPlatDB(p.sk);
     let sesionData=null;
     if(rol==='elecciones'){
@@ -11925,13 +11426,13 @@ function renderPortalInstitucion(platId,rolPre){
         if(!_esHashPassword(found.p)){found.p=await _hashPassword(pass);_savePlatDBQuiet(p.sk,platDB);}
       }
     }
-    if(!sesionData){customAlert('❌ Usuario o contraseña incorrectos.\n\nVerifique sus credenciales.');return;}
-    if(p.bloqueada&&rol!=='admin'){customAlert('🔒 Esta plataforma está temporalmente bloqueada por el administrador del sistema. Comuníquese con su institución.');return;}
+    if(!sesionData){alert('❌ Usuario o contraseña incorrectos.\n\nVerifique sus credenciales.');return;}
+    if(p.bloqueada&&rol!=='admin'){alert('🔒 Esta plataforma está temporalmente bloqueada por el administrador del sistema. Comuníquese con su institución.');return;}
     db=platDB;
     window._currentPlatSK=p.sk;
     window._currentPlatId=platId;
     sesion=sesionData;
-    pag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla';
+    pag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':'planilla';
     _sseInit();
     _checkSchemaMigrationBanner();
     render();
@@ -11939,7 +11440,7 @@ function renderPortalInstitucion(platId,rolPre){
   function previewLogoGestor(inputId,previewId,hiddenId){
     const file=document.getElementById(inputId).files[0];
     if(!file)return;
-    if(file.size>300000){customAlert('La imagen debe ser menor a 300KB para mejor rendimiento.');return;}
+    if(file.size>300000){alert('La imagen debe ser menor a 300KB para mejor rendimiento.');return;}
     const reader=new FileReader();
     reader.onload=function(e){
       const data=e.target.result;
@@ -11950,14 +11451,14 @@ function renderPortalInstitucion(platId,rolPre){
   }
   function descargarHTMLInstitucion(platId){
     const p=gestorDB.platforms.find(x=>x.id===platId);
-    if(!p){customAlert('Institución no encontrada.');return;}
+    if(!p){alert('Institución no encontrada.');return;}
     try{
       const html='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
       const nombre='Portal_'+p.nombre.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]/g,'_')+'_offline.html';
       _descargarTextoComoArchivo(html,nombre,'text/html;charset=utf-8');
       mostrarAlerta('✅ Portal de "'+p.nombre+'" descargado correctamente.','ok');
     }catch(e){
-      customAlert('Error al descargar: '+e.message);
+      alert('Error al descargar: '+e.message);
     }
   }
   function descargarGestorCompleto(){
@@ -11966,7 +11467,7 @@ function renderPortalInstitucion(platId,rolPre){
       _descargarTextoComoArchivo(html,'GESTOR_ACADEMICO_YC_completo_offline.html','text/html;charset=utf-8');
       mostrarAlerta('✅ Sistema completo descargado correctamente.','ok');
     }catch(e){
-      customAlert('Error al descargar: '+e.message);
+      alert('Error al descargar: '+e.message);
     }
   }
 

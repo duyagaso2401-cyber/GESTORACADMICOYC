@@ -102,7 +102,7 @@ function fmAgregarDocs(ev){
   var maxSize=1*1024*1024;
   var promises=files.map(function(f){
     return new Promise(function(resolve){
-      if(f.size>maxSize){customAlert('El archivo "'+f.name+'" supera 1MB y no se adjuntará. Reduzca el tamaño.');resolve(null);return;}
+      if(f.size>maxSize){alert('El archivo "'+f.name+'" supera 1MB y no se adjuntará. Reduzca el tamaño.');resolve(null);return;}
       var r=new FileReader();
       r.onload=function(e){resolve({name:f.name,type:f.type,data:e.target.result,size:f.size});};
       r.readAsDataURL(f);
@@ -115,8 +115,8 @@ function fmAgregarDocs(ev){
   });
 }
 
-async function fmEliminarDoc(idx){
-  if(!await customConfirm('¿Eliminar este documento?'))return;
+function fmEliminarDoc(idx){
+  if(!confirm('¿Eliminar este documento?'))return;
   _fm_docs.splice(idx,1);fmRenderDocs();
 }
 
