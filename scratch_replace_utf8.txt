@@ -1,0 +1,90 @@
+﻿function guardarDesc(){
+    const doc=document.getElementById('descDoc')?.value||sesion.u;
+    const per=document.getElementById('descPer').value;
+    const gra=document.getElementById('descGra').value;
+    const mat=document.getElementById('descMat').value;
+    const txRaw=document.getElementById('descTxt').value.trim();
+    if(!mat||!txRaw){alert('Complete el campo de asignatura e indicador');return;}
+    const prefijos={bajo:'Se le dificulta ',basico:'Algunas veces ',alto:'Casi siempre ',superior:'Siempre '};
+    const niveles=['bajo','basico','alto','superior'];
+    const base=Date.now();
+    // ===== AUTO-REPLICACIÃ“N ACTIVA (desactivable con check #autoReplicaChk) =====
+    // Detecta TODOS los grados donde el docente dicta la misma asignatura
+    // y replica automÃ¡ticamente el descriptor a esos grupos del mismo grado base.
+    const auto=document.getElementById('autoReplicaChk');
+    const replicar=!auto || auto.checked;
+    let gradosDestino=[gra];
+    if(replicar){
+      // Grado "base" = primer dÃ­gito (6, 7, 8, 9, 10, 11) ej: "6Â°1" -> "6"
+      const baseDe=g=>String(g).split(/[Â°\-\s]/)[0];
+      const baseSrc=baseDe(gra);
+      const otros=db.carga
+        .filter(c=>c.d===doc && c.m===mat && baseDe(c.g)===baseSrc && c.g!==gra)
+        .map(c=>c.g);
+      gradosDestino=[...new Set([gra,...otros])];
+    }
+    updDB(d=>{
+      gradosDestino.forEach((gDest,gi)=>{
+        // Limpia descriptores previos de este docente/per/mat/gra para evitar duplicados.
+        d.descriptores=d.descriptores.filter(x=>!(x.doc===doc&&String(x.per)===String(per)&&x.mat===mat&&x.gra===gDest));
+        niveles.forEach((niv,i)=>{
+          d.descriptores.push({id:base+gi*10+i,per,mat,niv,gra:gDest,txt:prefijos[niv]+txRaw,doc});
+        });
+      });
+      return d;
+    });
+    document.getElementById('descTxt').value='';
+    const st=document.getElementById('replicaStatus');
+    if(st && gradosDestino.length>1){
+      st.textContent='âœ… Descriptor guardado y auto-replicado a: '+gradosDestino.join(', ');
+    } else if(st){
+      st.textContent='âœ… Descriptor guardado para '+gra;
+    }
+    renderApp();
+  }
+  function editarDesc(id){
+  const d=db.descriptores.find(x=>x.id===id);if(!d) return;
+  const nt=prompt('Descriptor:',d.txt);if(nt===null) return;
+  updDB(db=>{const idx=db.descriptores.findIndex(x=>x.id===id);if(idx!==-1) db.descriptores[idx].txt=nt.trim();return db;});renderApp();
+}
+function eliminarDesc(id){if(!confirm('Â¿Eliminar?')) return;updDB(db=>{db.descriptores=db.descriptores.filter(x=>x.id!==id);return db;});renderApp();}
+
+// ============================================================
+// REPLICAR DESCRIPTORES A OTROS GRUPOS DEL MISMO GRADO BASE
+// ============================================================
+function replicarUltimosDescs(){
+  const doc=document.getElementById('descDoc')?.value||sesion.u;
+  const per=document.getElementById('descPer')?.value||'1';
+  const mat=document.getElementById('descMat')?.value||'';
+  const gradSrc=document.getElementById('descGra')?.value||'';
+  const selEl=document.getElementById('descReplicaDest');
+  if(!selEl){alert('No se encontrÃ³ el selector de grupos destino.');return;}
+  const gradsDest=Array.from(selEl.selectedOptions).map(o=>o.value).filter(g=>g!==gradSrc);
+  if(!gradsDest.length){alert('Seleccione al menos un grupo destino diferente al grado origen.');return;}
+  if(!mat){alert('Seleccione primero una asignatura.');return;}
+  const srcDescs=db.descriptores.filter(d=>d.doc===doc&&String(d.per)===String(per)&&d.mat===mat&&d.gra===gradSrc);
+  if(!srcDescs.length){
+    alert('No hay descriptores guardados para este docente/periodo/asignatura/grado origen.\nGuarde primero el descriptor y luego replique.');
+    return;
+  }
+  let totalRep=0;
+  updDB(d=>{
+    gradsDest.forEach(gradDest=>{
+      d.descriptores=d.descriptores.filter(x=>!(x.doc===doc&&String(x.per)===String(per)&&x.mat===mat&&x.gra===gradDest));
+      const base=Date.now()+Math.floor(Math.random()*10000);
+      srcDescs.forEach((sd,i)=>{
+        d.descriptores.push({id:base+i,per:sd.per,mat:sd.mat,niv:sd.niv,gra:gradDest,txt:sd.txt,doc:sd.doc});
+        totalRep++;
+      });
+    });
+    return d;
+  });
+  const statusEl=document.getElementById('replicaStatus');
+  if(statusEl) statusEl.textContent='âœ… '+totalRep+' descriptor(es) replicado(s) a: '+gradsDest.join(', ');
+  renderApp();
+}
+
+// ============================================================
+// PLANILLA
+// ============================================================
+let planPer='1',planCId='';

@@ -1,0 +1,10 @@
+node_modules/
+.local/
+.agents/
+*.log
+.env
+.env*
+*_RESPALDO*
+*.zip
+*_RESPALDO.json
+*_BUENO.json
