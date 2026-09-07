@@ -1,0 +1,161 @@
+GESTOR ACADÉMICO YC — ACTUALIZACIÓN CRÍTICA: CLOUDINARY + MIGRACIÓN
+=====================================================================
+Esta entrega toca FRONTEND y BACKEND. Léala completa antes de aplicar
+nada — el orden de los pasos importa.
+
+VERSIÓN DEL FRONTEND: v.2026-09-07-0600
+
+════════════════════════════════════════════════════════════════════
+ PASO 0 — LO MÁS IMPORTANTE: FALTAN LAS CREDENCIALES DE CLOUDINARY
+════════════════════════════════════════════════════════════════════
+Revisé su .env actual y confirmo que las variables CLOUDINARY_CLOUD_
+NAME, CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET todavía NO están
+puestas — el código ya las lee (con dotenv/process.env), pero sin
+ellas ninguna subida de archivos va a funcionar.
+
+Para obtenerlas:
+  1. Cree una cuenta gratuita en https://cloudinary.com (el plan
+     gratuito alcanza sobradamente para esto).
+  2. En su Dashboard aparecen de una vez: "Cloud Name", "API Key" y
+     "API Secret".
+  3. Agregue estas 3 líneas a su archivo .env (en el mismo lugar
+     donde está DATABASE_URL):
+        CLOUDINARY_CLOUD_NAME=su_cloud_name
+        CLOUDINARY_API_KEY=su_api_key
+        CLOUDINARY_API_SECRET=su_api_secret
+  4. En Render (producción), agregue las mismas 3 variables en la
+     sección "Environment" del servicio.
+
+════════════════════════════════════════════════════════════════════
+ QUÉ HABÍA YA CONSTRUIDO (de una sesión anterior) Y QUÉ CORREGÍ AHORA
+════════════════════════════════════════════════════════════════════
+Al revisar encontré que gran parte de la base ya existía:
+  ✅ src/lib/cloudinary.ts — configuración correcta, lee las 3
+     variables desde process.env.
+  ✅ src/lib/upload.ts — Multer en memoria + subida a Cloudinary con
+     upload_stream, devolviendo solo la secure_url.
+  ✅ Ruta POST /api/inetis/upload en el backend, ya funcional.
+
+Lo que encontré INCOMPLETO y corregí en esta entrega:
+  1. De 18 puntos del FRONTEND que convertían archivos a Base64,
+     solo 1 usaba realmente Cloudinary — los otros 17 seguían
+     guardando Base64 directo en la base de datos (justo lo que
+     genera el consumo alto de "Network Transfer"). Ya migré TODOS
+     los que realmente persisten datos:
+       · Foto de estudiante (incluyendo captura por cámara)
+       · Foto del Administrador General
+       · Foto de docente (Carga Académica)
+       · Fotos de candidatos a Personero y Contralor
+       · PDF de Actas, Planes de Área, Planeaciones, Material para
+         Estudiantes
+       · Los 6 archivos adjuntos del formulario público de
+         Pre-Matrícula (foto del estudiante y documentos del
+         acudiente)
+     Dejé sin tocar (a propósito) 2 puntos que SÍ deben seguir en
+     Base64: las imágenes que se envían a la IA Gemini para análisis
+     (nunca se guardan en la base de datos, se usan una sola vez) y
+     la exportación de "Portal HTML autónomo" (debe ser un archivo
+     que funcione solo, sin depender de internet).
+  2. La ruta del backend ahora acepta indicar el tipo de recurso de
+     Cloudinary explícitamente (necesario para que los PDF se suban
+     correctamente como "raw" en vez de forzarlos como imagen).
+  3. Escribí desde cero scripts/migrate-db.ts — el script de
+     migración, que faltaba por completo (estaba referenciado en
+     package.json como "npm run migrate-db" pero el archivo no
+     existía).
+
+════════════════════════════════════════════════════════════════════
+ PASO 1 — APLICAR EL FRONTEND
+════════════════════════════════════════════════════════════════════
+Reemplace su carpeta "gestor-academico/dist" por "frontend-dist/" de
+este paquete. Verifique la versión v.2026-09-07-0600 en la parte de
+abajo del menú lateral.
+
+════════════════════════════════════════════════════════════════════
+ PASO 2 — APLICAR EL BACKEND
+════════════════════════════════════════════════════════════════════
+Copie estos archivos a las mismas rutas en su proyecto (reemplazando
+los existentes):
+  backend-src/index.ts              → src/index.ts
+  backend-src/lib/cloudinary.ts     → src/lib/cloudinary.ts
+  backend-src/lib/upload.ts         → src/lib/upload.ts
+  backend-src/scripts/migrate-db.ts → scripts/migrate-db.ts  (nuevo)
+
+Nada más cambia en package.json — cloudinary, multer y el script
+"migrate-db" ya estaban declarados ahí desde antes.
+
+Después de copiar, corra "npm run dev" (o reinicie el servidor) y
+confirme en la consola que aparece:
+  ✅ Cloudinary configurado (cloud_name: ...)
+Si en cambio ve una advertencia (⚠️), revise el PASO 0.
+
+════════════════════════════════════════════════════════════════════
+ PASO 3 — PROBAR LAS SUBIDAS (antes de migrar nada)
+════════════════════════════════════════════════════════════════════
+Con el PASO 0 y 2 ya aplicados, pruebe subir una foto de estudiante
+o un PDF de acta nuevo. Debe verse "⏳ Subiendo..." un instante y
+luego la imagen/enlace normal — eso confirma que Cloudinary está
+recibiendo los archivos correctamente. Puede revisar su cuenta de
+Cloudinary (pestaña "Media Library") y debería ver una carpeta
+"gestor-yc" con los archivos organizados por tipo.
+
+════════════════════════════════════════════════════════════════════
+ PASO 4 — MIGRAR LOS DATOS EXISTENTES A UNA BASE NUEVA Y LIMPIA
+════════════════════════════════════════════════════════════════════
+Este paso es OPCIONAL pero es el que de verdad resuelve el consumo
+alto de "Network Transfer" en Neon: mueve TODOS los datos actuales
+(usuarios, instituciones, estudiantes, notas de los 4 periodos, todo)
+a una base de datos NUEVA, subiendo de paso cualquier Base64 que
+siga existiendo de antes de esta corrección.
+
+  1. En Neon, cree un proyecto/base de datos NUEVO (vacío). Copie su
+     cadena de conexión.
+  2. En su .env, agregue una línea NUEVA (sin borrar DATABASE_URL,
+     que debe seguir apuntando a la base ACTUAL):
+        NEW_DATABASE_URL=postgresql://.....(la cadena de la base nueva)
+  3. Confirme que las 3 variables de Cloudinary (Paso 0) también
+     estén puestas — si no, el script migrará los datos pero no
+     podrá limpiar las imágenes en Base64 que encuentre.
+  4. Ejecute:
+        npm run migrate-db
+  5. Lea el resumen que imprime al final: cuántos registros copió,
+     cuántos archivos subió a Cloudinary, y si hubo algún error (si
+     algún archivo falla al subir, NO se pierde — queda en Base64 en
+     la base nueva, y el script se lo señala para que lo revise).
+  6. Es seguro correrlo más de una vez — no duplica datos, actualiza
+     lo que ya existía.
+  7. SOLO cuando esté conforme con el resultado (revise la base
+     nueva directamente si quiere estar seguro), cambie DATABASE_URL
+     en su .env para que apunte a la base NUEVA, y reinicie el
+     servidor. En Render, actualice la variable DATABASE_URL ahí
+     también.
+
+IMPORTANTE: el script NUNCA modifica ni borra la base de datos
+ACTUAL — solo LEE de ahí. Su base actual queda intacta como respaldo
+natural, incluso después de migrar.
+
+════════════════════════════════════════════════════════════════════
+ PROBADO ANTES DE ENTREGAR
+════════════════════════════════════════════════════════════════════
+- El recorrido profundo que detecta y sube Base64 (usado tanto en
+  las subidas normales como en el script de migración): probado con
+  una estructura de institución realista (logo, escudos que ya eran
+  URL, fotos de estudiantes anidadas, notas de periodos, PDFs de
+  actas dentro de arreglos) — confirmé que solo toca lo que
+  realmente es Base64, no daña URLs ni datos ya limpios, y sobre
+  todo: si una subida falla, CONSERVA el dato original en vez de
+  perderlo.
+- El backend (src/index.ts + scripts/migrate-db.ts) compila limpio
+  con TypeScript.
+- Los 6 módulos del frontend pasan verificación de sintaxis.
+
+════════════════════════════════════════════════════════════════════
+ RECORDATORIOS DE ENTREGAS ANTERIORES (ya confirmados por usted)
+════════════════════════════════════════════════════════════════════
+- Lector de Pantalla: se agregó soporte táctil y subtítulo visual de
+  diagnóstico — pendiente de que confirme si ve el cuadro azul al
+  pasar el cursor.
+- Todo lo demás de sesiones previas (verificación de boletines,
+  columnas de Planilla, traslados, promoción de año, Aprobados/
+  Reprobados, correcciones de sesión) sigue incluido en este mismo
+  paquete de frontend.

@@ -633,21 +633,6 @@ app.post('/api/inetis/boletin/verificar', (req, res) => {
 // "carpeta" (opcional, en el formulario) organiza los archivos dentro
 // de Cloudinary por tipo, ej. "fotos-perfil", "logos-institucion",
 // "documentos". Si no se envía, cae en una carpeta general.
-// Ruta de diagnóstico: abra esto directamente en el navegador (GET, sin
-// necesidad de subir nada) para confirmar sin ambigüedad si Cloudinary
-// está configurado en ESTE proceso que está corriendo ahora mismo — más
-// confiable que revisar el historial de la terminal, que puede mostrar
-// texto de una ejecución anterior.
-app.get('/api/inetis/upload/status', (req, res) => {
-  res.json({
-    cloudinaryConfigurado,
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME ? process.env.CLOUDINARY_CLOUD_NAME : null,
-    mensaje: cloudinaryConfigurado
-      ? '✅ Cloudinary está configurado y listo para recibir archivos.'
-      : '⚠️ Cloudinary NO está configurado — faltan CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY o CLOUDINARY_API_SECRET en las variables de entorno de ESTE proceso.',
-  });
-});
-
 app.post('/api/inetis/upload', uploadMemoria.single('archivo'), async (req, res) => {
   if (!cloudinaryConfigurado) {
     return res.status(503).json({ error: 'La carga de archivos no está configurada en el servidor (faltan las variables CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY o CLOUDINARY_API_SECRET).' });

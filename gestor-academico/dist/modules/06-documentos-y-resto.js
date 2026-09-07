@@ -5092,12 +5092,14 @@ if(_origNavTo){
 // ============================================================
 function cargarFotoPerfil(inp){
   if(!inp.files[0]) return;
-  fileToB64(inp.files[0],b64=>{
-    updDB(d=>{d.users=d.users.map(u=>u.u===sesion.u?{...u,foto:b64}:u);return d;});
-    sesion={...sesion,foto:b64};
-    const prev=document.getElementById('fotoPerfilPreview');
-    if(prev) prev.innerHTML=`<img src="${b64}" style="width:100%;height:100%;object-fit:cover">`;
-  });
+  const prev=document.getElementById('fotoPerfilPreview');
+  if(prev) prev.innerHTML='<span style="font-size:1.4rem">⏳</span>';
+  fileToCloudinaryUrl(inp.files[0],function(url){
+    if(!url){ if(prev) prev.innerHTML=sesion.foto?`<img src="${sesion.foto}" style="width:100%;height:100%;object-fit:cover">`:'<span style="font-size:2rem">👤</span>'; return; }
+    updDB(d=>{d.users=d.users.map(u=>u.u===sesion.u?{...u,foto:url}:u);return d;});
+    sesion={...sesion,foto:url};
+    if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
+  },'fotos-perfil');
 }
 function abrirCamaraPerfil(){
   const wrap=document.getElementById('camaraPerfilWrap');
@@ -5120,11 +5122,15 @@ function tomarFotoCamara(){
   canvas.width=video.videoWidth||320;canvas.height=video.videoHeight||240;
   canvas.getContext('2d').drawImage(video,0,0);
   const b64=canvas.toDataURL('image/jpeg',0.8);
-  updDB(d=>{d.users=d.users.map(u=>u.u===sesion.u?{...u,foto:b64}:u);return d;});
-  sesion={...sesion,foto:b64};
-  const prev=document.getElementById('fotoPerfilPreview');
-  if(prev) prev.innerHTML=`<img src="${b64}" style="width:100%;height:100%;object-fit:cover">`;
   cerrarCamaraPerfil();
+  const prev=document.getElementById('fotoPerfilPreview');
+  if(prev) prev.innerHTML='<span style="font-size:1.4rem">⏳</span>';
+  dataUriToCloudinaryUrl(b64,function(url){
+    if(!url){ if(prev) prev.innerHTML=sesion.foto?`<img src="${sesion.foto}" style="width:100%;height:100%;object-fit:cover">`:'<span style="font-size:2rem">👤</span>'; return; }
+    updDB(d=>{d.users=d.users.map(u=>u.u===sesion.u?{...u,foto:url}:u);return d;});
+    sesion={...sesion,foto:url};
+    if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
+  },'fotos-perfil','captura.jpg');
 }
 
 // ============================================================
@@ -5145,12 +5151,13 @@ function actualizarPerfilEst(){
 }
 function cargarFotoPerfilEst(inp){
   if(!inp||!inp.files||!inp.files[0]) return;
-  fileToB64(inp.files[0],b64=>{
-    updDB(d=>{const idx=d.ests.findIndex(x=>x.id==sesion.estId);if(idx>=0) d.ests[idx].foto=b64;return d;});
-    sesion={...sesion,foto:b64};
+  fileToCloudinaryUrl(inp.files[0],function(url){
+    if(!url) return;
+    updDB(d=>{const idx=d.ests.findIndex(x=>x.id==sesion.estId);if(idx>=0) d.ests[idx].foto=url;return d;});
+    sesion={...sesion,foto:url};
     const prev=document.getElementById('_fotoEstPrev');
-    if(prev) prev.innerHTML=`<img src="${b64}" style="width:100%;height:100%;object-fit:cover">`;
-  });
+    if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
+  },'fotos-perfil');
 }
 
 // ============================================================
@@ -5171,12 +5178,13 @@ function actualizarPerfilPadre(){
 }
 function cargarFotoPerfilPadre(inp){
   if(!inp||!inp.files||!inp.files[0]) return;
-  fileToB64(inp.files[0],b64=>{
-    updDB(d=>{const idx=d.ests.findIndex(x=>x.id==sesion.estId);if(idx>=0) d.ests[idx].fotoAcud=b64;return d;});
-    sesion={...sesion,foto:b64};
+  fileToCloudinaryUrl(inp.files[0],function(url){
+    if(!url) return;
+    updDB(d=>{const idx=d.ests.findIndex(x=>x.id==sesion.estId);if(idx>=0) d.ests[idx].fotoAcud=url;return d;});
+    sesion={...sesion,foto:url};
     const prev=document.getElementById('_fotoPadrePrev');
-    if(prev) prev.innerHTML=`<img src="${b64}" style="width:100%;height:100%;object-fit:cover">`;
-  });
+    if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
+  },'fotos-perfil');
 }
 
 // ============================================================
