@@ -7,53 +7,17 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
-import { rateLimit } from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import * as Sentry from '@sentry/node';
 import { db, kvStore, notifications, documents, pushSubscriptions } from './db/index.js';
 import repositorioRouter from './routes/repositorio.js';
 import { eq, desc, and, isNull, or } from 'drizzle-orm';
 import { GoogleGenAI } from '@google/genai';
 import webpush from 'web-push';
-import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
+import { uploadMemoria, subirBufferACloudinary } from './lib/upload.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
-
-// ============================================================
-// MONITOREO DE ERRORES (Sentry) — OPCIONAL.
-// ------------------------------------------------------------------
-// NOTA TÉCNICA: en un proyecto ESM como este, para que Sentry alcance
-// a "instrumentar" automáticamente Express (y así medir el
-// desempeño/tiempo de cada petición, no solo capturar errores) hace
-// falta cargarlo con la bandera "--import" de Node ANTES que todo lo
-// demás. Se intentó esa configuración, pero causó un conflicto con
-// otro paquete (drizzle-orm) en este proyecto — así que se optó por
-// esta forma más simple y segura: sacrifica esa medición de
-// desempeño automática, pero la CAPTURA DE ERRORES (lo que
-// realmente importa acá) funciona igual, gracias a
-// Sentry.setupExpressErrorHandler() más abajo. Puede seguir viendo
-// un aviso de advertencia ("express is not instrumented") en la
-// terminal al iniciar — es inofensivo, solo informativo, y no
-// afecta el monitoreo de errores en sí.
-//
-// Si SENTRY_DSN no está configurada en las variables de entorno, el
-// SDK simplemente no hace nada (comportamiento oficial y
-// documentado de Sentry) — así que es seguro dejarlo siempre
-// llamado, sin condicionales alrededor: nadie nota la diferencia
-// hasta que se agregue la clave.
-//
-// Para activarlo: cree una cuenta gratuita en https://sentry.io,
-// cree un proyecto tipo "Node.js/Express", copie el DSN que le den
-// (una URL larga que empieza con "https://...@...ingest.sentry.io/..."),
-// y agréguela como SENTRY_DSN en su archivo .env y en Render.
-// ============================================================
-Sentry.init({
-  dsn: process.env.SENTRY_DSN || '',
-  environment: process.env.NODE_ENV === 'production' ? 'production' : 'development',
-  tracesSampleRate: 0.1, // 10% de las peticiones, para no consumir la cuota gratuita muy rápido
-});
 
 // ============================================================
 // FIRMA DE DOCUMENTOS (boletines) — HMAC-SHA256 con una clave que
@@ -160,43 +124,6 @@ app.use(cors({
 app.use(compression({ threshold: 1024 }));
 
 app.use(express.json({ limit: '50mb' }));
-
-// ============================================================
-// LÍMITE DE PETICIONES (rate limiting) — protección contra fuerza
-// bruta e intentos automatizados de descubrir credenciales.
-// ------------------------------------------------------------------
-// Contexto importante: en este sistema el login busca las
-// credenciales trayendo los datos de la institución (con las
-// contraseñas ya cifradas con PBKDF2, 100.000 iteraciones) y
-// comparando en el navegador — así que un límite de peticiones aquí
-// no sustituye tener contraseñas fuertes, pero sí frena de forma
-// real los intentos automatizados: cada "intento de login" hace una
-// petición nueva a esta ruta, así que limitar cuántas veces por
-// minuto se puede consultar hace mucho más lento y detectable
-// cualquier ataque con un script.
-//
-// Se usa un límite generoso a propósito (no bloquea el uso normal:
-// entrar a varias instituciones seguidas, o la sincronización
-// periódica de quien ya inició sesión), pero sí detiene un ataque
-// automatizado que necesita cientos de intentos por minuto.
-const limitadorLogin = rateLimit({
-  windowMs: 60 * 1000, // 1 minuto
-  limit: 30, // 30 consultas por minuto por IP — cómodo para uso normal, restrictivo para un ataque
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Demasiados intentos en poco tiempo. Espere un momento y vuelva a intentar.' },
-});
-// Límite más amplio para el resto de la API (protección general contra abuso/DoS,
-// sin restringir el uso normal del sistema).
-const limitadorGeneral = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Demasiadas peticiones en poco tiempo. Espere un momento.' },
-});
-app.use('/api/inetis/db', limitadorLogin);
-app.use('/api/', limitadorGeneral);
 
 // ============================================================
 // A02 · HELPERS — IA (GEMINI), SSE Y UTILIDADES
@@ -744,50 +671,6 @@ app.get('/api/inetis/upload/status', (req, res) => {
   });
 });
 
-// Configuración PÚBLICA que el navegador necesita conocer — nunca
-// incluye secretos. El DSN de Sentry no es información sensible: está
-// diseñado para vivir en código público (así funciona en cualquier
-// app con monitoreo de errores del lado del cliente), solo permite
-// ENVIAR reportes de error a este proyecto, no leer nada.
-app.get('/api/config/public', (req, res) => {
-  res.json({
-    sentryDsnFrontend: process.env.SENTRY_DSN_FRONTEND || process.env.SENTRY_DSN || null,
-  });
-});
-
-// Ruta de diagnóstico: abra esto directamente en el navegador para
-// provocar un error DE PRUEBA a propósito. Sirve para confirmar que
-// Sentry está recibiendo reportes de verdad — visitar una URL que no
-// existe NO sirve para esto (eso solo da un 404 normal, no un error
-// real). Se puede borrar esta ruta más adelante si se quiere, no
-// afecta nada del sistema si se deja.
-app.get('/api/test-error-sentry', (req, res) => {
-  throw new Error('Error de prueba — confirma que Sentry está recibiendo reportes correctamente. Si ve este error en su panel de Sentry, todo está funcionando.');
-});
-
-// Borra uno o varios archivos de Cloudinary a partir de su URL — se llama
-// cuando el usuario reemplaza una foto/documento por uno nuevo (para
-// borrar el viejo) o lo elimina explícitamente, así la cuenta de
-// Cloudinary no se llena de archivos huérfanos que ya nadie usa.
-// Acepta { url: "..." } para un solo archivo, o { urls: ["...", "..."] }
-// para varios de una vez (ej. al eliminar un registro con varios adjuntos).
-// Siempre responde OK: borrar el archivo viejo es limpieza de fondo, no
-// debe hacer fallar la acción principal del usuario si algo sale mal acá.
-app.post('/api/inetis/upload/delete', async (req, res) => {
-  try {
-    const urls: string[] = Array.isArray(req.body?.urls)
-      ? req.body.urls
-      : req.body?.url
-      ? [req.body.url]
-      : [];
-    await Promise.all(urls.map((u) => eliminarDeCloudinarySiAplica(u)));
-    return res.json({ ok: true });
-  } catch (err) {
-    console.warn('⚠️  Error en /api/inetis/upload/delete:', err);
-    return res.json({ ok: true }); // ver comentario arriba: nunca se reporta como fallo al frontend
-  }
-});
-
 app.post('/api/inetis/upload', uploadMemoria.single('archivo'), async (req, res) => {
   if (!cloudinaryConfigurado) {
     return res.status(503).json({ error: 'La carga de archivos no está configurada en el servidor (faltan las variables CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY o CLOUDINARY_API_SECRET).' });
@@ -1220,102 +1103,9 @@ app.get(/.*/, (req, res) => {
   return servePortal(req, res);
 });
 
-// El manejador de errores de Sentry va DESPUÉS de todas las rutas (así
-// puede capturar errores lanzados por cualquiera de ellas) — si no hay
-// SENTRY_DSN configurada, esto no hace nada, como se explicó arriba.
-Sentry.setupExpressErrorHandler(app);
-
 // ============================================================
 // A08 · INICIO DEL SERVIDOR
 // ============================================================
-
-// ============================================================
-// A08 · RESPALDO AUTOMÁTICO SEMANAL — copia de seguridad de cada
-// institución en Cloudinary, sin necesidad de que nadie presione el
-// botón manual de "Descargar Respaldo".
-// ------------------------------------------------------------------
-// Diseño pensado para ser resistente a reinicios del servidor
-// (frecuentes en planes gratuitos de hosting, que "duermen" el
-// servicio tras inactividad): en vez de una tarea programada a una
-// hora fija (que se perdería si el servidor está dormido justo en
-// ese momento), se revisa periódicamente si YA PASARON 7 días desde
-// el último respaldo de cada institución — así, sin importar cuándo
-// se reinicie el servidor, tarde o temprano la revisión periódica
-// se pone al día.
-//
-// El registro de "cuándo fue el último respaldo" se guarda en una
-// llave SEPARADA de los datos propios de la institución (prefijo
-// "_respaldo_meta_") — a propósito, para NO tocar el registro de la
-// institución en sí: si el respaldo automático actualizara esa
-// misma fila, cambiaría su "updatedAt" y eso rompería la
-// optimización de sincronización (ETag/304) que evita reenviar el
-// JSON completo cuando nada cambió de verdad para los usuarios.
-// ============================================================
-const RESPALDO_INTERVALO_REVISION_MS = 12 * 60 * 60 * 1000; // revisar cada 12 horas
-const RESPALDO_DIAS_MINIMOS = 7;
-
-async function respaldoObtenerMeta(sk: string): Promise<{ ultimoRespaldo?: string } | null> {
-  const filas = await db.select().from(kvStore).where(eq(kvStore.key, '_respaldo_meta_' + sk));
-  if (!filas.length) return null;
-  return (filas[0].value as any) || null;
-}
-
-async function respaldoGuardarMeta(sk: string, meta: { ultimoRespaldo: string; cloudinaryUrl?: string }) {
-  const clave = '_respaldo_meta_' + sk;
-  const existe = await db.select().from(kvStore).where(eq(kvStore.key, clave));
-  if (existe.length) {
-    await db.update(kvStore).set({ value: meta as any, updatedAt: new Date() }).where(eq(kvStore.key, clave));
-  } else {
-    await db.insert(kvStore).values({ key: clave, value: meta as any });
-  }
-}
-
-async function ejecutarRespaldosAutomaticosPendientes() {
-  try {
-    const todasLasFilas = await db.select().from(kvStore);
-    // Solo instituciones reales: se excluyen las llaves de metadatos de
-    // respaldo y cualquier otra llave con prefijo "_" reservado para uso
-    // interno del sistema.
-    const filasInstituciones = todasLasFilas.filter((f) => !f.key.startsWith('_'));
-    const ahora = Date.now();
-    for (const fila of filasInstituciones) {
-      try {
-        const meta = await respaldoObtenerMeta(fila.key);
-        const ultimoMs = meta?.ultimoRespaldo ? new Date(meta.ultimoRespaldo).getTime() : 0;
-        const diasTranscurridos = (ahora - ultimoMs) / (1000 * 60 * 60 * 24);
-        if (diasTranscurridos < RESPALDO_DIAS_MINIMOS) continue; // todavía no toca
-
-        if (!cloudinaryConfigurado) {
-          console.warn(`⚠️  Respaldo automático de "${fila.key}" pendiente, pero Cloudinary no está configurado — se reintentará en la próxima revisión.`);
-          continue;
-        }
-
-        const contenidoJson = JSON.stringify(fila.value);
-        const buffer = Buffer.from(contenidoJson, 'utf-8');
-        const fechaHoy = new Date().toISOString().slice(0, 10);
-        const resultado = await subirBufferACloudinary(buffer, {
-          folder: 'gestor-yc/respaldos-automaticos/' + fila.key,
-          publicId: 'respaldo-' + fechaHoy,
-          resourceType: 'raw',
-        });
-        await respaldoGuardarMeta(fila.key, { ultimoRespaldo: new Date().toISOString(), cloudinaryUrl: resultado.url });
-        console.log(`✅  Respaldo automático completado para "${fila.key}" → ${resultado.url}`);
-      } catch (errUno) {
-        // Un fallo en UNA institución no debe detener el respaldo de las demás.
-        console.error(`❌  Error en el respaldo automático de "${fila.key}":`, errUno);
-      }
-    }
-  } catch (err) {
-    console.error('❌  Error general revisando respaldos automáticos pendientes:', err);
-  }
-}
-
-function iniciarRespaldosAutomaticosProgramados() {
-  // Primera revisión a los 3 minutos de iniciar el servidor (deja que
-  // termine de arrancar tranquilo primero), luego cada 12 horas.
-  setTimeout(() => { ejecutarRespaldosAutomaticosPendientes(); }, 3 * 60 * 1000);
-  setInterval(() => { ejecutarRespaldosAutomaticosPendientes(); }, RESPALDO_INTERVALO_REVISION_MS);
-}
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API Server escuchando en puerto ${PORT}`);
@@ -1325,6 +1115,4 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     console.log(`✅  Asistente Adán IA configurado. Modelo preferido: ${PRIMARY_MODEL}`);
   }
-  iniciarRespaldosAutomaticosProgramados();
-  console.log('🗄️  Respaldo automático semanal programado (revisión cada 12 horas).');
 });

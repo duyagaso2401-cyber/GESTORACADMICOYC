@@ -36,6 +36,48 @@ export interface OpcionesSubida {
   resourceType?: 'image' | 'raw' | 'auto'; // 'raw' para PDFs/documentos que no son imagen
 }
 
+// Extrae el "public_id" y el tipo de recurso a partir de una URL de
+// Cloudinary ya guardada (la que quedó en la base de datos) — es lo que
+// pide uploader.destroy() para poder borrar el archivo. Si la URL no es
+// de Cloudinary (ej. quedó vacía, o es un Base64 de antes de la
+// migración), devuelve null sin lanzar error — así el llamador puede
+// simplemente no hacer nada en ese caso, en vez de tener que detectar
+// esto por su cuenta cada vez.
+export function extraerInfoCloudinaryDeUrl(url: string | null | undefined): { resourceType: string; publicId: string } | null {
+  const m = String(url || '').match(/\/([a-z]+)\/upload\/(?:v\d+\/)?(.+)$/);
+  if (!m) return null;
+  const resourceType = m[1];
+  let publicId = m[2];
+  // Los recursos "image"/"video" no incluyen la extensión en su public_id
+  // (Cloudinary la maneja aparte); los "raw" (PDFs, documentos) sí la
+  // incluyen completa, como parte del nombre.
+  if (resourceType === 'image' || resourceType === 'video') {
+    publicId = publicId.replace(/\.[a-zA-Z0-9]+$/, '');
+  }
+  return { resourceType, publicId };
+}
+
+/**
+ * Borra un archivo de Cloudinary a partir de su URL guardada — se usa
+ * cuando el usuario reemplaza una foto/documento por uno nuevo, o lo
+ * elimina explícitamente, para que la cuenta de Cloudinary no se vaya
+ * llenando de archivos "huérfanos" que ya nadie usa. Nunca lanza error
+ * hacia quien la llama: si la URL no es de Cloudinary, o el archivo ya
+ * no existe allá, o falla la conexión, simplemente no hace nada — borrar
+ * el archivo viejo es una limpieza de fondo, nunca debe bloquear ni
+ * romper la acción principal del usuario (guardar la foto nueva, etc.).
+ */
+export async function eliminarDeCloudinarySiAplica(url: string | null | undefined): Promise<void> {
+  if (!cloudinaryConfigurado) return;
+  const info = extraerInfoCloudinaryDeUrl(url);
+  if (!info) return;
+  try {
+    await cloudinary.uploader.destroy(info.publicId, { resource_type: info.resourceType });
+  } catch (err) {
+    console.warn('⚠️  No se pudo borrar de Cloudinary (' + info.publicId + '):', err);
+  }
+}
+
 /**
  * Sube un buffer (el archivo ya recibido por Multer en memoria) a
  * Cloudinary usando upload_stream, y devuelve una promesa con el

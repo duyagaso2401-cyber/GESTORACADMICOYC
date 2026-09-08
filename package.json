@@ -6,32 +6,34 @@
   "type": "module",
   "scripts": {
     "build": "echo 'Sin paso de compilacion necesario'",
-    "start": "NODE_OPTIONS='--max-http-header-size=32768' tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+   
+   "start": "NODE_OPTIONS='--max-http-header-size=32768' tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "migrate-db": "tsx scripts/migrate-db.ts"
   },
   "dependencies": {
     "@google/genai": "^2.12.0",
-    "cloudinary": "^2.11.0",
+    "@sentry/node": "^8.42.0",
+    "cloudinary": "^2.5.1",
     "cors": "^2.8.6",
+    "express-rate-limit": "^7.4.1",
+    "compression": "^1.7.5",
     "dotenv": "^17.4.2",
-    "drizzle-orm": "^0.45.2",
-    "express": "^5.2.1",
-    "multer": "^2.3.0",
+    "drizzle-orm": "^0.30.10",
+    "express": "^4.22.2",
+    "multer": "^1.4.5-lts.1",
     "pg": "^8.22.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
+    "@types/compression": "^1.7.5",
     "@types/express": "^4.17.25",
+    "@types/multer": "^1.4.12",
     "@types/node": "^20.19.43",
     "@types/pg": "^8.20.0",
     "@types/web-push": "^3.6.4",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3"
-  },
-  "allowScripts": {
-    "@google/genai@2.17.1": true,
-    "esbuild@0.28.2": true,
-    "protobufjs@7.6.5": true
   }
 }

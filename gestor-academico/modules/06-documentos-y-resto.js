@@ -5092,7 +5092,6 @@ if(_origNavTo){
 // ============================================================
 function cargarFotoPerfil(inp){
   if(!inp.files[0]) return;
-  const fotoAnterior=sesion.foto;
   const prev=document.getElementById('fotoPerfilPreview');
   if(prev) prev.innerHTML='<span style="font-size:1.4rem">⏳</span>';
   fileToCloudinaryUrl(inp.files[0],function(url){
@@ -5100,7 +5099,6 @@ function cargarFotoPerfil(inp){
     updDB(d=>{d.users=d.users.map(u=>u.u===sesion.u?{...u,foto:url}:u);return d;});
     sesion={...sesion,foto:url};
     if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
-    _cloudinaryEliminar(fotoAnterior);
   },'fotos-perfil');
 }
 function abrirCamaraPerfil(){
@@ -5124,7 +5122,6 @@ function tomarFotoCamara(){
   canvas.width=video.videoWidth||320;canvas.height=video.videoHeight||240;
   canvas.getContext('2d').drawImage(video,0,0);
   const b64=canvas.toDataURL('image/jpeg',0.8);
-  const fotoAnterior=sesion.foto;
   cerrarCamaraPerfil();
   const prev=document.getElementById('fotoPerfilPreview');
   if(prev) prev.innerHTML='<span style="font-size:1.4rem">⏳</span>';
@@ -5133,7 +5130,6 @@ function tomarFotoCamara(){
     updDB(d=>{d.users=d.users.map(u=>u.u===sesion.u?{...u,foto:url}:u);return d;});
     sesion={...sesion,foto:url};
     if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
-    _cloudinaryEliminar(fotoAnterior);
   },'fotos-perfil','captura.jpg');
 }
 
@@ -5155,15 +5151,12 @@ function actualizarPerfilEst(){
 }
 function cargarFotoPerfilEst(inp){
   if(!inp||!inp.files||!inp.files[0]) return;
-  const estActual=db.ests.find(x=>x.id==sesion.estId);
-  const fotoAnterior=estActual?estActual.foto:null;
   fileToCloudinaryUrl(inp.files[0],function(url){
     if(!url) return;
     updDB(d=>{const idx=d.ests.findIndex(x=>x.id==sesion.estId);if(idx>=0) d.ests[idx].foto=url;return d;});
     sesion={...sesion,foto:url};
     const prev=document.getElementById('_fotoEstPrev');
     if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
-    _cloudinaryEliminar(fotoAnterior);
   },'fotos-perfil');
 }
 
@@ -5185,15 +5178,12 @@ function actualizarPerfilPadre(){
 }
 function cargarFotoPerfilPadre(inp){
   if(!inp||!inp.files||!inp.files[0]) return;
-  const estActual=db.ests.find(x=>x.id==sesion.estId);
-  const fotoAnterior=estActual?estActual.fotoAcud:null;
   fileToCloudinaryUrl(inp.files[0],function(url){
     if(!url) return;
     updDB(d=>{const idx=d.ests.findIndex(x=>x.id==sesion.estId);if(idx>=0) d.ests[idx].fotoAcud=url;return d;});
     sesion={...sesion,foto:url};
     const prev=document.getElementById('_fotoPadrePrev');
     if(prev) prev.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover">`;
-    _cloudinaryEliminar(fotoAnterior);
   },'fotos-perfil');
 }
 
