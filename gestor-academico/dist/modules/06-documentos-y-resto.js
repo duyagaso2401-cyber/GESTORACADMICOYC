@@ -5583,8 +5583,15 @@ function generarDiplomaPDF(id){
 // VER CREDENCIALES (ADMIN / RECTOR)
 // ============================================================
 function htmlVerCredenciales(){
+  const admins=db.users.filter(u=>u.r==='admin');
   const docentes=db.users.filter(u=>u.r==='docente');
   const ests=(db.ests||[]).slice().sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
+  const rowsAdmin=admins.map(u=>`<tr>
+    <td style="text-align:left">${u.n||'—'}${u.soloLectura?' <span style="font-size:0.7rem;color:#888">(solo lectura)</span>':''}</td><td>${u.u}</td>
+    <td><button class="btn-sm" style="background:#7d3c98;font-size:0.72rem" onclick="_resetPassDocente('${u.u.replace(/'/g,"\\'")}')" title="Por seguridad, la contraseña actual está cifrada y no se puede mostrar. Puede definir una nueva.">🔑 Restablecer</button></td>
+    <td>${u.email||'—'}</td><td>${u.telefono||'—'}</td>
+    <td>${u.tfaActivo?'✅ Activa':'—'}</td>
+  </tr>`).join('');
   const rowsDoc=docentes.map(u=>`<tr>
     <td style="text-align:left">${u.n}</td><td>${u.u}</td>
     <td><button class="btn-sm" style="background:#7d3c98;font-size:0.72rem" onclick="_resetPassDocente('${u.u.replace(/'/g,"\\'")}')" title="Por seguridad, la contraseña actual está cifrada y no se puede mostrar. Puede definir una nueva.">🔑 Restablecer</button></td>
@@ -5610,26 +5617,34 @@ function htmlVerCredenciales(){
       <td style="text-align:center">
         ${e.numDocAcud?`<code style="font-size:0.78rem;background:#fef9e7;padding:2px 5px;border-radius:3px">${userAcud}</code>`:'<span style="color:#888;font-size:0.78rem">—</span>'}
       </td>
+      <td style="text-align:center">
+        ${e.numDocAcud?`<code style="font-size:0.78rem;background:#fdf2e9;padding:2px 5px;border-radius:3px">${passAcud}</code>`:'<span style="color:#888;font-size:0.78rem">—</span>'}
+      </td>
       <td>
         <button class="btn-sm" style="background:#003366;font-size:0.72rem" onclick="_abrirModalCred('${String(e.id)}')" title="Asignar / editar credenciales">🔑 Credenciales</button>
       </td>
     </tr>`;
   }).join('');
   return `<h3 class="sec-title">🔑 Credenciales del Sistema</h3>
-  <div class="warn-box">⚠️ Esta información es confidencial. Solo el administrador y rector pueden verla.</div>
+  <div class="warn-box">⚠️ Esta información es confidencial. Solo el administrador, rector y súper administrador (por continuidad del servicio) pueden verla.</div>
   ${sinCred.length?`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:7px;padding:10px 14px;margin-bottom:12px;font-size:0.84rem">
     ⚠️ <b>${sinCred.length}</b> estudiante(s) no tienen número de documento asignado. Use el botón <b>🔑 Credenciales</b> para asignarles acceso manual.
     <button class="btn-sm" style="background:#e67e22;margin-left:8px" onclick="_asignarCredTodos()">⚡ Generar para todos los que tengan doc.</button>
   </div>`:''}
   <div class="card">
+    <h4 class="card-title">🎓 Administrador(es) / Rector(a) (${admins.length})</h4>
+    ${admins.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Contraseña</th><th>Email</th><th>Teléfono</th><th>2FA</th></tr></thead><tbody>${rowsAdmin}</tbody></table></div>
+    <p style="font-size:0.75rem;color:#888;margin-top:6px">🔒 Igual que con los docentes: la contraseña del administrador/rector está cifrada y no puede mostrarse en texto — use "🔑 Restablecer" para definir una nueva.</p>`:_htmlEstadoVacio('🎓','Sin administradores registrados.')}
+  </div>
+  <div class="card" style="margin-top:14px">
     <h4 class="card-title">👨‍🏫 Docentes (${docentes.length})</h4>
     ${docentes.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Contraseña</th><th>Email</th><th>Teléfono</th></tr></thead><tbody>${rowsDoc}</tbody></table></div>
     <p style="font-size:0.75rem;color:#888;margin-top:6px">🔒 Por seguridad, las contraseñas de docentes se guardan cifradas y ya no pueden mostrarse en texto — use "🔑 Restablecer" para definir una nueva si el docente la olvidó.</p>`:_htmlEstadoVacio('👨‍🏫','Sin docentes registrados.')}
   </div>
   <div class="card" style="margin-top:14px">
-    <h4 class="card-title">👥 Estudiantes y Acudientes (${ests.length})</h4>
+    <h4 class="card-title">👥 Estudiantes y Acudientes / Padres de Familia (${ests.length})</h4>
     <div class="info-box" style="margin-bottom:10px">📋 El usuario del <b>estudiante</b> y contraseña inicial es su <b>Nº de documento</b>. El <b>acudiente</b> usa su propio Nº de documento como usuario y el Nº del estudiante como contraseña. Use el botón <b>🔑 Credenciales</b> para asignar o cambiar credenciales de forma manual.</div>
-    ${ests.length?`<div class="over" style="max-height:500px;overflow-y:auto"><table><thead><tr><th>Estudiante</th><th>Grado</th><th>Acudiente</th><th>Usuario Est.</th><th>Contraseña Est.</th><th>Usuario Acud.</th><th>Acción</th></tr></thead><tbody>${rowsEst}</tbody></table></div>`:_htmlEstadoVacio('🎓','Sin estudiantes registrados.')}
+    ${ests.length?`<div class="over" style="max-height:500px;overflow-y:auto"><table><thead><tr><th>Estudiante</th><th>Grado</th><th>Acudiente</th><th>Usuario Est.</th><th>Contraseña Est.</th><th>Usuario Acud./Padre</th><th>Contraseña Acud./Padre</th><th>Acción</th></tr></thead><tbody>${rowsEst}</tbody></table></div>`:_htmlEstadoVacio('🎓','Sin estudiantes registrados.')}
   </div>`;
 }
 async function _resetPassDocente(u){

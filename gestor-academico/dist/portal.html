@@ -193,6 +193,23 @@ html[data-theme="dark"] .card-title{color:var(--gold)}
 .sec-title{color:var(--navy);margin-bottom:15px;font-weight:700;font-size:1.05rem}
 html[data-theme="dark"] .sec-title{color:var(--gold)}
 input,select,textarea{width:100%;padding:9px 12px;border:1px solid var(--input-border);border-radius:8px;font-size:0.88rem;font-family:inherit;box-shadow:0 1px 2px rgba(0,51,102,0.04);transition:border-color .18s ease,box-shadow .18s ease;background:var(--input-bg);color:var(--input-text)}
+/* Corrección del "autocompletar" del navegador (Chrome/Edge): al
+   recordar o sugerir una contraseña, el navegador impone su PROPIO
+   fondo (blanco o amarillo pálido) sobre el campo, sin importar el CSS
+   de la app — dejando el texto casi invisible si el color de letra
+   configurado no contrasta con ESE fondo impuesto. Este truco (forzar
+   una transición del fondo casi infinita) evita que el navegador
+   pueda aplicar su propio color, dejando siempre el de la app. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active{
+  -webkit-text-fill-color:var(--input-text) !important;
+  -webkit-box-shadow:0 0 0px 1000px var(--input-bg) inset !important;
+  box-shadow:0 0 0px 1000px var(--input-bg) inset !important;
+  transition:background-color 9999s ease-in-out 0s;
+  caret-color:var(--input-text);
+}
 input::placeholder,select::placeholder,textarea::placeholder{color:var(--input-placeholder)}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--navy);box-shadow:0 0 0 3px var(--focus-ring)}
 html[data-theme="dark"] input:focus,html[data-theme="dark"] select:focus,html[data-theme="dark"] textarea:focus{border-color:var(--gold)}
@@ -248,6 +265,7 @@ html[data-theme="dark"] .perfil-box{background:#3a2c15;border-color:#8a5a1c}
 .empty-state-msg{font-size:0.92rem;color:var(--text-secondary);margin:0 0 14px;max-width:340px;margin-left:auto;margin-right:auto;line-height:1.4}
 .empty-state-btn{background:var(--navy);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:opacity .15s}
 .empty-state-btn:hover{opacity:0.88}
+.buscador-item:hover{background:var(--bg-card-hover)}
 html[data-theme="dark"] .empty-state-btn{background:var(--gold);color:#1b2432}
 .over{overflow-x:auto}
 .login-wrap{display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(160deg,#001f3f 0%,#003366 50%,#0a4080 100%)}
@@ -486,6 +504,33 @@ html[data-theme="dark"] .fm-sec{background:#22344a;border-left-color:var(--gold)
 .sb-btn:hover{background:rgba(255,255,255,0.07);color:#fff}
 .sb-btn.active{background:rgba(241,196,15,0.12);color:#f1c40f;border-left-color:#f1c40f}
 .sb-btn .sb-icon{font-size:1rem;width:18px;text-align:center;flex-shrink:0}
+
+/* --- Acordeón de categorías del menú lateral --- */
+.sb-categoria{border-bottom:1px solid rgba(255,255,255,0.05)}
+.sb-categoria-header{
+  display:flex;align-items:center;gap:9px;width:100%;
+  padding:10px 14px;border:none;background:transparent;
+  color:#d5e6f5;font-size:0.82rem;font-weight:700;cursor:pointer;text-align:left;
+  transition:background .15s,color .15s;
+}
+.sb-categoria-header:hover{background:rgba(255,255,255,0.06);color:#fff}
+.sb-categoria-header.abierta{color:#f1c40f}
+.sb-categoria-titulo{flex:1}
+.sb-chevron{
+  display:inline-block;font-size:0.75rem;color:#7fb3d3;
+  transition:transform .3s ease-in-out;transform:rotate(-90deg);
+}
+.sb-chevron.abierta{transform:rotate(0deg);color:#f1c40f}
+.sb-categoria-contenido{
+  max-height:0;overflow:hidden;
+  transition:max-height .3s ease-in-out;
+}
+.sb-categoria-contenido.abierta{max-height:900px}
+/* Sangrado a la derecha para denotar jerarquía: las opciones dentro de
+   una categoría quedan visualmente "adentro" de su encabezado. */
+.sb-categoria-contenido .sb-btn{padding-left:30px;font-size:0.79rem}
+.sb-categoria-contenido .sb-btn .sb-icon{font-size:0.9rem}
+
 .sidebar-footer{
   padding:10px 14px;border-top:1px solid rgba(255,255,255,0.08);
   font-size:0.72rem;color:#7fb3d3;flex-shrink:0
