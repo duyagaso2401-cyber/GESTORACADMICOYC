@@ -512,11 +512,20 @@ html[data-theme="dark"] .dd-acciones .dropdown-item:hover{color:var(--gold)}
 .theme-toggle-btn{background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:8px;padding:6px 11px;cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;gap:5px;transition:background .15s}
 .theme-toggle-btn:hover{background:rgba(255,255,255,0.2)}
 
-/* --- Sync chip (ajustado) --- */
+/* --- Sync chip: ahora es solo un ÍCONO (sin texto visible) que cambia de
+   color/animación según el estado — nunca cambia de tamaño, así que jamás
+   reacomoda nada a su alrededor. El detalle (cuándo fue la última vez,
+   si hay cambios pendientes) está disponible como tooltip (title) al
+   pasar el cursor, y con un clic se sincroniza manualmente. */
 #_syncChip{cursor:pointer;background:rgba(255,255,255,0.1);color:#a8d8f0;
-  padding:4px 10px;border-radius:20px;font-size:0.72rem;white-space:nowrap;
-  border:1px solid rgba(255,255,255,0.15);user-select:none;transition:background .2s}
+  border-radius:50%;font-size:0.85rem;
+  border:1px solid rgba(255,255,255,0.15);user-select:none;transition:background .2s,color .2s;
+  display:inline-flex;align-items:center;justify-content:center;
+  width:26px;height:26px;box-sizing:border-box;vertical-align:middle;flex-shrink:0}
 #_syncChip:hover{background:rgba(255,255,255,0.18)}
+#_syncChip.syncing{color:#ffe28a;animation:syncPulso 1s ease-in-out infinite}
+#_syncChip.offline{color:#ff9494}
+@keyframes syncPulso{0%,100%{opacity:1}50%{opacity:0.45}}
 
 /* --- Grillas con mejor espaciado --- */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
