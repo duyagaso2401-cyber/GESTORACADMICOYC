@@ -103,7 +103,7 @@ async function renderDocsModal(){
   const total = TIPOS_DOCS.estudiante.length + TIPOS_DOCS.acudiente.length;
   const cargados = guardados.length;
   const pct = Math.round(cargados/total*100);
-  html = `<div style="background:#f0f9f6;border:1px solid #b2dfdb;border-radius:7px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:14px">
+  html = `<div style="background:#f0f9f6;border:1px solid #b2dfdb;border-radius:7px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:14px;color:#1a1a2e">
     <div style="flex:1">
       <b style="color:#0e6655">Completitud de documentos:</b>
       <div class="doc-prog"><div class="doc-prog-bar" style="width:${pct}%"></div></div>
@@ -584,7 +584,7 @@ function htmlAsistencia(){
 
   // Widget para configurar umbrales de inasistencia (accesible para Admin)
   var configWidgetHtml = `
-    <div style="background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #003366;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+    <div style="background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #003366;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;color:#1a1a2e">
       <div style="font-size:0.82rem;color:#334155">
         <b>🚨 Parámetros del SIE (Decreto 1290):</b>
         Alerta Preventiva: <span style="background:#fff3cd;color:#856404;padding:2px 6px;border-radius:4px;font-weight:bold">${pctPrev}%</span> &nbsp;|&nbsp;
@@ -667,13 +667,13 @@ function htmlAsistencia(){
   html+='<select id="descAsistSub" style="display:none"><option value="1">Semana 1</option><option value="2">Semana 2</option><option value="3">Semana 3</option><option value="4">Semana 4</option><option value="5">Semana 5</option></select></div>';
   html+='<div><label class="lbl">Asignatura</label><select id="descAsistCId">'+cargaOpts+'</select></div>';
   html+='</div>';
-  html+='<div style="background:#f0f4f8;border-radius:8px;padding:12px;margin-bottom:12px">';
+  html+='<div style="background:#f0f4f8;border-radius:8px;padding:12px;margin-bottom:12px;color:#1a1a2e">';
   html+='<p style="font-size:0.82rem;color:#003366;font-weight:bold;margin-bottom:8px">📄 Descargar Planilla Vacía (para diligenciar en físico o Excel)</p>';
   html+='<div class="flex-gap">';
   html+='<button class="btn btn-blue" onclick="descargarPlanillaAsistenciaPDF()">📄 Planilla PDF</button>';
   html+='<button class="btn btn-green" onclick="descargarPlanillaAsistenciaExcel()">📊 Planilla Excel</button>';
   html+='</div></div>';
-  html+='<div style="background:#f0f8f4;border-radius:8px;padding:12px;margin-bottom:12px">';
+  html+='<div style="background:#f0f8f4;border-radius:8px;padding:12px;margin-bottom:12px;color:#1a1a2e">';
   html+='<p style="font-size:0.82rem;color:#003366;font-weight:bold;margin-bottom:8px">📊 Descargar Reporte de Asistencia Registrada</p>';
   html+='<div class="flex-gap">';
   html+='<button class="btn btn-navy" onclick="descargarReporteAsistenciaPDF()">📥 Reporte PDF</button>';
@@ -787,7 +787,7 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
   var asigNombre = cargaInfo ? (cargaInfo.m + ' (' + (cargaInfo.a||'') + ')') : 'Todas las asignaturas';
 
   var criticosHtml = criticos.length ? criticos.map(function(item){
-    return `<tr style="background:#fff5f5">
+    return `<tr style="background:#fff5f5;color:#1a1a2e">
       <td style="text-align:left;padding:8px">
         <b>${item.est.n}</b>
         <div style="font-size:0.75rem;color:#777">Doc: ${item.est.numDoc || '—'} · Acudiente: ${item.est.acudiente || '—'} (Tel: ${item.est.tel || item.est.telefono || '—'})</div>
@@ -804,7 +804,7 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
   }).join('') : `<tr><td colspan="5" class="empty" style="padding:16px;color:#27ae60">✅ No hay estudiantes en riesgo crítico en este grupo.</td></tr>`;
 
   var preventivosHtml = preventivos.length ? preventivos.map(function(item){
-    return `<tr style="background:#fffdf5">
+    return `<tr style="background:#fffdf5;color:#1a1a2e">
       <td style="text-align:left;padding:8px">
         <b>${item.est.n}</b>
         <div style="font-size:0.75rem;color:#777">Acudiente: ${item.est.acudiente || '—'} (Tel: ${item.est.tel || item.est.telefono || '—'})</div>
@@ -833,7 +833,7 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
       </div>
 
       <!-- Filtros del panel -->
-      <div class="grid3" style="margin-bottom:14px;background:#f8fafc;padding:10px;border-radius:8px;border:1px solid #e2e8f0">
+      <div class="grid3" style="margin-bottom:14px;background:#f8fafc;padding:10px;border-radius:8px;border:1px solid #e2e8f0;color:#1a1a2e">
         <div>
           <label class="lbl">Grado a Analizar</label>
           <select onchange="asistGrado=this.value;asistCId='';actualizarAsignaturasReg(this.value);renderApp()">${gradoOpts}</select>
@@ -852,19 +852,19 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
 
       <!-- Tarjetas de Resumen Estadístico -->
       <div class="grid4" style="gap:12px;margin-bottom:16px">
-        <div style="background:#f0f7ff;border:1px solid #c8dcf0;border-radius:8px;padding:12px;text-align:center">
+        <div style="background:#f0f7ff;border:1px solid #c8dcf0;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
           <div style="font-size:1.4rem;font-weight:bold;color:#003366">${ests.length}</div>
           <div style="font-size:0.75rem;color:#555;font-weight:bold">Total Estudiantes</div>
         </div>
-        <div style="background:#eafaf1;border:1px solid #a3e4d7;border-radius:8px;padding:12px;text-align:center">
+        <div style="background:#eafaf1;border:1px solid #a3e4d7;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
           <div style="font-size:1.4rem;font-weight:bold;color:#27ae60">${normales.length}</div>
           <div style="font-size:0.75rem;color:#27ae60;font-weight:bold">🟢 Normal (&lt;${pctPrev}%)</div>
         </div>
-        <div style="background:#fef9e7;border:1px solid #f9e79f;border-radius:8px;padding:12px;text-align:center">
+        <div style="background:#fef9e7;border:1px solid #f9e79f;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
           <div style="font-size:1.4rem;font-weight:bold;color:#d35400">${preventivos.length}</div>
           <div style="font-size:0.75rem;color:#d35400;font-weight:bold">🟡 Preventivo (${pctPrev}% - ${pctCrit-1}%)</div>
         </div>
-        <div style="background:#fdedec;border:1px solid #f5b7b1;border-radius:8px;padding:12px;text-align:center">
+        <div style="background:#fdedec;border:1px solid #f5b7b1;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
           <div style="font-size:1.4rem;font-weight:bold;color:#c0392b">${criticos.length}</div>
           <div style="font-size:0.75rem;color:#c0392b;font-weight:bold">🔴 Riesgo Pérdida (≥${pctCrit}%)</div>
         </div>
@@ -910,7 +910,7 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
 
       <!-- Orientaciones Psicopedagógicas Diferenciadas -->
       <div class="grid2" style="gap:16px;margin-top:16px">
-        <div style="background:#f0faf8;border:1px solid #b2dfdb;border-radius:8px;padding:14px">
+        <div style="background:#f0faf8;border:1px solid #b2dfdb;border-radius:8px;padding:14px;color:#1a1a2e">
           <h5 style="color:#00695c;margin-top:0;display:flex;align-items:center;gap:6px">
             👨‍🏫 Sugerencias Psicopedagógicas para el DOCENTE DE AULA
           </h5>
@@ -922,7 +922,7 @@ function htmlPanelReportePsicopedagogico(gradoOpts, cargaOpts){
           </ul>
         </div>
 
-        <div style="background:#f4f6f9;border:1px solid #ccd5e0;border-radius:8px;padding:14px">
+        <div style="background:#f4f6f9;border:1px solid #ccd5e0;border-radius:8px;padding:14px;color:#1a1a2e">
           <h5 style="color:#1a3a5c;margin-top:0;display:flex;align-items:center;gap:6px">
             🏛️ Sugerencias Psicopedagógicas para DIRECTIVOS (Rector / Coordinación / Orientación)
           </h5>
@@ -1849,8 +1849,8 @@ function htmlCentrosInteres(){
         '</div></div>'+
       (c.descripcion?'<div style="font-size:0.82rem;color:#666;margin:8px 0;padding:6px;background:#f8f9fa;border-radius:4px">'+c.descripcion+'</div>':'')+
       '<div style="margin:10px 0 6px"><b style="font-size:0.8rem;color:#003366">Etapas:</b> '+etapasHtml+avBtn+'</div>'+
-      (evidHtml?'<div style="background:#f0f4f8;border-radius:5px;padding:8px;margin-top:6px"><b style="font-size:0.79rem;color:#003366">&#x1F4CE; Evidencias:</b>'+evidHtml+'</div>':'')+
-      '<div style="margin-top:10px;padding:10px;background:#f9f9f9;border-radius:6px">'+
+      (evidHtml?'<div style="background:#f0f4f8;border-radius:5px;padding:8px;margin-top:6px;color:#1a1a2e"><b style="font-size:0.79rem;color:#003366">&#x1F4CE; Evidencias:</b>'+evidHtml+'</div>':'')+
+      '<div style="margin-top:10px;padding:10px;background:#f9f9f9;border-radius:6px;color:#1a1a2e">'+
         '<b style="font-size:0.8rem;color:#003366">+ Agregar Evidencia:</b>'+
         '<div class="grid3" style="margin-top:6px;gap:6px">'+
           '<select id="evTipo_'+i+'" style="padding:5px;font-size:0.8rem"><option value="video">&#x1F3AC; Video</option><option value="foto">&#x1F4F7; Fotografia</option><option value="documento">&#x1F4C4; Documento</option></select>'+
@@ -2211,7 +2211,7 @@ function renderPadre(){
   </div>
 
   <!-- BIENVENIDA PERSONAL -->
-  <div style="background:#f8f9fa;border-bottom:1px solid #e0e8f0;padding:10px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <div style="background:#f8f9fa;border-bottom:1px solid #e0e8f0;padding:10px 20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:#1a1a2e">
     <div style="width:36px;height:36px;border-radius:50%;background:#003366;display:flex;align-items:center;justify-content:center;color:#f1c40f;font-size:1.1rem;flex-shrink:0">👤</div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:700;color:#003366;font-size:0.9rem">Bienvenido/a, <span style="color:#e67e22">${sesion.n}</span></div>
@@ -2246,12 +2246,12 @@ function renderPadre(){
     </div>
 
     <!-- ALERTAS IMPORTANTES (solo si hay problemas) -->
-    ${areasPerdidasEst.length>0?`<div style="background:#fde8e8;border:1.5px solid #e74c3c;border-radius:12px;padding:14px 18px;margin-bottom:14px">
+    ${areasPerdidasEst.length>0?`<div style="background:#fde8e8;border:1.5px solid #e74c3c;border-radius:12px;padding:14px 18px;margin-bottom:14px;color:#1a1a2e">
       <div style="font-weight:700;color:#c0392b;font-size:0.92rem;margin-bottom:8px">⚠️ Materias con calificación en riesgo de reprobación</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">${areasPerdidasEst.map(a=>`<span style="background:#c0392b;color:#fff;border-radius:20px;padding:4px 12px;font-size:0.8rem;font-weight:bold">${a.mat}: ${a.prom.toFixed(1)}</span>`).join('')}</div>
       <p style="color:#7b241c;font-size:0.82rem;margin:8px 0 0">Comuníquese con los docentes de estas materias para apoyar a su hijo/a.</p>
     </div>`:''}
-    ${ausenciasCount>=5?`<div style="background:#fff3cd;border:1.5px solid #f39c12;border-radius:12px;padding:14px 18px;margin-bottom:14px">
+    ${ausenciasCount>=5?`<div style="background:#fff3cd;border:1.5px solid #f39c12;border-radius:12px;padding:14px 18px;margin-bottom:14px;color:#1a1a2e">
       <div style="font-weight:700;color:#856404;font-size:0.92rem">⚠️ Alerta de asistencia</div>
       <p style="color:#6d5004;font-size:0.85rem;margin:4px 0 0">${est.n} tiene <b>${ausenciasCount} ausencias</b> registradas este período. Comuníquese con la institución a la brevedad.</p>
     </div>`:''}
@@ -2261,7 +2261,7 @@ function renderPadre(){
       const _pzOk=!_privada||_pazSalvo.ok;
       const _pzMsg=_pazSalvo.pendientes.join(', ');
       if(_privada){
-        return `<div style="background:#fff;border:1.5px solid ${_pzOk?'#27ae60':'#c0392b'};border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.06)">
+        return `<div style="background:#fff;border:1.5px solid ${_pzOk?'#27ae60':'#c0392b'};border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.06);color:#1a1a2e">
           <div style="font-weight:700;color:${_pzOk?'#1e8449':'#c0392b'};font-size:0.95rem;margin-bottom:10px">${_pzOk?'✅ Paz y Salvo — Todo al día':'⛔ Pendiente de pago — No está a paz y salvo'}</div>
           ${!_pzOk?`<div style="background:#fde8e8;border-radius:8px;padding:10px 14px;font-size:0.85rem;color:#7b241c;margin-bottom:10px">Pendientes: <b>${_pzMsg}</b><br>No podrá recibir certificados ni boletines hasta regularizar su estado.</div>`:''}
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
@@ -2277,7 +2277,7 @@ function renderPadre(){
           </div>`:`<p style="font-size:0.82rem;color:#c0392b;margin:0">Regularice su estado para acceder a certificados y documentos.</p>`}
         </div>`;
       } else {
-        return (db.emailInst||db.telInst)?`<div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+        return (db.emailInst||db.telInst)?`<div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
           <div style="font-weight:700;color:#003366;font-size:0.92rem;margin-bottom:10px">📄 Solicitar Certificados y Documentos</div>
           <p style="font-size:0.85rem;color:#666;margin:0 0 10px">Para solicitar documentos académicos, use uno de los canales de la institución:</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -2289,7 +2289,7 @@ function renderPadre(){
     })()}
 
     <!-- CALIFICACIONES -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div style="font-weight:700;color:#003366;font-size:0.95rem">📊 Calificaciones de ${est.n}</div>
         <button class="btn btn-navy" style="font-size:0.79rem;padding:6px 14px" onclick="pdfConsolidadoEst('${String(est.id)}')">📥 Descargar PDF</button>
@@ -2298,13 +2298,13 @@ function renderPadre(){
     </div>
 
     <!-- ACTIVIDADES -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="font-weight:700;color:#27ae60;font-size:0.92rem;margin-bottom:12px">📝 Actividades de ${fmtNombreEst(est)}</div>
       ${htmlActividadesEstudiante(est)}
     </div>
 
     <!-- QUIZZES -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="font-weight:700;color:#8e44ad;font-size:0.92rem;margin-bottom:6px">🧩 Quizzes y Evaluaciones</div>
       <p style="font-size:0.82rem;color:#777;margin:0 0 10px">Los quizzes son respondidos por el estudiante desde su panel personal.</p>
       ${htmlQuizzesEstudiante(est)}
@@ -2316,13 +2316,13 @@ function renderPadre(){
       <button class="btn btn-green" onclick="abrirPreMatriculaLogueado()">📝 Iniciar Formulario de Pre-Matrícula</button>
     </div>`:''}
 
-    ${!_pushYaActivado()?`<div style="background:#fff8e6;border:1px solid #f1c40f;border-radius:12px;padding:14px 18px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+    ${!_pushYaActivado()?`<div style="background:#fff8e6;border:1px solid #f1c40f;border-radius:12px;padding:14px 18px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;color:#1a1a2e">
       <div style="font-size:0.85rem;color:#7d6608"><b>🔔 Active las notificaciones</b><br>Entérese al instante de anuncios y avisos, incluso con la app cerrada.</div>
       <button class="btn" style="background:#b7950b;color:#fff" onclick="activarNotificacionesPush()">🔔 Activar</button>
     </div>`:''}
 
     <!-- TABLÓN DE ANUNCIOS (docentes de sus grados/asignaturas) -->
-    <div style="background:#fff;border:1px solid #d5ead8;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)" id="padre-tablon-card">
+    <div style="background:#fff;border:1px solid #d5ead8;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e" id="padre-tablon-card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div style="font-weight:700;color:#1e8449;font-size:0.92rem">📢 Tablón de Anuncios — Grado ${est.g}</div>
         <button style="background:#eafaf1;color:#1e8449;border:1px solid #cdeedb;border-radius:8px;padding:6px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="_cargarTablonEst(${JSON.stringify(est.g)},'padre-tablon-list',${JSON.stringify(est.id)})">🔄 Actualizar</button>
@@ -2331,7 +2331,7 @@ function renderPadre(){
     </div>
 
     <!-- COMUNICADOS INSTITUCIONALES -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)" id="padre-notif-card">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e" id="padre-notif-card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div style="font-weight:700;color:#003366;font-size:0.92rem">📬 Comunicados Institucionales
           <span id="padre-notif-badge" style="display:none;background:#c0392b;color:#fff;border-radius:20px;padding:2px 10px;font-size:0.7rem;font-weight:bold;margin-left:6px"></span>
@@ -2342,7 +2342,7 @@ function renderPadre(){
     </div>
 
     <!-- OBSERVADOR DIGITAL -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div style="font-weight:700;color:#8e44ad;font-size:0.92rem">📓 Observador Digital de ${est.n}</div>
         ${obsEst.length?`<button style="background:#f5eef8;color:#6c3483;border:1px solid #d2b4de;border-radius:8px;padding:5px 12px;font-size:0.78rem;font-weight:bold;cursor:pointer" onclick="_verObservadorCompleto(${JSON.stringify(est.id)})">📋 Ver completo</button>`:''}
@@ -2352,7 +2352,7 @@ function renderPadre(){
     </div>
 
     <!-- HORARIO -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div style="font-weight:700;color:#003366;font-size:0.92rem">📅 Horario Semanal — Grado ${est.g}</div>
         <button style="background:#eaf0fb;color:#003366;border:1px solid #c5d8f0;border-radius:8px;padding:5px 12px;font-size:0.78rem;font-weight:bold;cursor:pointer" onclick="pdfHorarioGrado('${est.g}')">📥 PDF Horario</button>
@@ -2361,13 +2361,13 @@ function renderPadre(){
     </div>
 
     <!-- ASISTENCIA -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="font-weight:700;color:#003366;font-size:0.92rem;margin-bottom:12px">📋 Registro de Asistencia</div>
       ${htmlAsistEstudiante(est)}
     </div>
 
     <!-- PAGOS (solo colegios privados) -->
-    ${_privada?`<div style="background:#fff;border:1.5px solid #2980b9;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    ${_privada?`<div style="background:#fff;border:1.5px solid #2980b9;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="font-weight:700;color:#1a5276;font-size:0.92rem;margin-bottom:12px">💳 Estado Financiero y Pagos</div>
       ${pagosHtml}
       <div style="background:#eaf0fb;border-radius:8px;padding:10px 14px;margin-top:10px;font-size:0.82rem;color:#1a5276">
@@ -2386,7 +2386,7 @@ function renderPadre(){
           ${_gl?`<a href="${_gl}" target="_blank" style="background:#6c3483;color:#fff;border-radius:10px;padding:10px 18px;font-weight:bold;text-decoration:none;display:inline-block">🎥 Unirse a Clase Virtual</a>`
           :`<div style="background:#f0e6f8;border-radius:8px;padding:10px 14px;font-size:0.85rem;color:#6c3483">🎥 El enlace de clase virtual será publicado por el docente.</div>`}
         </div>
-        ${_lm.length?`<div style="background:#f5eef8;border-radius:8px;padding:10px 14px">
+        ${_lm.length?`<div style="background:#f5eef8;border-radius:8px;padding:10px 14px;color:#1a1a2e">
           <div style="font-weight:700;color:#6c3483;font-size:0.82rem;margin-bottom:6px">🔗 Recursos del docente:</div>
           <ul style="padding-left:18px;margin:0">${_lm.map(t=>`<li style="margin-bottom:5px;font-size:0.85rem"><a href="${t.url}" target="_blank" style="color:#6c3483;font-weight:bold">${t.nombre||t.tipoLink||'Recurso'}</a> <span style="color:#888">— ${t.asig||'General'} · ${t.fecha||''}</span></li>`).join('')}</ul>
         </div>`:''}
@@ -2394,13 +2394,13 @@ function renderPadre(){
     })():''}
 
     <!-- CONTACTO INSTITUCIONAL -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="font-weight:700;color:#003366;font-size:0.92rem;margin-bottom:12px">💬 Contacto Institucional</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;font-size:0.87rem;margin-bottom:12px">
-        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">DIRECTOR(A) DE GRUPO</div><b style="color:#003366">${(db.grados.find(g=>g.n===est.g)||{}).d||'Sin asignar'}</b></div>
-        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">RECTOR(A)</div><b style="color:#003366">${db.rectora||'—'}</b></div>
-        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">TELÉFONO</div><b style="color:#003366">${db.telInst||'—'}</b></div>
-        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">CORREO</div><b style="color:#003366">${db.emailInst||'—'}</b></div>
+        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px;color:#1a1a2e"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">DIRECTOR(A) DE GRUPO</div><b style="color:#003366">${(db.grados.find(g=>g.n===est.g)||{}).d||'Sin asignar'}</b></div>
+        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px;color:#1a1a2e"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">RECTOR(A)</div><b style="color:#003366">${db.rectora||'—'}</b></div>
+        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px;color:#1a1a2e"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">TELÉFONO</div><b style="color:#003366">${db.telInst||'—'}</b></div>
+        <div style="background:#f8f9fa;border-radius:8px;padding:10px 12px;color:#1a1a2e"><div style="font-size:0.72rem;color:#888;margin-bottom:2px">CORREO</div><b style="color:#003366">${db.emailInst||'—'}</b></div>
       </div>
       ${db.telInst?`<div style="display:flex;gap:8px;flex-wrap:wrap">
         <a style="background:#25d366;color:#fff;border-radius:8px;padding:9px 16px;font-size:0.85rem;font-weight:bold;text-decoration:none;display:inline-flex;align-items:center;gap:5px" target="_blank" href="https://wa.me/57${(db.telInst||'').replace(/\D/g,'')}?text=${encodeURIComponent('Hola, soy '+(sesion.n||'el acudiente')+' de '+(est.n||'mi hijo/a')+'. Institución: '+(db.nombre||'')+'.')}">💬 WhatsApp Institución</a>
@@ -2409,14 +2409,14 @@ function renderPadre(){
     </div>
 
     <!-- AJUSTES DE CUENTA -->
-    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:20px;box-shadow:0 1px 5px rgba(0,0,0,0.05)">
+    <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:20px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <details>
         <summary style="color:#003366;font-size:0.9rem;font-weight:700;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">
           <span>⚙️</span> <span>Mis Ajustes de Cuenta</span>
         </summary>
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;align-items:flex-start">
           <div style="text-align:center;flex-shrink:0">
-            <div id="_fotoPadrePrev" style="width:80px;height:90px;border-radius:10px;border:2px solid #27ae60;overflow:hidden;background:#eee;display:flex;align-items:center;justify-content:center;margin-bottom:8px">
+            <div id="_fotoPadrePrev" style="width:80px;height:90px;border-radius:10px;border:2px solid #27ae60;overflow:hidden;background:#eee;display:flex;align-items:center;justify-content:center;margin-bottom:8px;color:#1a1a2e">
               ${sesion.foto?`<img src="${_cloudinaryThumb(sesion.foto,150)}" style="width:100%;height:100%;object-fit:cover">`:'<span style="font-size:2rem">👤</span>'}
             </div>
             <button style="background:#27ae60;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:0.72rem;cursor:pointer;margin-bottom:4px" onclick="document.getElementById('_filePadreFoto').click()">📁 Subir foto</button>
@@ -2489,7 +2489,7 @@ function htmlNotasEstudiante(est){
   });
   // Fila de promedio general
   const promGen=countMats>0?(totalProm/countMats):0;
-  html+='<tr style="background:#e8f0fe;border-top:2px solid #003366">';
+  html+='<tr style="background:#e8f0fe;border-top:2px solid #003366;color:#1a1a2e">';
   html+=`<td style="font-weight:bold;padding:6px 8px;font-size:0.82rem;color:#003366">PROMEDIO GENERAL</td>`;
   html+=Array.from({length:_npNE},()=>'<td></td>').join('');
   html+=`<td style="text-align:center;font-weight:bold;font-size:0.9rem;color:${countMats?colorNota(promGen):'#bbb'}">${countMats?promGen.toFixed(2):'—'}</td>`;
@@ -2528,10 +2528,10 @@ function htmlAsistEstudiante(est){
   const pct=regs.length>0?Math.round(pres/regs.length*100):0;
   const statColor=pct>=90?'#27ae60':pct>=70?'#e67e22':'#c0392b';
   let html=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-    <div style="background:#e8f8e8;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px"><div style="font-size:1.2rem;font-weight:bold;color:#27ae60">${pres}</div><div style="font-size:0.72rem;color:#555">Presencias</div></div>
-    <div style="background:#fde8e8;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px"><div style="font-size:1.2rem;font-weight:bold;color:#c0392b">${aus}</div><div style="font-size:0.72rem;color:#555">Ausencias</div></div>
-    <div style="background:#fef3e2;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px"><div style="font-size:1.2rem;font-weight:bold;color:#e67e22">${just}</div><div style="font-size:0.72rem;color:#555">Justificados</div></div>
-    <div style="background:#e8f0fe;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px"><div style="font-size:1.2rem;font-weight:bold;color:${statColor}">${pct}%</div><div style="font-size:0.72rem;color:#555">% Asistencia</div></div>
+    <div style="background:#e8f8e8;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px;color:#1a1a2e"><div style="font-size:1.2rem;font-weight:bold;color:#27ae60">${pres}</div><div style="font-size:0.72rem;color:#555">Presencias</div></div>
+    <div style="background:#fde8e8;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px;color:#1a1a2e"><div style="font-size:1.2rem;font-weight:bold;color:#c0392b">${aus}</div><div style="font-size:0.72rem;color:#555">Ausencias</div></div>
+    <div style="background:#fef3e2;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px;color:#1a1a2e"><div style="font-size:1.2rem;font-weight:bold;color:#e67e22">${just}</div><div style="font-size:0.72rem;color:#555">Justificados</div></div>
+    <div style="background:#e8f0fe;border-radius:8px;padding:8px 14px;text-align:center;min-width:70px;color:#1a1a2e"><div style="font-size:1.2rem;font-weight:bold;color:${statColor}">${pct}%</div><div style="font-size:0.72rem;color:#555">% Asistencia</div></div>
   </div>`;
   html+=`<div class="over"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:#003366;color:#fff">
     <th style="padding:6px 8px">Fecha</th><th style="padding:6px 4px">Hora</th><th style="padding:6px 8px;text-align:left">Asignatura</th>
@@ -2593,7 +2593,7 @@ async function _cargarTablonEst(grado, listId, estId){
         if(cuerpo.startsWith(prefijo)) cuerpo=cuerpo.slice(prefijo.length);
       }
       cuerpo=cuerpo.replace(/\n\nAsignatura: [\s\S]*/,'').replace(/\n📅 Fecha límite: [\s\S]*/,'').trim();
-      return `<div style="border-left:4px solid #1e8449;background:#eafaf1;padding:10px 14px;border-radius:0 8px 8px 0;margin-bottom:10px">
+      return `<div style="border-left:4px solid #1e8449;background:#eafaf1;padding:10px 14px;border-radius:0 8px 8px 0;margin-bottom:10px;color:#1a1a2e">
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px">
           <span style="background:#1e8449;color:#fff;border-radius:5px;padding:2px 9px;font-size:0.7rem;font-weight:bold">📢 ${m.asig?m.asig:'Anuncio de grado'}</span>
           ${m.fechaLimite?`<span style="background:#fde8e8;color:#c0392b;border-radius:5px;padding:2px 9px;font-size:0.7rem;font-weight:bold">📅 Entrega: ${m.fechaLimite}</span>`:''}
@@ -2709,31 +2709,31 @@ function renderEstudiante(){
     <h4 class="card-title" style="color:#6c3483">💻 Mi Espacio Virtual — Modalidad Online</h4>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:12px">
       ${_linkVirtual?`<a href="${_linkVirtual}" target="_blank" class="btn" style="background:#6c3483;color:#fff;text-decoration:none;display:flex;align-items:center;gap:8px;justify-content:center;padding:12px 16px;border-radius:10px;font-weight:bold">🎥 Unirse a Clase Virtual</a>`:'<div class="info-box">🎥 El enlace de clase virtual será publicado por el docente o administrador.</div>'}
-      <div style="background:#f0e6fa;border-radius:8px;padding:12px;font-size:0.84rem">
+      <div style="background:#f0e6fa;border-radius:8px;padding:12px;font-size:0.84rem;color:#1a1a2e">
         <b style="color:#6c3483">📋 Tu información</b><br>
         Modalidad: <b>Online/Virtual</b><br>
         Grado: <b>${est.g}</b><br>
         Jornada: <b>${est.jornada||'—'}</b>
       </div>
     </div>
-    ${_linksMatEst.length?`<div style="margin-top:10px;padding:10px 14px;background:#f5eef8;border-radius:8px"><b style="color:#6c3483;font-size:0.85rem">🔗 Recursos del docente:</b><ul style="padding-left:18px;margin:6px 0 0">${_linksMatEst.map(t=>`<li style="margin-bottom:5px"><a href="${t.url}" target="_blank" style="color:#6c3483;font-weight:bold">${t.nombre||t.tipoLink||'Recurso'}</a><span style="font-size:0.75rem;color:#888"> — ${t.asig||'General'} · ${t.fecha||''}</span></li>`).join('')}</ul></div>`:''}
+    ${_linksMatEst.length?`<div style="margin-top:10px;padding:10px 14px;background:#f5eef8;border-radius:8px;color:#1a1a2e"><b style="color:#6c3483;font-size:0.85rem">🔗 Recursos del docente:</b><ul style="padding-left:18px;margin:6px 0 0">${_linksMatEst.map(t=>`<li style="margin-bottom:5px"><a href="${t.url}" target="_blank" style="color:#6c3483;font-weight:bold">${t.nombre||t.tipoLink||'Recurso'}</a><span style="font-size:0.75rem;color:#888"> — ${t.asig||'General'} · ${t.fecha||''}</span></li>`).join('')}</ul></div>`:''}
     <div class="info-box" style="background:#f5eef8;border-left-color:#9b59b6;color:#6c3483;font-size:0.83rem;margin-top:10px">📌 <b>Recuerde:</b> Conectarse puntualmente a las clases virtuales, mantener la cámara encendida y participar activamente.</div>
   </div>`:`<div class="card" style="border-left:4px solid #1a5276;background:linear-gradient(135deg,#eaf4fe,#fff)">
     <h4 class="card-title" style="color:#1a5276">🏫 Mi Información — Modalidad Presencial</h4>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
-      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center">
+      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
         <div style="font-size:1.4rem">🏫</div><div style="font-size:0.75rem;color:#555;margin-top:4px">Sede</div>
         <div style="font-weight:bold;color:#1a5276">${est.sede||'Principal'}</div>
       </div>
-      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center">
+      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
         <div style="font-size:1.4rem">⏰</div><div style="font-size:0.75rem;color:#555;margin-top:4px">Jornada</div>
         <div style="font-weight:bold;color:#1a5276">${est.jornada||'Mañana'}</div>
       </div>
-      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center">
+      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
         <div style="font-size:1.4rem">🎒</div><div style="font-size:0.75rem;color:#555;margin-top:4px">Grado</div>
         <div style="font-weight:bold;color:#1a5276">${est.g}</div>
       </div>
-      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center">
+      <div style="background:#e8f4fc;border-radius:8px;padding:12px;text-align:center;color:#1a1a2e">
         <div style="font-size:1.4rem">👨‍🏫</div><div style="font-size:0.75rem;color:#555;margin-top:4px">Dir. Grupo</div>
         <div style="font-weight:bold;color:#1a5276;font-size:0.8rem">${(db.grados.find(g=>g.n===est.g)||{}).d||'—'}</div>
       </div>
@@ -2749,6 +2749,8 @@ function renderEstudiante(){
     <button class="tbtn" style="background:#c0392b" onclick="cerrarSesion()">🚪 Salir</button></div></div>
   <div class="main">
     ${panelModalidad}
+    ${db.nivelEducativo==='UNIVERSIDAD'?_lmsCardResumenEstudiante(est):''}
+    ${db.nivelEducativo==='UNIVERSIDAD'?_htmlHistorialAcademicoEstudiante(est):''}
     ${_privadaE?`<div class="card" style="border-left:4px solid ${_bloqueadoE?'#c0392b':'#27ae60'}">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="font-size:1.4rem">${_bloqueadoE?'⛔':'✅'}</span>
@@ -2830,7 +2832,7 @@ function renderEstudiante(){
         <summary class="perfil-title" style="color:#1a3a5c;font-size:0.93rem">⚙️ Mis Ajustes de Cuenta — ${est.n}</summary>
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;align-items:flex-start">
           <div style="text-align:center;flex-shrink:0">
-            <div id="_fotoEstPrev" style="width:80px;height:90px;border-radius:8px;border:2px solid #003366;overflow:hidden;background:#eee;display:flex;align-items:center;justify-content:center;margin-bottom:8px">
+            <div id="_fotoEstPrev" style="width:80px;height:90px;border-radius:8px;border:2px solid #003366;overflow:hidden;background:#eee;display:flex;align-items:center;justify-content:center;margin-bottom:8px;color:#1a1a2e">
               ${sesion.foto?`<img src="${_cloudinaryThumb(sesion.foto,150)}" style="width:100%;height:100%;object-fit:cover">`:'<span style="font-size:2rem">👤</span>'}
             </div>
             <button class="btn-sm" style="background:#1a5276;margin-bottom:4px;font-size:0.72rem" onclick="document.getElementById('_fileEstFoto').click()">📁 Subir foto</button>
@@ -2862,7 +2864,7 @@ function _verObservadorCompleto(estId){
   const ov=document.createElement('div');
   ov.id='_obsCompOv';
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:9800;overflow-y:auto;padding:16px;display:flex;align-items:flex-start;justify-content:center';
-  let h=`<div style="background:#fff;border-radius:12px;max-width:680px;width:100%;margin:auto;box-shadow:0 8px 40px rgba(0,0,0,0.35)">
+  let h=`<div style="background:#fff;border-radius:12px;max-width:680px;width:100%;margin:auto;box-shadow:0 8px 40px rgba(0,0,0,0.35);color:#1a1a2e">
     <div style="background:#6c3483;color:#fff;padding:14px 20px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center">
       <h3 style="margin:0;font-size:0.95rem">📓 Observador Digital — ${est.n}</h3>
       <button onclick="document.getElementById('_obsCompOv').remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;border-radius:4px;padding:2px 10px;cursor:pointer;font-size:1.1rem">✕</button>
@@ -3517,7 +3519,7 @@ function htmlTablero(){
   const filasRiesgo=enRiesgo.length?enRiesgo.slice(0,25).map((s,i)=>{
     const areasP=calcAreasPerd(s.e.id,s.e.g);
     const nivel=s.prom<2?'🔴 Crítico':s.prom<2.5?'🟠 Alto':s.prom<2.8?'🟡 Moderado':'🟡 Leve';
-    return `<tr style="${i%2===0?'background:#fffafa':'background:#fff'}">
+    return `<tr style="${i%2===0?'background:#fffafa':'background:#fff'};color:#1a1a2e">
       <td style="padding:7px 10px;font-weight:500">${s.e.n}</td>
       <td style="padding:6px 8px;text-align:center;color:#666;font-size:0.82rem">${s.e.g}</td>
       <td style="padding:6px 8px;text-align:center;font-weight:bold;color:${colorNota(s.prom)}">${s.prom.toFixed(2)}</td>
@@ -3576,11 +3578,11 @@ function htmlTablero(){
       return `<span title="${a.mat} — Grado ${a.grado} — ${a.cnt} est." style="display:inline-block;background:${bg};color:#fff;border-radius:6px;padding:2px 7px;font-size:0.7rem;margin:2px 3px 2px 0;white-space:nowrap;cursor:default">${a.mat}: <b>${a.prom.toFixed(2)}</b></span>`;
     }).join('');
     const barW=Math.min(100,Math.round(d.promGlobal/5*100));
-    return `<tr style="${i%2===0?'background:#f9fbff':'background:#fff'}">
+    return `<tr style="${i%2===0?'background:#f9fbff':'background:#fff'};color:#1a1a2e">
       <td style="padding:8px 10px;font-weight:600;white-space:nowrap;font-size:0.85rem;color:#1a3a5c">${d.nombre}</td>
       <td style="padding:6px 10px">
         <div style="display:flex;align-items:center;gap:8px">
-          <div style="flex:1;min-width:60px;max-width:120px;background:#e9ecef;border-radius:20px;height:12px;overflow:hidden">
+          <div style="flex:1;min-width:60px;max-width:120px;background:#e9ecef;border-radius:20px;height:12px;overflow:hidden;color:#1a1a2e">
             <div style="background:${colProm};width:${barW}%;height:100%;border-radius:20px;transition:width .6s"></div>
           </div>
           <span style="font-weight:bold;font-size:0.92rem;color:${colProm};min-width:30px">${d.promGlobal.toFixed(2)}</span>
@@ -3592,7 +3594,7 @@ function htmlTablero(){
   }).join(''):`<tr><td colspan="4" style="padding:18px;text-align:center;color:#aaa">Sin carga académica asignada a docentes.</td></tr>`;
 
   // ── TABLA RESUMEN POR GRADO ──
-  const filasGrado=porGrado.map((g,i)=>`<tr style="${i%2===0?'background:#f7fbff':''}">
+  const filasGrado=porGrado.map((g,i)=>`<tr style="${i%2===0?'background:#f7fbff':''};color:#1a1a2e">
     <td style="padding:7px 10px;font-weight:600">${g.g}</td>
     <td style="padding:6px 8px;text-align:center">${g.total}</td>
     <td style="padding:6px 8px;text-align:center;color:#666">${g.conN}</td>
@@ -3600,7 +3602,7 @@ function htmlTablero(){
     <td style="padding:6px 8px;text-align:center;color:#1e8449;font-weight:bold">${g.apr}</td>
     <td style="padding:6px 8px;text-align:center;color:#c0392b;font-weight:bold">${g.rep}</td>
     <td style="padding:6px 8px">
-      <div style="position:relative;background:#f0f0f0;border-radius:20px;height:16px;overflow:hidden;min-width:70px">
+      <div style="position:relative;background:#f0f0f0;border-radius:20px;height:16px;overflow:hidden;min-width:70px;color:#1a1a2e">
         <div style="background:${g.pct>=70?'#1e8449':'#c0392b'};height:100%;width:${g.pct}%;border-radius:20px"></div>
         <span style="position:absolute;left:50%;top:0;transform:translateX(-50%);font-size:0.7rem;font-weight:bold;line-height:16px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.4);white-space:nowrap">${g.pct}%</span>
       </div>
@@ -3609,6 +3611,12 @@ function htmlTablero(){
   </tr>`).join('');
 
   return `<h3 class="sec-title">📊 Tablero de Estadísticas Institucional</h3>
+  ${db.nivelEducativo==='UNIVERSIDAD'?`<div style="background:#f5eef8;border:1px solid #8e44ad;border-radius:8px;padding:12px 16px;margin-bottom:14px;color:#1a1a2e;font-size:0.85rem">
+    🎓 <b>Institución configurada como Universidad/Instituto Técnico.</b> Las funciones diferenciadas para este nivel educativo están en:
+    <button class="btn-sm" style="background:#8e44ad;margin-left:6px" onclick="pag='planes-estudio';renderApp()">📋 Planes de Estudio</button>
+    <span style="color:#666"> (créditos, prerrequisitos) — para el administrador</span><br>
+    <span style="display:inline-block;margin-top:4px">💻 <b>Aula Virtual</b> — cada docente la encuentra en su "Mi Panel", en la tabla "Mis Aulas Virtuales" (aparece una vez tenga asignaturas a cargo en Carga Académica).</span>
+  </div>`:''}
   ${_htmlChecklistPrimerosPasos(ests.length,grados.length,db.users.filter(u=>u.r==='docente').length,carga.length,conNotas.length>0)}
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">
     <span style="font-size:0.78rem;color:#888">📅 ${new Date().toLocaleDateString('es-CO',{weekday:'long',year:'numeric',month:'long',day:'numeric'})} &nbsp;·&nbsp; Año académico: ${db.anio||'—'}</span>
@@ -3636,7 +3644,7 @@ function htmlTablero(){
         <table style="width:100%;border-collapse:collapse;font-size:0.83rem">
           <thead><tr style="background:#922b21;color:#fff">
             <th style="padding:7px 10px;text-align:left">Estudiante</th>
-            <th style="padding:7px 8px;text-align:center">Grado</th>
+            <th style="padding:7px 8px;text-align:center">${_txtNivel('Grado','Semestre/Grupo')}</th>
             <th style="padding:7px 8px;text-align:center">Promedio</th>
             <th style="padding:7px 8px;text-align:center">Áreas Perd.</th>
             <th style="padding:7px 8px;text-align:center">Nivel</th>
@@ -3657,7 +3665,7 @@ function htmlTablero(){
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:0.83rem">
         <thead><tr style="background:#1a3a5c;color:#fff">
-          <th style="padding:8px 10px;text-align:left">Grado</th>
+          <th style="padding:8px 10px;text-align:left">${_txtNivel('Grado','Semestre/Grupo')}</th>
           <th style="padding:8px;text-align:center">Total</th>
           <th style="padding:8px;text-align:center">Con Notas</th>
           <th style="padding:8px;text-align:center">Promedio</th>
@@ -3782,18 +3790,18 @@ function _htmlBIDirectivo(ests,grados,carga,asistencia){
     return {mat:c.m,grado:c.g,total:conN.length,rep,pctRep:Math.round(rep/conN.length*100)};
   }).filter(Boolean).filter(a=>a.pctRep>0).sort((a,b)=>b.pctRep-a.pctRep).slice(0,10);
 
-  const filasAsigRep=asigRep.length?asigRep.map((a,i)=>`<tr style="${i%2===0?'background:#fffafa':''}">
+  const filasAsigRep=asigRep.length?asigRep.map((a,i)=>`<tr style="${i%2===0?'background:#fffafa':''};color:#1a1a2e">
     <td style="padding:6px 10px;font-size:0.83rem">${a.mat}</td>
     <td style="padding:6px 8px;text-align:center;font-size:0.8rem;color:#555">${a.grado}</td>
     <td style="padding:6px 8px;text-align:center;font-weight:bold;color:#c0392b">${a.pctRep}%</td>
     <td style="padding:6px 8px;text-align:center;color:#c0392b">${a.rep}/${a.total}</td>
     <td style="padding:6px 10px">
-      <div style="background:#eee;border-radius:10px;height:10px;overflow:hidden"><div style="background:#c0392b;width:${a.pctRep}%;height:100%"></div></div>
+      <div style="background:#eee;border-radius:10px;height:10px;overflow:hidden;color:#1a1a2e"><div style="background:#c0392b;width:${a.pctRep}%;height:100%"></div></div>
     </td>
   </tr>`).join(''):`<tr><td colspan="5" style="padding:16px;text-align:center;color:#1e8449;font-weight:bold">✅ Ninguna asignatura con reprobación significativa.</td></tr>`;
 
   // ── ALERTAS DE DESERCIÓN HTML ──
-  const filasDesercion=alertasDesercion.length?alertasDesercion.slice(0,20).map((s,i)=>`<tr style="${i%2===0?'background:#fffafa':''}">
+  const filasDesercion=alertasDesercion.length?alertasDesercion.slice(0,20).map((s,i)=>`<tr style="${i%2===0?'background:#fffafa':''};color:#1a1a2e">
     <td style="padding:7px 10px;font-weight:500;font-size:0.83rem">${s.e.n}</td>
     <td style="padding:6px 8px;text-align:center;color:#555;font-size:0.8rem">${s.e.g}</td>
     <td style="padding:6px 8px;text-align:center;font-weight:bold;color:${s.pctA<70?'#c0392b':'#e67e22'}">${s.pctA}%</td>
@@ -3849,7 +3857,7 @@ function _htmlBIDirectivo(ests,grados,carga,asistencia){
            {label:'❌ Rechazadas',val:pmRech,pct:pmTotal?Math.round(pmRech/pmTotal*100):0,col:'#c0392b'}
         ].map(r=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
           <div style="flex:1"><div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:3px">${r.label}</div>
-          <div style="background:#eee;border-radius:10px;height:16px;overflow:hidden">
+          <div style="background:#eee;border-radius:10px;height:16px;overflow:hidden;color:#1a1a2e">
             <div style="background:${r.col};width:${r.pct}%;height:100%;border-radius:10px;transition:width .6s"></div>
           </div></div>
           <span style="font-weight:bold;color:${r.col};min-width:36px;text-align:right">${r.val}</span>
@@ -3863,19 +3871,19 @@ function _htmlBIDirectivo(ests,grados,carga,asistencia){
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:36px;height:36px;border-radius:50%;background:#1a5276;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">🏫</div>
           <div style="flex:1"><div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:3px">Presencial — ${presencial} estudiantes</div>
-          <div style="background:#eee;border-radius:10px;height:14px;overflow:hidden"><div style="background:#1a5276;width:${pctPres}%;height:100%;border-radius:10px"></div></div></div>
+          <div style="background:#eee;border-radius:10px;height:14px;overflow:hidden;color:#1a1a2e"><div style="background:#1a5276;width:${pctPres}%;height:100%;border-radius:10px"></div></div></div>
           <b style="color:#1a5276">${pctPres}%</b>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:36px;height:36px;border-radius:50%;background:#8e44ad;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">💻</div>
           <div style="flex:1"><div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:3px">Online/Virtual — ${online} estudiantes</div>
-          <div style="background:#eee;border-radius:10px;height:14px;overflow:hidden"><div style="background:#8e44ad;width:${pctOnline}%;height:100%;border-radius:10px"></div></div></div>
+          <div style="background:#eee;border-radius:10px;height:14px;overflow:hidden;color:#1a1a2e"><div style="background:#8e44ad;width:${pctOnline}%;height:100%;border-radius:10px"></div></div></div>
           <b style="color:#8e44ad">${pctOnline}%</b>
         </div>
       </div>
-      ${esPrivada?`<div style="background:#f8f9fa;border-radius:8px;padding:12px;margin-top:6px">
+      ${esPrivada?`<div style="background:#f8f9fa;border-radius:8px;padding:12px;margin-top:6px;color:#1a1a2e">
         <div style="font-size:0.78rem;font-weight:bold;color:var(--text-secondary);margin-bottom:6px">💳 Recaudo de Pensiones</div>
-        <div style="background:#eee;border-radius:10px;height:18px;overflow:hidden;margin-bottom:4px">
+        <div style="background:#eee;border-radius:10px;height:18px;overflow:hidden;margin-bottom:4px;color:#1a1a2e">
           <div style="background:${pctRecaudo>=80?'#1e8449':pctRecaudo>=50?'#e67e22':'#c0392b'};width:${pctRecaudo}%;height:100%;border-radius:10px"></div>
         </div>
         <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#888">
@@ -4183,18 +4191,18 @@ function htmlComunicadoGeneral(){
     <button class="btn" style="background:#1a5276;color:#fff;padding:10px 26px;font-size:0.92rem" onclick="enviarComunicadoGeneral()">📨 Publicar Comunicado</button>
     <button class="btn" style="background:#ecf0f1;color:#555;padding:10px 18px;font-size:0.88rem" onclick="document.getElementById('comPreview').style.display=document.getElementById('comPreview').style.display==='none'?'block':'none'">👁 Vista Previa</button>
   </div>
-  <div id="comPreview" style="display:none;border:2px dashed #3498db;border-radius:9px;padding:14px;margin-bottom:18px;background:#f0f7ff">
+  <div id="comPreview" style="display:none;border:2px dashed #3498db;border-radius:9px;padding:14px;margin-bottom:18px;background:#f0f7ff;color:#1a1a2e">
     <p style="margin:0 0 6px;font-size:0.75rem;font-weight:700;color:#3498db;text-transform:uppercase;letter-spacing:1px">Vista previa del comunicado</p>
     <div id="comPreviewContent" style="font-size:0.88rem;color:var(--text-secondary);line-height:1.6"></div>
   </div>
-  <div id="comProgreso" style="display:none;background:#fff;border:1px solid #dce;border-radius:9px;padding:16px;margin-bottom:16px">
+  <div id="comProgreso" style="display:none;background:#fff;border:1px solid #dce;border-radius:9px;padding:16px;margin-bottom:16px;color:#1a1a2e">
     <h4 style="color:#1a5276;margin:0 0 12px;font-size:0.93rem">📤 Publicando comunicado...</h4>
-    <div id="comBarraWrap" style="background:#eee;border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px">
+    <div id="comBarraWrap" style="background:#eee;border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;color:#1a1a2e">
       <div id="comBarra" style="height:8px;background:#3498db;border-radius:6px;width:0%;transition:width 0.4s ease"></div>
     </div>
     <div id="comLogItems" style="font-size:0.82rem;max-height:220px;overflow-y:auto;color:var(--text-secondary)"></div>
   </div>
-  <div id="comHistorial" style="display:none;background:#fafbff;border:1px solid #e0e6f0;border-radius:9px;padding:14px">
+  <div id="comHistorial" style="display:none;background:#fafbff;border:1px solid #e0e6f0;border-radius:9px;padding:14px;color:#1a1a2e">
     <h4 style="color:#1a3a5c;margin:0 0 10px;font-size:0.93rem">📋 Comunicados enviados (esta sesión)</h4>
     <div id="comHistItems"><p style="color:#bbb;text-align:center;padding:14px">Ningún comunicado enviado aún.</p></div>
   </div>
@@ -4272,7 +4280,7 @@ async function enviarComunicadoGeneral(){
   const histDiv=document.getElementById('comHistorial');
   const histItems=document.getElementById('comHistItems');
   histDiv.style.display='block';
-  histItems.innerHTML=_comHistorial.map(h=>`<div style="border-left:3px solid ${h.ok?'#27ae60':'#e74c3c'};padding:7px 12px;margin-bottom:8px;background:#fff;border-radius:0 6px 6px 0">
+  histItems.innerHTML=_comHistorial.map(h=>`<div style="border-left:3px solid ${h.ok?'#27ae60':'#e74c3c'};padding:7px 12px;margin-bottom:8px;background:#fff;border-radius:0 6px 6px 0;color:#1a1a2e">
     <span style="font-size:0.78rem;font-weight:700;color:${h.ok?'#27ae60':'#e74c3c'}">${h.ok?'✅':'⚠️'} ${h.tipo}</span>
     <span style="font-size:0.75rem;color:#888;margin-left:10px">${h.ahora}</span>
     ${h.grado!=='Todos'?`<span style="font-size:0.72rem;background:#e8f4fd;color:#1a5276;border-radius:4px;padding:1px 6px;margin-left:6px">Grado ${h.grado}</span>`:''}
@@ -4360,7 +4368,7 @@ function renderObsAulaLista(){
           const obsIdVal = o.id || ('obs_' + e.id + '_' + o._origIdx);
           const puedeModificar = isAdmin || o.doc===sesion.n || o.doc===sesion.u || o.docente===sesion.u;
           const jsonObsStr = encodeURIComponent(JSON.stringify(o));
-          return `<div style="border-left:4px solid ${colorTipo(o.tipo||'Otro')};padding:8px 10px;margin-bottom:8px;background:#f8fafc;border-radius:0 6px 6px 0;border:1px solid #e2e8f0;border-left-width:4px" id="obsItem_${obsIdVal}">
+          return `<div style="border-left:4px solid ${colorTipo(o.tipo||'Otro')};padding:8px 10px;margin-bottom:8px;background:#f8fafc;border-radius:0 6px 6px 0;border:1px solid #e2e8f0;border-left-width:4px;color:#1a1a2e" id="obsItem_${obsIdVal}">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
               <div style="flex:1">
                 ${o.tipo?`<span style="font-size:0.72rem;font-weight:700;color:${colorTipo(o.tipo)};text-transform:uppercase;background:#fff;border:1px solid ${colorTipo(o.tipo)}40;padding:1px 6px;border-radius:4px">${o.tipo}</span> · `:''}
@@ -4399,7 +4407,7 @@ function renderObsAulaLista(){
         </div>
         <button class="btn" style="background:#e8f4fd;color:#003366;font-size:0.78rem;padding:5px 14px;border:1px solid #b8daff;font-weight:600" onclick="toggleObsAulaForm('${e.id}')">➕ Nueva Observación</button>
       </div>
-      <div id="obsAulaForm_${e.id}" style="display:none;border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:12px;background:#f8fafc;padding:12px;border-radius:6px">
+      <div id="obsAulaForm_${e.id}" style="display:none;border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:12px;background:#f8fafc;padding:12px;border-radius:6px;color:#1a1a2e">
         <b style="font-size:0.8rem;color:#003366;display:block;margin-bottom:8px">📝 Registrar Nueva Observación de Aula</b>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <select id="obsAulaTipo_${e.id}" style="padding:7px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.83rem;flex:1;min-width:180px">${tipoOpts}</select>
@@ -4576,12 +4584,12 @@ function htmlAvisoDocente(){
     })()">👁 Vista Previa</button>
   </div>
   <div id="docComPrev" style="display:none;border:2px dashed #1e8449;border-radius:9px;padding:14px;margin-bottom:18px;background:#f0faf4;font-size:0.88rem;color:#555;line-height:1.6"></div>
-  <div id="docComProgreso" style="display:none;background:#fff;border:1px solid #dce;border-radius:9px;padding:14px;margin-bottom:14px">
+  <div id="docComProgreso" style="display:none;background:#fff;border:1px solid #dce;border-radius:9px;padding:14px;margin-bottom:14px;color:#1a1a2e">
     <h4 style="color:#1e8449;margin:0 0 8px;font-size:0.9rem">📤 Publicando aviso...</h4>
-    <div style="background:#eee;border-radius:6px;height:8px;overflow:hidden;margin-bottom:8px"><div id="docComBarra" style="height:8px;background:#1e8449;border-radius:6px;width:0%;transition:width 0.4s ease"></div></div>
+    <div style="background:#eee;border-radius:6px;height:8px;overflow:hidden;margin-bottom:8px;color:#1a1a2e"><div id="docComBarra" style="height:8px;background:#1e8449;border-radius:6px;width:0%;transition:width 0.4s ease"></div></div>
     <div id="docComLog" style="font-size:0.82rem;color:var(--text-secondary)"></div>
   </div>
-  <div id="docComHistorial" style="background:#f8fdf9;border:1px solid #d5ead8;border-radius:9px;padding:14px">
+  <div id="docComHistorial" style="background:#f8fdf9;border:1px solid #d5ead8;border-radius:9px;padding:14px;color:#1a1a2e">
     <h4 style="color:#1e8449;margin:0 0 10px;font-size:0.9rem">📋 Tablón — Anuncios publicados</h4>
     <div id="docComHistItems"><div style="text-align:center;padding:12px;color:#aaa;font-size:0.85rem">⏳ Cargando anuncios publicados...</div></div>
   </div>`;
@@ -4675,7 +4683,7 @@ async function _cargarTablonDocente(){
       const idsGrado=new Set((m.grado?(db.ests||[]).filter(function(e){return e.g===m.grado;}):(db.ests||[])).map(function(e){return String(e.id);}));
       const leidos=((db.avisosLeidos||{})[String(n.id)]||[]).filter(function(id){return idsGrado.has(String(id));}).length;
       const pctLeido=totalGrado?Math.round(leidos/totalGrado*100):0;
-      return `<div style="border-left:3px solid #1e8449;padding:7px 12px;margin-bottom:8px;background:#fff;border-radius:0 6px 6px 0">
+      return `<div style="border-left:3px solid #1e8449;padding:7px 12px;margin-bottom:8px;background:#fff;border-radius:0 6px 6px 0;color:#1a1a2e">
         <span style="font-size:0.74rem;color:#aaa">${f}</span>
         <span style="font-size:0.72rem;background:#e8f8f5;color:#1e8449;border-radius:4px;padding:1px 7px;margin-left:6px">Grado ${m.grado||'Todos'}</span>
         ${m.asig?`<span style="font-size:0.72rem;background:#eaf4fe;color:#1a5276;border-radius:4px;padding:1px 7px;margin-left:4px">${m.asig}</span>`:''}
@@ -4707,13 +4715,13 @@ function htmlAlertaTemprana(){
     <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
       <div>
         <label class="lbl">Período a evaluar</label>
-        <select id="at-periodo" style="font-size:0.9rem;padding:7px 14px;border-radius:7px;border:1px solid #ccd;background:#fff">
+        <select id="at-periodo" style="font-size:0.9rem;padding:7px 14px;border-radius:7px;border:1px solid #ccd;background:#fff;color:#1a1a2e">
           ${Array.from({length:(db.config&&db.config.numPeriodos)||4},(_,i)=>i+1).map(p=>`<option value="${p}"${p===perActual?' selected':''}>Período ${p}${perA[p-1]!==false?' (activo)':' (cerrado)'}</option>`).join('')}
         </select>
       </div>
       <div>
         <label class="lbl">Mínimo de áreas perdidas</label>
-        <select id="at-umbral" style="font-size:0.9rem;padding:7px 14px;border-radius:7px;border:1px solid #ccd;background:#fff">
+        <select id="at-umbral" style="font-size:0.9rem;padding:7px 14px;border-radius:7px;border:1px solid #ccd;background:#fff;color:#1a1a2e">
           <option value="1">1 o más áreas</option>
           <option value="2" selected>2 o más áreas</option>
           <option value="3">3 o más áreas</option>
@@ -4722,7 +4730,7 @@ function htmlAlertaTemprana(){
       </div>
       <div>
         <label class="lbl">Filtrar por grado (opcional)</label>
-        <select id="at-grado" style="font-size:0.9rem;padding:7px 14px;border-radius:7px;border:1px solid #ccd;background:#fff">
+        <select id="at-grado" style="font-size:0.9rem;padding:7px 14px;border-radius:7px;border:1px solid #ccd;background:#fff;color:#1a1a2e">
           <option value="">— Todos los grados —</option>
           ${gradOpts}
         </select>
@@ -4761,7 +4769,7 @@ function htmlAlertaTemprana(){
 
   <div id="at-progress" style="display:none" class="card" style="margin-bottom:14px">
     <h4 style="color:#1a5276;margin:0 0 10px;font-size:0.93rem">📨 Enviando alertas...</h4>
-    <div style="background:#e9ecef;border-radius:20px;height:18px;overflow:hidden;margin-bottom:8px">
+    <div style="background:#e9ecef;border-radius:20px;height:18px;overflow:hidden;margin-bottom:8px;color:#1a1a2e">
       <div id="at-progress-bar" style="background:#1a5276;height:100%;width:0%;border-radius:20px;transition:width .4s"></div>
     </div>
     <p id="at-progress-txt" style="font-size:0.83rem;color:#555;text-align:center;margin:0"></p>
@@ -4802,7 +4810,7 @@ function analizarAlertas(){
   tbody.innerHTML=candidatos.map((c,i)=>{
     const nivel=c.areasP>=4?'🔴 Crítico':c.areasP===3?'🟠 Alto':'🟡 Moderado';
     const tieneEmail=!!c.email;
-    return `<tr id="at-row-${i}" style="${i%2===0?'background:#fffafa':'background:#fff'}">
+    return `<tr id="at-row-${i}" style="${i%2===0?'background:#fffafa':'background:#fff'};color:#1a1a2e">
       <td style="padding:7px;text-align:center"><input type="checkbox" class="at-chk" data-idx="${i}" checked></td>
       <td style="padding:7px 10px;font-weight:500">${c.e.n}</td>
       <td style="padding:6px 8px;text-align:center;font-size:0.82rem">${c.e.g}</td>
@@ -4881,7 +4889,7 @@ async function enviarAlertasSeleccionadas(){
   // Log
   if(logDiv){
     const ts=new Date().toLocaleString('es-CO');
-    const bloque=`<div style="background:#eaf4fe;border-radius:8px;padding:10px 12px;margin-bottom:8px;border-left:4px solid #1a5276">
+    const bloque=`<div style="background:#eaf4fe;border-radius:8px;padding:10px 12px;margin-bottom:8px;border-left:4px solid #1a5276;color:#1a1a2e">
       <b style="color:#1a5276">📋 Envío — ${ts} — Período ${periodo} — ${enviados} alerta(s):</b>
       <ul style="margin:6px 0 0;padding-left:18px">
         ${logEntries.map(l=>`<li style="margin:3px 0;color:var(--text-secondary)">${l.ts} · ${l.msg}</li>`).join('')}
@@ -5236,7 +5244,7 @@ function htmlAusentismo(){
       <div><label class="lbl">MUNICIPIO</label><input id="aus_municipio" value="${db.municipio||''}"></div>
       <div><label class="lbl">NOMBRE EE / OFICINA</label><input id="aus_ee" value="${db.nombre||getROT3()||''}"></div>
     </div>
-    <div style="background:#f0f4f8;border-radius:6px;padding:10px 12px;margin-bottom:12px">
+    <div style="background:#f0f4f8;border-radius:6px;padding:10px 12px;margin-bottom:12px;color:#1a1a2e">
       <b style="color:#003366;font-size:0.82rem">DATOS DEL SOLICITANTE</b>
       <div class="grid2" style="margin-top:8px">
         <div><label class="lbl">NOMBRES Y APELLIDOS</label><input id="aus_nombre" value="${sesion.n||''}"></div>
@@ -5247,10 +5255,10 @@ function htmlAusentismo(){
         <div><label class="lbl">CELULAR</label><input id="aus_celular" value="${docUser.telefono||sesion.telefono||''}"></div>
       </div>
     </div>
-    <div style="background:#f9f0e0;border-radius:6px;padding:10px 12px;margin-bottom:12px">
+    <div style="background:#f9f0e0;border-radius:6px;padding:10px 12px;margin-bottom:12px;color:#1a1a2e">
       <b style="color:#856404;font-size:0.82rem">DATOS DEL PERMISO &nbsp;<small style="font-weight:normal">(Máx 3 días hábiles consecutivos — Ley 734/2002 — Dec.1083/2015 — Dec.648/2017)</small></b>
       <div class="grid2" style="margin-top:8px">
-        <div style="max-height:280px;overflow-y:auto;border:1px solid #ddd;border-radius:6px;padding:6px 10px;background:#fff">${tiposGrid}</div>
+        <div style="max-height:280px;overflow-y:auto;border:1px solid #ddd;border-radius:6px;padding:6px 10px;background:#fff;color:#1a1a2e">${tiposGrid}</div>
         <div>
           <div class="grid2" style="margin-bottom:8px">
             <div><label class="lbl">FECHA SOLICITUD (dd/mm/aa)</label><input id="aus_fechaSol" type="date" value="${hoy}"></div>
@@ -5317,15 +5325,15 @@ function enviarAusentismo(){
             <h2 style="margin:0;font-size:1.1rem">📋 Nueva Solicitud de Permiso Laboral</h2>
             <p style="margin:4px 0 0;font-size:0.85rem;opacity:0.8">H03.03.F01 — Gestor Académico YC</p>
           </div>
-          <div style="background:#fff;padding:20px;border:1px solid #e0e0e0;border-radius:0 0 10px 10px">
+          <div style="background:#fff;padding:20px;border:1px solid #e0e0e0;border-radius:0 0 10px 10px;color:#1a1a2e">
             <p>Estimado(a) Rector(a),</p>
             <p>El/La docente <b>${sesion.n}</b> ha enviado una solicitud de permiso laboral que requiere su gestión.</p>
             <table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin:16px 0">
-              <tr style="background:#f0f4f8"><td style="padding:8px;font-weight:bold">Docente:</td><td style="padding:8px">${sesion.n}</td></tr>
+              <tr style="background:#f0f4f8;color:#1a1a2e"><td style="padding:8px;font-weight:bold">Docente:</td><td style="padding:8px">${sesion.n}</td></tr>
               <tr><td style="padding:8px;font-weight:bold">Tipo(s):</td><td style="padding:8px">${tipos.join(', ')}</td></tr>
-              <tr style="background:#f0f4f8"><td style="padding:8px;font-weight:bold">Desde:</td><td style="padding:8px">${solicitud.desde||'—'}</td></tr>
+              <tr style="background:#f0f4f8;color:#1a1a2e"><td style="padding:8px;font-weight:bold">Desde:</td><td style="padding:8px">${solicitud.desde||'—'}</td></tr>
               <tr><td style="padding:8px;font-weight:bold">Hasta:</td><td style="padding:8px">${solicitud.hasta||'—'}</td></tr>
-              <tr style="background:#f0f4f8"><td style="padding:8px;font-weight:bold">Días:</td><td style="padding:8px">${solicitud.diasTotal||'—'}</td></tr>
+              <tr style="background:#f0f4f8;color:#1a1a2e"><td style="padding:8px;font-weight:bold">Días:</td><td style="padding:8px">${solicitud.diasTotal||'—'}</td></tr>
               ${solicitud.obs?`<tr><td style="padding:8px;font-weight:bold">Observaciones:</td><td style="padding:8px">${solicitud.obs}</td></tr>`:''}
             </table>
             <p style="font-size:0.85rem;color:#555">Ingrese al sistema para aprobar o rechazar esta solicitud.</p>
@@ -5609,16 +5617,16 @@ function htmlVerCredenciales(){
       <td>${e.g}</td>
       <td style="font-size:0.8rem">${e.acudiente||'—'}</td>
       <td style="text-align:center">
-        ${tieneUser?`<code style="font-size:0.78rem;background:#e8f0fe;padding:2px 5px;border-radius:3px">${userEst}</code>`:'<span style="color:#c0392b;font-size:0.78rem">Sin doc.</span>'}
+        ${tieneUser?`<code style="font-size:0.78rem;background:#e8f0fe;padding:2px 5px;border-radius:3px;color:#1a1a2e">${userEst}</code>`:'<span style="color:#c0392b;font-size:0.78rem">Sin doc.</span>'}
       </td>
       <td style="text-align:center">
-        ${tieneUser?`<code style="font-size:0.78rem;background:#e8f8f0;padding:2px 5px;border-radius:3px">${passEst}</code>`:'<span style="color:#c0392b;font-size:0.78rem">—</span>'}
+        ${tieneUser?`<code style="font-size:0.78rem;background:#e8f8f0;padding:2px 5px;border-radius:3px;color:#1a1a2e">${passEst}</code>`:'<span style="color:#c0392b;font-size:0.78rem">—</span>'}
       </td>
       <td style="text-align:center">
-        ${e.numDocAcud?`<code style="font-size:0.78rem;background:#fef9e7;padding:2px 5px;border-radius:3px">${userAcud}</code>`:'<span style="color:#888;font-size:0.78rem">—</span>'}
+        ${e.numDocAcud?`<code style="font-size:0.78rem;background:#fef9e7;padding:2px 5px;border-radius:3px;color:#1a1a2e">${userAcud}</code>`:'<span style="color:#888;font-size:0.78rem">—</span>'}
       </td>
       <td style="text-align:center">
-        ${e.numDocAcud?`<code style="font-size:0.78rem;background:#fdf2e9;padding:2px 5px;border-radius:3px">${passAcud}</code>`:'<span style="color:#888;font-size:0.78rem">—</span>'}
+        ${e.numDocAcud?`<code style="font-size:0.78rem;background:#fdf2e9;padding:2px 5px;border-radius:3px;color:#1a1a2e">${passAcud}</code>`:'<span style="color:#888;font-size:0.78rem">—</span>'}
       </td>
       <td>
         <button class="btn-sm" style="background:#003366;font-size:0.72rem" onclick="_abrirModalCred('${String(e.id)}')" title="Asignar / editar credenciales">🔑 Credenciales</button>
@@ -5627,7 +5635,7 @@ function htmlVerCredenciales(){
   }).join('');
   return `<h3 class="sec-title">🔑 Credenciales del Sistema</h3>
   <div class="warn-box">⚠️ Esta información es confidencial. Solo el administrador, rector y súper administrador (por continuidad del servicio) pueden verla.</div>
-  ${sinCred.length?`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:7px;padding:10px 14px;margin-bottom:12px;font-size:0.84rem">
+  ${sinCred.length?`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:7px;padding:10px 14px;margin-bottom:12px;font-size:0.84rem;color:#1a1a2e">
     ⚠️ <b>${sinCred.length}</b> estudiante(s) no tienen número de documento asignado. Use el botón <b>🔑 Credenciales</b> para asignarles acceso manual.
     <button class="btn-sm" style="background:#e67e22;margin-left:8px" onclick="_asignarCredTodos()">⚡ Generar para todos los que tengan doc.</button>
   </div>`:''}
@@ -5663,10 +5671,10 @@ function _abrirModalCred(estId){
   const ov=document.createElement('div');
   ov.id='_credOv';
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:26px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.35)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:26px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.35);color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:4px;font-size:1rem">🔑 Credenciales de Acceso</h3>
     <p style="font-size:0.82rem;color:#555;margin-bottom:16px"><b>${fmtNombreEst(e)}</b> — Grado ${e.g}</p>
-    <div style="background:#e8f0fe;border-left:4px solid #003366;padding:12px;border-radius:0 8px 8px 0;margin-bottom:14px">
+    <div style="background:#e8f0fe;border-left:4px solid #003366;padding:12px;border-radius:0 8px 8px 0;margin-bottom:14px;color:#1a1a2e">
       <div style="font-size:0.75rem;font-weight:bold;color:#003366;margin-bottom:8px">🎒 ESTUDIANTE</div>
       <div class="grid2" style="gap:8px">
         <div><label class="lbl">Usuario (Nº documento)</label><input id="_crUEst" value="${e.u||e.numDoc||''}" placeholder="Ej: 1001234567" style="padding:8px;border:1.5px solid #ddd;border-radius:6px;width:100%"></div>
@@ -5679,7 +5687,7 @@ function _abrirModalCred(estId){
       </div>
       <button onclick="_autoCredEst('${estId}')" style="margin-top:8px;background:#1a5276;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:0.75rem;cursor:pointer">⚡ Auto-rellenar desde doc.</button>
     </div>
-    <div style="background:#e8f8f0;border-left:4px solid #27ae60;padding:12px;border-radius:0 8px 8px 0;margin-bottom:16px">
+    <div style="background:#e8f8f0;border-left:4px solid #27ae60;padding:12px;border-radius:0 8px 8px 0;margin-bottom:16px;color:#1a1a2e">
       <div style="font-size:0.75rem;font-weight:bold;color:#27ae60;margin-bottom:8px">👨‍👩‍👦 ACUDIENTE / PADRE</div>
       <div class="grid2" style="gap:8px">
         <div><label class="lbl">Nombre acudiente</label><input id="_crNomAcud" value="${e.acudiente||''}" placeholder="Nombre del acudiente" style="padding:8px;border:1.5px solid #ddd;border-radius:6px;width:100%"></div>
@@ -5691,7 +5699,7 @@ function _abrirModalCred(estId){
     </div>
     <div style="background:#fff3cd;border-radius:6px;padding:8px 12px;font-size:0.78rem;color:#856404;margin-bottom:14px">⚠️ La contraseña inicial puede ser el Nº de documento. Recomiende cambiarla en el primer inicio de sesión.</div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button onclick="document.getElementById('_credOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cancelar</button>
+      <button onclick="document.getElementById('_credOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cancelar</button>
       <button onclick="_guardarCred('${estId}')" style="background:#003366;color:#fff;border:none;border-radius:7px;padding:10px 22px;cursor:pointer;font-weight:bold">💾 Guardar</button>
     </div>
   </div>`;
@@ -5772,7 +5780,7 @@ function htmlManualUsuario(){
         <span style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5">${p}</span>
       </div>`).join('');
     return `
-    <div style="background:#fff;border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);border:1px solid #eaecee">
+    <div style="background:#fff;border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);border:1px solid #eaecee;color:#1a1a2e">
       <div style="background:${bg};padding:11px 16px;display:flex;align-items:center;gap:12px">
         <span style="font-size:1.6rem;line-height:1">${emoji}</span>
         <div style="flex:1">
@@ -6717,7 +6725,7 @@ function _htmlSegObsResultados(){
   }
 
   // Tabla detallada por estudiante
-  const filasEst=estArr.length?estArr.map((e,i)=>`<tr style="${i%2===0?'background:#f9fbff':''}">
+  const filasEst=estArr.length?estArr.map((e,i)=>`<tr style="${i%2===0?'background:#f9fbff':''};color:#1a1a2e">
     <td style="padding:7px 10px;font-weight:500">${e.nom}</td>
     <td style="padding:7px 10px;text-align:center;color:#666">${e.grado}</td>
     <td style="padding:7px 10px;text-align:center;font-weight:bold;color:#1a5276">${e.total}</td>
@@ -6734,7 +6742,7 @@ function _htmlSegObsResultados(){
 
   // Lista de compromisos (todas las obs filtradas, últimas 30)
   const ultimas=filtradas.slice().reverse().slice(0,30);
-  const listaCompromisos=ultimas.length?ultimas.map(o=>`<div style="border-left:3px solid #1a5276;padding:8px 12px;margin-bottom:8px;background:#f9fbff;border-radius:0 6px 6px 0">
+  const listaCompromisos=ultimas.length?ultimas.map(o=>`<div style="border-left:3px solid #1a5276;padding:8px 12px;margin-bottom:8px;background:#f9fbff;border-radius:0 6px 6px 0;color:#1a1a2e">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
       <span style="font-weight:600;color:#1a5276">${o.estNom}</span>
       <span style="font-size:0.75rem;color:#888">${o.grado} · P${o.per} · ${o.fecha}</span>
@@ -6900,12 +6908,12 @@ function verEstudiantesPorGrado(grado){
   const seccion=(titulo,col,ests,bg)=>ests.length?`<div style="margin-bottom:14px">
     <div style="background:${col};color:#fff;padding:6px 12px;border-radius:7px 7px 0 0;font-size:0.83rem;font-weight:bold">${titulo} (${ests.length})</div>
     <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
-      <thead><tr style="background:#f0f4f8"><th style="padding:6px 10px;text-align:left">Estudiante</th><th style="padding:6px 8px;text-align:center">Promedio</th><th style="padding:6px 8px">Historial</th></tr></thead>
+      <thead><tr style="background:#f0f4f8;color:#1a1a2e"><th style="padding:6px 10px;text-align:left">Estudiante</th><th style="padding:6px 8px;text-align:center">Promedio</th><th style="padding:6px 8px">Historial</th></tr></thead>
       <tbody>${ests.map((s,i)=>fila(s,i,bg)).join('')}</tbody>
     </table></div>`:'';
   const modalId='_modalGrado_'+Date.now();
   document.body.insertAdjacentHTML('beforeend',`<div id="${modalId}" style="position:fixed;inset:0;background:rgba(10,20,40,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:12px;backdrop-filter:blur(3px)" onclick="if(event.target.id==='${modalId}')document.getElementById('${modalId}').remove()">
-  <div style="background:#fff;border-radius:14px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.35)">
+  <div style="background:#fff;border-radius:14px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.35);color:#1a1a2e">
     <div style="background:linear-gradient(135deg,#1a3a5c,#2980b9);border-radius:14px 14px 0 0;padding:16px 20px;display:flex;justify-content:space-between;align-items:center">
       <div>
         <div style="color:#fff;font-size:1.1rem;font-weight:800">👥 Grado: ${grado}</div>
@@ -6947,7 +6955,7 @@ function verHistorialEstudiante(estId){
     <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
       <thead><tr style="background:#1a3a5c;color:#fff"><th style="padding:6px 10px;text-align:left">Asignatura</th>${pHeaders}<th style="padding:5px 8px;text-align:center">Prom.</th></tr></thead>
       <tbody>${filasNotas}</tbody>
-      <tfoot><tr style="background:#e8f0fb;font-weight:bold"><td style="padding:6px 10px" colspan="${numPer+1}">Promedio General</td><td style="padding:6px 8px;text-align:center;color:${colorNota(promGlobal)}">${promGlobal.toFixed(2)}</td></tr></tfoot>
+      <tfoot><tr style="background:#e8f0fb;font-weight:bold;color:#1a1a2e"><td style="padding:6px 10px" colspan="${numPer+1}">Promedio General</td><td style="padding:6px 8px;text-align:center;color:${colorNota(promGlobal)}">${promGlobal.toFixed(2)}</td></tr></tfoot>
     </table></div>`:'<p style="color:#aaa;text-align:center;padding:12px;font-size:0.85rem">Sin notas registradas aún.</p>';
 
   const obs=(est.observaciones||[]).slice().reverse(); // más reciente primero
@@ -7001,7 +7009,7 @@ function verHistorialEstudiante(estId){
   // Construir modal
   const modalId='_modalHistObs_'+Date.now();
   const htmlModal=`<div id="${modalId}" style="position:fixed;inset:0;background:rgba(10,20,40,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:12px;backdrop-filter:blur(3px)" onclick="if(event.target.id==='${modalId}')document.getElementById('${modalId}').remove()">
-  <div style="background:#fff;border-radius:14px;max-width:700px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.35)">
+  <div style="background:#fff;border-radius:14px;max-width:700px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,.35);color:#1a1a2e">
     <!-- Cabecera -->
     <div style="background:linear-gradient(135deg,#1a3a5c,#2980b9);border-radius:14px 14px 0 0;padding:18px 20px;display:flex;justify-content:space-between;align-items:flex-start">
       <div>
@@ -7016,7 +7024,7 @@ function verHistorialEstudiante(estId){
 
     <div style="padding:18px 20px">
       <!-- Notas académicas -->
-      <div style="border:1px solid #d4e6f1;border-radius:10px;padding:14px;margin-bottom:18px;background:#f4f9ff">
+      <div style="border:1px solid #d4e6f1;border-radius:10px;padding:14px;margin-bottom:18px;background:#f4f9ff;color:#1a1a2e">
         <h4 style="color:#1a3a5c;margin:0 0 10px;font-size:0.93rem">📝 Notas Académicas por Asignatura</h4>
         ${notasHTML}
       </div>
@@ -7032,7 +7040,7 @@ function verHistorialEstudiante(estId){
       </div>
 
       <!-- Gráfica por período -->
-      <div style="border:1px solid #e3eaf4;border-radius:10px;padding:14px;margin-bottom:18px;background:#fafcff">
+      <div style="border:1px solid #e3eaf4;border-radius:10px;padding:14px;margin-bottom:18px;background:#fafcff;color:#1a1a2e">
         <h4 style="color:#1a3a5c;margin:0 0 10px;font-size:0.93rem">📊 Frecuencia por Período</h4>
         ${graficaPer}
         ${docsSet.length?`<div style="font-size:0.75rem;color:#666;text-align:center;margin-top:6px">Docentes involucrados: ${docsSet.join(', ')}</div>`:''}
@@ -7581,7 +7589,7 @@ function htmlCalendarioAcademico(){
   for(let dia=1;dia<=diasEnMes;dia++){
     const evs=eventosPorDia[dia]||[];
     const esHoy=esMesActual&&hoy.getDate()===dia;
-    celdas+='<td style="vertical-align:top;padding:4px;border:1px solid var(--border-color);'+(esHoy?'background:#fff8e1':'')+'">'
+    celdas+='<td style="vertical-align:top;padding:4px;border:1px solid var(--border-color);'+(esHoy?'background:#fff8e1':'')+';color:#1a1a2e">'
       +'<div style="font-weight:'+(esHoy?'800':'600')+';font-size:0.78rem;color:'+(esHoy?'#b7950b':'var(--text-secondary)')+'">'+dia+'</div>'
       +evs.slice(0,3).map(function(ev){ return '<div style="background:'+TIPO_EVENTO_INFO[ev.tipo].color+';color:#fff;border-radius:4px;padding:1px 4px;font-size:0.64rem;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+ev.titulo.replace(/"/g,'&quot;')+'">'+ev.titulo+'</div>'; }).join('')
       +(evs.length>3?'<div style="font-size:0.62rem;color:#888;margin-top:1px">+'+(evs.length-3)+' más</div>':'')
@@ -7788,8 +7796,8 @@ function htmlHistoricoAnios(){
           <span style="font-size:0.78rem;color:#888;margin-left:10px">Archivado: ${h.fechaArchivo||'—'}</span>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${h.numEstudiantes!=='?'?`<span style="background:#e8f4fd;padding:4px 10px;border-radius:4px;font-size:0.82rem">👥 ${h.numEstudiantes} est.</span>`:''}
-          ${h.numGrados!=='?'?`<span style="background:#eafaf1;padding:4px 10px;border-radius:4px;font-size:0.82rem">📚 ${h.numGrados} grados</span>`:''}
+          ${h.numEstudiantes!=='?'?`<span style="background:#e8f4fd;padding:4px 10px;border-radius:4px;font-size:0.82rem;color:#1a1a2e">👥 ${h.numEstudiantes} est.</span>`:''}
+          ${h.numGrados!=='?'?`<span style="background:#eafaf1;padding:4px 10px;border-radius:4px;font-size:0.82rem;color:#1a1a2e">📚 ${h.numGrados} grados</span>`:''}
           <button class="btn-sm" style="background:#1a5276" onclick="switchAnioLectivoVer('${h.anio}')">👁 Ver datos</button>
           <button class="btn-sm" style="background:#8e44ad" onclick="exportarHistoricoAnio('${h.anio}')">📥 Exportar</button>
           ${plat?`<button class="btn-sm" style="background:#27ae60" onclick="_activarAnioLectivo('${platId}','${h.anio}')">🔄 Activar</button>`:''}
@@ -7946,7 +7954,7 @@ function verDatosHistorico(anio){
   const d=hist.datos;
   const ests=d.ests||[];const grados=d.grados||[];const carga=d.carga||[];
   let html=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto" id="_histModalOv" onclick="if(event.target===this)this.remove()">
-  <div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;padding:0">
+  <div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;padding:0;color:#1a1a2e">
     <div style="background:linear-gradient(135deg,#003366,#1a5276);color:#fff;padding:18px 20px;border-radius:12px 12px 0 0;position:sticky;top:0;z-index:1;display:flex;justify-content:space-between;align-items:center">
       <div><h3 style="margin:0;font-size:1.05rem">📅 Año Lectivo ${anio} — Vista histórica (solo lectura)</h3>
         <small style="opacity:0.8">${hist.resumen||''}</small></div>
@@ -7954,9 +7962,9 @@ function verDatosHistorico(anio){
     </div>
     <div style="padding:20px">
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
-        <div style="background:#e8f4fd;border-radius:8px;padding:12px 20px;text-align:center"><b style="font-size:1.2rem;color:#003366">${ests.length}</b><div style="font-size:0.78rem;color:#666">Estudiantes</div></div>
-        <div style="background:#eafaf1;border-radius:8px;padding:12px 20px;text-align:center"><b style="font-size:1.2rem;color:#27ae60">${grados.length}</b><div style="font-size:0.78rem;color:#666">Grados</div></div>
-        <div style="background:#f5eef8;border-radius:8px;padding:12px 20px;text-align:center"><b style="font-size:1.2rem;color:#8e44ad">${carga.length}</b><div style="font-size:0.78rem;color:#666">Asignaturas</div></div>
+        <div style="background:#e8f4fd;border-radius:8px;padding:12px 20px;text-align:center;color:#1a1a2e"><b style="font-size:1.2rem;color:#003366">${ests.length}</b><div style="font-size:0.78rem;color:#666">Estudiantes</div></div>
+        <div style="background:#eafaf1;border-radius:8px;padding:12px 20px;text-align:center;color:#1a1a2e"><b style="font-size:1.2rem;color:#27ae60">${grados.length}</b><div style="font-size:0.78rem;color:#666">Grados</div></div>
+        <div style="background:#f5eef8;border-radius:8px;padding:12px 20px;text-align:center;color:#1a1a2e"><b style="font-size:1.2rem;color:#8e44ad">${carga.length}</b><div style="font-size:0.78rem;color:#666">Asignaturas</div></div>
       </div>
       <h4 style="color:#003366;margin-bottom:10px">👥 Listado de Estudiantes (${ests.length})</h4>
       <div style="overflow-x:auto;margin-bottom:20px"><table style="width:100%;border-collapse:collapse;font-size:0.82rem">
@@ -7965,7 +7973,7 @@ function verDatosHistorico(anio){
         ${ests.length>200?`<tr><td colspan="4" style="text-align:center;padding:8px;color:#888;font-style:italic">... y ${ests.length-200} estudiantes más</td></tr>`:''}</tbody>
       </table></div>
       <h4 style="color:#003366;margin-bottom:10px">📚 Grados y Asignaturas</h4>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${grados.map(g=>`<span style="background:#e8f4fd;padding:5px 12px;border-radius:6px;font-size:0.82rem"><b>${g.n||g}</b>${g.d?' · '+g.d:''}</span>`).join('')}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${grados.map(g=>`<span style="background:#e8f4fd;padding:5px 12px;border-radius:6px;font-size:0.82rem;color:#1a1a2e"><b>${g.n||g}</b>${g.d?' · '+g.d:''}</span>`).join('')}</div>
     </div>
   </div></div>`;
   const div=document.createElement('div');div.innerHTML=html;document.body.appendChild(div.firstChild);
@@ -8187,13 +8195,13 @@ function mostrarRecuperarPasswordGestor(){
   const overlay=document.createElement('div');
   overlay.id='_recGestorOverlay';
   overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center';
-  overlay.innerHTML=`<div style="background:#fff;border-radius:14px;padding:28px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.35)">
+  overlay.innerHTML=`<div style="background:#fff;border-radius:14px;padding:28px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.35);color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:4px">🔒 Recuperar Contraseña — Admin General</h3>
     <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Se enviará la contraseña al correo registrado del Administrador General.</p>
     <div id="_recGestorStatus" style="margin-bottom:10px;font-size:0.82rem;min-height:20px"></div>
     <div style="display:flex;gap:8px">
       <button onclick="enviarRecuperacionGestor()" style="flex:1;background:#003366;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold;font-size:0.9rem">📧 Enviar al Correo</button>
-      <button onclick="document.getElementById('_recGestorOverlay').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer">Cancelar</button>
+      <button onclick="document.getElementById('_recGestorOverlay').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer;color:#1a1a2e">Cancelar</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
@@ -8212,11 +8220,11 @@ async function enviarRecuperacionGestor(){
   const nuevoHash=await _hashPassword(password);
   updGestorDB(d=>{d.superAdmin.p=nuevoHash;return d;});
   const nombre=gestorDB.superAdmin.nombre||'Administrador General';
-  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;background:#f0f4f8;margin:0;padding:20px">
-  <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1)">
+  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;background:#f0f4f8;margin:0;padding:20px;color:#1a1a2e">
+  <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1);color:#1a1a2e">
     <div style="background:linear-gradient(135deg,#003366,#1a5276);padding:28px;text-align:center"><h1 style="color:#fff;margin:0;font-size:1.4rem">🎓 Gestor Académico YC</h1><p style="color:#cce4ff;margin:6px 0 0;font-size:0.9rem">Recuperación de Contraseña — Admin General</p></div>
     <div style="padding:28px"><p style="color:var(--text-secondary);font-size:0.95rem">Hola, <b>${nombre}</b>.</p>
-    <div style="background:#f0f6ff;border:1px solid #c0d8f0;border-radius:8px;padding:18px;margin:20px 0">
+    <div style="background:#f0f6ff;border:1px solid #c0d8f0;border-radius:8px;padding:18px;margin:20px 0;color:#1a1a2e">
       <table style="width:100%;border-collapse:collapse">
         <tr><td style="padding:6px 0;color:#666;font-size:0.85rem;width:40%">👤 Usuario:</td><td style="padding:6px 0;font-weight:bold;color:#003366;font-size:1.05rem">${usuario}</td></tr>
         <tr><td style="padding:6px 0;color:#666;font-size:0.85rem">🔑 Contraseña:</td><td style="padding:6px 0;font-weight:bold;color:#c0392b;font-size:1.05rem">${password}</td></tr>
@@ -8225,7 +8233,7 @@ async function enviarRecuperacionGestor(){
     </div>
     <p style="margin-top:20px;text-align:center"><a href="${location.origin}/portal.html" style="background:#003366;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:0.9rem">🚀 Ir a la Plataforma</a></p>
     </div>
-    <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee"><p style="color:#888;font-size:0.75rem;margin:0">Gestor Académico YC · ${new Date().toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</p></div>
+    <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee;color:#1a1a2e"><p style="color:#888;font-size:0.75rem;margin:0">Gestor Académico YC · ${new Date().toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</p></div>
   </div></body></html>`;
   try{
     const resp=await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:email,subject:'🔑 Recuperación de contraseña — Gestor Académico YC (Admin General)',html})});
@@ -8251,14 +8259,14 @@ function mostrarRecuperarPassword(){
   const overlay=document.createElement('div');
   overlay.id='_recPassOverlay';
   overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center';
-  overlay.innerHTML=`<div style="background:#fff;border-radius:14px;padding:28px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.35)">
+  overlay.innerHTML=`<div style="background:#fff;border-radius:14px;padding:28px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.35);color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:4px">🔒 Recuperar Contraseña</h3>
     <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Ingrese su correo electrónico. Le enviaremos un enlace/código de acceso al correo que tiene registrado.</p>
     <label style="font-size:0.82rem;font-weight:bold;color:var(--text-secondary)">Correo electrónico registrado:</label>
     <input id="_recEmail" type="email" placeholder="docente@correo.com" style="width:100%;margin:8px 0 14px;padding:10px;border:1.5px solid #ddd;border-radius:7px;font-size:0.9rem">
     <div style="display:flex;gap:8px">
       <button onclick="enviarRecuperacion()" style="flex:1;background:#003366;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold;font-size:0.9rem">📧 Solicitar Recuperación</button>
-      <button onclick="document.getElementById('_recPassOverlay').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer">Cancelar</button>
+      <button onclick="document.getElementById('_recPassOverlay').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer;color:#1a1a2e">Cancelar</button>
     </div>
     <div id="_recStatus" style="margin-top:12px;font-size:0.82rem;min-height:20px"></div>
   </div>`;
@@ -8271,8 +8279,8 @@ function mostrarRecuperarPasswordPortal(platId){
 }
 async function _enviarCorreoRecuperacion(destinatario,nombreUsuario,usuario,password,rol,nombrePlat){
   const html=`
-  <!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;background:#f0f4f8;margin:0;padding:20px">
-  <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1)">
+  <!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;background:#f0f4f8;margin:0;padding:20px;color:#1a1a2e">
+  <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1);color:#1a1a2e">
     <div style="background:linear-gradient(135deg,#003366,#1a5276);padding:28px;text-align:center">
       <h1 style="color:#fff;margin:0;font-size:1.4rem">🎓 Gestor Académico YC</h1>
       <p style="color:#cce4ff;margin:6px 0 0;font-size:0.9rem">Recuperación de Contraseña</p>
@@ -8280,7 +8288,7 @@ async function _enviarCorreoRecuperacion(destinatario,nombreUsuario,usuario,pass
     <div style="padding:28px">
       <p style="color:var(--text-secondary);font-size:0.95rem">Hola, <b>${nombreUsuario||usuario}</b>.</p>
       <p style="color:#555;font-size:0.9rem">Se ha solicitado la recuperación de su contraseña para la plataforma <b>${nombrePlat}</b>. A continuación encontrará sus credenciales de acceso:</p>
-      <div style="background:#f0f6ff;border:1px solid #c0d8f0;border-radius:8px;padding:18px;margin:20px 0">
+      <div style="background:#f0f6ff;border:1px solid #c0d8f0;border-radius:8px;padding:18px;margin:20px 0;color:#1a1a2e">
         <table style="width:100%;border-collapse:collapse">
           <tr><td style="padding:6px 0;color:#666;font-size:0.85rem;width:40%">🏫 Institución:</td><td style="padding:6px 0;font-weight:bold;color:#003366">${nombrePlat}</td></tr>
           <tr><td style="padding:6px 0;color:#666;font-size:0.85rem">👤 Usuario:</td><td style="padding:6px 0;font-weight:bold;color:#003366;font-size:1.05rem;letter-spacing:0.5px">${usuario}</td></tr>
@@ -8295,7 +8303,7 @@ async function _enviarCorreoRecuperacion(destinatario,nombreUsuario,usuario,pass
         <a href="${location.origin||'https://gestoracademicoyc.replit.app'}/portal.html" style="background:#003366;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:0.9rem">🚀 Ir a la Plataforma</a>
       </p>
     </div>
-    <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee">
+    <div style="background:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #eee;color:#1a1a2e">
       <p style="color:#888;font-size:0.75rem;margin:0">Este correo fue generado automáticamente por Gestor Académico YC · ${new Date().toLocaleDateString('es-CO',{year:'numeric',month:'long',day:'numeric'})}</p>
       <p style="color:#aaa;font-size:0.72rem;margin:4px 0 0">Si no solicitó esta recuperación, ignore este mensaje.</p>
     </div>
@@ -8476,24 +8484,24 @@ function abrirPazSalvoModal(estId){
   const ov=document.createElement('div');
   ov.id='_pzOv';
   ov.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.65);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:26px;max-width:380px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:26px;max-width:380px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.3);color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:16px">⚖️ Paz y Salvo — ${fmtNombreEst(est)}</h3>
     <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px">
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8f8f8;border-radius:8px;border:1.5px solid #ddd">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8f8f8;border-radius:8px;border:1.5px solid #ddd;color:#1a1a2e">
         <input type="checkbox" id="_pzEcon" ${est.pensionAlDia?'checked':''} style="width:18px;height:18px">
         <div><b>✅ Económico</b><br><small style="color:#666">Pensión / matrícula al día</small></div>
       </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8f8f8;border-radius:8px;border:1.5px solid #ddd">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8f8f8;border-radius:8px;border:1.5px solid #ddd;color:#1a1a2e">
         <input type="checkbox" id="_pzAcad" ${est.pazSalvoAcad!==false?'checked':''} style="width:18px;height:18px">
         <div><b>📚 Académico</b><br><small style="color:#666">Sin deudas académicas / recuperaciones pendientes</small></div>
       </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8f8f8;border-radius:8px;border:1.5px solid #ddd">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#f8f8f8;border-radius:8px;border:1.5px solid #ddd;color:#1a1a2e">
         <input type="checkbox" id="_pzDisc" ${est.pazSalvoDisc!==false?'checked':''} style="width:18px;height:18px">
         <div><b>🤝 Disciplinario</b><br><small style="color:#666">Sin sanciones disciplinarias activas</small></div>
       </label>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button onclick="document.getElementById('_pzOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cancelar</button>
+      <button onclick="document.getElementById('_pzOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cancelar</button>
       <button onclick="_guardarPazSalvo('${estId}')" style="background:#003366;color:#fff;border:none;border-radius:7px;padding:10px 22px;cursor:pointer;font-weight:bold">💾 Guardar</button>
     </div>
   </div>`;
@@ -8550,7 +8558,7 @@ function htmlActividadesEstudiante(est){
         <b style="color:#003366;font-size:0.88rem">📅 ${perLabel}</b>
         <span style="font-size:0.75rem;color:#555">${entregadasPer}/${totalActs} entregadas · ${califPer} calificadas</span>
       </div>
-      <div style="background:#e0e0e0;border-radius:5px;height:7px;margin-bottom:8px;overflow:hidden">
+      <div style="background:#e0e0e0;border-radius:5px;height:7px;margin-bottom:8px;overflow:hidden;color:#1a1a2e">
         <div style="background:#27ae60;height:100%;width:${pctEnt}%;border-radius:5px;transition:width 0.4s"></div>
       </div>
       ${perActs.map(a=>{
@@ -8560,7 +8568,7 @@ function htmlActividadesEstudiante(est){
         const estadoColor=nota!=null?(nota>=3?'#27ae60':'#c0392b'):entrega?'#2980b9':(vencida?'#c0392b':'#e67e22');
         const _escMax=db.config?.escalaS||5.0;const _escB=db.config?.escalaB||3.0;
         const estadoText=nota!=null?`${nota}/${_escMax.toFixed(1)} ${nota>=_escB?'✅':'⚠️'} ${esc(nota)}`:(entrega?'✅ Entregada':(vencida?'⛔ Vencida':'📋 Pendiente'));
-        return `<div style="border:1.5px solid #ddd;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fafafa">
+        return `<div style="border:1.5px solid #ddd;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fafafa;color:#1a1a2e">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:6px">
             <div>
               <b>${a.titulo}</b> <span style="font-size:0.8rem;color:#888">· ${a.asignatura||'—'}</span>
@@ -8569,9 +8577,9 @@ function htmlActividadesEstudiante(est){
             </div>
             <span style="background:${estadoColor};color:#fff;border-radius:12px;padding:2px 10px;font-size:0.75rem;font-weight:bold;white-space:nowrap">${estadoText}</span>
           </div>
-          ${nota!=null?`<div style="margin-top:6px"><div style="background:#e0e0e0;border-radius:4px;height:5px;overflow:hidden"><div style="background:${nota>=_escB?'#27ae60':'#c0392b'};height:100%;width:${Math.min(100,Math.round((nota/_escMax)*100))}%;transition:width 0.4s;border-radius:4px"></div></div></div>`:''}
+          ${nota!=null?`<div style="margin-top:6px"><div style="background:#e0e0e0;border-radius:4px;height:5px;overflow:hidden;color:#1a1a2e"><div style="background:${nota>=_escB?'#27ae60':'#c0392b'};height:100%;width:${Math.min(100,Math.round((nota/_escMax)*100))}%;transition:width 0.4s;border-radius:4px"></div></div></div>`:''}
           ${a.desc?`<p style="font-size:0.84rem;color:#555;margin:6px 0 4px">${a.desc}</p>`:''}
-          ${entrega?.observaciones?`<div style="font-size:0.8rem;background:#e8f8f5;border-radius:6px;padding:6px 10px;margin-top:4px"><b>Obs. docente:</b> ${entrega.observaciones}</div>`:''}
+          ${entrega?.observaciones?`<div style="font-size:0.8rem;background:#e8f8f5;border-radius:6px;padding:6px 10px;margin-top:4px;color:#1a1a2e"><b>Obs. docente:</b> ${entrega.observaciones}</div>`:''}
           <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
             ${a.archivoB64?`<button onclick="_descargarArchivoAct('${a.id}')" class="btn" style="background:#2980b9;color:#fff;font-size:0.78rem;padding:5px 12px">📥 ${(a.archivoNombre||'Archivo').substring(0,22)}</button>`:''}
             ${a.driveLink?`<a href="${a.driveLink}" target="_blank" class="btn" style="background:#1e8449;color:#fff;font-size:0.78rem;padding:5px 12px">📁 Drive</a>`:''}
@@ -8631,7 +8639,7 @@ function htmlQuizzesEstudiante(est){
     const vencido=ev.fechaLimite&&new Date(ev.fechaLimite)<now;
     const ultimaResp=misResp.sort((a,b)=>b.intento-a.intento)[0];
     const puedeResponder=!vencido&&intentosUsados<maxIntentos;
-    return `<div style="border:1.5px solid #9b59b6;border-radius:8px;padding:12px;margin-bottom:10px;background:#fdf9ff">
+    return `<div style="border:1.5px solid #9b59b6;border-radius:8px;padding:12px;margin-bottom:10px;background:#fdf9ff;color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px">
         <div>
           <b style="color:#8e44ad">${ev.titulo}</b> <span style="font-size:0.8rem;color:#888">· ${ev.asignatura||'—'}</span><br>
@@ -8671,13 +8679,13 @@ function iniciarQuizEstudiante(evalId,estId){
         <span>${o}</span>
       </label>`).join('');
     } else {
-      optsHtml=`<div style="background:#f0e6ff;border-radius:10px;padding:14px">
+      optsHtml=`<div style="background:#f0e6ff;border-radius:10px;padding:14px;color:#1a1a2e">
         <label style="display:block;font-size:0.82rem;font-weight:700;color:#6c3483;margin-bottom:8px">✏️ Escribe tu respuesta:</label>
         <textarea id="q_texto" placeholder="Escribe tu respuesta aquí..." style="width:100%;min-height:120px;max-height:300px;padding:12px;border:2px solid #c39bd3;border-radius:8px;font-size:0.95rem;font-family:inherit;resize:vertical;box-sizing:border-box;line-height:1.5;color:#333;background:#fff" oninput="window._qrSetTexto()">${respuestas[pregIdx]||''}</textarea>
         <p style="font-size:0.78rem;color:#888;margin:6px 0 0">Tu respuesta se guarda automáticamente al escribir. Haz clic en <b>Siguiente</b> o <b>Finalizar</b> cuando termines.</p>
       </div>`;
     }
-    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:26px;max-width:620px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.4)">
+    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:26px;max-width:620px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.4);color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
         <div>
           <div style="font-size:0.85rem;color:#888">📋 ${ev.titulo} · ${fmtNombreEst(est)}</div>
@@ -8685,7 +8693,7 @@ function iniciarQuizEstudiante(evalId,estId){
         </div>
         <div style="background:${tiempoRestante<120?'#c0392b':'#8e44ad'};color:#fff;border-radius:10px;padding:6px 14px;font-size:1.1rem;font-weight:bold;font-family:monospace" id="_qTimer">${minR}:${segR}</div>
       </div>
-      <div style="background:#f0e6ff;border-radius:10px;padding:14px;margin-bottom:14px;font-size:0.95rem;line-height:1.5">
+      <div style="background:#f0e6ff;border-radius:10px;padding:14px;margin-bottom:14px;font-size:0.95rem;line-height:1.5;color:#1a1a2e">
         <b>${pregIdx+1}.</b> ${p.p}
       </div>
       <div id="q_opts">${optsHtml}</div>
@@ -8742,7 +8750,7 @@ function iniciarQuizEstudiante(evalId,estId){
         ${p.just?`<div style="background:#fffbf0;border:1.5px solid #f0c080;border-radius:7px;padding:8px 10px;margin-top:7px;font-size:0.82rem;color:#555"><b>💡 Retroalimentación:</b> ${p.just}</div>`:''}
       </div>`;
     }).join('');
-    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:28px;max-width:580px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.4)">
+    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:28px;max-width:580px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.4);color:#1a1a2e">
       <div style="text-align:center;margin-bottom:18px">
         <div style="font-size:2.5rem;margin-bottom:6px">🎉</div>
         <h3 style="color:#8e44ad;margin:0 0 4px">¡Quiz completado!</h3>
@@ -8780,9 +8788,9 @@ function htmlEvalDocenteEstudiante(est){
       <b>${ev.titulo}</b>
       <div id="_evdResp_${ev.id}" style="margin-top:10px">${(ev.preguntas||[]).map((p,pi)=>`<div style="margin-bottom:10px">
         <div style="font-size:0.88rem;font-weight:bold;margin-bottom:4px">${pi+1}. ${p.p}</div>
-        ${p.tipo==='escala5'?`<div style="display:flex;gap:6px;flex-wrap:wrap">${[1,2,3,4,5].map(v=>`<label style="cursor:pointer;padding:5px 12px;border-radius:6px;border:1.5px solid #f39c12;background:#fffbf0;font-size:0.85rem"><input type="radio" name="evd_${ev.id}_${pi}" value="${v}" style="accent-color:#f39c12"> ${v}⭐</label>`).join('')}</div>`:''}
+        ${p.tipo==='escala5'?`<div style="display:flex;gap:6px;flex-wrap:wrap">${[1,2,3,4,5].map(v=>`<label style="cursor:pointer;padding:5px 12px;border-radius:6px;border:1.5px solid #f39c12;background:#fffbf0;font-size:0.85rem;color:#1a1a2e"><input type="radio" name="evd_${ev.id}_${pi}" value="${v}" style="accent-color:#f39c12"> ${v}⭐</label>`).join('')}</div>`:''}
         ${p.tipo==='texto'?`<textarea placeholder="Escribe tu respuesta aquí..." style="width:100%;min-height:100px;max-height:250px;padding:10px 12px;border:2px solid #f39c12;border-radius:8px;font-size:0.9rem;font-family:inherit;resize:vertical;box-sizing:border-box;line-height:1.5;color:#333;background:#fff" id="evd_txt_${ev.id}_${pi}"></textarea>`:''}
-        ${(!p.tipo||p.tipo==='seleccion')?`<div style="display:flex;flex-direction:column;gap:6px">${(p.opts||[]).map((o,oi)=>`<label style="cursor:pointer;padding:10px 14px;border-radius:8px;border:2px solid #f0d060;background:#fffbf0;font-size:0.88rem;display:flex;align-items:flex-start;gap:10px;width:100%;box-sizing:border-box;word-break:break-word"><input type="radio" name="evd_${ev.id}_${pi}" value="${oi}" style="accent-color:#f39c12;flex-shrink:0;margin-top:2px"> <span style="flex:1;min-width:0"><b style="color:#d35400;margin-right:4px">${['A','B','C','D'][oi]||oi+1}.</b>${o}</span></label>`).join('')}</div>`:''}
+        ${(!p.tipo||p.tipo==='seleccion')?`<div style="display:flex;flex-direction:column;gap:6px">${(p.opts||[]).map((o,oi)=>`<label style="cursor:pointer;padding:10px 14px;border-radius:8px;border:2px solid #f0d060;background:#fffbf0;font-size:0.88rem;display:flex;align-items:flex-start;gap:10px;width:100%;box-sizing:border-box;word-break:break-word;color:#1a1a2e"><input type="radio" name="evd_${ev.id}_${pi}" value="${oi}" style="accent-color:#f39c12;flex-shrink:0;margin-top:2px"> <span style="flex:1;min-width:0"><b style="color:#d35400;margin-right:4px">${['A','B','C','D'][oi]||oi+1}.</b>${o}</span></label>`).join('')}</div>`:''}
       </div>`).join('')}
       <button class="btn" style="background:#f39c12;color:#fff" onclick="enviarEvalDocente('${ev.id}','${est.id}','${est.g}')">📤 Enviar Evaluación (anónima)</button>
     </div>`).join('')}
@@ -8861,7 +8869,7 @@ function htmlDocenteActividades(){
       </div>
       ${!planes.length?`<p class="empty">Sin planeaciones guardadas aún.<br><span style="font-size:0.82rem;color:#a0a0a0">Use el botón <b>✨ Planificar con Adán</b> y luego <b>💾 Guardar planeación</b> en el chat del asistente.</span></p>`
       :`<div style="display:flex;flex-direction:column;gap:10px">${planes.map(p=>`
-        <div style="border:1.5px solid #d2b4de;border-radius:10px;padding:13px 14px;background:#faf0fe;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+        <div style="border:1.5px solid #d2b4de;border-radius:10px;padding:13px 14px;background:#faf0fe;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;color:#1a1a2e">
           <div style="flex:1;min-width:0">
             <div style="font-weight:700;color:#5b2a86;font-size:0.92rem;margin-bottom:3px">${p.titulo}</div>
             <div style="font-size:0.77rem;color:#888">📅 ${p.fecha||'—'} · 👤 ${p.docente||'—'}${p.editado?` · ✏️ Editada: ${p.editado}`:''}
@@ -8911,7 +8919,7 @@ function htmlDocenteActividades(){
         </div>
       </div>
     </div>
-    <div id="actInteractivaWrap" style="display:none;margin-bottom:12px;border:2px solid #f0c080;border-radius:8px;padding:12px;background:#fffbf0">
+    <div id="actInteractivaWrap" style="display:none;margin-bottom:12px;border:2px solid #f0c080;border-radius:8px;padding:12px;background:#fffbf0;color:#1a1a2e">
       <h4 style="color:#d35400;margin:0 0 6px">🎮 Preguntas de la actividad interactiva</h4>
       <p style="font-size:0.82rem;color:#888;margin-bottom:10px">El estudiante responde en línea — la nota se calcula automáticamente en la escala configurada por la institución (0.0 – ${(db.config?.escalaS||5.0).toFixed(1)}).</p>
       <div id="actPreguntas"><p style="color:#aaa;font-size:0.82rem;margin:0">Sin preguntas. Agrega la primera abajo.</p></div>
@@ -8934,7 +8942,7 @@ function htmlDocenteActividades(){
       const pctEnt=totalEst>0?Math.round(entregadas/totalEst*100):0;
       const pctCal=totalEst>0?Math.round(calificadas/totalEst*100):0;
       const promNotas=calificadas>0?parseFloat((entregas.filter(e=>e.notaObtenida!=null).reduce((s,e)=>s+e.notaObtenida,0)/calificadas).toFixed(1)):null;
-      return `<div style="border:1.5px solid #ddd;border-radius:8px;padding:12px;margin-bottom:10px;background:#fafafa">
+      return `<div style="border:1.5px solid #ddd;border-radius:8px;padding:12px;margin-bottom:10px;background:#fafafa;color:#1a1a2e">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
           <div>
             <b>${a.titulo}</b> <span style="font-size:0.8rem;color:#888">· ${a.asignatura||'—'} · ${a.grado}${a.periodo?' · P'+a.periodo:''}</span><br>
@@ -8954,8 +8962,8 @@ function htmlDocenteActividades(){
             <span>📬 Entregas: ${entregadas}/${totalEst} (${pctEnt}%)</span>
             <span>✅ Calificadas: ${calificadas}/${totalEst} (${pctCal}%)</span>
           </div>
-          <div style="background:#e0e0e0;border-radius:6px;height:9px;overflow:hidden;position:relative">
-            <div style="background:#a3d977;height:100%;width:${pctEnt}%;position:absolute;top:0;left:0;border-radius:6px"></div>
+          <div style="background:#e0e0e0;border-radius:6px;height:9px;overflow:hidden;position:relative;color:#1a1a2e">
+            <div style="background:#a3d977;height:100%;width:${pctEnt}%;position:absolute;top:0;left:0;border-radius:6px;color:#1a1a2e"></div>
             <div style="background:#27ae60;height:100%;width:${pctCal}%;position:absolute;top:0;left:0;border-radius:6px"></div>
           </div>
           <div style="font-size:0.67rem;color:#aaa;margin-top:2px">Claro: entregadas · Oscuro: calificadas</div>
@@ -9070,7 +9078,7 @@ function agregarPreguntaAct(){
 function renderPreguntasAct(){
   const c=document.getElementById('actPreguntas');if(!c) return;
   if(!window._actPregs.length){c.innerHTML='<p style="color:#aaa;font-size:0.82rem;margin:0">Sin preguntas. Agrega la primera abajo.</p>';return;}
-  c.innerHTML=window._actPregs.map((p,i)=>`<div style="border:1.5px solid #f0c080;border-radius:8px;padding:12px;margin-bottom:10px;background:#fffdf0">
+  c.innerHTML=window._actPregs.map((p,i)=>`<div style="border:1.5px solid #f0c080;border-radius:8px;padding:12px;margin-bottom:10px;background:#fffdf0;color:#1a1a2e">
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
       <b style="color:#d35400">Pregunta ${i+1}</b>
       <select onchange="window._actTipoChg(${i},this.value)" style="font-size:0.82rem;padding:3px 8px;border:1.5px solid #ddd;border-radius:5px">
@@ -9116,7 +9124,7 @@ function editarActividad(actId){
   window._editActArchivoB64=act.archivoB64||null;window._editActArchivoNombre=act.archivoNombre||null;
   const ov=document.createElement('div');ov.id='_editActOv';
   ov.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.65);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:580px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:580px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3);color:#1a1a2e">
     <h3 style="color:#1a5276;margin-bottom:16px">✏️ Editar Actividad</h3>
     <div class="grid2" style="gap:8px;margin-bottom:10px">
       <div><label class="lbl">Título *</label><input id="eaActTitulo" value="${act.titulo.replace(/"/g,'&quot;')}"></div>
@@ -9148,7 +9156,7 @@ function editarActividad(actId){
       </div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-      <button onclick="document.getElementById('_editActOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cancelar</button>
+      <button onclick="document.getElementById('_editActOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cancelar</button>
       <button onclick="_guardarEdicionActividad('${actId}')" style="background:#1a5276;color:#fff;border:none;border-radius:7px;padding:10px 22px;cursor:pointer;font-weight:bold">💾 Guardar Cambios</button>
     </div>
   </div>`;
@@ -9207,10 +9215,10 @@ function abrirEntregaEst(actId,estId){
   window._entregaArchivoB64=null;window._entregaArchivoNombre=null;
   const ov=document.createElement('div');ov.id='_entregaOv';
   ov.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.65);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:480px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:480px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.3);color:#1a1a2e">
     <h3 style="color:#27ae60;margin-bottom:14px">📬 ${entrega?'Editar entrega':'Enviar entrega'}</h3>
     <p style="font-size:0.88rem;color:#555;margin-bottom:12px"><b>${act.titulo}</b> · ${act.asignatura||'—'}${act.periodo?' · P'+act.periodo:''}</p>
-    ${act.archivoB64?`<div style="background:#e8f8f5;border-radius:8px;padding:10px 12px;margin-bottom:12px">
+    ${act.archivoB64?`<div style="background:#e8f8f5;border-radius:8px;padding:10px 12px;margin-bottom:12px;color:#1a1a2e">
       <b style="font-size:0.83rem">📎 Archivo del docente:</b>
       <button type="button" onclick="_descargarArchivoAct('${actId}')" style="background:#2980b9;color:#fff;border:none;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:0.82rem;margin-left:6px">📥 ${act.archivoNombre||'Descargar'}</button>
     </div>`:''}
@@ -9230,7 +9238,7 @@ function abrirEntregaEst(actId,estId){
       <textarea id="entregaComentario" placeholder="Agregue una nota sobre su entrega..." style="width:100%;min-height:60px;padding:8px;border:1.5px solid #ddd;border-radius:6px;font-size:0.85rem;resize:vertical;box-sizing:border-box">${entrega?.comentario||''}</textarea>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button type="button" onclick="document.getElementById('_entregaOv').remove();window._entregaArchivoB64=null;window._entregaArchivoNombre=null;" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cancelar</button>
+      <button type="button" onclick="document.getElementById('_entregaOv').remove();window._entregaArchivoB64=null;window._entregaArchivoNombre=null;" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cancelar</button>
       <button type="button" onclick="_guardarEntregaEst('${actId}','${estId}')" style="background:#27ae60;color:#fff;border:none;border-radius:7px;padding:10px 22px;cursor:pointer;font-weight:bold">📬 ${entrega?'Actualizar':'Enviar'}</button>
     </div>
   </div>`;
@@ -9279,12 +9287,12 @@ function _iniciarActividadInteractiva(actId,estId){
   function renderQ(){
     const p=preguntas[pregIdx];const total=preguntas.length;
     const tipoP=p.tipo||'seleccion';
-    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:24px 28px;max-width:540px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.4);overflow:hidden">
+    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:24px 28px;max-width:540px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.4);overflow:hidden;color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:8px">
         <b style="color:#d35400;font-size:0.9rem;word-break:break-word;flex:1">🎮 ${act.titulo}</b>
         <span style="font-size:0.78rem;color:#888;white-space:nowrap;flex-shrink:0">P${pregIdx+1}/${total} · Int.${intentoActual}/${maxIntentos}</span>
       </div>
-      <div style="background:#e0e0e0;border-radius:5px;height:5px;margin-bottom:16px">
+      <div style="background:#e0e0e0;border-radius:5px;height:5px;margin-bottom:16px;color:#1a1a2e">
         <div style="background:#d35400;height:100%;width:${Math.round((pregIdx+1)/total*100)}%;border-radius:5px;transition:width 0.3s"></div>
       </div>
       <p style="font-size:0.92rem;font-weight:bold;margin-bottom:14px;color:var(--text-secondary);word-break:break-word">${pregIdx+1}. ${p.p}</p>
@@ -9307,7 +9315,7 @@ function _iniciarActividadInteractiva(actId,estId){
         </label>`).join('')}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <button onclick="window._actQNav(-1)" style="background:#eee;border:none;border-radius:7px;padding:8px 16px;cursor:pointer${pregIdx===0?';opacity:0.4;pointer-events:none':''}">← Anterior</button>
+        <button onclick="window._actQNav(-1)" style="background:#eee;border:none;border-radius:7px;padding:8px 16px;cursor:pointer${pregIdx===0?';opacity:0.4;pointer-events:none':''};color:#1a1a2e">← Anterior</button>
         ${pregIdx<total-1
           ?`<button onclick="window._actQNav(1)" style="background:#d35400;color:#fff;border:none;border-radius:7px;padding:8px 20px;cursor:pointer;font-weight:bold">Siguiente →</button>`
           :`<button onclick="window._actQFin()" style="background:#27ae60;color:#fff;border:none;border-radius:7px;padding:8px 20px;cursor:pointer;font-weight:bold">✅ Enviar respuestas</button>`}
@@ -9366,7 +9374,7 @@ function _iniciarActividadInteractiva(actId,estId){
         ${p.just?`<div style="background:#fff8e8;border:1.5px solid #f0c080;border-radius:7px;padding:8px 10px;margin-top:7px;font-size:0.82rem;color:#555"><b>💡 Retroalimentación:</b> ${p.just}</div>`:''}
       </div>`;
     }).join('');
-    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:28px;max-width:580px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.4)">
+    ov.innerHTML=`<div style="background:#fff;border-radius:16px;padding:28px;max-width:580px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.4);color:#1a1a2e">
       <div style="text-align:center;margin-bottom:18px">
         <div style="font-size:2.4rem;margin-bottom:6px">🎮</div>
         <h3 style="color:#d35400;margin:0 0 4px">¡Actividad completada!</h3>
@@ -9402,12 +9410,12 @@ function abrirCalificarActividad(actId){
       <td><input type="text" id="obs_${e.id}" value="${en?.observaciones||''}" placeholder="Observación..." style="min-width:110px;padding:4px;border:1.5px solid #ddd;border-radius:5px"></td>
     </tr>`;
   }).join('');
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3);color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:14px">✎ Calificar: ${act.titulo}</h3>
-    ${act.archivoB64?`<div style="background:#e8f8f5;border-radius:7px;padding:8px 12px;margin-bottom:12px;font-size:0.83rem"><b>📎 Archivo de la actividad:</b> <button onclick="_descargarArchivoAct('${actId}')" style="background:#2980b9;color:#fff;border:none;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:0.8rem;margin-left:4px">📥 Descargar</button></div>`:''}
+    ${act.archivoB64?`<div style="background:#e8f8f5;border-radius:7px;padding:8px 12px;margin-bottom:12px;font-size:0.83rem;color:#1a1a2e"><b>📎 Archivo de la actividad:</b> <button onclick="_descargarArchivoAct('${actId}')" style="background:#2980b9;color:#fff;border:none;border-radius:5px;padding:3px 10px;cursor:pointer;font-size:0.8rem;margin-left:4px">📥 Descargar</button></div>`:''}
     <div class="over"><table><thead><tr><th style="text-align:left">Estudiante</th><th>Entregó</th><th>Coment.</th><th>Nota (/10)</th><th>Observación docente</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
-      <button onclick="document.getElementById('_calActOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cancelar</button>
+      <button onclick="document.getElementById('_calActOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cancelar</button>
       <button onclick="_guardarCalificacionesAct('${actId}')" style="background:#003366;color:#fff;border:none;border-radius:7px;padding:10px 22px;cursor:pointer;font-weight:bold">💾 Guardar Calificaciones</button>
     </div>
   </div>`;
@@ -9486,7 +9494,7 @@ function htmlDocenteQuizzes(){
       const pctResp=totalEst>0?Math.round(respondieron/totalEst*100):0;
       const _qzDocEsc=db.config?.escalaS||5;const notasEsc=resps.filter(r=>r.notaEscala!=null||r.puntaje!=null).map(r=>r.notaEscala!=null?r.notaEscala:Math.round((r.puntaje||0)/100*_qzDocEsc*10)/10);
       const promNota=notasEsc.length?parseFloat((notasEsc.reduce((a,b)=>a+b,0)/notasEsc.length).toFixed(1)):null;
-      return `<div style="border:1.5px solid #9b59b6;border-radius:8px;padding:12px;margin-bottom:10px;background:#fdf9ff">
+      return `<div style="border:1.5px solid #9b59b6;border-radius:8px;padding:12px;margin-bottom:10px;background:#fdf9ff;color:#1a1a2e">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
           <div>
             <b style="color:#8e44ad">${ev.titulo}</b> · <span style="font-size:0.8rem;color:#888">${ev.asignatura||'—'} · ${ev.grado}${ev.periodo?' · P'+ev.periodo:''}</span><br>
@@ -9494,14 +9502,14 @@ function htmlDocenteQuizzes(){
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             ${promNota!=null?`<span style="background:#8e44ad;color:#fff;border-radius:10px;padding:2px 10px;font-size:0.75rem">Nota prom: <b>${promNota}/${(db.config?.escalaS||5).toFixed(1)}</b></span>`:''}
-            <span style="background:#e8e0ff;border-radius:10px;padding:2px 10px;font-size:0.75rem"><b>${respondieron}</b>/${totalEst} respuestas</span>
+            <span style="background:#e8e0ff;border-radius:10px;padding:2px 10px;font-size:0.75rem;color:#1a1a2e"><b>${respondieron}</b>/${totalEst} respuestas</span>
             <button class="btn-sm" style="background:${ev.activa?'#27ae60':'#888'}" onclick="toggleActividadQz('${ev.id}')">${ev.activa?'✅ Activa':'⏸ Inactiva'}</button>
             <button class="btn-sm" style="background:#2980b9" onclick="verResultadosQz('${ev.id}')">📊 Resultados</button>
             <button class="btn-sm" style="background:#c0392b" onclick="eliminarQuiz('${ev.id}')">🗑</button>
           </div>
         </div>
         <div style="margin-top:8px">
-          <div style="background:#e8e0ff;border-radius:5px;height:7px;overflow:hidden">
+          <div style="background:#e8e0ff;border-radius:5px;height:7px;overflow:hidden;color:#1a1a2e">
             <div style="background:#8e44ad;height:100%;width:${pctResp}%;border-radius:5px;transition:width 0.3s"></div>
           </div>
           <div style="font-size:0.7rem;color:#888;margin-top:2px">${pctResp}% de estudiantes han respondido</div>
@@ -9517,7 +9525,7 @@ function agregarPreguntaQz(){
 }
 function renderPreguntasQz(){
   const wrap=document.getElementById('qzPreguntas');if(!wrap) return;
-  wrap.innerHTML=_qzPregs.map((p,i)=>`<div style="border:1.5px solid #ddd;border-radius:8px;padding:12px;margin-bottom:10px;background:#fafafa">
+  wrap.innerHTML=_qzPregs.map((p,i)=>`<div style="border:1.5px solid #ddd;border-radius:8px;padding:12px;margin-bottom:10px;background:#fafafa;color:#1a1a2e">
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
       <b style="color:#8e44ad">Pregunta ${i+1}</b>
       <select onchange="window._qzTipoChg(${i},this.value)" style="font-size:0.82rem;padding:3px 8px;border:1.5px solid #ddd;border-radius:5px">
@@ -9606,11 +9614,11 @@ function verResultadosQz(evalId){
       <td style="text-align:center;font-weight:bold;color:${mejorNota!=null?(mejorNota>=_vrEscB?'#27ae60':'#c0392b'):'#888'}">${mejorNota!=null?mejorNota+'/'+_vrEsc.toFixed(1)+' '+esc(mejorNota):'—'}</td>
     </tr>`;
   }).join('');
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3);color:#1a1a2e">
     <h3 style="color:#8e44ad;margin-bottom:14px">📊 Resultados: ${ev.titulo}</h3>
     <div class="over"><table><thead><tr><th style="text-align:left">Estudiante</th><th>Intentos</th><th>Mejor Puntaje</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
-      <button onclick="document.getElementById('_resQzOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cerrar</button>
+      <button onclick="document.getElementById('_resQzOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cerrar</button>
     </div>
   </div>`;
   document.body.appendChild(ov);
@@ -9643,7 +9651,7 @@ function htmlEvalDocenteAdmin(){
     <h4 class="card-title">📋 Encuestas Creadas</h4>
     ${evals.length?evals.map(ev=>{
       const totalResp=(ev.resp||[]).length;
-      return `<div style="border:1.5px solid #f39c12;border-radius:8px;padding:12px;margin-bottom:10px;background:#fffbf0">
+      return `<div style="border:1.5px solid #f39c12;border-radius:8px;padding:12px;margin-bottom:10px;background:#fffbf0;color:#1a1a2e">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
           <div>
             <b>${ev.titulo}</b><br>
@@ -9666,7 +9674,7 @@ function agregarPreguntaEvd(){
 }
 function renderPreguntasEvd(){
   const wrap=document.getElementById('evdPreguntas');if(!wrap) return;
-  wrap.innerHTML=_evdPregs.map((p,i)=>`<div style="border:1.5px solid #f39c12;border-radius:8px;padding:10px;margin-bottom:8px;background:#fffbf0">
+  wrap.innerHTML=_evdPregs.map((p,i)=>`<div style="border:1.5px solid #f39c12;border-radius:8px;padding:10px;margin-bottom:8px;background:#fffbf0;color:#1a1a2e">
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
       <b style="color:#f39c12">${i+1}</b>
       <select onchange="window._evdTipo(${i},this.value)" style="font-size:0.82rem;padding:3px 8px;border:1.5px solid #ddd;border-radius:5px">
@@ -9718,7 +9726,7 @@ function verResultadosEvd(evalId){
     if(p.tipo==='escala5'){
       const avg=vals.length?( vals.reduce((s,v)=>s+Number(v),0)/vals.length).toFixed(2):null;
       const dist=[1,2,3,4,5].map(v=>({v,c:vals.filter(x=>Number(x)===v).length}));
-      return `<div style="margin-bottom:16px;padding:12px;background:#fffbf0;border-radius:8px;border:1.5px solid #f39c12">
+      return `<div style="margin-bottom:16px;padding:12px;background:#fffbf0;border-radius:8px;border:1.5px solid #f39c12;color:#1a1a2e">
         <b>${pi+1}. ${p.p}</b><br>
         <div style="font-size:1.2rem;color:#f39c12;margin:6px 0">Promedio: <b>${avg||'—'}</b> ⭐ (${vals.length} respuestas)</div>
         <div style="display:flex;gap:4px;align-items:flex-end;height:50px">
@@ -9732,22 +9740,22 @@ function verResultadosEvd(evalId){
     }
     if(p.tipo==='texto'){
       const textos=vals.filter(v=>typeof v==='string'&&v.trim());
-      return `<div style="margin-bottom:16px;padding:12px;background:#fffbf0;border-radius:8px;border:1.5px solid #f39c12">
+      return `<div style="margin-bottom:16px;padding:12px;background:#fffbf0;border-radius:8px;border:1.5px solid #f39c12;color:#1a1a2e">
         <b>${pi+1}. ${p.p}</b> <span style="font-size:0.8rem;color:#888">(${textos.length} respuestas)</span>
         <ul style="margin:6px 0;padding-left:16px">${textos.map(t=>`<li style="font-size:0.85rem;color:#555;margin-bottom:3px">"${t}"</li>`).join('')}</ul>
       </div>`;
     }
-    return `<div style="margin-bottom:16px;padding:12px;background:#fffbf0;border-radius:8px;border:1.5px solid #f39c12">
+    return `<div style="margin-bottom:16px;padding:12px;background:#fffbf0;border-radius:8px;border:1.5px solid #f39c12;color:#1a1a2e">
       <b>${pi+1}. ${p.p}</b> <span style="font-size:0.8rem;color:#888">(${vals.length} respuestas)</span>
       ${(p.opts||[]).map((o,oi)=>{const c=vals.filter(v=>v==oi).length;return `<div style="display:flex;align-items:center;gap:8px;margin-top:4px"><span style="font-size:0.82rem;min-width:120px">${o}</span><div style="height:14px;background:#f39c12;border-radius:4px;width:${vals.length?Math.round((c/vals.length)*180):0}px"></div><span style="font-size:0.8rem;color:#555">${c}</span></div>`;}).join('')}
     </div>`;
   }).join('');
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:580px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3)">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:580px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,0.3);color:#1a1a2e">
     <h3 style="color:#f39c12;margin-bottom:4px">📊 Resultados: ${ev.titulo}</h3>
     <div style="font-size:0.82rem;color:#888;margin-bottom:14px">Total de respuestas anónimas: <b>${resps.length}</b> · Cursos: ${(ev.cursos||[]).join(', ')}</div>
     ${statsHtml||_htmlEstadoVacio('📭','Sin respuestas aún.')}
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
-      <button onclick="document.getElementById('_resEvdOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer">Cerrar</button>
+      <button onclick="document.getElementById('_resEvdOv').remove()" style="background:#eee;border:none;border-radius:7px;padding:10px 18px;cursor:pointer;color:#1a1a2e">Cerrar</button>
     </div>
   </div>`;
   document.body.appendChild(ov);
@@ -9781,7 +9789,7 @@ function htmlSeguimientoEvalDocenteAdmin(){
       </div>
       <button class="btn btn-green" onclick="guardarDriveEvalDocente()" style="white-space:nowrap;padding:9px 18px">💾 Guardar todo</button>
     </div>
-    ${link?`<div style="background:#eafaf1;border:1.5px solid #27ae60;border-radius:8px;padding:10px 14px;font-size:0.85rem;margin-bottom:0">
+    ${link?`<div style="background:#eafaf1;border:1.5px solid #27ae60;border-radius:8px;padding:10px 14px;font-size:0.85rem;margin-bottom:0;color:#1a1a2e">
       <b>✅ Enlace configurado.</b> <a href="${link}" target="_blank" style="color:#1a5276;word-break:break-all;font-size:0.82rem">${link.length>60?link.slice(0,60)+'…':link}</a>
     </div>`:`<div class="info-box" style="margin-bottom:0;background:#fef9e7;border-left-color:#f39c12">⚠️ Aún no hay enlace configurado.</div>`}
   </div>
@@ -9791,7 +9799,7 @@ function htmlSeguimientoEvalDocenteAdmin(){
     ${docCalifican.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:7px">
       ${docCalifican.map(u=>{
         const checked=!accesoConfigurado||accesoList.includes(u.u);
-        return `<label style="display:flex;align-items:flex-start;gap:8px;background:#f0faf4;border:1.5px solid #a9dfbf;border-radius:8px;padding:9px 12px;cursor:pointer">
+        return `<label style="display:flex;align-items:flex-start;gap:8px;background:#f0faf4;border:1.5px solid #a9dfbf;border-radius:8px;padding:9px 12px;cursor:pointer;color:#1a1a2e">
           <input type="checkbox" id="evalAcc_${u.u}" ${checked?'checked':''} style="margin-top:2px;accent-color:#27ae60">
           <span>
             <span style="font-weight:700;font-size:0.86rem;display:block">${u.n}</span>
@@ -9842,7 +9850,7 @@ function htmlSeguimientoEvalDocenteDocente(){
   const encoded=link?encodeURIComponent(link):'';
   const qrUrl=link?`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encoded}&bgcolor=ffffff&color=1a5276&margin=10`:'';
   const docNombre=sesion.n||sesion.u||'Docente';
-  const badgeInfo=`<div style="background:#eaf4fb;border:1.5px solid #aed6f1;border-radius:8px;padding:8px 12px;font-size:0.81rem;margin-bottom:14px">
+  const badgeInfo=`<div style="background:#eaf4fb;border:1.5px solid #aed6f1;border-radius:8px;padding:8px 12px;font-size:0.81rem;margin-bottom:14px;color:#1a1a2e">
     📜 <b>Decreto:</b> ${usrFull.decreto||'No registrado'} &nbsp;|&nbsp; 📋 <b>Modalidad:</b> ${usrFull.decreto==='1278'?(usrFull.modalidadDecre||'Sin definir'):'N/A'}
     <br style="margin:3px 0">
     🎓 <b>Pregrado:</b> ${usrFull.tipoPregrado?`<b>${usrFull.tipoPregrado}</b>${usrFull.nivelFormacion?' — '+usrFull.nivelFormacion:''}`:usrFull.nivelFormacion||'No registrado'}
@@ -9882,7 +9890,7 @@ function htmlSeguimientoEvalDocenteDocente(){
       </button>
       <div style="margin-bottom:8px">
         <p style="font-size:0.82rem;color:#888;margin-bottom:10px">O escanee este código QR desde su celular:</p>
-        <div style="display:inline-block;background:#fff;border-radius:12px;padding:10px;box-shadow:0 2px 8px rgba(0,0,0,0.12);border:2px solid #dce6f0">
+        <div style="display:inline-block;background:#fff;border-radius:12px;padding:10px;box-shadow:0 2px 8px rgba(0,0,0,0.12);border:2px solid #dce6f0;color:#1a1a2e">
           <img src="${qrUrl}" alt="QR Drive" width="180" height="180" style="display:block;border-radius:6px">
         </div>
         <p style="font-size:0.75rem;color:#aaa;margin-top:8px">Apunte la cámara al QR para abrir el Drive directamente</p>
@@ -9919,13 +9927,13 @@ function abrirModalTrasladar1(estId){
   let ov=document.getElementById('_trasladoModal');if(ov)ov.remove();
   ov=document.createElement('div');ov.id='_trasladoModal';
   ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;padding:16px';
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;width:100%;max-width:480px;box-shadow:0 8px 40px rgba(0,0,0,0.35);overflow:hidden">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;width:100%;max-width:480px;box-shadow:0 8px 40px rgba(0,0,0,0.35);overflow:hidden;color:#1a1a2e">
     <div style="background:#16a085;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center">
       <span style="font-weight:700;font-size:1rem">🔄 Trasladar Estudiante</span>
       <button onclick="document.getElementById('_trasladoModal').remove()" style="background:none;border:none;color:#fff;font-size:1.4rem;cursor:pointer">✕</button>
     </div>
     <div style="padding:22px 20px">
-      <div style="background:#e8f8f5;border-radius:8px;padding:12px 14px;margin-bottom:18px;font-size:0.88rem">
+      <div style="background:#e8f8f5;border-radius:8px;padding:12px 14px;margin-bottom:18px;font-size:0.88rem;color:#1a1a2e">
         <b>Estudiante:</b> ${fmtNombreEst(e)}<br>
         <b>Grado actual:</b> <span style="color:#e74c3c;font-weight:700">${e.g}</span>
       </div>
@@ -10023,7 +10031,7 @@ function abrirModalTrasladarMasivo(){
   let ov=document.getElementById('_trasladoMasivoModal');if(ov)ov.remove();
   ov=document.createElement('div');ov.id='_trasladoMasivoModal';
   ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.65);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto';
-  ov.innerHTML=`<div style="background:#fff;border-radius:14px;width:100%;max-width:680px;box-shadow:0 8px 40px rgba(0,0,0,0.35);overflow:hidden;margin:auto">
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;width:100%;max-width:680px;box-shadow:0 8px 40px rgba(0,0,0,0.35);overflow:hidden;margin:auto;color:#1a1a2e">
     <div style="background:#16a085;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center">
       <span style="font-weight:700;font-size:1rem">🔄 Traslado Masivo de Estudiantes</span>
       <button onclick="document.getElementById('_trasladoMasivoModal').remove()" style="background:none;border:none;color:#fff;font-size:1.4rem;cursor:pointer">✕</button>

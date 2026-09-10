@@ -169,8 +169,38 @@ html[data-theme="dark"]{
   --warn-box-bg:#3a3013;
   --warn-box-border:#a67c00;
   --warn-box-text:#f0d27a;
+  --navy:#5dade2;
+  --navy-dark:#2e86c1;
   --color-scheme:dark;
 }
+/* ------------------------------------------------------------------
+   Corrección de contraste en Modo Oscuro para colores de acento
+   fijos en el código (navy, morado, verde, etc. usados como color de
+   texto SIN un fondo propio) — en vez de editar cientos de lugares
+   dispersos en el código (riesgoso), se sobrescriben aquí mismo, por
+   su valor exacto, solo cuando el Modo Oscuro está activo. Cada
+   color oscuro se reemplaza por una versión más clara del mismo tono,
+   que sí se lee bien sobre el fondo oscuro de las tarjetas.
+   ------------------------------------------------------------------ */
+html[data-theme="dark"] [style*="color:#003366" i]{color:#5dade2 !important}
+html[data-theme="dark"] [style*="color:#001428" i]{color:#5dade2 !important}
+html[data-theme="dark"] [style*="color:#555" i]{color:#b7c4d6 !important}
+html[data-theme="dark"] [style*="color:#1a5276" i]{color:#7fb3d3 !important}
+html[data-theme="dark"] [style*="color:#1a3a5c" i]{color:#6fa8d8 !important}
+html[data-theme="dark"] [style*="color:#6c3483" i]{color:#c39bd3 !important}
+html[data-theme="dark"] [style*="color:#7d3c98" i]{color:#d2b4de !important}
+html[data-theme="dark"] [style*="color:#5b2a86" i]{color:#c39bd3 !important}
+html[data-theme="dark"] [style*="color:#922b21" i]{color:#f1948a !important}
+html[data-theme="dark"] [style*="color:#7b241c" i]{color:#f1948a !important}
+html[data-theme="dark"] [style*="color:#4a5568" i]{color:#cbd5e0 !important}
+html[data-theme="dark"] [style*="color:#334155" i]{color:#cbd5e0 !important}
+html[data-theme="dark"] [style*="color:#1e293b" i]{color:#cbd5e0 !important}
+html[data-theme="dark"] [style*="color:#1a7531" i]{color:#7dcea0 !important}
+html[data-theme="dark"] [style*="color:#186a3b" i]{color:#82e0aa !important}
+html[data-theme="dark"] [style*="color:#0e6655" i]{color:#76d7c4 !important}
+html[data-theme="dark"] [style*="color:#00695c" i]{color:#76d7c4 !important}
+html[data-theme="dark"] [style*="color:#6d5004" i]{color:#f4d03f !important}
+html[data-theme="dark"] [style*="color:#a04000" i]{color:#f0b27a !important}
 html{color-scheme:var(--color-scheme)}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:var(--bg-page);color:var(--text-main);font-size:14px;-webkit-font-smoothing:antialiased;transition:background-color .2s ease,color .2s ease}

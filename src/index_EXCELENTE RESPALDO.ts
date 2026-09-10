@@ -15,8 +15,6 @@ import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
 import { db, kvStore, notifications, documents, pushSubscriptions } from './db/index.js';
 import repositorioRouter from './routes/repositorio.js';
-import lmsRouter from './routes/lms.js';
-import universityRouter from './routes/university.js';
 import { eq, desc, and, isNull, or } from 'drizzle-orm';
 import { GoogleGenAI } from '@google/genai';
 import webpush from 'web-push';
@@ -1266,12 +1264,6 @@ Proporciona:
 // ============================================================
 
 app.use('/api/repositorio', repositorioRouter);
-app.use('/api/lms', lmsRouter);
-// Sistema INDEPENDIENTE de Educación Superior — ver el comentario al
-// inicio de src/routes/university.ts. No comparte lógica con el resto
-// del backend K-12; solo lee/escribe el mismo kv_store para no duplicar
-// la base de usuarios/estudiantes.
-app.use('/api/university', universityRouter);
 
 app.get('/repositorio', (req, res) => {
   function _safeDecodeQP(raw: unknown): string {
