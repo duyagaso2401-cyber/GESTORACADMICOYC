@@ -1453,6 +1453,11 @@ function _asistenteUniversitarioSystemPrompt(contexto: any): string {
     + `Estás ayudando a ${rolLabel}. Responde en español, de forma clara, profesional y concisa, enfocado en temas académicos, administrativos y de uso del sistema universitario (programas, asignaturas, matrícula, aula virtual, cuestionarios, calificaciones, cortes evaluativos). `
     + `Si te preguntan algo fuera de ese ámbito, puedes responder con normalidad, pero mantén siempre tu identidad como "Asistente Universitario".`;
 }
+const _ASISTENTE_MODELOS_CANDIDATOS = [
+  (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, ''),
+  'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash',
+].filter((m, i, self) => Boolean(m) && self.indexOf(m) === i);
+
 router.post('/asistente/chat', async (req: any, res) => {
   try {
     const { mensaje, historial } = req.body || {};
@@ -1468,13 +1473,36 @@ router.post('/asistente/chat', async (req: any, res) => {
       role: m.role === 'user' ? 'user' : 'model',
       parts: [{ text: String(m.content || '') }],
     }));
-    const chat = genAI.chats.create({
-      model: (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, ''),
-      config: { systemInstruction: systemPrompt, temperature: 0.7, maxOutputTokens: 2048 },
-      history: historialFormateado,
-    });
-    const respuesta = await chat.sendMessage({ message: String(mensaje) });
-    res.json({ respuesta: respuesta.text || 'No se pudo generar una respuesta en este momento.' });
+
+    // La misma librería que ya usa el resto del sistema SOLO expone una
+    // forma de enviar el mensaje: en streaming (sendMessageStream) — no
+    // existe un "sendMessage" simple. Aquí se recolecta el texto completo
+    // del streaming en vez de mandarlo por partes, porque este widget no
+    // necesita streaming, solo la respuesta final. Se intenta con varios
+    // modelos por si el configurado no está disponible en este momento.
+    let textoCompleto = '';
+    let ultimoError: any = null;
+    let respondido = false;
+    for (const modelo of _ASISTENTE_MODELOS_CANDIDATOS) {
+      try {
+        const chat = genAI.chats.create({
+          model: modelo,
+          config: { systemInstruction: systemPrompt, temperature: 0.7, maxOutputTokens: 2048 },
+          history: historialFormateado,
+        });
+        const stream = await chat.sendMessageStream({ message: String(mensaje) });
+        for await (const chunk of stream) {
+          if (chunk.text) textoCompleto += chunk.text;
+        }
+        respondido = true;
+        break;
+      } catch (err: any) {
+        ultimoError = err;
+        console.warn(`⚠️ Asistente Universitario — intento fallido con modelo ${modelo}:`, err?.message || err);
+      }
+    }
+    if (!respondido) throw ultimoError || new Error('No se pudo conectar con ningún modelo disponible.');
+    res.json({ respuesta: textoCompleto || 'No se pudo generar una respuesta en este momento.' });
   } catch (err) {
     console.error('POST /api/university/asistente/chat error:', err);
     res.status(500).json({ error: 'El Asistente Universitario no pudo responder en este momento. Intente de nuevo.' });
