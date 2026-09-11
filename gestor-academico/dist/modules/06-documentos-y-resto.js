@@ -7973,7 +7973,7 @@ function verDatosHistorico(anio){
         ${ests.length>200?`<tr><td colspan="4" style="text-align:center;padding:8px;color:#888;font-style:italic">... y ${ests.length-200} estudiantes más</td></tr>`:''}</tbody>
       </table></div>
       <h4 style="color:#003366;margin-bottom:10px">📚 Grados y Asignaturas</h4>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${grados.map(g=>`<span style="background:#e8f4fd;padding:5px 12px;border-radius:6px;font-size:0.82rem;color:#1a1a2e"><b>${g.n||g}</b>${g.d?' · '+g.d:''}</span>`).join('')}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${grados.map(g=>`<span style="background:#e8f4fd;padding:5px 12px;border-radius:6px;font-size:0.82rem;color:#1a1a2e"><b>${g.n||g}</b>${g.d?' · '+_nombreDirectorGrado(g.d):''}</span>`).join('')}</div>
     </div>
   </div></div>`;
   const div=document.createElement('div');div.innerHTML=html;document.body.appendChild(div.firstChild);
