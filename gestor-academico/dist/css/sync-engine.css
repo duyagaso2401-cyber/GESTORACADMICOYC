@@ -1,0 +1,108 @@
+/* ============================================================
+   sync-engine.css — Indicador sutil de sincronización + micro-efecto
+   de celda actualizada + toast de respaldo.
+
+   Este archivo SOLO es necesario si el proyecto NO trae ya el chip
+   #_syncChip (ver portal_respaldo.html línea ~1914). Si ya existe,
+   este CSS puede convivir sin conflicto (usa clases distintas), o
+   puedes usar solo el bloque ".sync-engine-chip" para reemplazar el
+   chip actual por una versión de tamaño fijo que nunca empuja el
+   layout (ver nota más abajo).
+   ============================================================ */
+
+/* Indicador — pequeño, de tamaño FIJO (nunca cambia de ancho aunque
+   cambie el ícono/estado), y posicionado absolutamente para que jamás
+   participe del flujo normal del documento ni empuje otros elementos.
+   Este flotante SOLO se usa como último recurso, cuando la página
+   anfitriona no tiene una barra superior donde insertarlo en línea (ver
+   asegurarIndicador() en 07-sync-engine.js) — por eso se ancla ARRIBA y
+   no abajo: la esquina inferior derecha suele estar ocupada por widgets
+   flotantes propios de cada pantalla (ej. el avatar del Asistente IA). */
+.sync-engine-chip {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(26, 58, 92, 0.85);
+  font-size: 13px;
+  line-height: 1;
+  z-index: 9998;
+  cursor: default;
+  user-select: none;
+  pointer-events: none;   /* puramente informativo: nunca intercepta clics del usuario */
+  transition: opacity 0.3s ease;
+  opacity: 0.55;           /* discreto por defecto */
+}
+.sync-engine-chip.syncing {
+  opacity: 1;
+  animation: sync-engine-pulso 1s ease-in-out infinite;
+}
+.sync-engine-chip.offline { opacity: 0.9; background: rgba(120, 40, 40, 0.85); }
+.sync-engine-chip.error   { opacity: 1; background: rgba(160, 60, 30, 0.9); }
+
+/* Variante "en línea": para cuando la página anfitriona ya declara el
+   #_syncChip dentro de su propia barra superior (ej. universidad/app.js,
+   junto al botón "Cerrar sesión") en vez de dejar que este archivo lo cree
+   flotando en una esquina. Antes, al no existir #_syncChip en esa página,
+   se creaba flotante en bottom:14px;right:14px — justo donde también flota
+   el avatar del Asistente IA (bottom:20px;right:20px) — quedando los dos
+   pegados. Con esta variante, el chip vive en el flujo normal del topbar:
+   discreto, sin position:fixed, sin invadir ni chocar con nada más. Se
+   combina con .sync-engine-chip (no la reemplaza) para seguir recibiendo
+   los mismos estados .syncing/.offline/.error que ya usa el resto del
+   motor de sincronización. */
+.sync-engine-chip.sync-engine-chip--inline {
+  position: static;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  font-size: 0.95rem;
+  pointer-events: auto;
+}
+.sync-engine-chip.sync-engine-chip--inline.syncing { animation: sync-engine-pulso 1s ease-in-out infinite; }
+.sync-engine-chip.sync-engine-chip--inline.offline,
+.sync-engine-chip.sync-engine-chip--inline.error { background: none; }
+
+@keyframes sync-engine-pulso {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.15); }
+}
+
+/* Micro-efecto de "esta celda se acaba de actualizar" — un resplandor
+   breve, SIN cambiar tamaño ni posición del elemento (evita el
+   "salto"/deformación de la fila que reportaba el usuario). */
+.sync-engine-actualizado {
+  outline: 2px solid rgba(46, 160, 90, 0.55);
+  outline-offset: 1px;
+  transition: outline-color 0.6s ease;
+}
+
+/* Toast de respaldo (solo se usa si el proyecto no trae ya _showToast) */
+.sync-engine-toast {
+  position: fixed;
+  bottom: 50px;
+  right: 14px;
+  max-width: 300px;
+  background: #1a3a5c;
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  z-index: 9999;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .3s ease, transform .3s ease;
+  pointer-events: none;
+}
+.sync-engine-toast.visible { opacity: 1; transform: translateY(0); }
+.sync-engine-toast[data-tipo="error"]   { background: #7a2020; }
+.sync-engine-toast[data-tipo="warning"] { background: #7a5a10; }
+.sync-engine-toast[data-tipo="success"] { background: #1e5c33; }
