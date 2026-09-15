@@ -497,6 +497,244 @@ Un chat en vivo con su soporte suele resolverse en minutos u horas, mucho más r
 
 ---
 
+## Ronda 11 — Bug de descriptores corregido + paquete de rendimiento/autonomía (6 pilares + 4 pilares)
+
+Ronda grande, con 4 pedidos distintos en un solo mensaje. Se abordaron los 4, cada uno documentado por separado abajo, distinguiendo siempre **qué se corrigió**, **qué se construyó nuevo**, **qué YA existía** (para no atribuirme crédito de algo que ya estaba hecho) y **qué queda como andamiaje pendiente de decisiones tuyas**.
+
+### 1. Bug corregido — Descriptores: la Asignatura aparecía en blanco
+
+**Causa encontrada:** en `htmlDescriptores()` (`gestor-academico/dist/modules/03-app-core.js`), el `<select id="descMat">` se renderizaba siempre vacío; solo se llenaba cuando se disparaba el `onchange` de Grado o Docente (función `actualizarMatsDesc()`) — pero esa función nunca se llamaba automáticamente al abrir el formulario, así que el docente tenía que tocar esos campos manualmente para "despertar" la Asignatura, tal como reportaste.
+
+**Corrección:** se extrajo la lógica de `actualizarMatsDesc()` y `actualizarGruposReplicaDesc()` a dos funciones puras reutilizables (`_matsDisponiblesDesc()` y `_htmlGruposReplicaDesc()`), y `htmlDescriptores()` ahora las usa para precalcular la Asignatura y los "grupos destino para replicar" **desde el primer render**, usando el mismo Grado/Docente que el formulario ya muestra seleccionado por defecto. Ya no hace falta tocar nada manualmente — la Asignatura (y los grupos de réplica) aparecen pobladas de inmediato.
+
+**Cómo lo verifiqué:** `node --check` sobre el archivo (sin errores de sintaxis) y 3 casos de prueba aislados simulando la lógica exacta (docente con carga en dos grupos del mismo grado, admin, y docente sin carga asignada aún) — los 3 pasaron.
+
+### 2. Auditoría de los "6 pilares de rendimiento" — qué ya existía vs. qué se hizo nuevo
+
+Antes de tocar nada, se revisó qué de lo pedido ya estaba resuelto en rondas anteriores de este mismo proyecto, para no duplicar trabajo:
+
+- **Pilar 3 (paginación/lazy loading), Pilar 5 (compresión de imágenes antes de subir a Cloudinary), Pilar 4 original (boletines masivos asíncronos) y rate limiting en rutas críticas**: **ya estaban implementados** desde la "Ronda 3" de este proyecto (tareas ya completadas antes de este mensaje). No se tocó nada de eso — sigue funcionando igual.
+- **Rate limiting específico para `/api/inetis/send-email`, la consulta pública de boletines y el login (`POST /api/inetis/db`)**: también ya existía. Se le agregó el mismo limitador estricto a los 2 endpoints nuevos de esta ronda (restablecimiento de contraseña y códigos de invitación), por la misma razón (evitan fuerza bruta/abuso).
+- **"GET /api/healthcheck" (Pilar 1)**: ya existía una ruta equivalente, `GET /api/health`, 100% aislada de la base de datos. Se agregó `GET /api/healthcheck` con el nombre EXACTO que pediste, registrada literalmente antes que cualquier otro middleware (antes de CORS, compresión, body-parser y rate-limit) para que responda desde RAM sin ejecutar absolutamente nada más — pensado para que UptimeRobot (o similar) haga ping sin gastar cómputo de Neon ni de Render. `/api/health` se dejó intacta para no romper nada que ya la esté usando.
+- **Caché en memoria para lecturas frecuentes (Pilar 2)**: esto SÍ era trabajo nuevo. `GET /api/inetis/db` — el endpoint más llamado de todo el sistema (sincronización periódica de cada dispositivo abierto) — ya tenía optimización de ANCHO DE BANDA (ETag/304), pero cada llamada seguía consultando Neon para saber la versión vigente. Se agregó `src/lib/db-cache.ts`: una caché en memoria de 5 segundos por institución, que se actualiza al instante cuando alguien guarda (no solo se invalida — se refresca ya con el dato nuevo, así ni el propio dispositivo que guardó tiene que esperar). Sin librerías nuevas (no se agregó `node-cache` ni similar): un `Map` en memoria del propio proceso alcanza para esta escala, siguiendo el mismo criterio que ya usaba `gestor-cache.ts` (la caché de instituciones del Súper Admin).
+
+### 3. "4 pilares de autonomía" — qué se construyó, con qué alcance exacto
+
+**Importante léelo con calma:** este era, con mucha diferencia, el pedido más grande de los 4. Se construyó todo lo que se pudo construir de forma segura y verificable sin arriesgar nada que ya funciona (especialmente el envío de correos, que costó 10 rondas estabilizar). Cada pieza dice explícitamente su alcance.
+
+#### 3.1 — Registro por código de invitación institucional (Pilar 1)
+
+Dos endpoints nuevos:
+- `POST /api/inetis/auth/invitacion/generar` — el admin/rector genera un código de 6 dígitos para un rol (`docente`, `directivo`, `gestor`, `rector`, `admin`), con vigencia (72h por defecto) y límite de usos (1 por defecto — se puede pedir más).
+- `POST /api/inetis/auth/invitacion/registrar` — cualquiera con el código válido se autoregistra: se le crea de inmediato una cuenta con el rol del código, **sin aprobación manual**, tal como pediste.
+
+**Alcance de esta ronda:** cuentas de "personal" (admin, rector, gestor, docente, directivo) — el modelo estándar `db.users[]` que ya usa todo el sistema. **El autoregistro de estudiantes/acudientes queda fuera a propósito**: esas cuentas están ligadas a una matrícula (grado, grupo, número de documento, datos del acudiente) que hoy solo se crea desde "Estudiantes" por un admin; abrir eso a autoregistro exige definir reglas de negocio nuevas (a qué grado queda un estudiante que se autoregistra, cómo evitar duplicados por documento, etc.) que no vinieron especificadas en tu mensaje — se necesita tu decisión antes de construirlo, para no inventar reglas que después haya que deshacer.
+
+**Nota de seguridad, para que quede explícito:** el endpoint de generar confía en que quien tiene el `sk` de la institución es un admin de esa institución — es EL MISMO modelo de confianza que ya tiene todo el sistema K-12 hoy (quien tiene el `sk` ya podría escribir usuarios directamente vía `POST /api/inetis/db`). No es una debilidad nueva, es consistencia con lo que ya existía.
+
+#### 3.2 — Recuperación de contraseña con token de un solo uso (Pilar 1)
+
+Dos endpoints nuevos, **ADICIONALES** al flujo actual de "¿Olvidó su contraseña?" (que sigue funcionando exactamente igual — no se tocó ni una línea de ese flujo, a propósito, porque ya costó 10 rondas estabilizar su entrega real por ZeptoMail):
+- `POST /api/inetis/auth/restablecer/solicitar` — recibe `{sk, usuario}`, y si existe (y tiene correo registrado), envía un enlace de restablecimiento por el mismo canal de correo ya estabilizado (`enviarCorreoGeneral`). Responde siempre igual exista o no el usuario, para no revelar qué usuarios existen.
+- `POST /api/inetis/auth/restablecer/confirmar` — recibe `{sk, token, nuevaPassword}`, valida el token y cambia la contraseña.
+
+**Sobre el "token JWT" pedido:** es un JWT real (HS256 — header, payload y firma en base64url, tal como especifica el estándar), pero implementado a mano con el módulo `crypto` nativo de Node, **sin agregar la librería `jsonwebtoken`** como dependencia nueva. Motivo: (a) el proyecto ya tenía la costumbre de evitar dependencias nuevas cuando lo nativo alcanza, y (b) en el momento de construir esto no fue posible confirmar de forma confiable la instalación de un paquete nuevo contra el registro de npm desde este entorno (el registro dio errores intermitentes) — y una dependencia sin poder verificar su instalación no se agrega a un sistema en producción. El resultado es funcionalmente idéntico y quedó cubierto por 7 pruebas automatizadas (token válido, secreto incorrecto, payload manipulado, formato inválido, expirado, vacío/`undefined`).
+
+El enlace expira en 30 minutos y **solo sirve una vez**: cada token emitido registra una ficha de un solo uso en `kv_store` (la misma tabla genérica que usa todo el proyecto — sin migraciones nuevas), que se borra al confirmarse el cambio; un segundo intento con el mismo token ya no encuentra la ficha, aunque la firma siga siendo válida.
+
+Para que el servidor pueda fijar una contraseña nueva reconocible por el navegador, se usa `hashPasswordServidor()` en `src/lib/reset-tokens.ts`, que genera el MISMO formato que ya usa el frontend (`PBKDF2-HMAC-SHA256`, 100000 iteraciones, formato `pbkdf2$salt$hash`) — verificado con 4 casos de prueba comparando byte a byte el resultado de la implementación del navegador (Web Crypto) contra la del servidor (Node `crypto`): coinciden exactamente.
+
+**Alcance:** igual que el punto anterior, cuentas de personal (`db.users[]`) — estudiantes/acudientes quedan fuera por el mismo motivo (modelo de identidad distinto).
+
+**Variable de entorno nueva (opcional pero recomendada):** `JWT_RESET_SECRET` — si no la configuras, el sistema usa un valor por defecto para no caerse, pero ese valor por defecto es público (está en este código fuente), así que en producción **debes configurar tu propio secreto** en Render. También puedes configurar `SITIO_BASE_URL` (la URL pública de tu sitio) para que el enlace del correo apunte exactamente ahí; si no la configuras, se usa `RENDER_EXTERNAL_URL` (que Render ya define automáticamente) o la URL de la propia petición como respaldo.
+
+**Pendiente (no es un cambio de código, es una decisión de producto):** falta la pantalla del frontend donde el usuario abre el enlace del correo y escribe su nueva contraseña — los dos endpoints ya están listos para que esa pantalla los use.
+
+#### 3.3 — Tareas programadas / mantenimiento autónomo (Pilar 4)
+
+Tres tareas nuevas, con el mismo patrón que ya usaba el respaldo automático semanal (funciones que se llaman solas con `setTimeout`/`setInterval` nativos — sin librerías de cron nuevas):
+
+- **(a) Cierre autónomo de planillas:** todos los días, justo después de la medianoche **hora Colombia**, revisa el Cronograma de Notas de cada institución; si la fecha límite de un periodo ya pasó y seguía marcado como abierto, lo cierra automáticamente (mismo efecto que si el admin lo cerrara a mano desde "Cronograma de Notas"). Verificado con pruebas que confirman: no toca periodos ya cerrados, no toca periodos aún vigentes, y no revienta si no hay fechas configuradas.
+- **(b) Alertas automáticas de ausentismo a acudientes:** **desactivada por defecto** en todas las instituciones (para que ninguna reciba correos nuevos sin haberlo pedido). Una institución la activa guardando `config.alertasAusenciasActivas=true` en su blob (aún no hay un botón dedicado en el panel — pendiente, se documenta abajo). Cuando está activa, revisa una vez por semana cuántas ausencias acumula cada estudiante y, si el acudiente tiene correo registrado y el conteo cruza un nuevo múltiplo del umbral configurado (`config.umbralAusenciasAlerta`, 3 por defecto), le envía un resumen — sin repetir la misma alerta cada semana si el conteo no subió.
+- **(c) Limpieza periódica de tokens/códigos vencidos:** cada 6 horas, borra fichas de restablecimiento de contraseña vencidas sin usar y códigos de invitación vencidos, en Neon.
+
+**Pendiente (fuera de alcance de esta ronda, documentado a propósito):** falta un botón/casilla en el panel de administración para activar/desactivar las alertas de ausentismo y ajustar el umbral — hoy solo se puede activar guardando ese campo directamente en los datos de la institución. La generación de reportes de morosidad ("morosos") pedida en el mismo punto depende del módulo financiero (punto 3.4) — no existía ninguna noción de pagos/mora en el sistema antes de esta ronda, así que no había nada de qué generar un reporte todavía.
+
+#### 3.4 — Módulo financiero + webhooks de pago (Pilar 2) — ANDAMIAJE, no listo para cobrar
+
+Se construyó la base técnica completa para los 3 niveles de cobro pedidos (suscripción SaaS de la plataforma, mensualidades, trámites administrativos), pero **esto es andamiaje, no un módulo listo para producción** — te explico exactamente qué falta y por qué no se inventó.
+
+**Lo que sí se construyó y quedó verificado:**
+- 2 tablas nuevas en Neon (`fin_transacciones`, `fin_suscripciones`), creadas automáticamente al arrancar el servidor (mismo mecanismo que ya usa todo el proyecto — sin pasos de migración manuales).
+- 3 endpoints públicos de webhook, uno por proveedor: `POST /api/payments/webhook/wompi`, `POST /api/payments/webhook/mercadopago`, `POST /api/payments/webhook/stripe`. Los tres verifican la firma de cada proveedor **investigada contra su documentación oficial** (Wompi: hash SHA-256 de los campos + timestamp + secreto de eventos; Mercado Pago: HMAC-SHA256 sobre un "manifiesto" con el id del pago + `x-request-id` + timestamp; Stripe: HMAC-SHA256 sobre `{timestamp}.{cuerpo crudo}`, con ventana de 5 minutos contra ataques de repetición) — implementadas a mano con `crypto` nativo (ninguno de los tres tiene, o requiere, una librería para esto en Node: solo Stripe trae un helper oficial, y aun así se hizo a mano para no sumar una dependencia nueva). Verificado con 13 pruebas automatizadas (firma válida se acepta; secreto incorrecto, payload manipulado, timestamp viejo, y ataque de "downgrade" a v0 en Stripe, todos se rechazan).
+- Cada webhook responde **503** si su proveedor no tiene el secreto configurado (no procesa nada) y **401** si la firma no coincide (tampoco procesa nada, ni registra la transacción) — mismo criterio de "seguro cuando no está configurado" que ya usan los proveedores de correo.
+- Convención de referencia (`tipo:sk:estudianteId:concepto`, ej. `mensualidad:INST123:est456:Mensualidad-Sept-2026`) para que el webhook sepa a qué institución/estudiante/concepto corresponde cada pago — la deberá usar quien construya la pantalla de generar el cobro/enlace de pago.
+
+**Lo que falta, y por qué no se construyó sin tu decisión:**
+1. **Elegir proveedor(es) reales y sus credenciales** (`WOMPI_EVENTOS_SECRETO`, `MERCADOPAGO_WEBHOOK_SECRETO` + `MERCADOPAGO_ACCESS_TOKEN`, `STRIPE_WEBHOOK_SECRETO`) — mientras no configures ninguno, el módulo existe pero no procesa pagos reales (503 en todos).
+2. **Definir precios, planes de suscripción, y reglas de mora** — no venían especificados.
+3. **Conectar la generación automática del PDF firmado** (certificado/paz y salvo) cuando un trámite se aprueba — quedó un punto de extensión claramente marcado en el código (`_registrarTransaccionPago()`, comentario "Punto de extensión") explicando exactamente qué falta, en vez de inventar una integración con el generador de certificados que no pude verificar contra el código real de boletines sin más información tuya sobre el formato exacto del certificado.
+4. **La pantalla/flujo para generar el cobro** (crear la preferencia/enlace de pago en el proveedor elegido, con la convención de referencia de arriba) — eso se hace del lado de cada proveedor con sus propios SDKs/paneles, y depende de cuál elijas.
+
+#### 3.5 — Copiloto de soporte con IA (Pilar 3)
+
+**Esto ya existía, completo y en producción:** el asistente "Adán" (backend `POST /api/inetis/ai/chat` con Gemini + fallback por FAQ con reglas; frontend con widget flotante, voz, streaming, adjuntar archivos/imágenes). No se construyó nada nuevo aquí porque ya cumple el pilar casi en su totalidad.
+
+**Hallazgo para que lo tengas presente:** el widget de Adán está, a propósito, restringido a roles de personal (`gestor`, `admin`, `rector`, `docente`) — estudiantes, acudientes y visitantes anónimos **nunca** lo ven (así lo dice el propio comentario del código: es una decisión de seguridad ya tomada, no un descuido). Esto significa que preguntas como "¿Cómo pagar mi mensualidad?" (pensadas para acudientes) no llegarían a tener quién las responda hasta que decidas si el widget también debe abrirse a acudientes/estudiantes — no se cambió ese acceso en esta ronda porque es una decisión de producto/seguridad, no un bug.
+
+### Resumen de variables de entorno nuevas (todas opcionales — el sistema funciona igual sin ellas, cada una solo activa su función correspondiente)
+
+| Variable | Para qué | Si falta |
+|---|---|---|
+| `JWT_RESET_SECRET` | Firma de los tokens de restablecimiento de contraseña | Usa un valor por defecto inseguro para producción — configúrala |
+| `SITIO_BASE_URL` | Que el enlace del correo de restablecimiento apunte a tu dominio | Usa `RENDER_EXTERNAL_URL` o la URL de la petición |
+| `WOMPI_EVENTOS_SECRETO` | Activa el webhook de Wompi | El webhook responde 503 (no procesa nada) |
+| `MERCADOPAGO_WEBHOOK_SECRETO` | Activa el webhook de Mercado Pago | El webhook responde 503 |
+| `MERCADOPAGO_ACCESS_TOKEN` | Consultar el detalle real del pago en Mercado Pago | Se registra el pago como "pendiente" para conciliar a mano |
+| `STRIPE_WEBHOOK_SECRETO` | Activa el webhook de Stripe | El webhook responde 503 |
+
+### Cómo se verificó todo esto
+
+- TypeScript: recompilé todo el backend — **0 errores nuevos**. Los únicos errores que aparecen son 27 instancias del mismo problema pre-existente y ya documentado en `src/db/schema.ts` (un desajuste de tipos entre la sintaxis de índices usada y la versión de `drizzle-orm` instalada, que NO afecta la ejecución real porque el proyecto corre con `tsx`, no con `tsc`) — 25 ya existían antes de esta ronda; las 2 nuevas son mis 2 tablas financieras, que usan exactamente la misma sintaxis que las otras 25 ya existentes, por consistencia.
+- JavaScript del frontend: `node --check` sobre `03-app-core.js` — sin errores de sintaxis.
+- 10 scripts de prueba aislados, con un total de 60+ casos individuales, todos verdes: helper de cierre de planillas, cruce de umbral de alertas de ausentismo, cálculo de la próxima medianoche Colombia, lógica del bug de descriptores, compatibilidad PBKDF2 navegador↔servidor, JWT hecho a mano (7 casos), lógica de restablecimiento de contraseña, lógica de códigos de invitación, y las 3 firmas de webhooks de pago (13 casos).
+- **Cero dependencias nuevas agregadas** en `package.json` — todo lo de esta ronda (JWT, hashing compatible con el navegador, firmas de webhooks) se construyó con el módulo `crypto` nativo de Node, siguiendo la costumbre ya establecida en este proyecto de no sumar librerías cuando lo nativo alcanza.
+
+---
+
+
+## Ronda 12 — Auto-matrícula, restablecimiento de contraseña frontend, alertas de ausentismo, cierre del módulo financiero, Adán para acudientes/estudiantes, y corrección móvil
+
+Esta ronda implementa las 4 definiciones de negocio que pediste (auto-registro/matrícula, pantallas de recuperación/alertas, integración financiera con certificados, y expansión del copiloto Adán), más la corrección del banner de sincronización que tapaba los botones en móvil, y cierra los puntos que habían quedado documentados como "pendientes de tu decisión" en la Ronda 11.
+
+### 1 — Corrección de vista móvil: banner de sincronización tapando botones
+
+**Causa raíz encontrada:** `_actualizarBannerSyncManual()` (y su gemela en el módulo de universidad, `_actualizarBannerSyncUniv()`) compensaban el aviso fijo de "sincronización desactivada" con un `paddingTop` **fijo de 38px**, calculado para una sola línea de texto en pantalla ancha. En celulares el texto se parte en 2-3 líneas y el aviso terminaba siendo más alto que esos 38px, pero seguía teniendo `position:fixed` con `z-index:99998` — por eso tapaba (y bloqueaba los clics de) la barra superior y la cuadrícula de botones de los módulos, tal como se ve en las capturas que enviaste.
+
+**Qué se corrigió (en ambos archivos, `03-app-core.js` y `universidad/app.js`):**
+- El padding del `body` ahora se calcula con la **altura real ya renderizada** del aviso (`getBoundingClientRect().height`) en vez de un número fijo, y se recalcula automáticamente en `resize` y `orientationchange` (por ejemplo, al girar el teléfono).
+- Se agregaron reglas `@media(max-width:768px)` y `@media(max-width:576px)` (los mismos cortes que ya usa el resto del sistema) que reducen el tamaño de letra y el espaciado del aviso en pantallas angostas, para que ocupe menos espacio.
+- Se agregó un botón "✕" para cerrar el aviso manualmente si de todos modos estorba (queda cerrado por esa sesión de navegador; la sincronización sigue disponible por el botón habitual del panel).
+
+### 2 — Auto-registro y matrícula desde el portal virtual existente
+
+Se reutilizó al 100% el formulario de pre-matrícula/inscripción ya existente (`_htmlFormPreMatricula`, `guardarPreMatricula()`) — no se construyó un formulario nuevo.
+
+- **Procesamiento autónomo por defecto:** al enviar el formulario, si `config.requiereAprobacionMatricula !== true` (por defecto está desactivado, es decir, autónomo), el sistema crea/vincula al estudiante en `db.ests[]` con su grado de inmediato, sin esperar aprobación manual, y le muestra en pantalla las credenciales de acceso (mismo formato que ya usaba la aprobación manual del admin).
+- **Control opcional para el rector:** se agregó el parámetro `config.requiereAprobacionMatricula` (por defecto `false`), con un interruptor visible arriba de "Gestión de Pre-Matrículas" en el panel del admin. Si lo activa, las solicitudes vuelven a quedar en "Pendiente" para revisión manual, exactamente como funcionaba antes de esta ronda.
+- **Prevención de duplicados (mejorada):** antes, si ya existía un estudiante con el mismo número de documento, el sistema simplemente **no hacía nada** (ni creaba ni actualizaba, en silencio). Se extrajo la lógica a una función compartida (`_procesarMatriculaDesdeSolicitud()`, reutilizada tanto por la aprobación manual como por la automática) que ahora, si el documento ya existe, **actualiza y vincula** los datos nuevos sobre el registro existente (grado, acudiente, foto, etc.) y le **"habilita las credenciales"** limpiando cualquier baja/retiro previo (`deletedAt=null`), en vez de duplicar o ignorar la solicitud.
+- **Vínculo estudiante-acudiente automático:** no requirió una cuenta separada para el acudiente — el sistema YA validaba el acceso del rol `padre` directamente contra los campos `numDocAcud`/`numDoc` del propio registro del estudiante (`doLoginInstitucional()`), así que en cuanto el estudiante se crea o se actualiza con los datos del acudiente, el acceso del acudiente queda enlazado automáticamente, sin pasos manuales adicionales. Verificado con 4 casos de prueba automatizados que confirman que el acudiente puede iniciar sesión inmediatamente después de la auto-matrícula.
+
+### 3 — Pantallas de recuperación de contraseña y alertas de ausentismo
+
+**Pantalla de restablecimiento de contraseña (frontend, nueva):** se construyó `renderRestablecerPassword()`, una pantalla pública y autónoma (no depende de tener una institución ya cargada) que se activa sola al abrir el enlace `?restablecerToken=...&sk=...` que ya enviaba el correo de la Ronda 11. Pide la nueva contraseña dos veces, llama a `POST /api/inetis/auth/restablecer/confirmar`, y muestra el resultado. También se agregó la forma de **disparar** ese enlace desde la interfaz: dentro del modal existente "¿Olvidó contraseña?" se agregó una opción "🔐 Prefiero crear yo mismo una nueva contraseña", que busca al usuario por su nombre de usuario en las instituciones activas y llama a `POST /api/inetis/auth/restablecer/solicitar` — sin tocar ni reemplazar el flujo anterior (que sigue funcionando igual, reenviando una contraseña temporal por correo).
+
+**Panel de control de alertas de ausentismo (frontend, nuevo):** se agregó, dentro de "Configuración Base → Control de Inasistencias y Alertas" (mismo panel donde ya estaban los umbrales de inasistencia crítica/preventiva), un interruptor para `config.alertasAusenciasActivas` y un campo numérico para `config.umbralAusenciasAlerta` — el mecanismo de envío en sí (`enviarAlertasAusentismoAutomaticas()`) ya existía desde la Ronda 11; lo que faltaba, y ahora existe, es la forma de activarlo/ajustarlo sin tocar la base de datos a mano.
+
+### 4 — Integración del módulo financiero: certificados, mensualidades y suscripciones SaaS
+
+Se implementó el "Punto de Extensión" que había quedado marcado en `_registrarTransaccionPago()` desde la Ronda 11, para los 3 casos que pediste:
+
+- **Mensualidades/pensiones:** cuando un webhook de pago aprueba una transacción con referencia `mensualidad:<sk>:<estudianteId>:<concepto>`, el servidor busca al estudiante en el blob de la institución y le agrega el pago a su arreglo `pagos[]` (el mismo campo que ya usa el resto del sistema), marcando `pensionAlDia=true`.
+- **Suscripciones SaaS:** con referencia `suscripcion_saas:<sk>::<plan>`, el servidor activa/renueva la fila de la institución en `fin_suscripciones` (`estado='activa'`, vigencia de 30 días desde el pago — ciclo mensual por defecto).
+- **Certificados/paz y salvo firmados:** con referencia `tramite:<sk>:<estudianteId>:<concepto>`, el servidor genera y **firma los datos** del certificado (mismo mecanismo `_firmarBlob`/`DOC_SIGN_SECRET` que ya usan los boletines) y los deja listos para descarga en `GET /api/inetis/pagos/certificados?sk=...&estudianteId=...`.
+  - **Decisión de arquitectura documentada:** el servidor **no genera el PDF en sí**. Todo el sistema genera sus PDFs (boletines, actas) 100% en el navegador con `jsPDF`, porque requiere un DOM/Canvas que Node no tiene, y el proyecto no tiene ninguna librería de PDF del lado del servidor (agregar `pdfkit` o `puppeteer` habría roto la política de "cero dependencias nuevas sin que lo pidas explícitamente"). En vez de eso, se reutilizó la infraestructura de PDF que YA existe en el navegador: cuando el estudiante/acudiente inicia sesión, un botón flotante nuevo ("📜 Certificados disponibles") aparece si tiene certificados pendientes, y al hacer clic genera el PDF final con `jsPDF` + el mismo generador de código QR que usan los boletines (`_qrDataUrlBoletin`), verificable con el panel "Verificar Autenticidad" ya existente (`POST /api/inetis/boletin/verificar`, que es genérico: verifica cualquier dato firmado con `DOC_SIGN_SECRET`, no solo boletines).
+- **Idempotencia (importante, no pedida explícitamente pero necesaria):** los 3 proveedores de pago documentan que pueden reenviar el mismo webhook más de una vez (reintentos de red). Se agregó una verificación que compara el estado previamente guardado de la transacción antes de repetir el abono/generación — así un reintento del webhook nunca duplica una mensualidad ni regenera el certificado dos veces.
+
+### 5 — Copiloto de IA "Adán" para acudientes y estudiantes
+
+- **Apertura del widget:** se amplió el filtro de rol en `iaInjectWidget()` (antes solo `gestor/admin/rector/docente`) para incluir `estudiante` y `padre`. También se corrigió el segundo punto de bloqueo, más fuerte, dentro de `renderApp()`: antes esos dos roles llamaban a `iaRemoveWidget()` incondicionalmente ANTES de llegar siquiera a `iaInjectWidget()` — cambiar solo el primer punto no habría tenido ningún efecto visible.
+- **System prompt dinámico por rol:** se agregó una rama completa y separada en `buildSystemPrompt()` (backend) para `rol==='estudiante'||rol==='padre'`, que reemplaza el prompt administrativo por uno de "Asistente de Soporte y Tutoría": ayuda de uso de la plataforma, tutoría académica, apoyo emocional básico (con derivación a un profesional cuando corresponde) y cultura general.
+  - **Restricción de seguridad explícita:** el prompt le prohíbe expresamente a Adán actuar como si pudiera consultar/modificar planillas de calificaciones, asistencia u observador, o mostrar datos de OTRO estudiante distinto al propio (o al hijo/a del acudiente).
+  - **Aviso de transparencia:** `POST /api/inetis/ai/chat` **no tiene autenticación propia** — el rol viaja del cliente sin firmar, así que esta restricción es una mitigación a nivel de instrucción/UX, no un control de acceso real a nivel de datos. Hoy no hay riesgo estructural adicional porque esta ruta no lee la base de datos de la institución por su cuenta (solo usa lo que ya viene en el contexto que manda el navegador), pero se documenta para que quede claro el límite real de esta protección.
+
+### Resumen de variables/config nuevas de esta ronda
+
+| Config/Variable | Para qué | Si falta |
+|---|---|---|
+| `config.requiereAprobacionMatricula` | Exige aprobación manual de matrículas (si no, es automática) | `false` (automática) por defecto |
+| `config.alertasAusenciasActivas` | Activa el envío automático de alertas de ausentismo | `false` (desactivado) por defecto |
+| `config.umbralAusenciasAlerta` | Cada cuántas ausencias se notifica al acudiente | `3` por defecto |
+
+### Cómo se verificó todo esto (Ronda 12)
+
+- TypeScript: recompilé `src/index.ts` (con los cambios del webhook de pagos) — **0 errores nuevos** (los 27 de siempre, pre-existentes en `schema.ts`, sin relación con esta ronda).
+- JavaScript del frontend: `node --check` sobre `03-app-core.js`, `06-documentos-y-resto.js` y `universidad/app.js` — sin errores de sintaxis, después de cada bloque de cambios.
+- 2 scripts de prueba aislados nuevos, con 22 casos en total: idempotencia y firma del certificado + parseo de referencias + vigencia de suscripción SaaS (11 casos), y dedup/vínculo de auto-matrícula por número de documento incluyendo el caso de un estudiante retirado que vuelve y la validación de que el acudiente puede iniciar sesión de inmediato (11 casos). Además se re-ejecutaron los 6 scripts de prueba más relevantes de la Ronda 11 (firmas de pago, JWT, invitación, cron, restablecimiento) para confirmar que nada se rompió — todos verdes.
+- **Cero dependencias nuevas agregadas** en `package.json` en esta ronda tampoco: el certificado se firma con `crypto` nativo (igual que boletines) y se dibuja en PDF reutilizando `jsPDF`/`QRCode` que el navegador ya tenía cargados para los boletines.
+
+### Lo que queda pendiente de tu decisión (documentado, no resuelto a ciegas)
+
+1. **Formato exacto del certificado/paz y salvo en PDF** — se implementó un diseño simple y funcional (nombre, concepto, fecha, código QR de verificación), pero si tu institución necesita un diseño específico (logo, firma del rector, texto legal exacto), dímelo y se ajusta el generador `_descargarCertificadoPDF()`.
+2. **Reglas de mora/vigencia de la suscripción SaaS** — se asumió un ciclo de 30 días desde el pago aprobado; si tu plan es anual o tiene otra regla, se ajusta fácilmente en `_actualizarSuscripcionSaas()`.
+3. **Qué pasa con una mensualidad ya acreditada si luego el proveedor la reembolsa** — hoy el reembolso se registra en `fin_transacciones` pero no revierte automáticamente `pensionAlDia`/el registro en `est.pagos[]`; no vino especificado y podría ser una decisión de negocio sensible (¿se retira el acceso de inmediato o se da un plazo?).
+
+---
+
+## Ronda 13 — Reglas finales de negocio: plantilla oficial del certificado, ciclo de vigencia SaaS y manejo de reembolsos/contracargos
+
+Esta ronda responde, una por una, a las 3 decisiones de negocio que habían quedado documentadas como "pendientes de tu decisión" al cierre de la Ronda 12, con las reglas exactas que diste. El objetivo declarado era dejar el ciclo financiero y de certificación **completamente cerrado y funcional**, y eso es lo que se implementó.
+
+### 1 — Plantilla oficial del certificado / paz y salvo (PDF tamaño Carta + QR de verificación pública)
+
+Se reescribió por completo `_descargarCertificadoPDF()` (frontend, `03-app-core.js`) siguiendo tu especificación exacta:
+
+- **Tamaño y formato:** `new jsPDF('p','mm','letter')` — tamaño Carta, tal como pediste (el resto del sistema usa A4 para boletines; este documento es el único que usa Carta, a propósito).
+- **Encabezado:** nombre de la institución (en mayúsculas) y su escudo/logo si está cargado en `db.logo`; el código DANE/NIT se incluye si tu institución lo tiene guardado en la configuración; título dinámico en mayúsculas — `"CERTIFICADO DE ESTUDIOS"` por defecto, o `"PAZ Y SALVO ACADÉMICO Y FINANCIERO"` automáticamente cuando el concepto de la transacción contiene la frase "paz y salvo" (detectado con `/paz\s*y\s*salvo/i`).
+- **Cuerpo:** texto oficial con el nombre completo del estudiante y su tipo/número de documento, indicando matrícula vigente y estar al día por todo concepto en el periodo lectivo — con una redacción para el certificado de estudios y otra, específica, para el paz y salvo.
+- **Firma/estampado:** bloque con el nombre configurado como rector/secretario (`db.rectora`) y la leyenda "Firmado digitalmente" — es un **estampado visual**, no una firma digital criptográfica sobre el PDF en sí (el proyecto no tiene ni agregó ninguna librería de firma de PDF); la validez real del documento la da el mecanismo de abajo, no el estampado visual.
+- **Código QR de verificación pública:** en la esquina inferior, generado con el mismo helper que ya usan los boletines (`_qrDataUrlBoletin`), apuntando a `TU_DOMINIO/api/certificados/verificar/<código>` — exactamente la ruta pública que pediste.
+
+**Nuevo endpoint público, sin autenticación:** `GET /api/certificados/verificar/:hash` (backend, `src/index.ts`). Cualquiera que escanee el QR (o pegue el enlace) ve una página HTML autónoma y estilizada (no JSON, no requiere tener la plataforma abierta) con 3 estados posibles: **código no encontrado** (gris), **documento revocado** (rojo — ver punto 3), o **válido** (verde, con institución, nombre del estudiante, concepto y fecha de emisión).
+
+**Cambios de base de datos para soportar esto:** se agregaron las columnas `codigo_verificacion` (con índice, para que la búsqueda pública sea instantánea) y `revocado` a `fin_transacciones` — ambas con `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, siguiendo el mismo mecanismo de migración que ya usa todo el proyecto (`initDb()` en `src/db/index.ts`, sin sistema de migraciones aparte). El listado `GET /api/inetis/pagos/certificados` ahora también informa `revocado` por cada certificado, y el modal "📜 Certificados disponibles" muestra un aviso rojo "REVOCADO" y desactiva la descarga cuando corresponde (ver punto 3).
+
+### 2 — Ciclo de vigencia de la suscripción SaaS (mensual/anual, gracia de 3 días, alerta 5 días antes)
+
+- **Duración según el plan:** `_actualizarSuscripcionSaas()` ahora detecta si el plan es anual con una expresión regular sobre el texto del plan/concepto (`/anual|annual|yearly|year\b/i`) — si lo es, la vigencia se calcula a **365 días** desde la confirmación del webhook; si no, a **30 días** (mensual, el valor por defecto). Ambos se cuentan desde la fecha/hora exacta en que llega el webhook de pago aprobado, tal como pediste.
+- **Margen de gracia de 3 días:** nueva función `verificarSuscripcionSaas(sk)`, que se ejecuta en cada `POST /api/inetis/db` (guardado). Si la fecha actual está dentro de `vigenteHasta + 3 días`, todo sigue funcionando con normalidad. Solo al superar ese margen se bloquea el guardado.
+  - **Decisión de arquitectura que debes conocer:** todo el sistema K-12 guarda sus datos a través de un único endpoint genérico (`POST /api/inetis/db`, un solo "blob" JSON por institución) — no existe, a nivel de ese endpoint, una forma de distinguir una acción "administrativa" de una "operativa" (ej. no se puede permitir editar asistencia pero bloquear editar cobros, porque ambas viajan en el mismo guardado). Por eso, "congelar las funciones administrativas" se implementó como: **se bloquean todos los guardados** (la API responde `402` con `{error, suscripcionVencida:true}`) **pero las consultas (GET) siguen funcionando con total normalidad** — el rector y su equipo pueden seguir viendo toda su información en todo momento, solo no pueden guardar cambios nuevos hasta renovar. Un Súper Admin puede seguir usando el mecanismo de rescate ya existente (`_tieneRescateValido`, el mismo que se usa para la "Pantalla en Blanco") para levantar el bloqueo manualmente en un caso excepcional.
+  - **Frontend:** se agregó el manejo del nuevo código `402` en `_pushDB()` — el cambio del docente/admin **no se pierde** (ya quedó guardado en `localStorage` desde antes), y se le muestra un aviso claro una sola vez por sesión ("🔒 La suscripción de esta institución venció...") en vez de fallar en silencio.
+  - **Compatibilidad hacia atrás, importante:** una institución que **todavía no tiene ninguna fila** en `fin_suscripciones` (es decir, la inmensa mayoría hoy, porque el cobro de SaaS es apenas un andamiaje) **nunca se ve afectada** por este bloqueo — `verificarSuscripcionSaas()` devuelve `{ok:true}` de inmediato si no encuentra fila. El bloqueo solo puede activarse para instituciones que ya están efectivamente suscritas y vencidas.
+- **Alerta previa de 5 días:** nueva función `enviarAlertasVencimientoSaas()`, agregada a las tareas autónomas programadas del servidor (primer chequeo 15 minutos después de arrancar, luego cada 12 horas). Revisa todas las suscripciones activas y, cuando falten 5 días o menos para el vencimiento, envía un correo (reutilizando `enviarCorreoGeneral`, el mismo mecanismo de correo que ya existe) y marca `alertaVencimientoEnviada=true` para no reenviarla una y otra vez.
+  - **Adaptación documentada:** el proyecto no tiene un campo dedicado de "contacto de facturación" por institución. Se resuelve buscando, dentro de los usuarios de la institución, al primero con rol `admin` o `rector` que tenga un correo (`correo`/`email`) registrado. Si tu institución no tiene ningún admin/rector con correo cargado, la alerta simplemente no tiene a quién enviarse (no genera error, solo no se envía) — si esto te afecta, dímelo y se agrega un campo explícito de "correo de facturación" en la configuración.
+
+### 3 — Reembolsos, devoluciones y contracargos (`REFUNDED`/`CHARGEBACK`/`DISPUTED`)
+
+Se implementaron, tal cual las especificaste, las 3 reacciones automáticas cuando un webhook notifica uno de estos estados:
+
+1. **Estado de la transacción:** `normalizarEstadoPago()` ahora reconoce también `CHARGEBACK`, `DISPUTED`, `DISPUTE` e `IN_DISPUTE` (antes solo `REFUNDED`/`REFUND`/`CHARGED_BACK`) y los mapea todos al mismo estado interno `'reembolsado'`, que queda guardado de inmediato en `fin_transacciones.estado`.
+   - **Simplificación consciente, por instrucción tuya explícita:** una disputa (`DISPUTED`) se trata de inmediato igual que un reembolso ya confirmado, aunque en la práctica una disputa "abierta" a veces termina resolviéndose a favor del comercio. Pediste reaccionar de una vez por seguridad en lugar de esperar la resolución final del proveedor, así que así quedó implementado.
+2. **Reversión automática en el estado de cuenta:** nueva función `_revertirPagoMensualidadEnBlob()`. Cuando el webhook trae una reversión de una **mensualidad** (`esNuevaReversion` — es decir, la transacción estaba `aprobado` y ahora llega como reembolso/disputa), se busca el pago exacto dentro de `est.pagos[]` del estudiante (por proveedor + ID de pago del proveedor, la misma pareja única que ya se usaba para la idempotencia) y se marca `estado:'reembolsado'` **solo esa entrada** (el historial de otros pagos no relacionados queda intacto), y se pone `est.pensionAlDia=false` para que el estudiante vuelva a figurar en mora/pendiente.
+   - **Simplificación documentada:** `pensionAlDia` se pone en `false` sin verificar si, aun quitando ese pago puntual, otro pago distinto ya cubría el mismo periodo — en la enorme mayoría de los casos (un pago = un periodo) esto es exactamente lo correcto; si tu institución maneja pagos parciales/fraccionados para un mismo periodo, este caso extremo podría marcar `pensionAlDia=false` de más y dime para afinarlo.
+3. **Revocación del certificado:** si la transacción reembolsada/disputada corresponde a un **trámite** (certificado/paz y salvo pagado), se marca `fin_transacciones.revocado=true` en esa misma fila. El certificado **sigue siendo criptográficamente válido** (su firma no cambia — sigue siendo el mismo documento que se generó), pero la página pública de verificación (`/api/certificados/verificar/:hash`) ahora comprueba también esta bandera y, si está en `true`, muestra el estado "🚫 REVOCADO" en rojo en vez de "✅ VÁLIDO" — exactamente el efecto de "impedir su verificación" que pediste. El modal de "Certificados disponibles" del estudiante/acudiente también refleja el mismo estado y bloquea la descarga.
+   - **Punto que quedó explícitamente sin definir (documentado, no resuelto a ciegas):** especificaste la regla para mensualidades y trámites, pero no para un reembolso de la **suscripción SaaS** en sí (`suscripcion_saas`). Hoy ese caso queda registrado en `fin_transacciones` (con el estado `reembolsado`) pero **no** revierte automáticamente la fila de `fin_suscripciones` (no la desactiva ni le resta los días de vigencia ya otorgados) — no vino especificado si eso debería congelar la cuenta de inmediato, prorratear los días, o esperar a que la vigencia expire por sí sola. Dime la regla y se agrega en la misma función (`_registrarTransaccionPago`, rama `esNuevaReversion` para `suscripcion_saas`).
+
+### Resumen de columnas nuevas de esta ronda
+
+| Columna | Tabla | Para qué |
+|---|---|---|
+| `codigo_verificacion` (+ índice) | `fin_transacciones` | Búsqueda O(1) del certificado desde la página pública de verificación por QR |
+| `revocado` | `fin_transacciones` | Marca un certificado como inválido tras un reembolso/contracargo, sin alterar su firma original |
+| `alerta_vencimiento_enviada` | `fin_suscripciones` | Evita reenviar la alerta de "vence en 5 días" más de una vez por ciclo |
+
+Las 3 se crean solas al arrancar el servidor (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` dentro de `initDb()`) — no requieren que corras ningún script SQL a mano.
+
+### Cómo se verificó todo esto (Ronda 13)
+
+- TypeScript: recompilé `src/index.ts`, `src/db/schema.ts`, `src/db/index.ts` y `src/lib/pagos-webhooks.ts` — **0 errores nuevos** (se mantienen exactamente los mismos 27 errores pre-existentes de siempre en `schema.ts`, sin relación con esta ronda; el nuevo índice de `codigoVerificacion` no sumó ningún error nuevo porque comparte la sintaxis, ya conocida, del resto de índices de esa misma tabla).
+- JavaScript del frontend: `node --check` sobre `03-app-core.js`, `06-documentos-y-resto.js` y `universidad/app.js` — sin errores de sintaxis, verificado después de cada bloque de cambios (incluida la reescritura completa de `_descargarCertificadoPDF()` y el nuevo manejo del código `402` en `_pushDB()`).
+- 1 script de prueba aislado nuevo, con 26 casos: detección de plan mensual vs. anual, cálculo de vigencia a 30 y 365 días, límites exactos del margen de gracia de 3 días (dentro/fuera), compatibilidad hacia atrás (institución sin fila = nunca bloqueada), ventana de alerta de 5 días con su deduplicación, normalización de `DISPUTED`/`CHARGEBACK`, idempotencia de la reversión, y aislamiento de la reversión por entrada de pago específica (no afecta otros pagos del mismo estudiante).
+- **Cero dependencias nuevas agregadas** en `package.json` en esta ronda: el PDF sigue generándose 100% en el navegador con `jsPDF` (ahora en tamaño Carta) y el QR reutiliza el generador que ya tenían los boletines; la página pública de verificación es HTML armado a mano en el propio backend, sin ningún motor de plantillas nuevo.
+
+### Lo que queda pendiente de tu decisión (documentado, no resuelto a ciegas)
+
+1. **Reembolso de la propia suscripción SaaS** (no de mensualidades ni trámites, que ya quedaron resueltos): hoy se registra el estado pero no se toca `fin_suscripciones` — dime si debe congelar la cuenta de inmediato, prorratear días, o no hacer nada hasta que la vigencia expire sola.
+2. **Campo dedicado de "correo de facturación"** por institución: hoy la alerta de vencimiento SaaS se envía al primer admin/rector con correo registrado; si prefieres un contacto de facturación separado (que no dependa de que exista ese rol con ese dato), se agrega un campo nuevo en la configuración.
+3. **Firma digital criptográfica del PDF en sí** (más allá del estampado visual "Firmado digitalmente" + el QR de verificación): si tu institución necesita que el archivo PDF traiga una firma digital embebida verificable con Adobe Reader/software de firma (ej. PAdES), eso requeriría agregar una librería nueva (hoy no existe ninguna en el proyecto) — dime si es un requisito real y se evalúa cuál conviene.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.

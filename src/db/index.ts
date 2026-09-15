@@ -460,6 +460,51 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS univ_gb_cat_seccion_idx ON univ_gradebook_categorias(seccion_id);
 
       ALTER TABLE lms_actividades ADD COLUMN IF NOT EXISTS categoria_id INTEGER REFERENCES univ_gradebook_categorias(id) ON DELETE SET NULL;
+
+      -- ════════════════════════════════════════════════════════════════
+      -- "4 pilares de autonomía" — Pilar 2: MÓDULO FINANCIERO Y PASARELA
+      -- DE PAGO (andamiaje). Ver el comentario detallado en src/db/schema.ts.
+      -- ════════════════════════════════════════════════════════════════
+      CREATE TABLE IF NOT EXISTS fin_transacciones (
+        id SERIAL PRIMARY KEY,
+        sk TEXT,
+        tipo TEXT NOT NULL,
+        concepto TEXT NOT NULL DEFAULT '',
+        estudiante_id TEXT,
+        proveedor TEXT NOT NULL,
+        proveedor_pago_id TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'pendiente',
+        monto_centavos INTEGER NOT NULL DEFAULT 0,
+        moneda TEXT NOT NULL DEFAULT 'COP',
+        metadata JSONB DEFAULT '{}',
+        entregable_generado BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS fin_transacciones_sk_idx ON fin_transacciones(sk);
+      CREATE INDEX IF NOT EXISTS fin_transacciones_estado_idx ON fin_transacciones(estado);
+      CREATE UNIQUE INDEX IF NOT EXISTS fin_transacciones_proveedor_pago_idx ON fin_transacciones(proveedor, proveedor_pago_id);
+
+      -- Ronda 13: cierre del ciclo financiero (certificados verificables
+      -- públicamente + revocación por reembolso/contracargo).
+      ALTER TABLE fin_transacciones ADD COLUMN IF NOT EXISTS codigo_verificacion TEXT;
+      ALTER TABLE fin_transacciones ADD COLUMN IF NOT EXISTS revocado BOOLEAN NOT NULL DEFAULT FALSE;
+      CREATE INDEX IF NOT EXISTS fin_transacciones_codigo_verificacion_idx ON fin_transacciones(codigo_verificacion);
+
+      CREATE TABLE IF NOT EXISTS fin_suscripciones (
+        id SERIAL PRIMARY KEY,
+        sk TEXT NOT NULL UNIQUE,
+        plan TEXT NOT NULL DEFAULT 'basico',
+        estado TEXT NOT NULL DEFAULT 'inactiva',
+        proveedor TEXT,
+        proveedor_suscripcion_id TEXT,
+        vigente_hasta TIMESTAMPTZ,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS fin_suscripciones_estado_idx ON fin_suscripciones(estado);
+      ALTER TABLE fin_suscripciones ADD COLUMN IF NOT EXISTS alerta_vencimiento_enviada BOOLEAN NOT NULL DEFAULT FALSE;
     `);
     console.log("✅ Tablas verificadas/creadas en Neon exitosamente.");
   } catch (err) {

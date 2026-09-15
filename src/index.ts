@@ -13,7 +13,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones } from './db/index.js';
 import repositorioRouter from './routes/repositorio.js';
 import lmsRouter from './routes/lms.js';
 import universityRouter, { exigirSesion as exigirSesionUniv, verificarInstitucionActiva as verificarInstitucionActivaUniv } from './routes/university.js';
@@ -27,6 +27,9 @@ import { GoogleGenAI } from '@google/genai';
 import webpush from 'web-push';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
+import { leerDbCacheado, guardarDbCache, invalidarDbCache, leerBlobInstitucion } from './lib/db-cache.js';
+import { emitirTokenRestablecimiento, verificarYConsumirTokenRestablecimiento, hashPasswordServidor, limpiarTokensRestablecimientoExpirados } from './lib/reset-tokens.js';
+import { verificarFirmaWompi, verificarFirmaMercadoPago, verificarFirmaStripe, normalizarEstadoPago, parsearReferenciaPago, type ReferenciaPago } from './lib/pagos-webhooks.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
 import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado } from './lib/email-general.js';
 import { emailApiConfigurado, emailApiProveedor, enviarPorApiHttp } from './lib/email-http-provider.js';
@@ -256,6 +259,28 @@ const app = express();
 // y seguro aquí (no se debe usar "true" en producción porque eso confiaría
 // en cualquier cabecera X-Forwarded-For que mande el propio cliente).
 app.set('trust proxy', 1);
+
+// ============================================================
+// "6 pilares de rendimiento" — Pilar 1: Keep-Alive 100% en RAM.
+// ------------------------------------------------------------
+// Registrado aquí, ANTES de CORS, compresión, parseo de body, rate-limit
+// o cualquier otra cosa, a propósito: así ningún middleware (ni siquiera
+// uno tan liviano como express-rate-limit) se ejecuta antes de responder.
+// No toca el ORM, el driver de Postgres, Neon, ni ninguna verificación de
+// autenticación — es una constante fija devuelta directamente desde
+// memoria. Pensado para un servicio externo de Keep-Alive (UptimeRobot y
+// similares) que hace ping cada pocos minutos solo para evitar que Render
+// duerma la instancia por el plan gratuito, sin gastar ni una sola
+// consulta ni un solo milisegundo de cómputo de Neon en cada ping.
+// (Ya existía "/api/health" — más abajo, en la sección de rutas — con el
+// mismo espíritu; "/api/healthcheck" se añade con el nombre exacto
+// solicitado y en la posición más temprana posible, sin sustituir el
+// endpoint anterior para no romper nada que ya lo esté usando.)
+// ============================================================
+app.get('/api/healthcheck', (_req, res) => {
+  res.status(200).json({ ok: true, status: 'up', ts: new Date().toISOString() });
+});
+
 const PORT = parseInt(process.env.PORT || '8080');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -279,7 +304,14 @@ app.use(cors({
 // comprimiendo respuestas ya pequeñas (menos de 1 KB no vale la pena).
 app.use(compression({ threshold: 1024 }));
 
-app.use(express.json({ limit: '50mb' }));
+// "verify" captura el Buffer del cuerpo crudo, sin re-serializar, en
+// req.rawBody — lo necesita ÚNICAMENTE la verificación de firma de Stripe
+// (POST /api/payments/webhook/stripe), que exige comparar contra los bytes
+// EXACTOS recibidos (si se reconstruye el JSON a partir del objeto ya
+// parseado, la firma nunca coincide). Para el resto de rutas esto no tiene
+// ningún efecto — es una referencia adicional al mismo buffer que
+// express.json() ya leyó, no una lectura ni un costo extra.
+app.use(express.json({ limit: '50mb', verify: (req: any, _res, buf: Buffer) => { req.rawBody = buf; } }));
 
 // ============================================================
 // LÍMITE DE PETICIONES (rate limiting) — protección contra fuerza
@@ -363,6 +395,16 @@ app.use('/api/inetis/rescate', limitadorRescate);
 // contraseña para usarse, así que merece la misma protección contra
 // fuerza bruta.
 app.use('/api/inetis/email-status', limitadorRescate);
+// "4 pilares de autonomía" — Pilar 1: mismo espíritu que limitadorEmail (este
+// flujo también termina enviando un correo) — evita que alguien intente
+// pedir restablecimientos en cadena para agotar la cuota del proveedor de
+// correo, o probar usuarios al voleo contra /confirmar.
+app.use('/api/inetis/auth/restablecer', limitadorEmail);
+// "4 pilares de autonomía" — Pilar 1: mismo espíritu que limitadorRescate —
+// un código de invitación de 6 dígitos tiene un espacio de búsqueda
+// pequeño (hasta 900,000 combinaciones); sin límite de intentos por
+// minuto, alguien podría intentar adivinarlo por fuerza bruta.
+app.use('/api/inetis/auth/invitacion', limitadorRescate);
 app.use('/api/', limitadorGeneral);
 
 // ============================================================
@@ -440,6 +482,47 @@ function buildSystemPrompt(context: Record<string, unknown>): string {
   const ctxSistema = esGestor
     ? `Estás en modo Gestor Multi-Plataforma. El usuario administra múltiples instituciones educativas desde el panel central.`
     : `Institución: ${nombreInst} | Año: ${anio} | Grados: ${grados.join(', ') || 'N/A'} | Estudiantes: ${numEstudiantes} | Docentes: ${numDocentes} | Periodos: ${numPeriodos} | Periodo actual: ${perActual} | Escala: S≥${escalaS} A≥${escalaA} B≥${escalaB} | Asignaturas: ${asignaturas.join(', ') || 'N/A'}${misAsignaturas.length ? ` | Mis asignaturas: ${misAsignaturas.join(', ')}` : ''}`;
+
+  // ── Ronda 12, Sección 4: prompt restringido para Estudiante/Acudiente ──
+  // El widget de Adán ahora es visible para estos dos roles (antes solo
+  // Docente/Directivo/Gestor lo veían — ver iaInjectWidget()/renderApp()
+  // en 03-app-core.js). Como NO existe autenticación en
+  // POST /api/inetis/ai/chat (context.rol viaja del cliente sin firmar),
+  // esta restricción de prompt es una mitigación de UX/alcance, no un
+  // control de acceso real — hoy no hay riesgo estructural adicional
+  // porque esta ruta no lee la base de datos de la institución por su
+  // cuenta (solo usa lo que ya viene en "context"), pero aun así se le
+  // instruye explícitamente a Adán que nunca actúe como si tuviera
+  // permisos administrativos ni exponga datos de otros estudiantes.
+  if (rol === 'estudiante' || rol === 'padre') {
+    const paraQuien = rol === 'estudiante' ? 'el propio estudiante' : 'el padre/madre o acudiente de un estudiante';
+    return `Eres Adán, el Asistente de Soporte y Tutoría de Gestor Académico YC para ${nombreInst}.
+
+USUARIO ACTIVO:
+- Nombre: ${usuario}
+- Rol en el sistema: ${rolLabel} (estás hablando con ${paraQuien})
+- Módulo activo: ${modulo}
+- Contexto del sistema: ${ctxSistema}
+
+TU PROPÓSITO CON ESTE USUARIO:
+1. Explicar cómo usar la plataforma (dónde ver notas, horarios, asistencia, boletines, cómo descargar documentos, cómo contactar al colegio, etc.)
+2. Apoyo de tutoría académica: resolver dudas de materias, explicar temas, ayudar a estudiar, generar ejercicios de práctica y planes de estudio personalizados
+3. Orientación y contención emocional básica en temas escolares (manejo del estrés académico, hábitos de estudio, motivación) — SIN reemplazar nunca a un psicólogo, orientador escolar o profesional de salud mental; si detectas señales de una crisis o de que la persona necesita ayuda profesional, recomienda hablar con el orientador del colegio, un adulto de confianza o un profesional de salud mental
+4. Responder preguntas generales de cultura, tareas y temas educativos como lo haría cualquier asistente de IA útil
+
+RESTRICCIÓN DE SEGURIDAD — CUMPLE ESTO SIEMPRE, SIN EXCEPCIÓN:
+- NUNCA actúes como si pudieras consultar, modificar, calificar o exportar planillas de calificaciones, asistencia, observador u otra información administrativa/docente, aunque el usuario lo pida o insista. Explica que esa función es exclusiva del personal docente/administrativo.
+- NUNCA muestres, inventes ni "recuerdes" datos, notas, asistencia u observaciones de OTRO estudiante distinto al propio (o al hijo/a del acudiente que está escribiendo). Si te piden datos de otro estudiante, recházalo con amabilidad y explica que esa información es privada.
+- NUNCA generes ni simules credenciales, códigos de invitación, enlaces de restablecimiento de contraseña de otras personas, ni te hagas pasar por el sistema para "aprobar" matrículas, pagos o trámites — esas acciones solo las realiza el sistema o el personal autorizado.
+- Si detectas que la pregunta requiere acceso a datos administrativos que no tienes, dilo claramente y sugiere contactar al colegio (rectoría/secretaría) en vez de inventar una respuesta.
+- Puedes y debes seguir ayudando con TODO lo demás (tutoría, dudas académicas, uso de la plataforma, apoyo emocional básico, cultura general) sin restricciones adicionales.
+
+INSTRUCCIONES DE ESTILO:
+1. Responde en español colombiano, cálido, cercano y claro — recuerda que puede estar hablando con un menor de edad o con su acudiente
+2. Para material de estudio (resúmenes, ejercicios, guías), usa formato bien estructurado con markdown
+3. Sé conciso cuando la pregunta es simple, y detallado cuando se trata de explicar un tema académico
+4. Nunca uses lenguaje que asuma que el usuario tiene permisos administrativos`;
+  }
 
   return `Eres Adán, un asistente de inteligencia artificial avanzado — igual que Gemini, ChatGPT o Claude. Puedes responder CUALQUIER pregunta sobre CUALQUIER tema sin excepción. Además, funcionas como un Copilot Pedagógico y actúas como un Sico orientador pedagógico y psicólogo educativo para apoyar a la comunidad académica.
 
@@ -605,9 +688,25 @@ app.get('/api/inetis/db', async (req, res) => {
         return res.status(403).json({ error: estado.motivo, institucionPausada: !!estado.institucionPausada, pantallaBlancaActiva: !!estado.pantallaBlancaActiva });
       }
     }
-    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
-    if (!rows.length) return res.json({ data: null, version: null });
-    const version = rows[0].updatedAt ? rows[0].updatedAt.toISOString() : null;
+    // PILAR 2 (rendimiento): caché en memoria de 5s — ver src/lib/db-cache.ts.
+    // Evita golpear Neon en cada sincronización periódica cuando nada cambió.
+    let filaValue: any;
+    let filaUpdatedAt: Date | null;
+    let filaExiste: boolean;
+    const cacheada = leerDbCacheado(sk);
+    if (cacheada) {
+      filaValue = cacheada.value;
+      filaUpdatedAt = cacheada.updatedAt;
+      filaExiste = cacheada.existe;
+    } else {
+      const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+      filaExiste = rows.length > 0;
+      filaValue = filaExiste ? rows[0].value : null;
+      filaUpdatedAt = filaExiste ? rows[0].updatedAt : null;
+      guardarDbCache(sk, filaValue, filaUpdatedAt, filaExiste);
+    }
+    if (!filaExiste) return res.json({ data: null, version: null });
+    const version = filaUpdatedAt ? filaUpdatedAt.toISOString() : null;
     // Petición condicional: si el navegador ya tiene esta misma versión (se
     // la manda de vuelta en "If-None-Match"), no hace falta reenviar el
     // JSON completo de la institución — con cientos de estudiantes y sus
@@ -620,7 +719,7 @@ app.get('/api/inetis/db', async (req, res) => {
       return res.status(304).end();
     }
     if (version) res.setHeader('ETag', `"${version}"`);
-    return res.json({ data: rows[0].value, version });
+    return res.json({ data: filaValue, version });
   } catch (e) {
     console.error('GET /api/inetis/db', e);
     return res.status(500).json({ error: 'Error interno' });
@@ -638,6 +737,7 @@ app.delete('/api/inetis/db', async (req, res) => {
     if (!sk) return res.status(400).json({ error: 'sk requerido' });
     await db.delete(kvStore).where(eq(kvStore.key, sk));
     await db.delete(notifications).where(eq(notifications.sk, sk));
+    invalidarDbCache(sk); // Pilar 2: que el borrado se refleje de inmediato, sin esperar el TTL de la caché
     return res.json({ ok: true });
   } catch (e) {
     console.error('DELETE /api/inetis/db', e);
@@ -670,6 +770,14 @@ app.post('/api/inetis/db', async (req, res) => {
       if (!estado.ok) {
         return res.status(403).json({ error: estado.motivo, institucionPausada: !!estado.institucionPausada, pantallaBlancaActiva: !!estado.pantallaBlancaActiva });
       }
+      // Ronda 13, punto 2: congela la escritura si la suscripción SaaS
+      // venció y ya pasó el periodo de gracia — ver verificarSuscripcionSaas()
+      // para el porqué de este alcance (bloquea POST, no GET) y por qué NO
+      // afecta a instituciones que no usan esta facturación automática.
+      const estadoSuscripcion = await verificarSuscripcionSaas(sk);
+      if (!estadoSuscripcion.ok) {
+        return res.status(402).json({ error: estadoSuscripcion.motivo, suscripcionVencida: true });
+      }
     }
 
     if (baseVersion !== undefined) {
@@ -693,6 +801,11 @@ app.post('/api/inetis/db', async (req, res) => {
         target: kvStore.key,
         set: { value: data as any, updatedAt: nowTs },
       });
+    // Pilar 2: en vez de solo invalidar, se refresca la caché ya con el valor
+    // recién guardado — así el propio dispositivo que guardó (y cualquier otro
+    // que sincronice en los próximos segundos) recibe el dato correcto sin
+    // tener que esperar ni volver a golpear Neon.
+    guardarDbCache(sk, data, nowTs, true);
     broadcastChange(sk);
     return res.json({ ok: true, version: nowTs.toISOString() });
   } catch (e) {
@@ -1010,6 +1123,770 @@ app.post('/api/inetis/send-email', async (req, res) => {
   } catch (e: any) {
     console.error('POST /api/inetis/send-email', e);
     return res.status(500).json({ ok: false, error: 'Error interno', hint: 'Error interno' });
+  }
+});
+
+// ============================================================
+// "4 pilares de autonomía" — Pilar 1 (Self-Service Onboarding):
+// RESTABLECIMIENTO DE CONTRASEÑA CON TOKEN DE UN SOLO USO
+// ------------------------------------------------------------
+// Mecanismo ADICIONAL al flujo existente de "¿Olvidó su contraseña?"
+// (contraseña temporal enviada vía POST /api/inetis/send-email) — no lo
+// reemplaza ni lo toca. Ver src/lib/reset-tokens.ts para el diseño
+// completo (por qué es un JWT de un solo uso, alcance de esta ronda,
+// etc.). El enlace enviado por correo apunta al propio front del sistema
+// con los parámetros necesarios para que una pantalla nueva (a construir
+// en el front cuando se adopte este flujo) pueda leerlos y llamar a
+// /confirmar.
+// ============================================================
+app.post('/api/inetis/auth/restablecer/solicitar', async (req, res) => {
+  try {
+    const { sk, usuario } = req.body as { sk?: string; usuario?: string };
+    if (!sk || !usuario) {
+      return res.status(400).json({ ok: false, error: 'Faltan campos requeridos (sk, usuario).' });
+    }
+    // Respuesta genérica SIEMPRE (se explique o no abajo): evita que alguien
+    // pueda usar este endpoint para averiguar qué nombres de usuario existen
+    // en una institución con solo observar si la respuesta cambia.
+    const respuestaGenerica = { ok: true, mensaje: 'Si el usuario existe, se envió un correo con instrucciones para restablecer la contraseña.' };
+    const blob = await leerBlobInstitucion(String(sk));
+    if (!blob || !Array.isArray(blob.users)) return res.json(respuestaGenerica);
+    const cuenta = blob.users.find((u: any) => u && u.u === usuario);
+    const correoDestino = cuenta && (cuenta.correo || cuenta.email);
+    if (!cuenta || !correoDestino) return res.json(respuestaGenerica);
+    const token = await emitirTokenRestablecimiento(String(sk), String(usuario));
+    const baseUrl = (process.env.SITIO_BASE_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+    const enlace = `${baseUrl}/?restablecerToken=${encodeURIComponent(token)}&sk=${encodeURIComponent(String(sk))}`;
+    const nombreCuenta = cuenta.n || cuenta.u;
+    await enviarCorreoGeneral({
+      to: String(correoDestino),
+      subject: 'Restablecer contraseña — Gestor Académico YC',
+      text: `Hola ${nombreCuenta},\n\nRecibimos una solicitud para restablecer su contraseña en Gestor Académico YC.\n\nUse este enlace (válido por 30 minutos, y solo puede usarse una vez) para crear una nueva contraseña:\n${enlace}\n\nSi usted no solicitó esto, ignore este correo — su contraseña actual sigue siendo válida.`,
+      html: `<p>Hola ${nombreCuenta},</p><p>Recibimos una solicitud para restablecer su contraseña en <b>Gestor Académico YC</b>.</p><p>Use este enlace (válido por 30 minutos, y solo puede usarse una vez) para crear una nueva contraseña:</p><p><a href="${enlace}">${enlace}</a></p><p>Si usted no solicitó esto, ignore este correo — su contraseña actual sigue siendo válida.</p>`,
+    });
+    // Se responde ok:true igual, tanto si el correo se pudo entregar en el
+    // acto como si no (por ejemplo, el proveedor de correo aún en revisión
+    // — ver checklist): el usuario no debe saber por este medio si el envío
+    // interno falló, y el enlace ya quedó registrado y es válido de todas
+    // formas por si el correo llega con retraso desde el panel del proveedor.
+    return res.json(respuestaGenerica);
+  } catch (e) {
+    console.error('POST /api/inetis/auth/restablecer/solicitar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+app.post('/api/inetis/auth/restablecer/confirmar', async (req, res) => {
+  try {
+    const { sk, token, nuevaPassword } = req.body as { sk?: string; token?: string; nuevaPassword?: string };
+    if (!sk || !token || !nuevaPassword) {
+      return res.status(400).json({ ok: false, error: 'Faltan campos requeridos (sk, token, nuevaPassword).' });
+    }
+    if (String(nuevaPassword).length < 6) {
+      return res.status(400).json({ ok: false, error: 'La nueva contraseña debe tener al menos 6 caracteres.' });
+    }
+    const payload = await verificarYConsumirTokenRestablecimiento(String(token));
+    if (!payload || payload.sk !== String(sk)) {
+      return res.status(400).json({ ok: false, error: 'El enlace no es válido, ya fue usado, o expiró. Solicite uno nuevo.' });
+    }
+    // Se lee directo de Neon (sin caché) para no arriesgar sobrescribir con
+    // un blob de hace unos segundos justo en la operación más sensible
+    // (cambiar una contraseña) de todo este mecanismo.
+    const filas = await db.select().from(kvStore).where(eq(kvStore.key, payload.sk));
+    if (!filas.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
+    const blob: any = filas[0].value;
+    const idx = Array.isArray(blob.users) ? blob.users.findIndex((u: any) => u && u.u === payload.usuario) : -1;
+    if (idx === -1) return res.status(404).json({ ok: false, error: 'La cuenta ya no existe.' });
+    blob.users[idx].p = hashPasswordServidor(String(nuevaPassword));
+    const nowTs = new Date();
+    await db
+      .insert(kvStore)
+      .values({ key: payload.sk, value: blob, updatedAt: nowTs })
+      .onConflictDoUpdate({ target: kvStore.key, set: { value: blob, updatedAt: nowTs } });
+    guardarDbCache(payload.sk, blob, nowTs, true);
+    broadcastChange(payload.sk);
+    return res.json({ ok: true, mensaje: 'Contraseña actualizada correctamente. Ya puede iniciar sesión con su nueva contraseña.' });
+  } catch (e) {
+    console.error('POST /api/inetis/auth/restablecer/confirmar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+// ============================================================
+// "4 pilares de autonomía" — Pilar 1 (Self-Service Onboarding):
+// REGISTRO POR CÓDIGO DE INVITACIÓN INSTITUCIONAL
+// ------------------------------------------------------------
+// El rector/admin genera un código de 6 dígitos para un rol (docente,
+// directivo, gestor…) y lo comparte por fuera del sistema (WhatsApp,
+// cartelera, etc.); cualquiera con ese código puede autoregistrarse SIN
+// aprobación manual — se le crea de inmediato una cuenta en db.users con
+// el rol que trae el código, lista para iniciar sesión.
+//
+// Alcance de esta ronda: cuentas de "personal" (mismo alcance que el
+// restablecimiento de contraseña — ver reset-tokens.ts). El auto-registro
+// de ESTUDIANTES/ACUDIENTES queda fuera a propósito: esas cuentas están
+// ligadas a un registro de matrícula (grado, grupo, número de documento,
+// datos del acudiente) que hoy solo se crea desde "Estudiantes" por un
+// admin — abrir su creación a autoregistro exige definir reglas de negocio
+// nuevas (a qué grado/grupo queda un estudiante que se autoregistra, cómo
+// se evitan duplicados por número de documento, etc.) que no vinieron
+// especificadas; se documenta como pendiente en el checklist.
+//
+// Nota sobre el modelo de confianza: igual que TODO el sistema K-12 hoy
+// (que confía en que quien llama a POST /api/inetis/db con un "sk" válido
+// tiene derecho a leer/escribir los datos de esa institución — el "sk" es,
+// en la práctica, el secreto compartido de la institución), este endpoint
+// confía en que quien conoce el "sk" y llama a /generar es realmente un
+// admin de esa institución. No es una debilidad NUEVA: quien ya tiene el
+// "sk" podría de todas formas escribir directamente en db.users vía POST
+// /api/inetis/db. Se documenta explícitamente para que quede claro que es
+// una decisión consciente de consistencia con el modelo existente, no un
+// descuido.
+// ============================================================
+function _generarCodigoInvitacion(): string {
+  return String(Math.floor(100000 + Math.random() * 900000)); // 6 dígitos, 100000-999999
+}
+
+app.post('/api/inetis/auth/invitacion/generar', async (req, res) => {
+  try {
+    const { sk, rol, creadoPor, usosMax, expiraEnHoras } = req.body as { sk?: string; rol?: string; creadoPor?: string; usosMax?: number | null; expiraEnHoras?: number | null };
+    const rolesValidos = ['docente', 'directivo', 'gestor', 'rector', 'admin'];
+    if (!sk || !rol || !rolesValidos.includes(String(rol))) {
+      return res.status(400).json({ ok: false, error: `Faltan campos requeridos, o "rol" inválido (use uno de: ${rolesValidos.join(', ')}).` });
+    }
+    const filas = await db.select().from(kvStore).where(eq(kvStore.key, String(sk)));
+    if (!filas.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
+    const blob: any = filas[0].value || {};
+    if (!Array.isArray(blob.codigosInvitacion)) blob.codigosInvitacion = [];
+    const codigo = _generarCodigoInvitacion();
+    const ahora = new Date();
+    const horasVigencia = typeof expiraEnHoras === 'number' && expiraEnHoras > 0 ? expiraEnHoras : 72; // 72h por defecto: cómodo para compartir, no queda abierto indefinidamente
+    blob.codigosInvitacion.push({
+      codigo,
+      rol: String(rol),
+      creadoPor: creadoPor ? String(creadoPor) : 'admin',
+      creadoEn: ahora.toISOString(),
+      expiraEn: new Date(ahora.getTime() + horasVigencia * 60 * 60 * 1000).toISOString(),
+      usosMax: typeof usosMax === 'number' && usosMax > 0 ? usosMax : 1, // por defecto, de un solo uso
+      usosActuales: 0,
+    });
+    await db
+      .insert(kvStore)
+      .values({ key: String(sk), value: blob, updatedAt: ahora })
+      .onConflictDoUpdate({ target: kvStore.key, set: { value: blob, updatedAt: ahora } });
+    guardarDbCache(String(sk), blob, ahora, true);
+    broadcastChange(String(sk));
+    return res.json({ ok: true, codigo, expiraEn: blob.codigosInvitacion[blob.codigosInvitacion.length - 1].expiraEn });
+  } catch (e) {
+    console.error('POST /api/inetis/auth/invitacion/generar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+app.post('/api/inetis/auth/invitacion/registrar', async (req, res) => {
+  try {
+    const { sk, codigo, u, p, n, correo } = req.body as { sk?: string; codigo?: string; u?: string; p?: string; n?: string; correo?: string };
+    if (!sk || !codigo || !u || !p || !n) {
+      return res.status(400).json({ ok: false, error: 'Faltan campos requeridos (sk, codigo, u, p, n).' });
+    }
+    if (String(p).length < 6) {
+      return res.status(400).json({ ok: false, error: 'La contraseña debe tener al menos 6 caracteres.' });
+    }
+    const filas = await db.select().from(kvStore).where(eq(kvStore.key, String(sk)));
+    if (!filas.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
+    const blob: any = filas[0].value || {};
+    const lista: any[] = Array.isArray(blob.codigosInvitacion) ? blob.codigosInvitacion : [];
+    const ahoraIso = new Date().toISOString();
+    const entrada = lista.find(c => c && c.codigo === String(codigo) && c.expiraEn > ahoraIso && c.usosActuales < c.usosMax);
+    if (!entrada) {
+      return res.status(400).json({ ok: false, error: 'El código de invitación no es válido, ya expiró, o ya alcanzó su límite de usos.' });
+    }
+    if (!Array.isArray(blob.users)) blob.users = [];
+    if (blob.users.some((x: any) => x && x.u === String(u))) {
+      return res.status(409).json({ ok: false, error: 'Ese nombre de usuario ya está en uso en esta institución. Elija otro.' });
+    }
+    blob.users.push({
+      u: String(u),
+      p: hashPasswordServidor(String(p)),
+      n: String(n),
+      r: entrada.rol,
+      correo: correo ? String(correo) : '',
+    });
+    entrada.usosActuales = (entrada.usosActuales || 0) + 1;
+    const nowTs = new Date();
+    await db
+      .insert(kvStore)
+      .values({ key: String(sk), value: blob, updatedAt: nowTs })
+      .onConflictDoUpdate({ target: kvStore.key, set: { value: blob, updatedAt: nowTs } });
+    guardarDbCache(String(sk), blob, nowTs, true);
+    broadcastChange(String(sk));
+    return res.json({ ok: true, rol: entrada.rol, mensaje: 'Cuenta creada correctamente. Ya puede iniciar sesión.' });
+  } catch (e) {
+    console.error('POST /api/inetis/auth/invitacion/registrar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+// ============================================================
+// "4 pilares de autonomía" — Pilar 2 (Módulo Financiero + Pasarela de Pago
+// Multi-propósito vía Webhooks): WOMPI, MERCADO PAGO, STRIPE
+// ------------------------------------------------------------------------------
+// Andamiaje genérico — ver el comentario grande en src/db/schema.ts sobre
+// fin_transacciones/fin_suscripciones y src/lib/pagos-webhooks.ts sobre la
+// verificación de firma de cada proveedor y la convención de "reference".
+//
+// Cada endpoint queda "vivo" solo si su secreto de verificación está
+// configurado por variable de entorno — si no, responde 503 sin procesar
+// nada (mismo criterio de "seguro cuando no está configurado" ya usado
+// para los proveedores de correo). Si el secreto SÍ está configurado pero
+// la firma no coincide, responde 401 y NO registra la transacción — así
+// una llamada falsificada a esta URL pública nunca puede inventarse un
+// pago aprobado.
+//
+// Pendiente de decisión del usuario antes de ir a producción (documentado
+// en el checklist): elegir proveedor(es) reales, sus credenciales, precios
+// y reglas de negocio; y conectar "entregableGenerado" con la generación
+// real del PDF firmado (certificados/paz y salvo) — aquí solo se deja el
+// punto de extensión marcado, no se inventa esa integración sin poder
+// verificarla contra el generador de PDFs real del sistema.
+// ============================================================
+// Ronda 12, Sección 3: acredita un pago de mensualidad/pensión en el
+// estado de cuenta del estudiante (blob K-12, campo est.pagos[], el mismo
+// arreglo que ya usa el resto del sistema — ver su creación en
+// cambiarEstadoPM()/_procesarMatriculaDesdeSolicitud() en el frontend).
+// Se lee la fila directo de Neon (sin caché) para no arriesgar
+// sobrescribir un blob desactualizado en la operación más sensible de
+// todo este mecanismo: registrar dinero recibido.
+async function _registrarPagoMensualidadEnBlob(
+  ref: ReferenciaPago,
+  datos: { proveedor: string; proveedorPagoId: string; montoCentavos: number; moneda: string },
+  nowTs: Date,
+) {
+  try {
+    if (!ref.sk || !ref.estudianteId) return;
+    const filas = await db.select().from(kvStore).where(eq(kvStore.key, ref.sk));
+    if (!filas.length) return;
+    const blob: any = filas[0].value;
+    if (!Array.isArray(blob.ests)) return;
+    const idx = blob.ests.findIndex((e: any) => e && String(e.id) === String(ref.estudianteId));
+    if (idx === -1) {
+      console.error(`_registrarPagoMensualidadEnBlob: estudiante ${ref.estudianteId} no encontrado en ${ref.sk} — pago ${datos.proveedor}/${datos.proveedorPagoId} quedó registrado en fin_transacciones pero SIN acreditar en el estado de cuenta. Requiere conciliación manual.`);
+      return;
+    }
+    const est = { ...blob.ests[idx] };
+    est.pagos = Array.isArray(est.pagos) ? [...est.pagos] : [];
+    est.pagos.push({
+      concepto: ref.concepto || 'Mensualidad',
+      montoCentavos: datos.montoCentavos,
+      moneda: datos.moneda,
+      proveedor: datos.proveedor,
+      proveedorPagoId: datos.proveedorPagoId,
+      fecha: nowTs.toISOString(),
+      origen: 'webhook-automatico',
+    });
+    est.pensionAlDia = true; // habilita de inmediato lo que dependa de este indicador (ej. bloqueo por mora)
+    blob.ests[idx] = est;
+    await db
+      .insert(kvStore)
+      .values({ key: ref.sk, value: blob, updatedAt: nowTs })
+      .onConflictDoUpdate({ target: kvStore.key, set: { value: blob, updatedAt: nowTs } });
+    guardarDbCache(ref.sk, blob, nowTs, true);
+    broadcastChange(ref.sk);
+  } catch (e) {
+    console.error('_registrarPagoMensualidadEnBlob', e);
+  }
+}
+
+// Ronda 12, Sección 3 → ciclo de vigencia cerrado en Ronda 13: activa/
+// renueva la suscripción SaaS de la institución. Reglas de negocio dadas
+// explícitamente por el usuario: 30 días calendario para planes
+// mensuales, 365 días para planes anuales — se detecta cuál es por el
+// texto del "plan" (viene del concepto de la referencia de pago, ej.
+// "Plan-Institucional-Anual"); si no dice "anual"/"annual" en ningún
+// lado, se asume mensual (30 días), que es el caso más común y el que ya
+// existía antes de esta ronda.
+const DIAS_CICLO_SAAS_ANUAL = 365;
+const DIAS_CICLO_SAAS_MENSUAL = 30;
+function _esPlanAnualSaas(plan: string): boolean {
+  return /anual|annual|yearly|year\b/i.test(String(plan || ''));
+}
+async function _actualizarSuscripcionSaas(
+  ref: ReferenciaPago,
+  datos: { proveedor: string; proveedorPagoId: string; metadata: any },
+  nowTs: Date,
+) {
+  try {
+    if (!ref.sk) return;
+    const plan = ref.concepto || 'basico';
+    const dias = _esPlanAnualSaas(plan) ? DIAS_CICLO_SAAS_ANUAL : DIAS_CICLO_SAAS_MENSUAL;
+    const vigenteHasta = new Date(nowTs.getTime() + dias * 24 * 60 * 60 * 1000);
+    await db
+      .insert(finSuscripciones)
+      .values({
+        sk: ref.sk,
+        plan,
+        estado: 'activa',
+        proveedor: datos.proveedor,
+        proveedorSuscripcionId: datos.proveedorPagoId,
+        vigenteHasta,
+        metadata: datos.metadata,
+        // Ronda 13: cada renovación reinicia el aviso de vencimiento — así
+        // la alerta de "vence en 5 días" se vuelve a poder enviar en ESTE
+        // nuevo ciclo, en vez de quedar marcada como "ya enviada" para
+        // siempre desde el ciclo anterior.
+        alertaVencimientoEnviada: false,
+        updatedAt: nowTs,
+      })
+      .onConflictDoUpdate({
+        target: finSuscripciones.sk,
+        set: { plan, estado: 'activa', proveedor: datos.proveedor, proveedorSuscripcionId: datos.proveedorPagoId, vigenteHasta, metadata: datos.metadata, alertaVencimientoEnviada: false, updatedAt: nowTs },
+      });
+  } catch (e) {
+    console.error('_actualizarSuscripcionSaas', e);
+  }
+}
+
+// Ronda 13, punto 3: reversión de una mensualidad ya acreditada cuando el
+// proveedor la reembolsa/contracarga después. Regla dada explícitamente
+// por el usuario: el concepto vuelve a "pendiente/mora" — en la
+// arquitectura de este sistema, eso es est.pensionAlDia=false. Se ubica
+// (y marca) la entrada específica de est.pagos[] que corresponde a ESTE
+// pago exacto (por proveedor+proveedorPagoId, igual llave que usa
+// fin_transacciones) en vez de simplemente vaciar todo el arreglo, para
+// no borrar el historial de otros pagos distintos del mismo estudiante.
+async function _revertirPagoMensualidadEnBlob(
+  ref: ReferenciaPago,
+  datos: { proveedor: string; proveedorPagoId: string },
+  nowTs: Date,
+) {
+  try {
+    if (!ref.sk || !ref.estudianteId) return;
+    const filas = await db.select().from(kvStore).where(eq(kvStore.key, ref.sk));
+    if (!filas.length) return;
+    const blob: any = filas[0].value;
+    if (!Array.isArray(blob.ests)) return;
+    const idx = blob.ests.findIndex((e: any) => e && String(e.id) === String(ref.estudianteId));
+    if (idx === -1) return;
+    const est = { ...blob.ests[idx] };
+    est.pagos = Array.isArray(est.pagos) ? est.pagos.map((p: any) =>
+      p && p.proveedor === datos.proveedor && p.proveedorPagoId === datos.proveedorPagoId
+        ? { ...p, estado: 'reembolsado', fechaReembolso: nowTs.toISOString() }
+        : p,
+    ) : [];
+    // Vuelve a "PENDIENTE/MORA" — simplificación consciente (documentada en
+    // el checklist): no se intenta calcular si OTRO pago distinto sigue
+    // cubriendo el periodo, se asume que la única mensualidad reembolsada
+    // deja al estudiante en mora hasta que se verifique/registre un nuevo pago.
+    est.pensionAlDia = false;
+    blob.ests[idx] = est;
+    await db
+      .insert(kvStore)
+      .values({ key: ref.sk, value: blob, updatedAt: nowTs })
+      .onConflictDoUpdate({ target: kvStore.key, set: { value: blob, updatedAt: nowTs } });
+    guardarDbCache(ref.sk, blob, nowTs, true);
+    broadcastChange(ref.sk);
+  } catch (e) {
+    console.error('_revertirPagoMensualidadEnBlob', e);
+  }
+}
+
+// Ronda 13, punto 2: "periodo de gracia de 3 días antes de congelar las
+// funciones administrativas". Solo aplica a instituciones que
+// EFECTIVAMENTE tienen una fila en fin_suscripciones (es decir, que ya
+// procesaron al menos un pago de suscripción SaaS por webhook) — la
+// inmensa mayoría de instituciones hoy NO usan esta facturación
+// automática todavía (es andamiaje, ver Ronda 11/12), así que para ellas
+// esto sigue sin tener ningún efecto, exactamente como antes de esta ronda.
+//
+// Adaptación de alcance documentada: en la arquitectura de este sistema
+// K-12 (un solo blob JSON por institución, un solo endpoint genérico de
+// escritura — POST /api/inetis/db — para TODO: notas, asistencia,
+// matrículas, configuración, etc.), no existe una forma de distinguir
+// "una acción administrativa" de "una acción operativa cualquiera" a
+// nivel de endpoint. "Congelar las funciones administrativas" se
+// implementa entonces como bloquear la ESCRITURA (POST) mientras la
+// LECTURA (GET) se mantiene disponible: el rector, los docentes y las
+// familias siguen viendo toda la información ya guardada, pero no se
+// pueden guardar cambios nuevos hasta que se renueve el pago o el Súper
+// Admin intervenga manualmente (el rescate de Súper Admin, igual que con
+// "Pantalla en Blanco", siempre puede pasar por encima de este candado).
+const DIAS_GRACIA_SAAS = 3;
+async function verificarSuscripcionSaas(sk: string): Promise<{ ok: boolean; motivo?: string }> {
+  try {
+    const filas = await db.select().from(finSuscripciones).where(eq(finSuscripciones.sk, sk));
+    if (!filas.length) return { ok: true };
+    const sus: any = filas[0];
+    if (!sus.vigenteHasta) return { ok: true };
+    const limiteConGracia = new Date(new Date(sus.vigenteHasta).getTime() + DIAS_GRACIA_SAAS * 24 * 60 * 60 * 1000);
+    if (new Date() <= limiteConGracia) return { ok: true };
+    return {
+      ok: false,
+      motivo: 'La suscripción de esta institución venció y ya pasó el periodo de gracia de 3 días. Los cambios no se pueden guardar hasta renovar el plan — puede seguir consultando la información existente. Si esto es un error, contacte al administrador del sistema.',
+    };
+  } catch {
+    // Ante un error de esta verificación puntual, no se bloquea todo el
+    // sistema — mismo criterio que verificarEstadoInstitucion().
+    return { ok: true };
+  }
+}
+
+// Ronda 13, punto 2: alerta automática por correo 5 días antes de que
+// venza el plan SaaS — pedida explícitamente por el usuario. Se envía al
+// correo del primer usuario con rol 'admin' o 'rector' que tenga un
+// correo/email registrado en la institución (no existe hoy un campo
+// dedicado de "correo de facturación" separado; se documenta como
+// adaptación razonable en el checklist). No se reenvía más de una vez
+// por ciclo de vigencia (fin_suscripciones.alertaVencimientoEnviada, que
+// se reinicia a false en cada renovación — ver _actualizarSuscripcionSaas()).
+async function enviarAlertasVencimientoSaas() {
+  try {
+    const filas = await db.select().from(finSuscripciones);
+    const ahora = Date.now();
+    const CINCO_DIAS_MS = 5 * 24 * 60 * 60 * 1000;
+    for (const sus of filas as any[]) {
+      try {
+        if (sus.estado !== 'activa' || sus.alertaVencimientoEnviada || !sus.vigenteHasta) continue;
+        const msRestantes = new Date(sus.vigenteHasta).getTime() - ahora;
+        if (msRestantes > CINCO_DIAS_MS || msRestantes < 0) continue; // todavía faltan más de 5 días, o ya venció (eso lo maneja el periodo de gracia, no esta alerta preventiva)
+        const blob = await leerBlobInstitucion(sus.sk);
+        if (!blob || !Array.isArray(blob.users)) continue;
+        const contacto = blob.users.find((u: any) => u && (u.r === 'admin' || u.r === 'rector') && (u.correo || u.email));
+        const correoDestino = contacto && (contacto.correo || contacto.email);
+        if (!correoDestino) {
+          console.warn(`⚠️  Suscripción SaaS de "${sus.sk}" vence en menos de 5 días, pero no se encontró un correo de admin/rector para avisar.`);
+          continue;
+        }
+        const diasRestantes = Math.max(0, Math.ceil(msRestantes / (24 * 60 * 60 * 1000)));
+        const resultado = await enviarCorreoGeneral({
+          to: String(correoDestino),
+          subject: `Su plan vence en ${diasRestantes} día(s) — ${blob.nombre || 'Gestor Académico YC'}`,
+          text: `Hola,\n\nLe informamos que la suscripción de "${blob.nombre || 'su institución'}" vence el ${new Date(sus.vigenteHasta).toLocaleDateString('es-CO')} (en ${diasRestantes} día(s)).\n\nPara evitar interrupciones en las funciones administrativas del sistema, renueve su plan antes de esa fecha. Después del vencimiento hay un periodo de gracia de 3 días antes de que se congelen los cambios.\n\nEste es un mensaje automático.`,
+        });
+        if (resultado.ok) {
+          await db.update(finSuscripciones).set({ alertaVencimientoEnviada: true }).where(eq(finSuscripciones.sk, sus.sk));
+          console.log(`📧 Alerta de vencimiento SaaS enviada a "${correoDestino}" (${sus.sk}, vence en ${diasRestantes} día(s)).`);
+        }
+      } catch (errUno) {
+        console.error(`❌ Error procesando alerta de vencimiento SaaS de "${sus.sk}":`, errUno);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error general enviando alertas de vencimiento SaaS:', err);
+  }
+}
+
+async function _registrarTransaccionPago(datos: {
+  proveedor: string;
+  proveedorPagoId: string;
+  estado: 'pendiente' | 'aprobado' | 'rechazado' | 'reembolsado';
+  montoCentavos: number;
+  moneda: string;
+  referencia: string | null;
+  metadata: any;
+}) {
+  const ref = datos.referencia ? parsearReferenciaPago(datos.referencia) : null;
+  const nowTs = new Date();
+
+  // ── Idempotencia (Ronda 12) ──────────────────────────────────────────
+  // Los tres proveedores documentan que SÍ pueden reenviar el mismo
+  // webhook más de una vez (reintentos de red, reconciliación, etc.).
+  // Sin esto, cada reintento de un pago que YA se había marcado
+  // "aprobado" volvería a abonar la misma mensualidad o a "reactivar" la
+  // suscripción SaaS otra vez, duplicando el efecto. Se compara contra el
+  // estado que YA estaba guardado para esta transacción (identificada por
+  // proveedor + su id externo — la misma llave única de la tabla) antes
+  // de decidir si hay que disparar el Punto de Extensión.
+  const filaPrevia = await db
+    .select()
+    .from(finTransacciones)
+    .where(and(eq(finTransacciones.proveedor, datos.proveedor), eq(finTransacciones.proveedorPagoId, datos.proveedorPagoId)));
+  const estadoPrevio = filaPrevia[0]?.estado;
+  const esNuevaAprobacion = datos.estado === 'aprobado' && estadoPrevio !== 'aprobado';
+  // Ronda 13, punto 3: reversión — solo dispara al TRANSICIONAR de
+  // "aprobado" a "reembolsado" (idéntico criterio de idempotencia que la
+  // aprobación: un reintento del webhook con el mismo estado ya reflejado
+  // no vuelve a disparar nada).
+  const esNuevaReversion = datos.estado === 'reembolsado' && estadoPrevio === 'aprobado';
+
+  let entregableGenerado = filaPrevia[0]?.entregableGenerado || false;
+  let codigoVerificacionFinal: string | null = filaPrevia[0]?.codigoVerificacion || null;
+  let revocado = filaPrevia[0]?.revocado || false;
+  let metadataFinal: any = datos.metadata;
+
+  // ── Punto de extensión (Ronda 11 → implementado en Ronda 12/13) ──────
+  if (esNuevaAprobacion && ref) {
+    if (ref.tipo === 'tramite') {
+      // NO se genera el PDF en el servidor: todo el sistema genera sus
+      // PDFs (boletines, actas) 100% en el navegador con jsPDF, que
+      // requiere un DOM/Canvas que Node no tiene, y el proyecto no trae
+      // ninguna librería de PDF server-side (decisión consciente de no
+      // agregar una dependencia nueva — pdfkit/puppeteer — sin que el
+      // usuario la pida explícitamente). En su lugar, el servidor genera y
+      // FIRMA los DATOS del certificado (igual que ya hace con los
+      // boletines — ver _firmarBlob()/DOC_SIGN_SECRET) y los deja listos
+      // para que el estudiante/acudiente los descargue: el navegador ya
+      // tiene jsPDF + generación de QR cargados (ver _generarBoletinesPDF
+      // y _dibujarFirmaDigitalPDF en 03-app-core.js) y puede dibujar el
+      // certificado igual que dibuja un boletín. El QR apunta a la URL
+      // pública GET /api/certificados/verificar/:hash (Ronda 13, pedida
+      // explícitamente por el usuario) en vez de requerir la app abierta.
+      const datosCertificado = {
+        sk: ref.sk,
+        estudianteId: ref.estudianteId,
+        concepto: ref.concepto || 'Certificado',
+        proveedor: datos.proveedor,
+        proveedorPagoId: datos.proveedorPagoId,
+        montoCentavos: datos.montoCentavos,
+        moneda: datos.moneda,
+        fechaEmision: nowTs.toISOString(),
+      };
+      const codigoVerificacion = _firmarBlob(datosCertificado);
+      metadataFinal = { ...datos.metadata, certificado: { ...datosCertificado, codigoVerificacion } };
+      codigoVerificacionFinal = codigoVerificacion;
+      revocado = false; // una nueva aprobación (ej. tras reintentar un pago previamente rechazado) siempre emite un certificado vigente
+      entregableGenerado = true;
+    } else if (ref.tipo === 'mensualidad') {
+      await _registrarPagoMensualidadEnBlob(ref, datos, nowTs);
+    } else if (ref.tipo === 'suscripcion_saas') {
+      await _actualizarSuscripcionSaas(ref, datos, nowTs);
+    }
+  } else if (esNuevaReversion && ref) {
+    // Ronda 13, punto 3 — reglas dadas explícitamente por el usuario para
+    // REFUNDED/CHARGEBACK/DISPUTED (los tres ya normalizados a "reembolsado"
+    // por normalizarEstadoPago()):
+    if (ref.tipo === 'mensualidad') {
+      await _revertirPagoMensualidadEnBlob(ref, datos, nowTs);
+    } else if (ref.tipo === 'tramite') {
+      // "el hash del código QR de ese PDF se marca como REVOCADO/NO VÁLIDO"
+      revocado = true;
+    }
+    // suscripcion_saas: el usuario no pidió una regla específica para el
+    // reembolso de una suscripción SaaS (distinto de una mensualidad de
+    // estudiante); se deja documentado como punto abierto en el checklist
+    // en vez de inventar una consecuencia (¿se corta el servicio de
+    // inmediato? ¿se deja vigente hasta el fin del ciclo ya pagado?).
+  }
+
+  await db
+    .insert(finTransacciones)
+    .values({
+      sk: ref?.sk || null,
+      tipo: ref?.tipo || 'tramite',
+      concepto: ref?.concepto || '',
+      estudianteId: ref?.estudianteId || null,
+      proveedor: datos.proveedor,
+      proveedorPagoId: datos.proveedorPagoId,
+      estado: datos.estado,
+      montoCentavos: datos.montoCentavos,
+      moneda: datos.moneda,
+      metadata: metadataFinal,
+      entregableGenerado,
+      codigoVerificacion: codigoVerificacionFinal,
+      revocado,
+      updatedAt: nowTs,
+    })
+    .onConflictDoUpdate({
+      target: [finTransacciones.proveedor, finTransacciones.proveedorPagoId],
+      set: { estado: datos.estado, metadata: metadataFinal, entregableGenerado, codigoVerificacion: codigoVerificacionFinal, revocado, updatedAt: nowTs },
+    });
+}
+
+// Ronda 12: consulta pública (acotada por "sk" — mismo modelo de confianza
+// que el resto del sistema K-12) de los certificados/trámites ya
+// aprobados y firmados, para que el frontend (portal del estudiante o del
+// acudiente) los liste y genere el PDF final con jsPDF en el navegador.
+app.get('/api/inetis/pagos/certificados', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const estudianteId = req.query.estudianteId ? String(req.query.estudianteId) : null;
+    if (!sk) return res.status(400).json({ ok: false, error: 'Falta "sk".' });
+    const condiciones = [eq(finTransacciones.sk, sk), eq(finTransacciones.tipo, 'tramite'), eq(finTransacciones.entregableGenerado, true)];
+    if (estudianteId) condiciones.push(eq(finTransacciones.estudianteId, estudianteId));
+    const filas = await db.select().from(finTransacciones).where(and(...condiciones));
+    const certificados = filas
+      .map((f: any) => (f.metadata?.certificado ? { ...f.metadata.certificado, revocado: !!f.revocado } : null))
+      .filter(Boolean);
+    return res.json({ ok: true, certificados });
+  } catch (e) {
+    console.error('GET /api/inetis/pagos/certificados', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+// Ronda 13, punto 1: URL PÚBLICA de verificación de certificados —
+// pedida explícitamente por el usuario para que el código QR del PDF
+// funcione sin necesidad de tener la app abierta (a diferencia del
+// panel "Verificar Autenticidad" de boletines, que exige pegar/escanear
+// dentro de la aplicación). Es de solo lectura y no expone el número de
+// documento del estudiante ni datos financieros sensibles — solo lo
+// necesario para confirmar que el documento es auténtico y sigue vigente.
+function _htmlPaginaVerificacionCertificado(opts: {
+  encontrado: boolean;
+  revocado?: boolean;
+  nombreInst?: string;
+  nombreEst?: string;
+  concepto?: string;
+  fechaEmision?: string;
+  codigo?: string;
+}): string {
+  const { encontrado, revocado, nombreInst, nombreEst, concepto, fechaEmision, codigo } = opts;
+  const estadoTitulo = !encontrado ? '❌ Código no encontrado' : revocado ? '⚠️ Documento REVOCADO' : '✅ Documento auténtico y vigente';
+  const estadoColor = !encontrado ? '#7f8c8d' : revocado ? '#c0392b' : '#1e8449';
+  const estadoDetalle = !encontrado
+    ? 'Este código de verificación no corresponde a ningún certificado emitido por este sistema. Verifique que lo escribió/escaneó correctamente.'
+    : revocado
+    ? 'El pago que originó este certificado fue reembolsado o contracargado después de emitido. Este documento ya NO es válido como soporte oficial.'
+    : 'Este certificado fue emitido y firmado digitalmente por el sistema académico de la institución, y el pago que lo originó sigue vigente.';
+  const filas = encontrado
+    ? `<tr><td style="padding:6px 10px;color:#666;font-weight:bold">Institución</td><td style="padding:6px 10px">${nombreInst || '—'}</td></tr>
+       <tr><td style="padding:6px 10px;color:#666;font-weight:bold">Estudiante</td><td style="padding:6px 10px">${nombreEst || '—'}</td></tr>
+       <tr><td style="padding:6px 10px;color:#666;font-weight:bold">Concepto</td><td style="padding:6px 10px">${concepto || '—'}</td></tr>
+       <tr><td style="padding:6px 10px;color:#666;font-weight:bold">Fecha de emisión</td><td style="padding:6px 10px">${fechaEmision ? new Date(fechaEmision).toLocaleString('es-CO') : '—'}</td></tr>
+       <tr><td style="padding:6px 10px;color:#666;font-weight:bold">Código</td><td style="padding:6px 10px"><code>${codigo || '—'}</code></td></tr>`
+    : '';
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Verificación de certificado — Gestor Académico YC</title>
+  <style>body{font-family:Arial,sans-serif;background:#f0f4f8;margin:0;padding:24px;color:#1a1a2e}.card{max-width:520px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.1);overflow:hidden}.head{background:#003366;color:#fff;padding:20px;text-align:center}.body{padding:24px}table{width:100%;border-collapse:collapse;margin-top:12px}tr:nth-child(even){background:#f7f9fb}</style>
+  </head><body><div class="card"><div class="head"><h2 style="margin:0">🎓 Gestor Académico YC</h2><p style="margin:6px 0 0;font-size:0.85rem;color:#cce4ff">Verificación pública de certificados</p></div>
+  <div class="body"><h3 style="color:${estadoColor};margin:0 0 8px">${estadoTitulo}</h3><p style="font-size:0.9rem;color:#444;line-height:1.5">${estadoDetalle}</p>
+  ${filas ? `<table>${filas}</table>` : ''}
+  </div></div></body></html>`;
+}
+app.get('/api/certificados/verificar/:hash', async (req, res) => {
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  try {
+    const hash = String(req.params.hash || '').trim().toUpperCase();
+    if (!hash) return res.status(400).send(_htmlPaginaVerificacionCertificado({ encontrado: false }));
+    const filas = await db.select().from(finTransacciones).where(eq(finTransacciones.codigoVerificacion, hash));
+    if (!filas.length) return res.status(404).send(_htmlPaginaVerificacionCertificado({ encontrado: false }));
+    const fila: any = filas[0];
+    const cert = fila.metadata?.certificado || {};
+    let nombreInst = cert.sk || '';
+    let nombreEst = cert.estudianteId || '';
+    try {
+      const blob = await leerBlobInstitucion(String(cert.sk || ''));
+      if (blob) {
+        nombreInst = blob.nombre || nombreInst;
+        const est = Array.isArray(blob.ests) ? blob.ests.find((e: any) => e && String(e.id) === String(cert.estudianteId)) : null;
+        if (est) nombreEst = est.n || `${est.nombres || ''} ${est.apellidos || ''}`.trim() || nombreEst;
+      }
+    } catch { /* si no se puede leer el blob, se sigue mostrando el resultado con lo que ya se tiene */ }
+    return res.send(_htmlPaginaVerificacionCertificado({
+      encontrado: true,
+      revocado: !!fila.revocado,
+      nombreInst,
+      nombreEst,
+      concepto: cert.concepto,
+      fechaEmision: cert.fechaEmision,
+      codigo: hash,
+    }));
+  } catch (e) {
+    console.error('GET /api/certificados/verificar/:hash', e);
+    return res.status(500).send(_htmlPaginaVerificacionCertificado({ encontrado: false }));
+  }
+});
+
+app.post('/api/payments/webhook/wompi', async (req, res) => {
+  try {
+    const secreto = process.env.WOMPI_EVENTOS_SECRETO;
+    if (!secreto) return res.status(503).json({ ok: false, error: 'Wompi no está configurado (falta WOMPI_EVENTOS_SECRETO).' });
+    if (!verificarFirmaWompi(req.body, secreto)) return res.status(401).json({ ok: false, error: 'Firma inválida.' });
+    const tx = req.body?.data?.transaction || {};
+    await _registrarTransaccionPago({
+      proveedor: 'wompi',
+      proveedorPagoId: String(tx.id || ''),
+      estado: normalizarEstadoPago('wompi', tx.status),
+      montoCentavos: Number(tx.amount_in_cents) || 0,
+      moneda: String(tx.currency || 'COP'),
+      referencia: tx.reference || null,
+      metadata: req.body,
+    });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/payments/webhook/wompi', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+app.post('/api/payments/webhook/mercadopago', async (req, res) => {
+  try {
+    const secreto = process.env.MERCADOPAGO_WEBHOOK_SECRETO;
+    if (!secreto) return res.status(503).json({ ok: false, error: 'Mercado Pago no está configurado (falta MERCADOPAGO_WEBHOOK_SECRETO).' });
+    const dataId = String(req.body?.data?.id || req.query['data.id'] || '');
+    const xRequestId = String(req.headers['x-request-id'] || '');
+    const xSignature = String(req.headers['x-signature'] || '');
+    if (!verificarFirmaMercadoPago(dataId, xRequestId, xSignature, secreto)) {
+      return res.status(401).json({ ok: false, error: 'Firma inválida.' });
+    }
+    // La notificación de Mercado Pago solo trae el ID — para conocer el
+    // estado real y la "external_reference" hay que consultar su API con
+    // el access token de la cuenta. Si no está configurado, se registra la
+    // transacción como "pendiente" para conciliar manualmente después.
+    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+    let estado: 'pendiente' | 'aprobado' | 'rechazado' | 'reembolsado' = 'pendiente';
+    let montoCentavos = 0;
+    let referencia: string | null = null;
+    let detalle: any = req.body;
+    if (accessToken && dataId) {
+      try {
+        const r = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(dataId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (r.ok) {
+          const pago: any = await r.json();
+          estado = normalizarEstadoPago('mercadopago', pago.status);
+          montoCentavos = Math.round(Number(pago.transaction_amount || 0) * 100);
+          referencia = pago.external_reference || null;
+          detalle = pago;
+        } else {
+          console.warn(`⚠️ Mercado Pago: no se pudo consultar el pago ${dataId} (HTTP ${r.status}) — se registra como pendiente para conciliar.`);
+        }
+      } catch (errFetch) {
+        console.error('⚠️ Mercado Pago: error consultando el pago para conciliar', errFetch);
+      }
+    } else if (!accessToken) {
+      console.warn('⚠️ Mercado Pago: MERCADOPAGO_ACCESS_TOKEN no configurado — no se puede resolver el estado/referencia real del pago, se registra como pendiente.');
+    }
+    await _registrarTransaccionPago({
+      proveedor: 'mercadopago',
+      proveedorPagoId: dataId,
+      estado,
+      montoCentavos,
+      moneda: 'COP',
+      referencia,
+      metadata: detalle,
+    });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/payments/webhook/mercadopago', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+app.post('/api/payments/webhook/stripe', async (req, res) => {
+  try {
+    const secreto = process.env.STRIPE_WEBHOOK_SECRETO;
+    if (!secreto) return res.status(503).json({ ok: false, error: 'Stripe no está configurado (falta STRIPE_WEBHOOK_SECRETO).' });
+    const cuerpoCrudo: Buffer | undefined = (req as any).rawBody;
+    const firmaHeader = String(req.headers['stripe-signature'] || '');
+    if (!cuerpoCrudo || !verificarFirmaStripe(cuerpoCrudo, firmaHeader, secreto)) {
+      return res.status(401).json({ ok: false, error: 'Firma inválida.' });
+    }
+    const evento = req.body;
+    const objeto = evento?.data?.object || {};
+    const estadoBruto = objeto.status || evento?.type || '';
+    await _registrarTransaccionPago({
+      proveedor: 'stripe',
+      proveedorPagoId: String(objeto.id || evento?.id || ''),
+      estado: normalizarEstadoPago('stripe', estadoBruto),
+      montoCentavos: Number(objeto.amount_total ?? objeto.amount ?? 0),
+      moneda: String(objeto.currency || 'usd').toUpperCase(),
+      referencia: objeto.client_reference_id || objeto.metadata?.referencia || null,
+      metadata: evento,
+    });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/payments/webhook/stripe', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
   }
 });
 
@@ -1804,6 +2681,194 @@ function iniciarRespaldosAutomaticosProgramados() {
   setInterval(() => { ejecutarRespaldosAutomaticosPendientes(); }, RESPALDO_INTERVALO_REVISION_MS);
 }
 
+// ============================================================
+// "4 pilares de autonomía" — Pilar 4 (Tareas Programadas / Mantenimiento
+// Autónomo). Mismo patrón que el respaldo automático de arriba: funciones
+// idempotentes que se pueden llamar tantas veces como haga falta sin
+// causar daño, programadas con setTimeout/setInterval nativos de Node
+// (sin librerías de cron nuevas, siguiendo el mismo criterio ya usado en
+// todo este proyecto para no sumar dependencias sin necesidad real).
+// ============================================================
+
+// ── 4-a. Cierre autónomo de planillas a la medianoche de la fecha límite ──
+// Cuando la fecha "hasta" de un periodo (configurada en Cronograma de
+// Notas, db.cronograma.p<N>) ya pasó y ese periodo seguía marcado como
+// abierto (db.periodosActivos[N-1]===true), se cierra automáticamente
+// (mismo campo, mismo efecto, que si el admin lo cerrara a mano desde
+// Cronograma de Notas) — así ya no hace falta que un humano recuerde
+// cerrar la planilla justo el día en que vence el periodo.
+async function cerrarPlanillasVencidasAutomaticamente() {
+  try {
+    const todasLasFilas = await db.select().from(kvStore);
+    const filasInstituciones = todasLasFilas.filter((f) => !f.key.startsWith('_'));
+    const hoy = new Date().toISOString().slice(0, 10);
+    for (const fila of filasInstituciones) {
+      try {
+        const blob: any = fila.value;
+        if (!blob || !blob.cronograma || !Array.isArray(blob.periodosActivos)) continue;
+        const numPeriodos = (blob.config && blob.config.numPeriodos) || blob.periodosActivos.length || 4;
+        let huboCambios = false;
+        for (let p = 1; p <= numPeriodos; p++) {
+          const rango = blob.cronograma['p' + p];
+          if (rango && rango.hasta && hoy > rango.hasta && blob.periodosActivos[p - 1] !== false) {
+            blob.periodosActivos[p - 1] = false;
+            huboCambios = true;
+            console.log(`🔒 Periodo ${p} de "${fila.key}" cerrado automáticamente (fecha límite ${rango.hasta} ya pasó).`);
+          }
+        }
+        if (huboCambios) {
+          const nowTs = new Date();
+          await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, fila.key));
+          guardarDbCache(fila.key, blob, nowTs, true);
+          broadcastChange(fila.key);
+        }
+      } catch (errUno) {
+        console.error(`❌ Error cerrando planillas vencidas de "${fila.key}":`, errUno);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error general cerrando planillas vencidas automáticamente:', err);
+  }
+}
+
+// ── 4-b. Alertas automáticas de ausentismo a acudientes (OPCIONAL, ──
+// desactivada por defecto). Cada institución activa esto por su cuenta
+// poniendo config.alertasAusenciasActivas=true (aún no hay un botón
+// dedicado en el panel de administración para esto — se documenta como
+// pendiente en el checklist; por ahora se activa guardando ese campo en
+// el blob de la institución, por ejemplo desde la consola del navegador
+// o una futura pantalla). Por defecto NO envía nada, para que ninguna
+// institución existente reciba correos nuevos sin haberlo pedido.
+//
+// Evita reenviar la misma alerta cada semana: solo notifica cuando el
+// conteo de ausencias del estudiante cruza un NUEVO múltiplo del umbral
+// configurado (config.umbralAusenciasAlerta, por defecto 3) desde la
+// última vez que se le notificó a su acudiente.
+async function enviarAlertasAusentismoAutomaticas() {
+  try {
+    const todasLasFilas = await db.select().from(kvStore);
+    const filasInstituciones = todasLasFilas.filter((f) => !f.key.startsWith('_'));
+    for (const fila of filasInstituciones) {
+      try {
+        const blob: any = fila.value;
+        if (!blob || !blob.config || blob.config.alertasAusenciasActivas !== true) continue;
+        if (!Array.isArray(blob.ests) || !Array.isArray(blob.asistencia)) continue;
+        const umbral = Number(blob.config.umbralAusenciasAlerta) > 0 ? Number(blob.config.umbralAusenciasAlerta) : 3;
+        if (!blob.config._ultimoConteoAusenciasNotificado) blob.config._ultimoConteoAusenciasNotificado = {};
+        const registroNotificados: Record<string, number> = blob.config._ultimoConteoAusenciasNotificado;
+        let huboCambios = false;
+        for (const est of blob.ests) {
+          if (!est || est.deletedAt || !est.emailAcud) continue;
+          const conteo = blob.asistencia.filter((a: any) => a && !a.deletedAt && Array.isArray(a.ausentes) && a.ausentes.includes(est.id)).length;
+          const yaNotificadoHasta = registroNotificados[est.id] || 0;
+          if (conteo < umbral) continue;
+          const cruzoNuevoUmbral = Math.floor(conteo / umbral) > Math.floor(yaNotificadoHasta / umbral);
+          if (!cruzoNuevoUmbral) continue;
+          const resultado = await enviarCorreoGeneral({
+            to: String(est.emailAcud),
+            subject: `Alerta de ausentismo — ${est.n || 'Estudiante'}`,
+            text: `Hola,\n\nLe informamos que ${est.n || 'el/la estudiante'} acumula ${conteo} inasistencia(s) registrada(s) en el sistema académico hasta la fecha.\n\nSi considera que esta información no es correcta, comuníquese con la institución.\n\nEste es un mensaje automático de seguimiento académico.`,
+          });
+          if (resultado.ok) {
+            registroNotificados[est.id] = conteo;
+            huboCambios = true;
+            console.log(`📧 Alerta de ausentismo enviada a acudiente de "${est.n}" (${fila.key}) — ${conteo} ausencias.`);
+          }
+        }
+        if (huboCambios) {
+          const nowTs = new Date();
+          await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, fila.key));
+          guardarDbCache(fila.key, blob, nowTs, true);
+        }
+      } catch (errUno) {
+        console.error(`❌ Error procesando alertas de ausentismo de "${fila.key}":`, errUno);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error general enviando alertas de ausentismo automáticas:', err);
+  }
+}
+
+// ── 4-c. Limpieza periódica de tokens/códigos temporales vencidos ──────────
+// Borra fichas de restablecimiento de contraseña (reset-tokens.ts) que
+// expiraron sin usarse, y códigos de invitación institucional vencidos —
+// mantenimiento de higiene de kv_store, sin efecto sobre datos académicos.
+async function limpiarTokensYCodigosExpirados() {
+  try {
+    const cantidadReset = await limpiarTokensRestablecimientoExpirados();
+    if (cantidadReset > 0) console.log(`🧹 ${cantidadReset} token(s) de restablecimiento de contraseña vencido(s) eliminado(s).`);
+  } catch (err) {
+    console.error('❌ Error limpiando tokens de restablecimiento vencidos:', err);
+  }
+  try {
+    const todasLasFilas = await db.select().from(kvStore);
+    const filasInstituciones = todasLasFilas.filter((f) => !f.key.startsWith('_'));
+    const ahoraIso = new Date().toISOString();
+    for (const fila of filasInstituciones) {
+      try {
+        const blob: any = fila.value;
+        if (!blob || !Array.isArray(blob.codigosInvitacion) || !blob.codigosInvitacion.length) continue;
+        const antes = blob.codigosInvitacion.length;
+        blob.codigosInvitacion = blob.codigosInvitacion.filter((c: any) => c && c.expiraEn > ahoraIso);
+        if (blob.codigosInvitacion.length !== antes) {
+          const nowTs = new Date();
+          await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, fila.key));
+          guardarDbCache(fila.key, blob, nowTs, true);
+        }
+      } catch (errUno) {
+        console.error(`❌ Error limpiando códigos de invitación vencidos de "${fila.key}":`, errUno);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error general limpiando códigos de invitación vencidos:', err);
+  }
+}
+
+function msHastaProximaMedianocheColombia(): number {
+  // Colombia usa UTC-5 todo el año (sin horario de verano) — medianoche en
+  // Colombia equivale a las 05:00 UTC. Se agregan 5 minutos de margen para
+  // no correr justo en el segundo del cambio de fecha.
+  const OFFSET_HORAS_COLOMBIA = -5;
+  const horaUtcMedianocheCol = 0 - OFFSET_HORAS_COLOMBIA; // 5
+  const ahora = new Date();
+  let proxima = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), horaUtcMedianocheCol, 5, 0));
+  if (proxima.getTime() <= ahora.getTime()) proxima = new Date(proxima.getTime() + 24 * 60 * 60 * 1000);
+  return proxima.getTime() - ahora.getTime();
+}
+
+function iniciarTareasAutonomasProgramadas() {
+  // Cierre de planillas: se revisa a diario, justo después de la
+  // medianoche (hora Colombia), y luego cada 24 horas desde ahí.
+  setTimeout(() => {
+    cerrarPlanillasVencidasAutomaticamente();
+    setInterval(() => { cerrarPlanillasVencidasAutomaticamente(); }, 24 * 60 * 60 * 1000);
+  }, msHastaProximaMedianocheColombia());
+
+  // Alertas de ausentismo: una vez por semana (no a diario, para que sea
+  // un "resumen" y no un correo repetido todos los días), empezando a los
+  // 10 minutos de arrancar el servidor.
+  setTimeout(() => {
+    enviarAlertasAusentismoAutomaticas();
+    setInterval(() => { enviarAlertasAusentismoAutomaticas(); }, 7 * 24 * 60 * 60 * 1000);
+  }, 10 * 60 * 1000);
+
+  // Limpieza de tokens/códigos vencidos: cada 6 horas, empezando a los 5
+  // minutos de arrancar el servidor.
+  setTimeout(() => {
+    limpiarTokensYCodigosExpirados();
+    setInterval(() => { limpiarTokensYCodigosExpirados(); }, 6 * 60 * 60 * 1000);
+  }, 5 * 60 * 1000);
+
+  // Ronda 13: alerta de vencimiento de suscripción SaaS — igual criterio
+  // que las demás tareas autónomas (revisión periódica en vez de una hora
+  // fija, para ser resistente a reinicios del servidor). Solo tiene efecto
+  // sobre instituciones que ya tienen una fila en fin_suscripciones.
+  setTimeout(() => {
+    enviarAlertasVencimientoSaas();
+    setInterval(() => { enviarAlertasVencimientoSaas(); }, 12 * 60 * 60 * 1000);
+  }, 15 * 60 * 1000);
+}
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API Server escuchando en puerto ${PORT}`);
   const key = getGeminiApiKey();
@@ -1814,4 +2879,6 @@ app.listen(PORT, '0.0.0.0', () => {
   }
   iniciarRespaldosAutomaticosProgramados();
   console.log('🗄️  Respaldo automático semanal programado (revisión cada 12 horas).');
+  iniciarTareasAutonomasProgramadas();
+  console.log('🤖 Tareas autónomas programadas: cierre de planillas (diario, medianoche Colombia), alertas de ausentismo (semanal, opcional por institución), limpieza de tokens/códigos vencidos (cada 6 horas).');
 });

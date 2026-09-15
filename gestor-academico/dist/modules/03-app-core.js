@@ -626,6 +626,23 @@ async function _pushDB(){
       if(conflicto) await _resolverConflictoDB(conflicto,_sk);
       return;
     }
+    if(r.status===402){
+      // Ronda 13: la suscripción SaaS de la institución venció y ya pasó el
+      // margen de gracia de 3 días — el backend bloquea todos los guardados
+      // (POST) pero sigue permitiendo consultar la información (GET), ver
+      // verificarSuscripcionSaas() en el servidor. El cambio queda intacto
+      // en localStorage (saveDB() ya lo guardó ahí) y se reintentará solo en
+      // cuanto la institución renueve, sin que se pierda nada; aquí solo se
+      // avisa UNA vez por sesión para no saturar con el mismo mensaje en
+      // cada autoguardado.
+      _updateSyncChip('offline');
+      if(!window._avisoSuscripcionVencidaMostrado){
+        window._avisoSuscripcionVencidaMostrado=true;
+        const j=await r.json().catch(()=>({}));
+        _showToast('🔒 '+(j&&j.error?j.error:'La suscripción de esta institución venció. Puede seguir consultando la información, pero los cambios no se guardarán hasta renovar el plan.'),'error',9000);
+      }
+      return;
+    }
     if(r.ok){
       window._hayCambiosSinSincronizar=false;
       _fallosConsecutivosGuardado=0;
@@ -4087,6 +4104,12 @@ function gradosDelDocente(u){
 // ============================================================
 function iaRemoveWidget(){const w=document.getElementById('iaWidget');if(w)w.remove();}
 function render(){
+  // Ronda 12, Sección 2: pantalla de restablecimiento de contraseña por
+  // enlace seguro (?restablecerToken=...&sk=...). Se revisa ANTES que
+  // cualquier otro estado (sesión activa, modo gestor, etc.) porque la
+  // persona llega aquí desde un enlace de correo y puede estar en
+  // cualquier estado de navegador — con o sin sesión iniciada.
+  if(pag==='restablecer-password'){iaRemoveWidget();renderRestablecerPassword();return;}
   if(window._adminPortalMode){iaRemoveWidget();renderAdminPortal();return;}
   if(gestorSesion){
     if(gestorEnPlataforma){renderApp();return;}
@@ -4097,7 +4120,89 @@ function render(){
   iaRemoveWidget();renderGestorLanding();
 }
 // Sincronizar con servidor al cargar la página
-(async()=>{try{const ok=await _pullDB();if(ok){if(sesion)renderApp();else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
+// Ronda 12: si la URL trae un enlace de restablecimiento de contraseña
+// (pag==='restablecer-password'), esa pantalla es pública/autónoma y NO
+// debe ser reemplazada cuando esta sincronización en segundo plano
+// termine de cargar — de lo contrario, la persona vería el formulario un
+// instante y luego "saltaría" al portal normal antes de poder usarlo.
+(async()=>{try{const ok=await _pullDB();if(pag==='restablecer-password')return;if(ok){if(sesion)renderApp();else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
+
+// ============================================================
+// Ronda 12, Sección 2: PANTALLA DE RESTABLECIMIENTO DE CONTRASEÑA
+// ------------------------------------------------------------
+// Consume el enlace de un solo uso emitido por
+// POST /api/inetis/auth/restablecer/solicitar (Ronda 11) y confirmado por
+// POST /api/inetis/auth/restablecer/confirmar. Es una pantalla pública y
+// autónoma: no depende de "db"/"gestorDB" estar cargados, porque la
+// persona puede llegar aquí en frío desde el enlace de su correo.
+// ============================================================
+function renderRestablecerPassword(){
+  const ctx=window._restablecerCtx||{token:'',sk:''};
+  const appEl=document.getElementById('app');
+  if(!appEl) return;
+  appEl.innerHTML=`
+  <div class="login-wrap">
+    <div class="login-box" style="max-width:420px;width:92%;text-align:left">
+      <div style="text-align:center;margin-bottom:14px">
+        <div style="font-size:2.4rem">🔑</div>
+        <h2 style="color:#003366;margin:6px 0 2px">Crear nueva contraseña</h2>
+        <div style="font-size:0.78rem;color:#888">Este enlace es de un solo uso y expira 30 minutos después de haber sido solicitado.</div>
+      </div>
+      ${ctx.token&&ctx.sk?`
+      <label class="lbl">Nueva contraseña</label>
+      <div style="position:relative;margin-bottom:12px">
+        <input type="password" id="_rpNueva" placeholder="Mínimo 6 caracteres" style="width:100%;padding:10px;padding-right:40px;border:1.5px solid #c0cfe0;border-radius:7px;font-size:0.9rem;box-sizing:border-box">
+        <button type="button" title="Ver/ocultar" onclick="(function(btn){var i=document.getElementById('_rpNueva');i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁️':'🙈';}).call(this,this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1rem;padding:2px;line-height:1;color:#555">👁️</button>
+      </div>
+      <label class="lbl">Confirmar nueva contraseña</label>
+      <input type="password" id="_rpConfirmar" placeholder="Repita la contraseña" style="width:100%;margin-bottom:16px;padding:10px;border:1.5px solid #c0cfe0;border-radius:7px;font-size:0.9rem;box-sizing:border-box">
+      <button id="_rpBtnConfirmar" class="btn btn-navy" style="width:100%;padding:12px" onclick="_confirmarRestablecerPassword()">✅ Guardar nueva contraseña</button>
+      <div id="_rpStatus" style="margin-top:12px;font-size:0.85rem;min-height:20px"></div>
+      `:`
+      <div style="background:#fdecea;border:1px solid #e74c3c;border-radius:8px;padding:14px;font-size:0.85rem;color:#922b21">⚠️ Este enlace no es válido — falta información necesaria (token o institución). Solicite uno nuevo desde la pantalla de inicio de sesión.</div>
+      `}
+      <div style="margin-top:16px;text-align:center">
+        <button class="tbtn" style="background:#7f8c8d;color:#fff;border:none;padding:8px 16px;border-radius:6px;font-size:0.8rem;cursor:pointer" onclick="_volverDeRestablecerPassword()">← Volver al inicio de sesión</button>
+      </div>
+    </div>
+  </div>`;
+}
+function _volverDeRestablecerPassword(){
+  // Limpia el token de la URL (no debe quedar en el historial del navegador
+  // ni poder reusarse por accidente) y vuelve al portal normal.
+  try{ window.history.replaceState({},'',window.location.pathname); }catch(e){}
+  window._restablecerCtx=null;
+  pag='planilla';
+  render();
+}
+async function _confirmarRestablecerPassword(){
+  const ctx=window._restablecerCtx||{};
+  const statusEl=document.getElementById('_rpStatus');
+  const nueva=(document.getElementById('_rpNueva')?.value||'');
+  const confirmar=(document.getElementById('_rpConfirmar')?.value||'');
+  if(nueva.length<6){ if(statusEl)statusEl.innerHTML='<span style="color:#c0392b">⚠️ La contraseña debe tener al menos 6 caracteres.</span>'; return; }
+  if(nueva!==confirmar){ if(statusEl)statusEl.innerHTML='<span style="color:#c0392b">⚠️ Las dos contraseñas no coinciden.</span>'; return; }
+  const btn=document.getElementById('_rpBtnConfirmar');
+  if(btn){ btn.disabled=true; btn.innerHTML='⏳ Guardando...'; }
+  if(statusEl)statusEl.innerHTML='<span style="color:#e67e22">🔄 Confirmando...</span>';
+  try{
+    const r=await fetch('/api/inetis/auth/restablecer/confirmar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:ctx.sk,token:ctx.token,nuevaPassword:nueva})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){
+      if(statusEl)statusEl.innerHTML=`<div style="background:#eafaf1;border:1px solid #27ae60;border-radius:6px;padding:12px;color:#1a7531">✅ ${j.mensaje||'Contraseña actualizada correctamente.'}</div>`;
+      const inputs=document.querySelectorAll('#_rpNueva,#_rpConfirmar');
+      inputs.forEach(i=>i.disabled=true);
+      if(btn){ btn.style.display='none'; }
+      setTimeout(_volverDeRestablecerPassword,2500);
+    } else {
+      if(statusEl)statusEl.innerHTML=`<div style="background:#fdecea;border:1px solid #e74c3c;border-radius:8px;padding:12px;font-size:0.85rem;color:#922b21">❌ ${j.error||'No se pudo actualizar la contraseña.'}</div>`;
+      if(btn){ btn.disabled=false; btn.innerHTML='✅ Guardar nueva contraseña'; }
+    }
+  }catch(e){
+    if(statusEl)statusEl.innerHTML='<div style="background:#fdecea;border:1px solid #e74c3c;border-radius:8px;padding:12px;font-size:0.85rem;color:#922b21">❌ Error de conexión. Intente de nuevo.</div>';
+    if(btn){ btn.disabled=false; btn.innerHTML='✅ Guardar nueva contraseña'; }
+  }
+}
 
 // ============================================================
 // SINCRONIZACIÓN AUTOMÁTICA MULTI-DISPOSITIVO
@@ -4398,23 +4503,66 @@ function _sincronizacionAutoHabilitadaAhora(){
 // por su propio camino (saveDB/updDB), sin pasar por aquí. Lo único que
 // cambia es si la pantalla se refresca sola con cambios de OTROS
 // dispositivos, o si hay que pedirlo con el botón "Sincronizar ahora".
+// Corrección móvil (Ronda 12): antes se compensaba el aviso con un
+// "paddingTop" fijo de 38px, calculado para 1 sola línea de texto en
+// pantallas anchas. En celulares el texto se parte en 2-3 líneas y el
+// aviso terminaba siendo mucho más alto que 38px pero seguía usando
+// position:fixed + z-index muy alto, así que tapaba (y bloqueaba los
+// clics de) la barra superior y la cuadrícula de botones de los módulos.
+// Ahora: (1) el tamaño de letra/espaciado se reduce en pantallas angostas
+// vía media queries (evita que el aviso crezca tanto), (2) el padding del
+// body se calcula SIEMPRE con la altura real ya renderizada del aviso
+// (getBoundingClientRect) en vez de un número fijo, recalculando en
+// "resize"/cambio de orientación, y (3) se agrega un botón "✕" para que
+// la persona pueda cerrarlo manualmente si de todos modos le estorba
+// (la sincronización sigue disponible por el botón habitual del panel).
+function _asegurarEstilosBannerSyncManual(){
+  if(document.getElementById('_estilosBannerSyncManual')) return;
+  const st=document.createElement('style');
+  st.id='_estilosBannerSyncManual';
+  st.textContent=
+    '.banner-sync-manual{position:fixed;top:0;left:0;right:0;z-index:99998;color:#fff;padding:8px 34px 8px 14px;font-size:0.8rem;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.25)}'
+    +'.banner-sync-manual .btn-sync-ahora{background:#f1c40f;color:#001428;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer;font-size:0.78rem;white-space:nowrap}'
+    +'.banner-sync-manual .btn-sync-cerrar{position:absolute;top:2px;right:2px;background:transparent;color:#fff;border:none;font-size:1.05rem;cursor:pointer;line-height:1;padding:7px 9px}'
+    +'@media(max-width:768px){.banner-sync-manual{font-size:0.72rem;padding:6px 30px 6px 10px;gap:6px}.banner-sync-manual .btn-sync-ahora{padding:4px 10px;font-size:0.72rem}}'
+    +'@media(max-width:576px){.banner-sync-manual{font-size:0.68rem;text-align:center}}';
+  document.head.appendChild(st);
+}
+function _ajustarPaddingBannerSyncManual(){
+  const banner=document.getElementById('_bannerSyncManual');
+  document.body.style.paddingTop=banner?banner.getBoundingClientRect().height+'px':'';
+}
+function _cerrarBannerSyncManual(){
+  const banner=document.getElementById('_bannerSyncManual');
+  if(banner) banner.remove();
+  document.body.style.paddingTop='';
+  try{ sessionStorage.setItem('_bannerSyncManualCerrado','1'); }catch(e){}
+}
 function _actualizarBannerSyncManual(){
   const banner=document.getElementById('_bannerSyncManual');
   const debeMostrarse=!_sincronizacionAutoHabilitadaAhora();
   if(!debeMostrarse){
     if(banner) banner.remove();
-    if(document.body&&document.body.style.paddingTop==='38px') document.body.style.paddingTop='';
+    document.body.style.paddingTop='';
     return;
   }
-  if(banner) return; // ya está visible
+  let cerradoManualmente=false;
+  try{ cerradoManualmente=sessionStorage.getItem('_bannerSyncManualCerrado')==='1'; }catch(e){}
+  if(cerradoManualmente) return; // la persona ya lo cerró en esta sesión de navegador
+  if(banner){ _ajustarPaddingBannerSyncManual(); return; } // ya está visible
+  _asegurarEstilosBannerSyncManual();
   const b=document.createElement('div');
   b.id='_bannerSyncManual';
-  b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99998;background:#1a3a5c;color:#fff;padding:8px 14px;font-size:0.8rem;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.25)';
+  b.className='banner-sync-manual';
+  b.style.background='#1a3a5c';
   b.innerHTML='<span>🔕 Sincronización automática desactivada para tu institución. Tus datos se guardan igual de inmediato — haz clic para traer los cambios más recientes de otros dispositivos.</span>'
-    +'<button onclick="_sincronizarAhoraManual()" style="background:#f1c40f;color:#001428;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer;font-size:0.78rem;white-space:nowrap">🔄 Sincronizar ahora</button>';
+    +'<button class="btn-sync-ahora" onclick="_sincronizarAhoraManual()">🔄 Sincronizar ahora</button>'
+    +'<button class="btn-sync-cerrar" onclick="_cerrarBannerSyncManual()" aria-label="Cerrar aviso" title="Cerrar aviso">✕</button>';
   document.body.appendChild(b);
-  document.body.style.paddingTop='38px'; // evita que el aviso tape el encabezado normal
+  _ajustarPaddingBannerSyncManual();
 }
+window.addEventListener('resize',_ajustarPaddingBannerSyncManual);
+window.addEventListener('orientationchange',_ajustarPaddingBannerSyncManual);
 function _sincronizarAhoraManual(){
   _syncAll(true);
 }
@@ -5497,8 +5645,14 @@ function renderApp(){
   }
   _actualizarBannerSyncManual();
   if(sesion.r==='elecciones'){iaRemoveWidget();renderElecciones();return;}
-  if(sesion.r==='padre'){iaRemoveWidget();renderPadre();return;}
-  if(sesion.r==='estudiante'){iaRemoveWidget();renderEstudiante();return;}
+  // Ronda 12: acudientes y estudiantes ahora SÍ ven el widget de Adán (antes
+  // se removía incondicionalmente aquí, antes siquiera de llegar a
+  // iaInjectWidget() más abajo — por eso era necesario tocar este punto
+  // además del arreglo de roles dentro de iaInjectWidget()). El backend
+  // (buildSystemPrompt en src/index.ts) es quien restringe qué puede
+  // responder Adán para estos roles.
+  if(sesion.r==='padre'){renderPadre();iaInjectWidget();_revisarCertificadosDisponibles();return;}
+  if(sesion.r==='estudiante'){renderEstudiante();iaInjectWidget();_revisarCertificadosDisponibles();return;}
   const isAdmin=sesion.r==='admin';
   const _ma=moduloActivo;
   const menu=[];
@@ -6819,6 +6973,18 @@ function htmlConfigEvalPedagogica(){
             • Entre ${db.config?.pctInasistenciaPreventiva||20}% y ${db.config?.pctInasistenciaCritica||25}%: <span style="color:#e67e22;font-weight:bold">🟡 Preventivo</span> &nbsp;|&nbsp;
             • &ge; ${db.config?.pctInasistenciaCritica||25}%: <span style="color:#c0392b;font-weight:bold">🔴 Crítico (Reprobación)</span>
           </div>
+          <hr style="border-color:#d8e8f5;margin:12px 0">
+          <b style="font-size:0.85rem;color:#003366">📧 Alertas Automáticas de Ausentismo a Acudientes</b>
+          <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Cuando está activo, el sistema revisa periódicamente las ausencias de cada estudiante y le envía un correo automático al acudiente registrado cada vez que se cumple un nuevo múltiplo del umbral configurado (ej. con umbral 3: al llegar a 3, 6, 9 ausencias...). Desactivado por defecto — actívelo solo si su institución ya tiene correos de acudientes registrados y quiere que se les avise así.</p>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+            <input type="checkbox" id="cfgAlertasAusenciasActivas" ${db.config?.alertasAusenciasActivas===true?'checked':''} style="width:16px;height:16px">
+            <span style="font-size:0.85rem">Activar alertas automáticas de ausentismo por correo</span>
+          </label>
+          <label class="lbl" style="font-size:0.78rem">Umbral de ausencias para notificar</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" id="cfgUmbralAusenciasAlerta" min="1" max="60" step="1" value="${db.config?.umbralAusenciasAlerta!=null?db.config.umbralAusenciasAlerta:3}" style="width:85px;padding:6px;font-weight:bold;color:#003366;font-size:0.9rem">
+            <span style="font-size:0.8rem;font-weight:bold">ausencias (Por defecto 3)</span>
+          </div>
         </div>
       </div>
       <div>
@@ -6916,6 +7082,14 @@ function guardarConfigPedagogica(){
     d.config.recPeriodicas=document.getElementById('cfgRecPerio')?.checked!==false;
     d.config.recFinalAnio=document.getElementById('cfgRecFinal')?.checked!==false;
     d.config.recSiguienteAnio=document.getElementById('cfgRecSiguiente')?.checked||false;
+    // Ronda 12, Sección 2: alertas automáticas de ausentismo (backend ya
+    // implementado en Ronda 11 — enviarAlertasAusentismoAutomaticas() en
+    // src/index.ts — pero antes no había ningún control en el panel para
+    // activarlo/desactivarlo ni ajustar el umbral; solo podía cambiarse a
+    // mano en el blob. Por defecto sigue desactivado (||false).
+    d.config.alertasAusenciasActivas=document.getElementById('cfgAlertasAusenciasActivas')?.checked||false;
+    const _umbralAus=parseInt(document.getElementById('cfgUmbralAusenciasAlerta')?.value||3);
+    d.config.umbralAusenciasAlerta=(_umbralAus>0?_umbralAus:3);
     return d;
   });
   _pushDB();
@@ -8971,6 +9145,18 @@ function htmlDescriptores(){
   const misGradosDoc = isAdmin ? db.grados.map(g=>g.n) : [...new Set(db.carga.filter(c=>c.d===sesion.u).map(c=>c.g))].sort();
   const gradOpts = (misGradosDoc.length ? misGradosDoc : db.grados.map(g=>g.n)).map(g=>`<option value="${g}">${g}</option>`).join('');
 
+  // 2-B. CORRECCIÓN: Asignatura(s) y grupos-destino ya disponibles desde el primer render.
+  // Antes el <select id="descMat"> quedaba vacío hasta que el docente disparaba manualmente
+  // el onchange de Grado/Docente (llamando a actualizarMatsDesc()); ahora se precalcula aquí
+  // con el grado que el <select id="descGra"> mostrará seleccionado por defecto (el primero
+  // de la lista), usando los mismos helpers puros que la actualización dinámica, para que
+  // la asignatura y los grupos de réplica aparezcan pobladas de inmediato al abrir el módulo.
+  const graActivo = (misGradosDoc.length ? misGradosDoc : db.grados.map(g=>g.n))[0] || '';
+  const matsIniciales = _matsDisponiblesDesc(docActivo, graActivo);
+  const matOptsIniciales = matsIniciales.map(m => `<option value="${m.m}">${m.m}</option>`).join('');
+  const matActivaIni = matsIniciales[0]?.m || '';
+  const descReplicaDestIniciales = _htmlGruposReplicaDesc(docActivo, graActivo, matActivaIni);
+
   // 3. Descriptores activos (no borrados lógicamente)
   let descs = (db.descriptores || []).filter(d => !d.deletedAt);
   // AISLAMIENTO ESTRICTO: el docente solo visualiza sus propios descriptores
@@ -9104,7 +9290,7 @@ function htmlDescriptores(){
     <div class="grid4" style="margin-bottom:10px">
       <div><label class="lbl">Periodo</label><select id="descPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></div>
       <div><label class="lbl">Grado</label><select id="descGra" onchange="actualizarMatsDesc()">${gradOpts}</select></div>
-      <div><label class="lbl">Asignatura</label><select id="descMat" onchange="actualizarGruposReplicaDesc()"></select></div>
+      <div><label class="lbl">Asignatura</label><select id="descMat" onchange="actualizarGruposReplicaDesc()">${matOptsIniciales}</select></div>
     </div>
     <div style="margin-bottom:8px;padding:8px 10px;background:#e8f5e9;border-left:3px solid #27ae60;border-radius:4px;font-size:0.82rem;color:#1a1a2e"><b>El sistema agrega automáticamente los prefijos para TODOS los niveles:</b> Se le dificulta / Algunas veces / Casi siempre / Siempre</div>
     <div style="margin-bottom:8px;padding:8px 10px;background:#fff3cd;border-left:3px solid #f39c12;border-radius:4px;font-size:0.82rem;color:#1a1a2e">
@@ -9136,9 +9322,7 @@ function htmlDescriptores(){
         <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Guarde primero los descriptores, luego seleccione los grupos destino asignados y replique:</p>
         <div style="margin-bottom:6px">
           <label class="lbl" style="font-size:0.78rem">Grupos destino (solo carga asignada):</label>
-          <div id="descReplicaDest" style="display:flex;flex-wrap:wrap;gap:6px;padding:6px;border:1px solid #ccc;border-radius:4px;background:#fff;max-height:90px;overflow-y:auto;color:#1a1a2e">
-             <!-- Dinámicamente poblado según la carga del docente -->
-          </div>
+          <div id="descReplicaDest" style="display:flex;flex-wrap:wrap;gap:6px;padding:6px;border:1px solid #ccc;border-radius:4px;background:#fff;max-height:90px;overflow-y:auto;color:#1a1a2e">${descReplicaDestIniciales}</div>
         </div>
         <button class="btn btn-teal" style="font-size:0.8rem;padding:7px 12px" onclick="replicarUltimosDescs()">🔁 Replicar al/los grupo(s)</button>
         <div id="replicaStatus" style="font-size:0.78rem;color:#0e6655;margin-top:6px"></div>
@@ -9224,10 +9408,48 @@ function _filtrarDescReg(){
   });
 }
 
+// Helper puro (sin tocar el DOM): calcula las asignaturas de carga académica disponibles
+// para un docente+grado dados. Se reutiliza tanto en el render inicial de htmlDescriptores()
+// (para que el campo "Asignatura" NO aparezca vacío al abrir el módulo) como en la
+// actualización dinámica vía onchange en actualizarMatsDesc() — una sola fuente de verdad.
+function _matsDisponiblesDesc(doc, gra){
+  return db.carga.filter(c => c.d === doc && c.g === gra);
+}
+
+// Helper puro (sin tocar el DOM): calcula el HTML de los checkboxes de "grupos destino"
+// para replicar descriptores. Se reutiliza tanto en el render inicial de htmlDescriptores()
+// como en actualizarGruposReplicaDesc() — una sola fuente de verdad.
+function _htmlGruposReplicaDesc(doc, gra, mat){
+  const baseDe = g => String(g).split(/[°\-\s]/)[0];
+  const baseSrc = baseDe(gra);
+
+  // RESTRICCIÓN ESTRICTA POR CARGA: Únicamente grupos donde este docente tiene asignada carga en esa materia
+  const otrosGruposCarga = [...new Set(
+    db.carga
+      .filter(c => c.d === doc && (!mat || c.m === mat) && c.g !== gra && (!baseSrc || baseDe(c.g) === baseSrc))
+      .map(c => c.g)
+  )].sort();
+
+  if (otrosGruposCarga.length) {
+    return otrosGruposCarga.map(g => `<label style="font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:3px;background:#e8f8f5;padding:3px 7px;border-radius:4px;border:1px solid #a3e4d7;color:#1a1a2e"><input type="checkbox" name="chkRepDest" value="${g}" checked> <b>${g}</b></label>`).join('');
+  }
+
+  // Si no hay del mismo grado base, buscar en otros grados asignados al docente para esa materia
+  const otrosTodos = [...new Set(
+    db.carga
+      .filter(c => c.d === doc && (!mat || c.m === mat) && c.g !== gra)
+      .map(c => c.g)
+  )].sort();
+
+  return otrosTodos.length
+    ? otrosTodos.map(g => `<label style="font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:3px;background:#e8f4fd;padding:3px 7px;border-radius:4px;color:#1a1a2e"><input type="checkbox" name="chkRepDest" value="${g}"> ${g}</label>`).join('')
+    : `<span style="font-size:0.75rem;color:#888;padding:4px">No tiene otros grupos con carga asignada en esta materia.</span>`;
+}
+
 function actualizarMatsDesc(){
   const doc = document.getElementById('descDoc')?.value || sesion.u;
   const gra = document.getElementById('descGra')?.value || '';
-  const mats = db.carga.filter(c => c.d === doc && c.g === gra);
+  const mats = _matsDisponiblesDesc(doc, gra);
   const sel = document.getElementById('descMat');
   if (sel) {
     sel.innerHTML = mats.map(m => `<option value="${m.m}">${m.m}</option>`).join('');
@@ -9241,33 +9463,7 @@ function actualizarGruposReplicaDesc(){
   const mat = document.getElementById('descMat')?.value || '';
   const container = document.getElementById('descReplicaDest');
   if (!container) return;
-
-  const baseDe = g => String(g).split(/[°\-\s]/)[0];
-  const baseSrc = baseDe(gra);
-
-  // RESTRICCIÓN ESTRICTA POR CARGA: Únicamente grupos donde este docente tiene asignada carga en esa materia
-  const otrosGruposCarga = [...new Set(
-    db.carga
-      .filter(c => c.d === doc && (!mat || c.m === mat) && c.g !== gra && (!baseSrc || baseDe(c.g) === baseSrc))
-      .map(c => c.g)
-  )].sort();
-
-  if (!otrosGruposCarga.length) {
-    // Si no hay del mismo grado base, buscar en otros grados asignados al docente para esa materia
-    const otrosTodos = [...new Set(
-      db.carga
-        .filter(c => c.d === doc && (!mat || c.m === mat) && c.g !== gra)
-        .map(c => c.g)
-    )].sort();
-
-    if (otrosTodos.length) {
-      container.innerHTML = otrosTodos.map(g => `<label style="font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:3px;background:#e8f4fd;padding:3px 7px;border-radius:4px;color:#1a1a2e"><input type="checkbox" name="chkRepDest" value="${g}"> ${g}</label>`).join('');
-    } else {
-      container.innerHTML = `<span style="font-size:0.75rem;color:#888;padding:4px">No tiene otros grupos con carga asignada en esta materia.</span>`;
-    }
-  } else {
-    container.innerHTML = otrosGruposCarga.map(g => `<label style="font-size:0.75rem;cursor:pointer;display:inline-flex;align-items:center;gap:3px;background:#e8f8f5;padding:3px 7px;border-radius:4px;border:1px solid #a3e4d7;color:#1a1a2e"><input type="checkbox" name="chkRepDest" value="${g}" checked> <b>${g}</b></label>`).join('');
-  }
+  container.innerHTML = _htmlGruposReplicaDesc(doc, gra, mat);
 }
 
 function guardarDesc(){
@@ -13823,6 +14019,141 @@ async function _qrDataUrlBoletin(texto){
     return await QRCode.toDataURL(texto,{margin:1,width:130});
   }catch(e){ return null; }
 }
+
+// ============================================================
+// Ronda 12, Sección 3: CERTIFICADOS/TRÁMITES PAGADOS — DESCARGA
+// ------------------------------------------------------------
+// El backend (webhooks de pago en src/index.ts, _registrarTransaccionPago)
+// firma los DATOS del certificado apenas se aprueba un pago tipo
+// "tramite", pero NO genera el PDF en el servidor: este proyecto no trae
+// ninguna librería de PDF del lado del servidor (todo PDF del sistema —
+// boletines, actas — se genera en el navegador con jsPDF, que necesita un
+// DOM/Canvas que Node no tiene). En vez de agregar una dependencia nueva
+// al backend sin que el usuario la pidiera explícitamente, se reutiliza
+// exactamente la misma infraestructura que ya usan los boletines
+// (jsPDF + QRCode.toDataURL) para dibujar el certificado aquí, a partir
+// de los datos ya firmados por el servidor con DOC_SIGN_SECRET.
+// ============================================================
+async function _revisarCertificadosDisponibles(){
+  try{
+    if(!sesion||!(sesion.r==='padre'||sesion.r==='estudiante')) return;
+    const est=db.ests&&db.ests.find(e=>e.id===sesion.estId);
+    if(!est) return;
+    const sk=_skActual();
+    if(!sk) return;
+    const r=await fetch('/api/inetis/pagos/certificados?sk='+encodeURIComponent(sk)+'&estudianteId='+encodeURIComponent(est.id));
+    if(!r.ok) return;
+    const j=await r.json();
+    const certs=Array.isArray(j.certificados)?j.certificados:[];
+    window._certsDisponiblesCache=certs;
+    let btn=document.getElementById('_btnCertsDisponibles');
+    if(!certs.length){ if(btn) btn.remove(); return; }
+    if(btn){ btn.textContent='📜 Certificados disponibles ('+certs.length+')'; return; }
+    btn=document.createElement('button');
+    btn.id='_btnCertsDisponibles';
+    btn.textContent='📜 Certificados disponibles ('+certs.length+')';
+    btn.onclick=abrirCertificadosDisponibles;
+    btn.style.cssText='position:fixed;right:16px;bottom:96px;z-index:9400;background:#8e44ad;color:#fff;border:none;border-radius:24px;padding:10px 16px;font-size:0.8rem;font-weight:bold;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,0.25)';
+    document.body.appendChild(btn);
+  }catch(e){}
+}
+function abrirCertificadosDisponibles(){
+  const certs=window._certsDisponiblesCache||[];
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9950;overflow-y:auto;padding:16px;display:flex;align-items:flex-start;justify-content:center';
+  let h='<div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:22px;box-shadow:0 8px 40px rgba(0,0,0,0.35);margin:auto;color:#1a1a2e">';
+  h+='<h3 style="color:#8e44ad;margin:0 0 12px;text-align:center">📜 Certificados y Trámites Pagados</h3>';
+  if(!certs.length){ h+='<p style="text-align:center;color:#888;font-size:0.85rem">No hay certificados disponibles por ahora.</p>'; }
+  else certs.forEach((c,i)=>{
+    // Ronda 13, punto 3: si el pago que originó este certificado fue
+    // reembolsado/contracargado después de emitido, el backend lo marca
+    // "revocado" — se muestra con claridad en vez de ocultarlo, y el botón
+    // de descarga queda deshabilitado (el documento ya no sería válido).
+    h+='<div style="border:1px solid '+(c.revocado?'#f1948a':'#e0d0ec')+';background:'+(c.revocado?'#fdedec':'#fff')+';border-radius:8px;padding:12px 14px;margin-bottom:10px">';
+    h+='<div style="font-weight:bold;color:#1a1a2e;font-size:0.9rem">'+(c.concepto||'Certificado')+(c.revocado?' <span style="background:#c0392b;color:#fff;border-radius:10px;padding:1px 8px;font-size:0.68rem;font-weight:bold;margin-left:6px">REVOCADO</span>':'')+'</div>';
+    h+='<div style="font-size:0.76rem;color:#888;margin:4px 0">Emitido: '+new Date(c.fechaEmision).toLocaleString('es-CO')+' · Código: '+c.codigoVerificacion+'</div>';
+    if(c.revocado){ h+='<div style="font-size:0.76rem;color:#c0392b;margin-bottom:6px">⚠️ El pago de este trámite fue reembolsado — este documento ya no es válido.</div>'; }
+    h+='<button '+(c.revocado?'disabled style="background:#bbb;color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:0.8rem;font-weight:bold;cursor:not-allowed"':'onclick="_descargarCertificadoPDF('+i+')" style="background:#8e44ad;color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:0.8rem;cursor:pointer;font-weight:bold"')+'>⬇️ Descargar PDF</button>';
+    h+='</div>';
+  });
+  h+='<button onclick="this.closest(\'div[style*=position:fixed]\').remove()" style="width:100%;padding:10px;background:#7f8c8d;color:#fff;border:none;border-radius:7px;cursor:pointer;margin-top:6px">✕ Cerrar</button>';
+  h+='</div>';
+  ov.innerHTML=h;
+  document.body.appendChild(ov);
+}
+// Ronda 13, punto 1: plantilla oficial del certificado/paz y salvo, según
+// las directrices exactas que dio el usuario — tamaño Carta, encabezado
+// con nombre/escudo/DANE-NIT de la institución, título según el tipo de
+// trámite, cuerpo con los datos del estudiante, firma del Rector(a), y un
+// código QR en la esquina inferior que apunta a la URL pública de
+// verificación (GET /api/certificados/verificar/:hash) — ya no requiere
+// tener la app abierta para comprobar la autenticidad, a diferencia del
+// panel "Verificar Autenticidad" que usan los boletines.
+async function _descargarCertificadoPDF(idx){
+  const c=(window._certsDisponiblesCache||[])[idx];
+  if(!c || c.revocado) return;
+  if(typeof window.jspdf==='undefined'){customAlert('Librería PDF no disponible.');return;}
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF('p','mm','letter'); // Tamaño Carta, pedido explícitamente
+  const W=doc.internal.pageSize.width;
+  const inst=(db.nombre||'Institución Educativa').toUpperCase();
+  const est=db.ests&&db.ests.find(e=>e.id===c.estudianteId);
+  const nombreEst=est?(est.n||((est.nombres||'')+' '+(est.apellidos||''))).trim():(c.estudianteId||'—');
+  const tipoDocEst=est?.tipoDoc||'';
+  const numDocEst=est?.numDoc||'';
+  const esPazYSalvo=/paz\s*y\s*salvo/i.test(c.concepto||'');
+  const titulo=esPazYSalvo?'PAZ Y SALVO ACADÉMICO Y FINANCIERO':'CERTIFICADO DE ESTUDIOS';
+
+  // ── Encabezado: escudo/logo + nombre institución + DANE/NIT ──
+  const logoSrc=db.logo||'';
+  if(logoSrc){ try{doc.addImage(logoSrc,'JPEG',18,14,20,20);}catch(e){try{doc.addImage(logoSrc,'PNG',18,14,20,20);}catch(e2){}} }
+  doc.setFont(undefined,'bold');doc.setFontSize(14);doc.setTextColor(0,51,102);
+  doc.text(inst,W/2,22,{align:'center',maxWidth:W-90});
+  doc.setFont(undefined,'normal');doc.setFontSize(9);doc.setTextColor(90);
+  const daneNit=[db.dane?'DANE: '+db.dane:'',db.nit?'NIT: '+db.nit:''].filter(Boolean).join('   |   ');
+  if(daneNit) doc.text(daneNit,W/2,29,{align:'center'});
+  doc.setDrawColor(0,51,102);doc.setLineWidth(0.6);doc.line(18,38,W-18,38);
+  doc.setFont(undefined,'bold');doc.setFontSize(16);doc.setTextColor(0,0,0);
+  doc.text(titulo,W/2,50,{align:'center'});
+
+  // ── Cuerpo: texto oficial ──
+  doc.setFont(undefined,'normal');doc.setFontSize(11);doc.setTextColor(20);
+  const identificacion=(tipoDocEst||numDocEst)?` identificado(a) con ${tipoDocEst||'documento'} No. ${numDocEst||'—'},`:'';
+  const cuerpo=esPazYSalvo
+    ?`El(la) suscrito(a) Rector(a) / Secretario(a) de ${inst} hace constar que el(la) estudiante ${nombreEst},${identificacion} se encuentra A PAZ Y SALVO por todo concepto académico y financiero en la institución, correspondiente a: ${c.concepto||'trámite'}, durante el año lectivo ${db.anio||''}.`
+    :`El(la) suscrito(a) Rector(a) / Secretario(a) de ${inst} hace constar que el(la) estudiante ${nombreEst},${identificacion} se encuentra MATRICULADO(A) y al día por todo concepto en el periodo lectivo ${db.anio||''}, correspondiente a: ${c.concepto||'trámite'}.`;
+  doc.text(cuerpo,20,66,{maxWidth:W-40,align:'justify',lineHeightFactor:1.6});
+  doc.setFontSize(9.5);doc.setTextColor(90);
+  doc.text('Fecha de emisión: '+new Date(c.fechaEmision).toLocaleString('es-CO'),20,100);
+  doc.text('Referencia de pago: '+c.proveedor+' / '+c.proveedorPagoId,20,106);
+
+  // ── Firma digital / estampado ──
+  const firmaY=140;
+  doc.setDrawColor(120);doc.setLineWidth(0.3);doc.line(30,firmaY,W/2-10,firmaY);
+  doc.setFont(undefined,'bold');doc.setFontSize(10);doc.setTextColor(0);
+  doc.text((db.rectora||'RECTOR(A)').toUpperCase(),(30+(W/2-10))/2,firmaY+5,{align:'center'});
+  doc.setFont(undefined,'normal');doc.setFontSize(8);doc.setTextColor(90);
+  doc.text('Rector(a) / Secretario(a) — Firmado digitalmente',(30+(W/2-10))/2,firmaY+10,{align:'center'});
+
+  // ── Código QR de verificación pública (esquina inferior) ──
+  // Apunta directo a la URL pública GET /api/certificados/verificar/:hash
+  // (pedido explícito del usuario) — cualquiera puede escanearlo con la
+  // cámara de su teléfono y confirmar la autenticidad SIN necesidad de
+  // tener esta aplicación abierta.
+  try{
+    const urlVerificacion=window.location.origin+'/api/certificados/verificar/'+encodeURIComponent(c.codigoVerificacion);
+    const qrUrl=await _qrDataUrlBoletin(urlVerificacion);
+    if(qrUrl) doc.addImage(qrUrl,'PNG',W-58,firmaY-22,32,32);
+    doc.setFontSize(6.5);doc.setTextColor(120);
+    doc.text('Verificar en:',W-58,firmaY+12);
+    doc.setFontSize(5.5);
+    doc.text(urlVerificacion,W-58,firmaY+16,{maxWidth:36});
+  }catch(e){}
+
+  doc.setFontSize(7);doc.setTextColor(150);
+  doc.text('Código de verificación: '+c.codigoVerificacion,20,firmaY+22);
+  doc.save((esPazYSalvo?'PazYSalvo_':'Certificado_')+String(c.concepto||'documento').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf');
+}
 function htmlVerificarPanel(){
   return `<div class="card">
     <h4 class="card-title">🔍 Verificar Autenticidad de un Documento</h4>
@@ -16274,9 +16605,14 @@ function iaInputKeydown(e){
 // ============================================================
 function iaInjectWidget(){
   if(!moduloActivo('asistente-ia')) return;
-  // SEGURIDAD: solo Docente, Directivo (admin/rector) y Gestor pueden ver el asistente.
-  // Estudiantes, padres de familia y visitantes anónimos NUNCA acceden al widget.
-  if(!sesion||!['gestor','admin','rector','docente'].includes(sesion.r)){
+  // SEGURIDAD (ampliado en Ronda 12): Docente, Directivo (admin/rector) y
+  // Gestor ven el asistente con TODAS sus capacidades administrativas.
+  // Estudiantes y acudientes ('padre') ahora también pueden verlo, pero
+  // buildSystemPrompt() en el backend (src/index.ts) les entrega un
+  // system prompt restringido de solo tutoría/soporte — nunca el prompt
+  // administrativo — así que ampliar este arreglo de roles es seguro.
+  // Solo visitantes anónimos (sin sesión) siguen sin acceso al widget.
+  if(!sesion||!['gestor','admin','rector','docente','estudiante','padre'].includes(sesion.r)){
     iaRemoveWidget(); // retira el widget si el rol no tiene acceso o no hay sesión
     return;
   }
@@ -16768,8 +17104,58 @@ async function guardarPreMatricula(){
   };
 
   updDB(d=>{d.preMatriculas=d.preMatriculas||[];d.preMatriculas.push(solicitud);return d;});
-  _pmMsg('✅ Pre-Matrícula enviada correctamente. Número de solicitud: #'+solicitud.id+'. La institución revisará su solicitud y le notificará. Guarde este número de referencia.','#27ae60');
+
+  // ── Ronda 12, Sección 1: PROCESAMIENTO AUTÓNOMO E INTELIGENTE ──────────
+  // Por defecto (config.requiereAprobacionMatricula !== true) la matrícula
+  // se procesa de inmediato, sin esperar aprobación manual del rector: se
+  // crea/vincula el estudiante en db.ests[] con su grado y grupo, y se le
+  // muestran de una vez las credenciales de acceso. Si el rector activó
+  // config.requiereAprobacionMatricula=true, se conserva el flujo anterior
+  // (queda PENDIENTE en "Gestión de Pre-Matrículas" para revisión manual).
+  const _autoAprobar=db.config?.requiereAprobacionMatricula!==true;
+  if(_autoAprobar){
+    updDB(d=>{
+      const s=(d.preMatriculas||[]).find(x=>x.id===solicitud.id);
+      if(s){s.estado='APROBADA';s.obsAdmin='Matrícula automática (auto-registro desde el portal — config.requiereAprobacionMatricula=false)';s.fechaRevision=new Date().toLocaleString('es-CO');}
+      return d;
+    });
+    const _yaExistia=_procesarMatriculaDesdeSolicitud(solicitud);
+    _pmMsg('✅ ¡Matrícula completada automáticamente! Número de solicitud: #'+solicitud.id+'.'+(_yaExistia?' Se actualizó y vinculó el registro existente del estudiante.':' Se creó el registro del estudiante.'),'#27ae60');
+    _mostrarCredencialesAutoMatricula(solicitud);
+  } else {
+    _pmMsg('✅ Pre-Matrícula enviada correctamente. Número de solicitud: #'+solicitud.id+'. La institución revisará su solicitud y le notificará. Guarde este número de referencia.','#27ae60');
+  }
   if(btn) btn.disabled=false;
+}
+
+// Ronda 12: tarjeta de credenciales tras la matrícula automática desde el
+// portal público — mismo criterio visual que el modal de aprobación
+// manual (cambiarEstadoPM), pero sin depender del panel de admin (esta
+// pantalla es pública, sin sesión iniciada).
+function _mostrarCredencialesAutoMatricula(sol){
+  const nombreEst=(sol.nombres||'')+' '+(sol.apellidos||'');
+  const inst=db.nombre||db.corregimiento||'la institución';
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9900;overflow-y:auto;padding:16px;display:flex;align-items:flex-start;justify-content:center';
+  let h='<div style="background:#fff;border-radius:12px;max-width:540px;width:100%;padding:24px;box-shadow:0 8px 40px rgba(0,0,0,0.35);margin:auto;color:#1a1a2e">';
+  h+='<div style="text-align:center;font-size:2rem;margin-bottom:8px">🎓</div>';
+  h+='<h3 style="color:#27ae60;margin:0 0 4px;text-align:center">¡Matrícula completada!</h3>';
+  h+='<p style="font-size:0.84rem;color:#555;margin-bottom:16px;text-align:center"><b>'+nombreEst+'</b> — Grado '+(sol.gradoAspira||'')+' · '+inst+'</p>';
+  h+='<div style="background:#f0f4f8;border-left:4px solid #003366;padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:10px;color:#1a1a2e">';
+  h+='<div style="font-size:0.78rem;font-weight:bold;color:#003366;margin-bottom:6px">🎒 CREDENCIALES ESTUDIANTE</div>';
+  h+='<div style="font-size:0.85rem;margin:3px 0">👤 <b>Usuario:</b> <code style="background:#e8f0fe;padding:2px 6px;border-radius:4px;color:#1a1a2e">'+sol.numDoc+'</code></div>';
+  h+='<div style="font-size:0.85rem;margin:3px 0">🔑 <b>Contraseña:</b> <code style="background:#e8f0fe;padding:2px 6px;border-radius:4px;color:#1a1a2e">'+sol.numDoc+'</code></div>';
+  h+='</div>';
+  h+='<div style="background:#f0f8f4;border-left:4px solid #27ae60;padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:16px;color:#1a1a2e">';
+  h+='<div style="font-size:0.78rem;font-weight:bold;color:#27ae60;margin-bottom:6px">👨‍👩‍👦 CREDENCIALES ACUDIENTE</div>';
+  h+='<div style="font-size:0.85rem;margin:3px 0">👤 <b>Usuario:</b> <code style="background:#e8f8f0;padding:2px 6px;border-radius:4px;color:#1a1a2e">'+sol.numDocAcud+'</code></div>';
+  h+='<div style="font-size:0.85rem;margin:3px 0">🔑 <b>Contraseña:</b> <code style="background:#e8f8f0;padding:2px 6px;border-radius:4px;color:#1a1a2e">'+sol.numDoc+'</code></div>';
+  h+='</div>';
+  h+='<div style="background:#fff3cd;border-radius:6px;padding:8px 12px;font-size:0.78rem;color:#856404;margin-bottom:14px">⚠️ Guarde estos datos: la contraseña inicial es el número de documento del estudiante. Puede cambiarla luego desde "Mi Perfil".</div>';
+  h+='<button onclick="this.closest(\'div[style*=position:fixed]\').remove()" style="width:100%;padding:11px;background:#003366;color:#fff;border:none;border-radius:7px;font-size:0.9rem;cursor:pointer">✕ Cerrar</button>';
+  h+='</div>';
+  ov.innerHTML=h;
+  document.body.appendChild(ov);
 }
 
 function _pmMsg(msg,color){
@@ -16812,6 +17198,13 @@ function htmlGestionPreMatriculas(){
 
   return `<div class="card">
     <h3 class="card-title">📝 Solicitudes de Pre-Matrícula</h3>
+    <div style="background:${db.config?.requiereAprobacionMatricula===true?'#fff3cd':'#eafaf1'};border:1px solid ${db.config?.requiereAprobacionMatricula===true?'#f1c40f':'#27ae60'};border-radius:8px;padding:12px 16px;margin-bottom:14px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="cfgRequiereAprobMatricula" ${db.config?.requiereAprobacionMatricula===true?'checked':''} onchange="_toggleRequiereAprobacionMatricula(this.checked)" style="width:16px;height:16px">
+        <span style="font-size:0.85rem;font-weight:bold;color:#1a1a2e">🔒 Requerir aprobación manual antes de matricular</span>
+      </label>
+      <p style="font-size:0.76rem;color:#666;margin:6px 0 0 24px">${db.config?.requiereAprobacionMatricula===true?'Activado: cada solicitud queda en "Pendiente" y un administrador debe aprobarla manualmente (como antes).':'Desactivado (por defecto): al recibir la solicitud, el sistema crea/vincula al estudiante y habilita sus credenciales de inmediato, sin esperar revisión manual.'}</p>
+    </div>
     <div class="flex-gap" style="margin-bottom:14px">
       <div class="stat-box" style="background:#e67e22">⏳ Pendientes: <b>${pendientes}</b></div>
       <div class="stat-box" style="background:#27ae60">✅ Aprobadas: <b>${aprobadas}</b></div>
@@ -16904,6 +17297,103 @@ function verPreMatricula(id){
   document.body.appendChild(ov);
 }
 
+// ── Ronda 12, Sección 1: crea O vincula (dedup por numDoc) el estudiante
+// correspondiente a una solicitud de pre-matrícula/inscripción. Antes
+// (Rondas ≤11) esto vivía sólo dentro de cambiarEstadoPM() y, si ya
+// existía un estudiante con ese numDoc, simplemente NO HACÍA NADA (ni
+// creaba ni actualizaba). Ahora se extrae a una función compartida —la
+// reutilizan tanto la aprobación manual del admin (cambiarEstadoPM) como
+// el auto-registro autónomo (guardarPreMatricula, cuando
+// config.requiereAprobacionMatricula!==true)— y cuando el estudiante YA
+// existe, se actualiza/vincula con los datos nuevos de la solicitud y se
+// "habilitan" sus credenciales quitando cualquier baja previa
+// (deletedAt), en vez de duplicar el registro o ignorarlo en silencio.
+// El vínculo estudiante-acudiente no requiere una cuenta aparte: el
+// acceso del acudiente (rol 'padre') ya se valida en doLoginInstitucional()
+// directamente contra numDocAcud/numDoc de ESTE MISMO registro, así que
+// queda automáticamente enlazado en cuanto el estudiante se crea/actualiza.
+function _procesarMatriculaDesdeSolicitud(solReg){
+  const _aps=(solReg.apellidos||'').trim().toUpperCase().split(/\s+/);
+  const _nms=(solReg.nombres||'').trim().toUpperCase().split(/\s+/);
+  const _ap1=_aps[0]||'';const _ap2=_aps.slice(1).join(' ')||'';
+  const _nm1=_nms[0]||'';const _nm2=_nms.slice(1).join(' ')||'';
+  const _nomCompleto=[_ap1,_ap2,_nm1,_nm2].filter(Boolean).join(' ');
+  let vinculado=false;
+  updDB(d=>{
+    d.ests=d.ests||[];
+    const idx=d.ests.findIndex(e=>(e.numDoc||'').toString().trim()===(solReg.numDoc||'').toString().trim()&&solReg.numDoc);
+    if(idx!==-1){
+      vinculado=true;
+      const ex=d.ests[idx];
+      d.ests[idx]={
+        ...ex,
+        n:_nomCompleto||ex.n,
+        nombres:solReg.nombres||ex.nombres,
+        apellidos:solReg.apellidos||ex.apellidos,
+        apellido1:_ap1||ex.apellido1,apellido2:_ap2||ex.apellido2,nombre1:_nm1||ex.nombre1,nombre2:_nm2||ex.nombre2,
+        tipoDoc:solReg.tipoDoc||ex.tipoDoc,
+        fechaNac:solReg.fechaNac||ex.fechaNac,
+        g:solReg.gradoAspira||ex.g,
+        acudiente:solReg.acudiente||ex.acudiente,
+        numDocAcud:solReg.numDocAcud||ex.numDocAcud,
+        tipoDocAcud:solReg.tipoDocAcud||ex.tipoDocAcud,
+        tel:solReg.telAcud||ex.tel,
+        email:solReg.emailAcud||ex.email,
+        municipio:solReg.municipio||ex.municipio,
+        sangre:solReg.sangre||ex.sangre,
+        eps:solReg.eps||ex.eps,
+        foto:solReg.foto?.datos||ex.foto,
+        modalidad:solReg.modalidad||ex.modalidad,
+        jornada:solReg.jornada||ex.jornada,
+        sede:solReg.sede||ex.sede,
+        linkClase:solReg.linkClase||ex.linkClase,
+        deletedAt:null,
+      };
+    } else {
+      d.ests.push({
+        id:'est_'+Date.now(),
+        n:_nomCompleto,
+        nombres:solReg.nombres||'',
+        apellidos:solReg.apellidos||'',
+        apellido1:_ap1,apellido2:_ap2,nombre1:_nm1,nombre2:_nm2,
+        numDoc:solReg.numDoc||'',
+        tipoDoc:solReg.tipoDoc||'T.I.',
+        fechaNac:solReg.fechaNac||'',
+        g:solReg.gradoAspira||'',
+        acudiente:solReg.acudiente||'',
+        numDocAcud:solReg.numDocAcud||'',
+        tipoDocAcud:solReg.tipoDocAcud||'C.C.',
+        tel:solReg.telAcud||'',
+        email:solReg.emailAcud||'',
+        municipio:solReg.municipio||'',
+        sangre:solReg.sangre||'',
+        eps:solReg.eps||'',
+        foto:solReg.foto?.datos||'',
+        u:solReg.numDoc,
+        p:solReg.numDoc,
+        r:'estudiante',
+        nts:{},
+        obs:[],
+        observaciones:[],
+        modalidad:solReg.modalidad||'presencial',
+        jornada:solReg.jornada||'Mañana',
+        sede:solReg.sede||'',
+        linkClase:solReg.linkClase||'',
+        pensionAlDia:true,
+        pagos:[],
+        descargos:[]
+      });
+    }
+    return d;
+  });
+  return vinculado; // true = ya existía y se actualizó/vinculó; false = se creó nuevo
+}
+
+function _toggleRequiereAprobacionMatricula(activo){
+  updDB(d=>{ if(!d.config)d.config={}; d.config.requiereAprobacionMatricula=activo===true; return d; });
+  _showToast(activo?'🔒 Ahora las nuevas solicitudes requieren aprobación manual.':'✅ Las nuevas solicitudes se matricularán automáticamente.');
+  navTo('pre-matricula-admin');
+}
 function cambiarEstadoPM(id,estado,btn){
   const obs=document.getElementById('pm_obsAdmin_'+id)?.value||'';
   updDB(d=>{
@@ -16914,50 +17404,7 @@ function cambiarEstadoPM(id,estado,btn){
   if(btn){const modal=btn.closest('div[style*="position:fixed"]');if(modal)modal.remove();}
   if(estado==='APROBADA'){
     const solReg=(db.preMatriculas||[]).find(x=>x.id===id);
-    if(solReg&&!db.ests.find(e=>e.numDoc===solReg.numDoc)){
-      updDB(d=>{
-        d.ests=d.ests||[];
-        const _aps=(solReg.apellidos||'').trim().toUpperCase().split(/\s+/);
-        const _nms=(solReg.nombres||'').trim().toUpperCase().split(/\s+/);
-        const _ap1=_aps[0]||'';const _ap2=_aps.slice(1).join(' ')||'';
-        const _nm1=_nms[0]||'';const _nm2=_nms.slice(1).join(' ')||'';
-        const _nomCompleto=[_ap1,_ap2,_nm1,_nm2].filter(Boolean).join(' ');
-        d.ests.push({
-          id:'est_'+Date.now(),
-          n:_nomCompleto,
-          nombres:solReg.nombres||'',
-          apellidos:solReg.apellidos||'',
-          apellido1:_ap1,apellido2:_ap2,nombre1:_nm1,nombre2:_nm2,
-          numDoc:solReg.numDoc||'',
-          tipoDoc:solReg.tipoDoc||'T.I.',
-          fechaNac:solReg.fechaNac||'',
-          g:solReg.gradoAspira||'',
-          acudiente:solReg.acudiente||'',
-          numDocAcud:solReg.numDocAcud||'',
-          tipoDocAcud:solReg.tipoDocAcud||'C.C.',
-          tel:solReg.telAcud||'',
-          email:solReg.emailAcud||'',
-          municipio:solReg.municipio||'',
-          sangre:solReg.sangre||'',
-          eps:solReg.eps||'',
-          foto:solReg.foto?.datos||'',
-          u:solReg.numDoc,
-          p:solReg.numDoc,
-          r:'estudiante',
-          nts:{},
-          obs:[],
-          observaciones:[],
-          modalidad:solReg.modalidad||'presencial',
-          jornada:solReg.jornada||'Mañana',
-          sede:solReg.sede||'',
-          linkClase:solReg.linkClase||'',
-          pensionAlDia:true,
-          pagos:[],
-          descargos:[]
-        });
-        return d;
-      });
-    }
+    if(solReg) _procesarMatriculaDesdeSolicitud(solReg);
   }
   if(estado==='APROBADA'){
     const sol=(db.preMatriculas||[]).find(x=>x.id===id);
@@ -17337,6 +17784,15 @@ function renderPortalInstitucion(platId,rolPre){
     const params=new URLSearchParams(window.location.search);
     const instId=params.get('id')||params.get('inst');
     if(instId) window._urlInstId=instId;
+    // Ronda 12: enlace de restablecimiento de contraseña enviado por correo
+    // (ver POST /api/inetis/auth/restablecer/solicitar en el backend, que
+    // arma exactamente esta URL). Es válido una sola vez y expira en 30
+    // minutos — la validación real ocurre en el servidor al confirmar.
+    const restablecerToken=params.get('restablecerToken');
+    if(restablecerToken){
+      window._restablecerCtx={token:restablecerToken,sk:params.get('sk')||''};
+      pag='restablecer-password';
+    }
     // Ruta oculta para Administrador General
     const adminKey=params.get('_x');
     const isAdminPath=window.location.pathname.indexOf('/admin-ycgestor')!==-1||window.location.pathname.indexOf('/admin-portal-secure')!==-1;

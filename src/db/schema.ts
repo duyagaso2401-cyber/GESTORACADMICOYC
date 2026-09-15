@@ -585,6 +585,78 @@ export const univIntentosCuestionario = pgTable('univ_lms_intentos', {
 // categoría (columna nueva en lms_actividades); el promedio final del
 // estudiante se calcula ponderando el promedio de cada categoría.
 // ════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// "4 pilares de autonomía" — Pilar 2: MÓDULO FINANCIERO Y PASARELA DE PAGO
+// ------------------------------------------------------------------------------
+// Andamiaje genérico para los tres niveles de cobro pedidos: (a) suscripción
+// SaaS de la plataforma, (b) mensualidades/pensiones (colegios privados),
+// (c) trámites administrativos (certificados, constancias, derechos de
+// grado) — a través de webhooks universales de Mercado Pago, Wompi y
+// Stripe (ver src/lib/pagos-webhooks.ts y POST /api/payments/webhook/:proveedor
+// en src/index.ts). Mismo criterio que EMAIL_API_PROVIDER: el código y las
+// tablas de los tres proveedores conviven; cuál queda "vivo" depende
+// únicamente de qué variables de entorno de credenciales estén configuradas.
+//
+// IMPORTANTE — esto es andamiaje, no un módulo listo para cobrar en
+// producción: falta que el usuario decida qué proveedor(es) usar, obtenga
+// sus credenciales reales, defina precios/planes, y decida las reglas de
+// negocio de mora y de entrega de PDFs firmados. Ver CHECKLIST_DESPLIEGUE.md.
+// ════════════════════════════════════════════════════════════════════════════
+export const finTransacciones = pgTable('fin_transacciones', {
+  id: serial('id').primaryKey(),
+  sk: text('sk'), // institución dueña del cobro; null solo si algún día hay cargos de plataforma sin institución asociada
+  tipo: text('tipo').notNull(), // 'suscripcion_saas' | 'mensualidad' | 'tramite'
+  concepto: text('concepto').notNull().default(''), // ej "Mensualidad Sept. 2026", "Certificado de notas"
+  estudianteId: text('estudiante_id'), // solo aplica a 'mensualidad' y 'tramite'
+  proveedor: text('proveedor').notNull(), // 'mercadopago' | 'wompi' | 'stripe'
+  proveedorPagoId: text('proveedor_pago_id').notNull(), // id del cargo/pago en el proveedor externo — permite ignorar reintentos duplicados del mismo webhook
+  estado: text('estado').notNull().default('pendiente'), // 'pendiente' | 'aprobado' | 'rechazado' | 'reembolsado'
+  montoCentavos: integer('monto_centavos').notNull().default(0),
+  moneda: text('moneda').notNull().default('COP'),
+  metadata: jsonb('metadata').default({}),
+  entregableGenerado: boolean('entregable_generado').notNull().default(false), // true cuando ya se generó/entregó el PDF firmado (certificado, paz y salvo, etc.)
+  // Ronda 13: código corto de verificación del certificado (mismo valor que
+  // metadata.certificado.codigoVerificacion, duplicado aquí como columna
+  // propia para poder buscarlo en O(1) desde GET /api/certificados/verificar/:hash
+  // sin tener que recorrer/filtrar el jsonb de "metadata" en cada consulta).
+  codigoVerificacion: text('codigo_verificacion'),
+  // Ronda 13: true cuando el pago que originó este certificado fue
+  // reembolsado/contracargado después de emitido — el documento deja de
+  // pasar la verificación pública aunque su firma siga siendo
+  // matemáticamente válida (la firma prueba que los datos no fueron
+  // alterados, no que el pago siga vigente; "revocado" es el candado para
+  // ese segundo caso).
+  revocado: boolean('revocado').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('fin_transacciones_sk_idx').on(t.sk),
+  index('fin_transacciones_estado_idx').on(t.estado),
+  index('fin_transacciones_codigo_verificacion_idx').on(t.codigoVerificacion),
+  uniqueIndex('fin_transacciones_proveedor_pago_idx').on(t.proveedor, t.proveedorPagoId),
+]);
+
+export const finSuscripciones = pgTable('fin_suscripciones', {
+  id: serial('id').primaryKey(),
+  sk: text('sk').notNull().unique(), // una suscripción SaaS activa por institución
+  plan: text('plan').notNull().default('basico'),
+  estado: text('estado').notNull().default('inactiva'), // 'activa' | 'vencida' | 'cancelada' | 'inactiva'
+  proveedor: text('proveedor'),
+  proveedorSuscripcionId: text('proveedor_suscripcion_id'),
+  vigenteHasta: timestamp('vigente_hasta', { withTimezone: true }),
+  metadata: jsonb('metadata').default({}),
+  // Ronda 13: true una vez que ya se envió el correo de "tu plan vence en
+  // 5 días" para el ciclo de vigencia ACTUAL — se reinicia a false cada
+  // vez que vigenteHasta avanza (renovación), para que la alerta se pueda
+  // volver a enviar en el siguiente ciclo sin reenviarla varias veces en
+  // el mismo ciclo.
+  alertaVencimientoEnviada: boolean('alerta_vencimiento_enviada').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('fin_suscripciones_estado_idx').on(t.estado),
+]);
+
 export const univGradebookCategorias = pgTable('univ_gradebook_categorias', {
   id:          serial('id').primaryKey(),
   sk:          text('sk').notNull(),

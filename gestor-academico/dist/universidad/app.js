@@ -105,21 +105,57 @@
     if(window.SyncEngine&&_flagsPlataformaUniv.sincronizacionAutomatica) window.SyncEngine.autoAttach();
     _actualizarBannerSyncUniv();
   }
+  // Corrección móvil (Ronda 12) — mismo criterio que _actualizarBannerSyncManual()
+  // en 03-app-core.js: padding del body calculado con la altura REAL del
+  // aviso (en vez de un 38px fijo que en celulares se queda corto cuando el
+  // texto se parte en varias líneas), tamaño de letra reducido en pantallas
+  // angostas, y botón "✕" para cerrarlo manualmente si estorba.
+  function _asegurarEstilosBannerSyncUniv(){
+    if(document.getElementById('_estilosBannerSyncManualUniv')) return;
+    const st=document.createElement('style');
+    st.id='_estilosBannerSyncManualUniv';
+    st.textContent=
+      '.banner-sync-manual-univ{position:fixed;top:0;left:0;right:0;z-index:99998;color:#fff;padding:8px 34px 8px 14px;font-size:0.8rem;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.25)}'
+      +'.banner-sync-manual-univ .btn-sync-ahora{background:#f1c40f;color:#001428;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer;font-size:0.78rem;white-space:nowrap}'
+      +'.banner-sync-manual-univ .btn-sync-cerrar{position:absolute;top:2px;right:2px;background:transparent;color:#fff;border:none;font-size:1.05rem;cursor:pointer;line-height:1;padding:7px 9px}'
+      +'@media(max-width:768px){.banner-sync-manual-univ{font-size:0.72rem;padding:6px 30px 6px 10px;gap:6px}.banner-sync-manual-univ .btn-sync-ahora{padding:4px 10px;font-size:0.72rem}}'
+      +'@media(max-width:576px){.banner-sync-manual-univ{font-size:0.68rem;text-align:center}}';
+    document.head.appendChild(st);
+  }
+  function _ajustarPaddingBannerSyncUniv(){
+    const banner=document.getElementById('_bannerSyncManualUniv');
+    document.body.style.paddingTop=banner?banner.getBoundingClientRect().height+'px':'';
+  }
+  function _cerrarBannerSyncUniv(){
+    const banner=document.getElementById('_bannerSyncManualUniv');
+    if(banner) banner.remove();
+    document.body.style.paddingTop='';
+    try{ sessionStorage.setItem('_bannerSyncManualUnivCerrado','1'); }catch(e){}
+  }
+  window._cerrarBannerSyncUniv=_cerrarBannerSyncUniv;
+  window.addEventListener('resize',_ajustarPaddingBannerSyncUniv);
+  window.addEventListener('orientationchange',_ajustarPaddingBannerSyncUniv);
   function _actualizarBannerSyncUniv(){
     const banner=document.getElementById('_bannerSyncManualUniv');
     if(_flagsPlataformaUniv.sincronizacionAutomatica){
       if(banner) banner.remove();
-      if(document.body&&document.body.style.paddingTop==='38px') document.body.style.paddingTop='';
+      document.body.style.paddingTop='';
       return;
     }
-    if(banner) return;
+    let cerradoManualmente=false;
+    try{ cerradoManualmente=sessionStorage.getItem('_bannerSyncManualUnivCerrado')==='1'; }catch(e){}
+    if(cerradoManualmente) return;
+    if(banner){ _ajustarPaddingBannerSyncUniv(); return; }
+    _asegurarEstilosBannerSyncUniv();
     const b=document.createElement('div');
     b.id='_bannerSyncManualUniv';
-    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99998;background:#4a1a6e;color:#fff;padding:8px 14px;font-size:0.8rem;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.25)';
+    b.className='banner-sync-manual-univ';
+    b.style.background='#4a1a6e';
     b.innerHTML='<span>🔕 Sincronización automática desactivada para tu institución. Tus datos se guardan igual de inmediato — haz clic para traer los cambios más recientes.</span>'
-      +'<button onclick="_sincronizarAhoraManualUniv()" style="background:#f1c40f;color:#001428;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer;font-size:0.78rem;white-space:nowrap">🔄 Sincronizar ahora</button>';
+      +'<button class="btn-sync-ahora" onclick="_sincronizarAhoraManualUniv()">🔄 Sincronizar ahora</button>'
+      +'<button class="btn-sync-cerrar" onclick="_cerrarBannerSyncUniv()" aria-label="Cerrar aviso" title="Cerrar aviso">✕</button>';
     document.body.appendChild(b);
-    document.body.style.paddingTop='38px';
+    _ajustarPaddingBannerSyncUniv();
   }
   function _sincronizarAhoraManualUniv(){
     cache={}; // fuerza a que la vista actual vuelva a pedir datos frescos

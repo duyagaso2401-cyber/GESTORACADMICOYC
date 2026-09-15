@@ -8289,7 +8289,7 @@ async function enviarRecuperacionGestor(){
 function mostrarRecuperarPassword(){
   const overlay=document.createElement('div');
   overlay.id='_recPassOverlay';
-  overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center';
+  overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;overflow-y:auto;padding:16px 0';
   overlay.innerHTML=`<div style="background:#fff;border-radius:14px;padding:28px;max-width:420px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,0.35);color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:4px">🔒 Recuperar Contraseña</h3>
     <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Ingrese su correo electrónico. Le enviaremos un enlace/código de acceso al correo que tiene registrado.</p>
@@ -8300,8 +8300,54 @@ function mostrarRecuperarPassword(){
       <button onclick="document.getElementById('_recPassOverlay').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer;color:#1a1a2e">Cancelar</button>
     </div>
     <div id="_recStatus" style="margin-top:12px;font-size:0.82rem;min-height:20px"></div>
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid #eee">
+      <button type="button" onclick="document.getElementById('_recSeguraZona').style.display=document.getElementById('_recSeguraZona').style.display==='none'?'block':'none'" style="background:none;border:none;color:#1a5276;font-size:0.78rem;cursor:pointer;text-decoration:underline;padding:0">🔐 Soy Docente/Directivo/Gestor — prefiero crear yo mismo una nueva contraseña (más seguro)</button>
+      <div id="_recSeguraZona" style="display:none;margin-top:10px">
+        <p style="font-size:0.78rem;color:#666;margin-bottom:8px">Esta opción NUNCA envía su contraseña por correo: le enviamos un enlace de un solo uso (válido 30 minutos) para que usted mismo elija su nueva contraseña.</p>
+        <label style="font-size:0.82rem;font-weight:bold;color:var(--text-secondary)">Usuario (el mismo con el que inicia sesión):</label>
+        <input id="_recUsuarioSeguro" type="text" placeholder="Ej: jperez" style="width:100%;margin:8px 0 10px;padding:10px;border:1.5px solid #ddd;border-radius:7px;font-size:0.9rem">
+        <button onclick="enviarRecuperacionSegura()" style="width:100%;background:#1a5276;color:#fff;border:none;padding:10px;border-radius:7px;cursor:pointer;font-weight:bold;font-size:0.85rem">🔗 Enviarme un enlace seguro</button>
+        <div id="_recSeguraStatus" style="margin-top:10px;font-size:0.82rem;min-height:20px"></div>
+      </div>
+    </div>
   </div>`;
   document.body.appendChild(overlay);
+}
+// Ronda 12: variante segura de recuperación — en vez de reenviar la
+// contraseña (o una temporal) por correo en texto plano como hace
+// enviarRecuperacion() arriba, usa el mecanismo de token de un solo uso
+// construido en Ronda 11 (emitirTokenRestablecimiento/reset-tokens.ts).
+// Reutiliza el mismo patrón de "buscar en todas las instituciones
+// activas" que ya usa enviarRecuperacion(), porque esta pantalla general
+// tampoco conoce de antemano a qué institución pertenece la persona.
+// Alcance: cuentas de personal (db.users) — igual que el resto de la
+// infraestructura de restablecimiento de Ronda 11; estudiantes/acudientes
+// inician sesión con su número de documento y no tienen correo propio en
+// el sistema, así que no aplica para ellos.
+async function enviarRecuperacionSegura(){
+  const usuario=(document.getElementById('_recUsuarioSeguro')?.value||'').trim();
+  const statusEl=document.getElementById('_recSeguraStatus');
+  if(!usuario){ if(statusEl)statusEl.innerHTML='<span style="color:#c0392b">⚠️ Ingrese su usuario.</span>'; return; }
+  if(statusEl)statusEl.innerHTML='<span style="color:#e67e22">🔄 Buscando su institución...</span>';
+  let sk=null;
+  try{
+    for(const plat of gestorDB.platforms){
+      if(!plat.activa) continue;
+      try{
+        const platDB=await _fetchPlatDB(plat.sk);
+        if((platDB.users||[]).some(u=>u&&u.u===usuario)){ sk=plat.sk; break; }
+      }catch(e){}
+    }
+  }catch(e){}
+  // Respuesta siempre genérica (se haya encontrado o no la institución):
+  // el backend ya responde igual sin importar si el usuario existe, para
+  // no revelar por este medio qué usuarios están registrados.
+  const mensajeGenerico='<div style="background:#eafaf1;border:1px solid #27ae60;border-radius:6px;padding:12px;color:#1a7531">✅ Si el usuario existe, se envió un correo con instrucciones para crear su nueva contraseña.</div>';
+  if(!sk){ if(statusEl)statusEl.innerHTML=mensajeGenerico; return; }
+  try{
+    await fetch('/api/inetis/auth/restablecer/solicitar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk,usuario})});
+  }catch(e){}
+  if(statusEl)statusEl.innerHTML=mensajeGenerico;
 }
 function mostrarRecuperarPasswordPortal(platId){
   mostrarRecuperarPassword();
