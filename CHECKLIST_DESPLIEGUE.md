@@ -449,6 +449,54 @@ Con este cambio, **es muy probable que el envío ya funcione sin que tengas que 
 
 ---
 
+## Ronda 9 — Causa final: no es código, es una restricción de cuenta en Zoho ZeptoMail (Customer Validation Form pendiente)
+
+**Buena noticia primero:** el error CAMBIÓ, y eso confirma que la corrección de la Ronda 8 funcionó. Antes era `401 Invalid API Token found` (ZeptoMail ni siquiera reconocía el token). Ahora es `403 Request Denied — "Email sending blocked"` (código `TM_3601` / `SM_143`). Ese cambio es la prueba de que el token YA es válido y ZeptoMail ya lo autenticó correctamente — lo que está pasando ahora es un bloqueo a nivel de CUENTA, no del código ni del token.
+
+**Investigué directamente en la documentación oficial de Zoho ZeptoMail para confirmar esto con una fuente primaria, no una suposición:** según su propia página de ayuda ["¿Por qué se bloqueó mi cuenta?"](https://help.zoho.com/portal/en/kb/zeptomail/faqs/sending-emails/articles/why-was-my-account-blocked) y ["¿Cómo reviso mi cuenta?"](https://help.zoho.com/portal/en/kb/zeptomail/faqs/getting-started/articles/how-can-i-review-my-account), toda cuenta nueva de ZeptoMail pasa por una revisión obligatoria antes de poder enviar correos de verdad: hay que completar un formulario llamado **"Customer Validation Form"** dentro del panel de ZeptoMail, y el equipo de Zoho lo revisa (normalmente en un par de días hábiles) para confirmar que el uso es transaccional (recuperación de contraseña, OTPs, confirmaciones — exactamente tu caso) y no masivo/publicitario. Mientras esa revisión no se complete, o si la cuenta quedó marcada para revisión automáticamente, ZeptoMail bloquea el envío con ese mismo mensaje: "Email sending blocked".
+
+### Qué debes hacer tú ahora (esto ya no se puede resolver desde el código)
+
+1. **Entra al panel de ZeptoMail** (zeptomail.zoho.com, con tu cuenta de Zoho).
+2. **Busca "Customer Validation Form"** en el menú de la izquierda (aparece cuando la cuenta necesita revisión).
+3. **Complétalo por completo**, explicando que el uso es transaccional: recuperación de contraseña y notificaciones automáticas para una plataforma de gestión académica (colegios y universidades) — exactamente la clase de uso que ZeptoMail aprueba sin problema.
+4. **Espera la aprobación** — Zoho menciona típicamente 1-2 días hábiles.
+5. Si ya lo completaste y sigue bloqueado, o no encuentras ese formulario en tu panel, **escribe directamente a `presales@zeptomail.com`** (es el correo que la propia documentación de Zoho indica para este caso exacto) citando el `request_id` que aparece en el error de tus logs: `2d6f.6f33ef91012b3c36.m1.3ae7f6a0-b0ac-11f1-8705-5254001dc20d.1a0a2df030a` — con ese identificador, el soporte de Zoho puede ver la razón interna exacta del bloqueo (que la API no expone).
+6. **Mientras esperas la aprobación**, puedes seguir usando el endpoint de prueba de la Ronda 7 (`POST /api/inetis/email-status/enviar-prueba`) para verificar en cualquier momento, sin tener que probar "Recuperar Contraseña" una y otra vez, si ya se desbloqueó.
+
+**Nota honesta:** no hice ningún cambio de código en esta ronda — no había nada que arreglar en `src/lib/email-http-provider.ts` ni en ningún otro archivo. El sistema ya está enviando la petición correctamente formada (con el token con el prefijo correcto, el remitente correcto); lo único que falta es que Zoho autorice tu cuenta para enviar. Por eso este ZIP no trae cambios de código respecto al de la Ronda 8 — se actualiza únicamente para dejar este hallazgo documentado.
+
+**Alternativa si no quieres esperar la revisión de Zoho:** el código ya soporta un segundo proveedor por API HTTP, Resend (`EMAIL_API_PROVIDER=resend`), como se explicó desde la primera ronda de este canal — igual requiere verificar un dominio propio, pero es una cuenta y un proceso de revisión totalmente aparte del de Zoho, así que si Zoho tarda más de lo esperado, podrías activar Resend en paralelo sin tocar nada de código (solo cambiando esas 2 variables de entorno en Render).
+
+**Fuentes consultadas:** [¿Por qué se bloqueó mi cuenta? — Zoho ZeptoMail](https://help.zoho.com/portal/en/kb/zeptomail/faqs/sending-emails/articles/why-was-my-account-blocked), [¿Cómo reviso mi cuenta? — Zoho ZeptoMail](https://help.zoho.com/portal/en/kb/zeptomail/faqs/getting-started/articles/how-can-i-review-my-account), [Primeros pasos con ZeptoMail](https://www.zoho.com/zeptomail/help/getting-started.html), [Dirección del remitente en ZeptoMail](https://zoho.com/zeptomail/help/sender-address.html).
+
+---
+
+## Ronda 10 — Confirmado con tu panel de ZeptoMail: es 100% la revisión de cuenta pendiente, nada técnico
+
+Revisé tus capturas de pantalla del panel de ZeptoMail una por una, buscando cualquier cosa que SÍ pudiera arreglarse desde aquí:
+
+- **Dominio `gestoracademicoyc.com`: ✅ Verificado.** Los dos registros DNS (TXT del DKIM y CNAME) también aparecen "✅ Verificado". Esto descarta por completo cualquier problema de dominio.
+- **Restricción de dirección de remitente: desactivada.** No hay ninguna lista blanca bloqueando `contacto@gestoracademicoyc.com`.
+- **Lista de supresión: vacía.** El correo `yadan3108@gmail.com` no está bloqueado ahí.
+- **Usuarios: solo tú, como administrador.** Nada raro en permisos.
+
+Todo lo que SÍ se puede revisar desde afuera está en orden. Y tu propio panel de ZeptoMail lo confirma con sus propias palabras, en la tarjeta "Información de créditos": **"Su cuenta no se ha revisado todavía."** Eso es exactamente la causa — no es nada de configuración, es que Zoho tiene tu cuenta en cola de revisión manual, y mientras esa revisión no se complete, su sistema puede bloquear el envío por API con el mismo error que ves (`SM_143 / Email sending blocked`), incluso si el panel también dice que deberías poder enviar hasta 100 correos al día mientras tanto — en la práctica, cuentas y dominios muy nuevos suelen quedar con un bloqueo más estricto hasta que un humano de Zoho los revisa.
+
+### Qué hacer ahora — el camino más rápido
+
+En vez de escribir un correo y esperar días, usa el **chat de soporte que ya está integrado en tu propio panel de ZeptoMail** (los íconos en la esquina inferior derecha — el de globo de chat y el de "?"). Ábrelo y diles, tal cual:
+
+> "Mi cuenta de ZeptoMail (dominio gestoracademicoyc.com) muestra 'cuenta no revisada' y estoy recibiendo el error SM_143 / TM_3601 'Email sending blocked' al enviar por la API, aunque mi dominio ya está verificado. ¿Pueden revisar/aprobar mi cuenta? Request ID de un intento reciente: 2d6f.6f33ef91012b3c36.m1.3ae7f6a0-b0ac-11f1-8705-5254001dc20d.1a0a2df030a"
+
+Un chat en vivo con su soporte suele resolverse en minutos u horas, mucho más rápido que esperar el "1-2 días hábiles" genérico del proceso automático.
+
+**Para que quede clarísimo:** de aquí en adelante, no hay nada más que yo pueda ajustar en el código para este problema puntual. Cada capa que estaba bajo nuestro control — el formato del token, el remitente, el dominio, el DNS, la lógica de envío — ya está correcta y confirmada. Lo que falta es exclusivamente una aprobación humana del lado de Zoho.
+
+**Mientras esperas la respuesta de Zoho**, recuerda que puedes seguir usando `POST /api/inetis/email-status/enviar-prueba` (Ronda 7) para comprobar en segundos, sin tocar la pantalla real de "Recuperar Contraseña", el momento exacto en que Zoho apruebe tu cuenta y el envío empiece a funcionar.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.
