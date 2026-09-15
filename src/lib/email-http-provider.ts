@@ -48,6 +48,12 @@ const EMAIL_API_KEY = process.env.EMAIL_API_KEY || '';
 const EMAIL_API_FROM = process.env.EMAIL_API_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '';
 
 export const emailApiConfigurado = Boolean(EMAIL_API_PROVIDER && EMAIL_API_KEY);
+// Se expone el NOMBRE del proveedor (nunca la API key) para poder mostrarlo
+// en un endpoint de diagnóstico (ver GET /api/inetis/email-status en
+// src/index.ts) — así se puede confirmar desde afuera, sin mirar los logs
+// de Render, si las variables de entorno realmente llegaron al proceso
+// desplegado.
+export const emailApiProveedor = EMAIL_API_PROVIDER || null;
 
 if (EMAIL_API_PROVIDER && !EMAIL_API_KEY) {
   console.warn('⚠️  [email-http-provider] EMAIL_API_PROVIDER="' + EMAIL_API_PROVIDER + '" definido pero falta EMAIL_API_KEY — este canal quedará inactivo hasta que se defina.');
@@ -75,13 +81,32 @@ interface ParametrosEnvioApi {
  * decidir con calma si cae de inmediato al respaldo SMTP. */
 export async function enviarPorApiHttp(params: ParametrosEnvioApi): Promise<ResultadoEnvioApi> {
   if (!emailApiConfigurado) {
+    // Este es, en la práctica, el mensaje más importante de todo este
+    // archivo para diagnosticar problemas en producción: si esto aparece
+    // en los logs de Render cuando se esperaba que el canal HTTP
+    // funcionara, significa que EMAIL_API_PROVIDER y/o EMAIL_API_KEY NO
+    // llegaron al proceso — casi siempre porque faltan en las variables
+    // de entorno de Render, o porque el servicio no se reinició/redesplegó
+    // después de agregarlas (Render no relee el .env solo; hay que hacer
+    // "Manual Deploy" o esperar el redeploy automático tras el push).
+    console.error(
+      '❌ [email-http-provider] Se intentó enviar por API HTTP pero el canal NO está configurado ' +
+      '(EMAIL_API_PROVIDER="' + (EMAIL_API_PROVIDER || '(vacío)') + '", EMAIL_API_KEY ' + (EMAIL_API_KEY ? 'presente' : 'AUSENTE') + '). ' +
+      'Verifique en Render → su servicio → Environment que ambas variables estén puestas, y que el servicio se haya reiniciado/redesplegado después de agregarlas.'
+    );
     return { ok: false, error: 'Canal de API HTTP no configurado (EMAIL_API_PROVIDER/EMAIL_API_KEY).' };
   }
   try {
     if (EMAIL_API_PROVIDER === 'resend') return await enviarConResend(params);
     if (EMAIL_API_PROVIDER === 'zeptomail') return await enviarConZeptoMail(params);
+    console.error('❌ [email-http-provider] EMAIL_API_PROVIDER="' + EMAIL_API_PROVIDER + '" no reconocido (valores válidos: "resend", "zeptomail").');
     return { ok: false, error: 'EMAIL_API_PROVIDER="' + EMAIL_API_PROVIDER + '" no reconocido (valores válidos: "resend", "zeptomail").' };
   } catch (err: any) {
+    // Un throw aquí significa que ni siquiera se pudo completar la
+    // petición HTTP (por ejemplo, DNS, TLS, o el fetch nativo de Node
+    // rechazándola por algún motivo de red) — se registra completo, no
+    // solo el mensaje corto, para poder diagnosticarlo sin adivinar.
+    console.error('❌ [email-http-provider] Excepción al intentar enviar por ' + EMAIL_API_PROVIDER + ':', err);
     return { ok: false, error: err?.message || 'Error desconocido al enviar por API HTTP.' };
   }
 }
@@ -101,8 +126,18 @@ async function enviarConResend(p: ParametrosEnvioApi): Promise<ResultadoEnvioApi
       html: p.html || undefined,
     }),
   });
-  if (resp.ok) return { ok: true };
+  if (resp.ok) {
+    console.log('✅ [email-http-provider] Correo enviado por Resend a ' + p.to + ' (asunto: "' + p.subject + '").');
+    return { ok: true };
+  }
   const cuerpo = await resp.text().catch(() => '');
+  // Log COMPLETO (sin recortar) en la consola del servidor — lo que se
+  // devuelve al llamador sí va recortado a 300 caracteres, para no
+  // inflar innecesariamente la respuesta HTTP ni el objeto que
+  // eventualmente ve el frontend, pero en los logs de Render se necesita
+  // el mensaje exacto para diagnosticar (dominio no verificado, API key
+  // inválida, límite diario alcanzado, etc.).
+  console.error('❌ [email-http-provider] Resend respondió ' + resp.status + ' al intentar enviar a ' + p.to + ':', cuerpo);
   return { ok: false, error: 'Resend respondió ' + resp.status + ': ' + cuerpo.slice(0, 300) };
 }
 
@@ -110,23 +145,48 @@ async function enviarConZeptoMail(p: ParametrosEnvioApi): Promise<ResultadoEnvio
   // ZeptoMail espera la cabecera Authorization con el valor COMPLETO que
   // el panel de Zoho entrega (normalmente algo como "Zoho-enczapikey
   // wSs...") — por eso aquí se manda EMAIL_API_KEY tal cual, sin agregarle
-  // ningún prefijo "Bearer".
-  const resp = await fetch('https://api.zeptomail.com/v1.1/email', {
-    method: 'POST',
-    headers: {
-      Authorization: EMAIL_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: { address: EMAIL_API_FROM },
-      to: [{ email_address: { address: p.to } }],
-      subject: p.subject,
-      htmlbody: p.html || (p.text ? '<pre style="font-family:inherit;white-space:pre-wrap">' + _escaparHtml(p.text) + '</pre>' : undefined),
-      textbody: p.text || undefined,
-    }),
-  });
-  if (resp.ok) return { ok: true };
+  // ningún prefijo "Bearer". Un error muy común es copiar SOLO el token
+  // sin el prefijo "Zoho-enczapikey " — si EMAIL_API_KEY no empieza por
+  // "Zoho-enczapikey", se avisa explícitamente en los logs para que sea
+  // fácil de detectar sin tener que interpretar el error crudo de Zoho.
+  if (!/^zoho-enczapikey\s/i.test(EMAIL_API_KEY)) {
+    console.warn(
+      '⚠️  [email-http-provider] EMAIL_API_KEY no empieza con el prefijo esperado "Zoho-enczapikey " — ' +
+      'es un error de configuración muy común (copiar solo el token, sin el prefijo, desde el panel de Zoho). ' +
+      'Revise el valor completo del "Send Mail Token" en Zoho ZeptoMail → API/SMTP Tokens.'
+    );
+  }
+  const cuerpoEnvio = {
+    from: { address: EMAIL_API_FROM },
+    to: [{ email_address: { address: p.to } }],
+    subject: p.subject,
+    htmlbody: p.html || (p.text ? '<pre style="font-family:inherit;white-space:pre-wrap">' + _escaparHtml(p.text) + '</pre>' : undefined),
+    textbody: p.text || undefined,
+  };
+  let resp: Response;
+  try {
+    resp = await fetch('https://api.zeptomail.com/v1.1/email', {
+      method: 'POST',
+      headers: {
+        Authorization: EMAIL_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(cuerpoEnvio),
+    });
+  } catch (err: any) {
+    // Fallo de RED (no de la API en sí) — DNS, TLS, timeout del fetch, etc.
+    console.error('❌ [email-http-provider] No se pudo conectar con la API de ZeptoMail (error de red, no de la API):', err);
+    return { ok: false, error: 'No se pudo conectar con la API de ZeptoMail: ' + (err?.message || 'error de red desconocido') };
+  }
+  if (resp.ok) {
+    console.log('✅ [email-http-provider] Correo enviado por ZeptoMail a ' + p.to + ' (asunto: "' + p.subject + '").');
+    return { ok: true };
+  }
   const cuerpo = await resp.text().catch(() => '');
+  // Log COMPLETO en consola (ver nota en enviarConResend de arriba) — esto
+  // es exactamente lo que pediste: el mensaje exacto de ZeptoMail queda en
+  // los logs de Render, en vez de perderse en un "Error al enviar" genérico.
+  console.error('❌ [email-http-provider] ZeptoMail respondió ' + resp.status + ' al intentar enviar a ' + p.to + '. Remitente usado: "' + EMAIL_API_FROM + '". Respuesta completa:', cuerpo);
   return { ok: false, error: 'ZeptoMail respondió ' + resp.status + ': ' + cuerpo.slice(0, 300) };
 }
 

@@ -306,6 +306,41 @@ Es decir: **puedes usar `Gestor2026*` para las dos cosas sin ningún problema**,
 
 ---
 
+## Ronda 5 — Diagnóstico: "Recuperar Contraseña" sigue fallando con 500
+
+Revisé el código de `POST /api/inetis/send-email` a fondo, línea por línea, y necesito ser directo contigo sobre lo que encontré: **el código ya hace exactamente lo que pides desde la Ronda 1** — intenta primero la API HTTP (ZeptoMail/Resend) y solo cae a SMTP si esa falla o no está configurada, y responde 200 de inmediato en cuanto la API HTTP tiene éxito. No hay ningún bug ahí que haga que "prefiera" SMTP.
+
+Eso significa que el 500 que ves casi seguro es una de estas dos cosas, no un error de lógica:
+
+1. **El Render en producción todavía no tiene este código desplegado** (sigue corriendo una versión de antes de que existiera el canal por API HTTP), o
+2. **`EMAIL_API_PROVIDER` y/o `EMAIL_API_KEY` no están puestas (o no llegaron) en las variables de entorno de ese servicio en Render** — en ese caso, el código correctamente ni siquiera intenta ZeptoMail (porque no lo tiene configurado) y va directo a SMTP, que es justo el síntoma que describes.
+
+**Para que puedas confirmar cuál es, en vez de que sigamos adivinando:** agregué un endpoint nuevo, de solo lectura y sin exponer ningún secreto:
+
+```
+GET /api/inetis/email-status
+```
+
+Ábrelo en el navegador (o con curl) apuntando a tu Render, por ejemplo `https://gestoracademicoyc.com/api/inetis/email-status` — te va a devolver algo como:
+
+```json
+{ "apiHttpConfigurado": true, "apiHttpProveedor": "zeptomail", "smtpConfigurado": true, "algunCanalConfigurado": true }
+```
+
+- Si `apiHttpConfigurado` sale en `false`, el problema es el punto 2 de arriba: revisa en Render → tu servicio → **Environment** que `EMAIL_API_PROVIDER=zeptomail` y `EMAIL_API_KEY=<tu Send Mail Token completo, con el prefijo "Zoho-enczapikey ")` estén puestas, y haz un **Manual Deploy** (Render no relee variables nuevas solo con guardarlas si el servicio no se reinicia).
+- Si `apiHttpConfigurado` sale en `true` mostrando `"apiHttpProveedor":"zeptomail"` y el correo SIGUE fallando, entonces sí es un problema puntual con la llamada a ZeptoMail (API key inválida, remitente no verificado, etc.) — en ese caso, revisa los logs de Render justo después de un intento fallido: ahora van a mostrar la respuesta COMPLETA y exacta de ZeptoMail (antes se recortaba a 300 caracteres y con `console.warn`; ahora es `console.error` con el cuerpo completo), incluyendo si el remitente (`EMAIL_API_FROM`) no está verificado en tu cuenta de ZeptoMail, que es la causa más común de rechazo cuando la API key sí es válida.
+
+**Otro detalle que agregué a la validación:** si `EMAIL_API_KEY` no empieza con el prefijo `"Zoho-enczapikey "` (un error de configuración muy común — copiar solo el token largo y no la línea completa que Zoho muestra en su panel), ahora se avisa explícitamente en los logs, en vez de dejar que ZeptoMail rechace la petición con un error genérico de autenticación.
+
+**Los 3 puntos concretos que pediste, confirmados/ajustados:**
+1. ✅ Ya usa el canal por API HTTP primero — confirmado revisando el código, sin cambios necesarios en la lógica.
+2. ✅ Responde 200 de inmediato en éxito — confirmado, sin cambios necesarios.
+3. ✅ Logging detallado — esto SÍ lo mejoré: los errores de ZeptoMail/Resend ahora se registran completos (no recortados) con `console.error`, junto con el remitente usado y el destinatario, y se agregaron avisos específicos para los dos errores de configuración más comunes (key sin el prefijo correcto, o provider configurado pero sin key).
+
+**Cómo lo verifiqué:** recompilé `src/index.ts`, `src/lib/email-general.ts` y `src/lib/email-http-provider.ts` con TypeScript — 0 errores nuevos. Simulé (sin red real) 5 combinaciones de variables de entorno contra la lógica de `emailApiConfigurado`/`correoGeneralConfigurado` — las 5 se comportaron como se esperaba. No pude probar el envío real contra ZeptoMail desde aquí (no tengo acceso a tu cuenta ni a tus credenciales), así que el paso que falta es que abras `/api/inetis/email-status` en tu Render y me digas qué te devuelve — con eso te digo exactamente qué falta.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.

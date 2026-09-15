@@ -28,7 +28,8 @@ import webpush from 'web-push';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
-import { enviarCorreoGeneral } from './lib/email-general.js';
+import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado } from './lib/email-general.js';
+import { emailApiConfigurado, emailApiProveedor } from './lib/email-http-provider.js';
 
 // ============================================================
 // MONITOREO DE ERRORES (Sentry) — OPCIONAL.
@@ -874,6 +875,24 @@ app.post('/api/inetis/notify/seen', async (req, res) => {
     console.error('POST /api/inetis/notify/seen', e);
     return res.status(500).json({ error: 'Error interno' });
   }
+});
+
+// ============================================================
+// GET /api/inetis/email-status — diagnóstico rápido, SIN exponer ningún
+// secreto (ninguna API key ni contraseña), de qué canales de correo
+// quedaron activos en ESTE despliegue concreto del servidor. Pensado
+// para responder en segundos preguntas como "¿de verdad se leyeron
+// EMAIL_API_PROVIDER/EMAIL_API_KEY?" o "¿este Render ya tiene el código
+// nuevo?" sin tener que interpretar los logs de Render — basta con abrir
+// esta URL en el navegador o consultarla con curl.
+// ============================================================
+app.get('/api/inetis/email-status', (_req, res) => {
+  return res.json({
+    apiHttpConfigurado: emailApiConfigurado,
+    apiHttpProveedor: emailApiProveedor,
+    smtpConfigurado: smtpGeneralConfigurado,
+    algunCanalConfigurado: correoGeneralConfigurado,
+  });
 });
 
 // ============================================================

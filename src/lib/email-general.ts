@@ -123,7 +123,10 @@ export async function enviarCorreoGeneral(opts: { to: string; subject: string; t
   if (emailApiConfigurado) {
     const rApi = await enviarPorApiHttp({ to, subject, text, html });
     if (rApi.ok) return { ok: true };
-    console.warn('⚠️  [inetis/send-email] Falló el envío por API HTTP (' + rApi.error + ') — se intentará por SMTP como respaldo.');
+    // El detalle completo del error (incluida la respuesta cruda del
+    // proveedor) ya quedó registrado dentro de enviarPorApiHttp() — aquí
+    // solo se dice que, por ese motivo, se está cayendo al respaldo SMTP.
+    console.error('❌ [inetis/send-email] Falló el envío por API HTTP (' + rApi.error + ') — cayendo al respaldo SMTP.');
     // continúa abajo al intento por SMTP, si está configurado
   }
 
