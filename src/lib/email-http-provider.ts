@@ -39,13 +39,55 @@
 // ahora):
 //   EMAIL_API_PROVIDER = "resend" | "zeptomail"
 //   EMAIL_API_KEY      = la API key / token de ese proveedor
-//   EMAIL_API_FROM     = remitente a mostrar (si no se define, se usa
-//                        SMTP_FROM o SMTP_USER como respaldo)
+//   EMAIL_API_FROM     = remitente a mostrar (también se acepta EMAIL_FROM
+//                        como alias; si ninguna de las dos se define, se
+//                        usa SMTP_FROM o SMTP_USER como respaldo)
+//
+// IMPORTANTE al pegar estos valores en Render (o cualquier hosting): NO
+// incluyan comillas alrededor del valor. El código ya intenta detectar y
+// quitar un par de comillas que envuelvan todo el valor (ver _limpiarEnv
+// más abajo), pero es más seguro pegarlo tal cual, sin comillas.
 // =====================================================================
 
-const EMAIL_API_PROVIDER = (process.env.EMAIL_API_PROVIDER || '').trim().toLowerCase();
-const EMAIL_API_KEY = process.env.EMAIL_API_KEY || '';
-const EMAIL_API_FROM = process.env.EMAIL_API_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '';
+// Es MUY común, al pegar un valor en el panel de "Environment Variables"
+// de Render (o de cualquier otro hosting), incluir por accidente las
+// comillas que rodeaban el valor al copiarlo de otro lado (por ejemplo, de
+// un archivo .env donde estaba escrito como KEY="valor", o de un mensaje/
+// documento que lo mostraba entre comillas). Render (y la mayoría de
+// hostings) NO quita esas comillas automáticamente: las guarda como parte
+// LITERAL del valor, así que el proceso recibe algo como
+// '"Zoho-enczapikey abc123"' (con comillas incluidas) en vez de
+// 'Zoho-enczapikey abc123' — esto rompe silenciosamente cualquier
+// comparación de prefijo y cualquier token/API key, sin que aparezca
+// ningún error obvio de "variable faltante" (la variable SÍ está definida,
+// solo que con basura extra). _limpiarEnv() quita un único par de comillas
+// (dobles o simples) que envuelvan TODO el valor, y además recorta
+// espacios en blanco al inicio/final (otro descuido común al copiar).
+function _limpiarEnv(v: string | undefined): string {
+  let s = (v || '').trim();
+  if (s.length >= 2) {
+    const primera = s[0];
+    const ultima = s[s.length - 1];
+    if ((primera === '"' && ultima === '"') || (primera === "'" && ultima === "'")) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
+const EMAIL_API_PROVIDER = _limpiarEnv(process.env.EMAIL_API_PROVIDER).toLowerCase();
+const EMAIL_API_KEY = _limpiarEnv(process.env.EMAIL_API_KEY);
+// EMAIL_FROM se acepta como alias de EMAIL_API_FROM: es un nombre de
+// variable igual de razonable y, en la práctica, algunos despliegues lo
+// configuraron así por error (confundiéndolo con el nombre "esperado") —
+// en vez de dejar ese valor silenciosamente ignorado, se usa como
+// respaldo antes de caer a SMTP_FROM/SMTP_USER.
+const EMAIL_API_FROM =
+  _limpiarEnv(process.env.EMAIL_API_FROM) ||
+  _limpiarEnv(process.env.EMAIL_FROM) ||
+  _limpiarEnv(process.env.SMTP_FROM) ||
+  _limpiarEnv(process.env.SMTP_USER) ||
+  '';
 
 export const emailApiConfigurado = Boolean(EMAIL_API_PROVIDER && EMAIL_API_KEY);
 // Se expone el NOMBRE del proveedor (nunca la API key) para poder mostrarlo

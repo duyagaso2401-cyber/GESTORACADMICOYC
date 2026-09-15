@@ -341,6 +341,49 @@ GET /api/inetis/email-status
 
 ---
 
+## Ronda 6 — La causa real encontrada: token de ZeptoMail rechazado, comillas literales en las variables, y un bug mío en el rate-limiting
+
+Con los logs de Render y la lista de tus variables de entorno que me compartiste, esta vez sí encontré la causa exacta (no una hipótesis) — y de paso encontré un bug real que introduje yo en la Ronda 3, sin relación con el correo.
+
+### 1) La causa directa del 500: ZeptoMail rechazó el token con "Invalid API Token found"
+
+Tus logs muestran, textualmente, que ZeptoMail respondió con `401` y `{"error":{"code":"TM_4001","details":[{"code":"SERR_157","message":"Invalid API Token found"}]}}`. Esto es ZeptoMail diciendo, sin ambigüedad, que el valor que llegó como `EMAIL_API_KEY` no es un token válido para ellos — no es un problema del código (el canal por API HTTP sí se está usando, tal como pediste), es un problema del **valor** que tiene esa variable en Render.
+
+### 2) La pista que explica el porqué: comillas literales pegadas por accidente
+
+En tus mismos logs vi esta línea: `Remitente usado: ""Gestor Académico YC <contacto@gestoracademicoyc.com>""` — con las comillas DOBLES y REPETIDAS. Eso solo pasa si, al pegar el valor en el panel de "Environment Variables" de Render, quedaron las comillas de más incluidas como parte literal del texto (por ejemplo, si copiaste `"Gestor Académico YC <...>"` completo, comillas incluidas, en vez de solo el texto de adentro). Render **no quita esas comillas solo**: las guarda tal cual, como basura pegada al valor real.
+
+Es muy probable que a `EMAIL_API_KEY` le haya pasado exactamente lo mismo (un valor como `"Zoho-enczapikey abc123..."` con comillas incluidas en vez de `Zoho-enczapikey abc123...`), lo cual explica perfectamente el "Invalid API Token found": ZeptoMail recibe un texto con comillas de más y lo rechaza porque no coincide con ningún token real.
+
+**Lo que agregué para que esto no vuelva a pasar (y probablemente resuelva el problema sin que tengas que tocar nada en Render):** una función `_limpiarEnv()` en `src/lib/email-http-provider.ts` y en `src/lib/email-general.ts` que detecta y quita automáticamente un par de comillas (dobles o simples) que envuelvan TODO el valor de una variable, antes de usarla — se aplica a `EMAIL_API_PROVIDER`, `EMAIL_API_KEY`, `EMAIL_API_FROM`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` y `SMTP_FROM`.
+
+**Importante — esto no es garantía absoluta:** tus logs mostraban comillas DOBLADAS (`""..."" `), lo que sugiere que el valor pudo quedar envuelto en más de una capa de comillas. Mi función solo quita UNA capa (la más externa) por diseño — quitar comillas "a ciegas" de forma más agresiva podría corromper un valor que legítimamente empiece o termine con `"`. Por eso, aunque este cambio ayuda, **te recomiendo que de todas formas entres a Render → tu servicio → Environment → `EMAIL_API_KEY` y revises el valor a simple vista:** no debe tener ninguna comilla `"` ni `'` al principio ni al final, debe empezar exactamente con `Zoho-enczapikey ` (con un espacio después), y debe ser el "Send Mail Token" completo que te dio ZeptoMail (no un token de Zoho Mail normal ni una contraseña SMTP). Si tiene comillas, bórralas ahí mismo y guarda — es la forma más segura de estar 100% seguro, independientemente de mi función de limpieza.
+
+### 3) Un nombre de variable equivocado: `EMAIL_FROM` en vez de `EMAIL_API_FROM`
+
+Al comparar la lista de variables que configuraste en Render contra lo que el código realmente lee, noté que pusiste `EMAIL_FROM`, pero el código (hasta esta ronda) solo leía `EMAIL_API_FROM` — así que esa variable se estaba ignorando por completo, y el remitente terminaba cayendo al respaldo `SMTP_FROM` (el mismo que salió con las comillas dobladas en el punto 2).
+
+**Ya está corregido:** ahora el código acepta `EMAIL_FROM` como alias válido de `EMAIL_API_FROM` — no necesitas renombrar nada en Render, ambos nombres funcionan igual. El orden de prioridad quedó: `EMAIL_API_FROM` → `EMAIL_FROM` → `SMTP_FROM` → `SMTP_USER`.
+
+### 4) Un bug real que introduje yo en la Ronda 3 (sin relación con el correo, pero lo vi en tus logs)
+
+Tus logs mostraban, repetidas veces, este error: `ValidationError: ERR_ERL_UNEXPECTED_X_FORWARDED_FOR ... The 'X-Forwarded-For' header is set but the Express 'trust proxy' setting is false`. Esto lo causaron los limitadores de tráfico (`express-rate-limit`) que agregué en la Ronda 3: Render (como todo hosting con proxy reverso) le agrega a cada petición una cabecera `X-Forwarded-For` con la IP real del visitante, pero Express, por defecto, no confía en esa cabecera — así que la librería de rate-limiting se quejaba en cada petición.
+
+**No era la causa del error del correo**, pero sí era un problema real: mientras esto no se corrigiera, el rate-limiting corría el riesgo de identificar a todos tus visitantes como una sola IP (la del proxy de Render) en vez de la IP real de cada uno, lo cual le resta efectividad al límite (alguien podría agotar el límite de todos los demás sin querer).
+
+**Ya está corregido:** agregué `app.set('trust proxy', 1)` justo después de crear la app de Express en `src/index.ts` — le dice a Express que confíe en el primer proxy delante de él (el de Render), que es exactamente el escenario correcto y seguro aquí.
+
+### Qué debes hacer tú ahora
+
+1. **Revisa el valor de `EMAIL_API_KEY` en Render** (ver punto 2 arriba) y quítale cualquier comilla que veas al principio o al final, si la tiene. Aprovecha y revisa también `EMAIL_FROM`/`SMTP_FROM` por si tienen el mismo problema.
+2. **Vuelve a desplegar** (Manual Deploy, o espera el redeploy automático tras subir este ZIP) — como siempre, Render no relee variables de entorno solo con guardarlas.
+3. **Verifica primero con el endpoint de diagnóstico** (`/api/inetis/email-status` en tu dominio) que siga mostrando `apiHttpConfigurado: true`.
+4. **Intenta de nuevo "Recuperar Contraseña"** desde la pantalla real. Si sigue fallando, mira los logs de Render justo después del intento: ahora deberían mostrar la respuesta exacta de ZeptoMail (por ejemplo, si sigue siendo "Invalid API Token", significa que el token en sí es inválido/revocado en el panel de Zoho y hay que generar uno nuevo, no un problema de comillas).
+
+**Cómo lo verifiqué:** recompilé `src/index.ts`, `src/lib/email-http-provider.ts` y `src/lib/email-general.ts` con TypeScript — 0 errores nuevos (los mismos 25 de siempre en `schema.ts`, sin relación con esto). Escribí y corrí 11 casos de prueba aislados para `_limpiarEnv()` (valor con comillas dobles, con comillas simples, sin comillas, con espacios de más, comillas dobladas como las de tus logs, una sola comilla suelta, vacío, `undefined`, etc.) — los 11 pasaron. No pude probar el envío real contra ZeptoMail (no tengo tu token ni acceso a tu cuenta), así que el paso 4 de arriba es la única verificación que falta y que solo tú puedes hacer.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.

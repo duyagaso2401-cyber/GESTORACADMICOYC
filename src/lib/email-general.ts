@@ -27,11 +27,29 @@
 import nodemailer from 'nodemailer';
 import { enviarPorApiHttp, emailApiConfigurado } from './email-http-provider.js';
 
-const SMTP_HOST = process.env.SMTP_HOST || '';
-const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
-const SMTP_USER = process.env.SMTP_USER || '';
-const SMTP_PASS = process.env.SMTP_PASS || '';
-const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
+// Mismo problema y misma solución que en email-http-provider.ts: si al
+// pegar estas variables en el panel de Render quedaron comillas literales
+// envolviendo el valor (ej. SMTP_FROM = "\"Gestor Académico YC <...>\""),
+// eso rompe el remitente/credenciales sin que salte ningún error de
+// "variable faltante". _limpiarEnv() quita un único par de comillas
+// (dobles o simples) que envuelvan TODO el valor, y recorta espacios.
+function _limpiarEnv(v: string | undefined): string {
+  let s = (v || '').trim();
+  if (s.length >= 2) {
+    const primera = s[0];
+    const ultima = s[s.length - 1];
+    if ((primera === '"' && ultima === '"') || (primera === "'" && ultima === "'")) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
+const SMTP_HOST = _limpiarEnv(process.env.SMTP_HOST);
+const SMTP_PORT = Number(_limpiarEnv(process.env.SMTP_PORT) || 587);
+const SMTP_USER = _limpiarEnv(process.env.SMTP_USER);
+const SMTP_PASS = _limpiarEnv(process.env.SMTP_PASS);
+const SMTP_FROM = _limpiarEnv(process.env.SMTP_FROM) || SMTP_USER;
 
 // SMTP_SECURE es OPCIONAL: si no se define explícitamente, se infiere del
 // puerto (465 = SSL directo; cualquier otro = STARTTLS), que es lo correcto

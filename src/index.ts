@@ -241,6 +241,21 @@ async function enviarPushParaNotificacion(sk: string, kind: string, message: str
 // ============================================================
 
 const app = express();
+// "trust proxy" = 1 confía en el PRIMER salto delante del servidor (el
+// balanceador/reverse-proxy de Render, Railway, Heroku, etc.), que es
+// exactamente el escenario de este despliegue. Sin esto, Express usa su
+// valor por defecto (false) y express-rate-limit (usado más abajo para
+// limitar /api/inetis/email, /api/inetis/rescate, etc.) lanza en cada
+// request un error "ERR_ERL_UNEXPECTED_X_FORWARDED_FOR"
+// porque ve la cabecera X-Forwarded-For que SÍ pone el proxy de Render
+// pero Express le dice que no debería existir — no rompe el envío de
+// correos en sí, pero ensucia los logs y puede hacer que el rate-limit
+// identifique a todos los usuarios como una sola IP (la del proxy) en
+// lugar de la IP real de cada visitante. Con "1" (en vez de "true"),
+// Express confía solo en el primer proxy de la cadena, que es lo correcto
+// y seguro aquí (no se debe usar "true" en producción porque eso confiaría
+// en cualquier cabecera X-Forwarded-For que mande el propio cliente).
+app.set('trust proxy', 1);
 const PORT = parseInt(process.env.PORT || '8080');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
