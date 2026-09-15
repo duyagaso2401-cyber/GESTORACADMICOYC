@@ -25,6 +25,7 @@
 // y guardando la contraseña temporal aunque el correo falle).
 // =====================================================================
 import nodemailer from 'nodemailer';
+import { enviarPorApiHttp, emailApiConfigurado } from './email-http-provider.js';
 
 const SMTP_HOST = process.env.SMTP_HOST || '';
 const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
@@ -32,7 +33,43 @@ const SMTP_USER = process.env.SMTP_USER || '';
 const SMTP_PASS = process.env.SMTP_PASS || '';
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 
+// SMTP_SECURE es OPCIONAL: si no se define explícitamente, se infiere del
+// puerto (465 = SSL directo; cualquier otro = STARTTLS), que es lo correcto
+// para el 99% de los proveedores (Zoho, Gmail, Office365, SendGrid, etc.).
+// Si el hosting o el proveedor exige forzarlo manualmente, "true"/"1" fuerza
+// SSL directo y "false"/"0" fuerza STARTTLS sin importar el puerto.
+const SMTP_SECURE_ENV = (process.env.SMTP_SECURE || '').trim().toLowerCase();
+const SMTP_SECURE = SMTP_SECURE_ENV === '' ? SMTP_PORT === 465 : (SMTP_SECURE_ENV === 'true' || SMTP_SECURE_ENV === '1');
+
 export const smtpGeneralConfigurado = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+// "Algo" está configurado si hay SMTP O el canal de API HTTP (ver
+// email-http-provider.ts) — ambos pueden convivir; esto solo se usa para
+// decidir si el endpoint responde 503 "no configurado" o intenta enviar.
+export const correoGeneralConfigurado = smtpGeneralConfigurado || emailApiConfigurado;
+
+// Códigos/mensajes típicos cuando el puerto SMTP saliente está bloqueado por
+// el proveedor de hosting (ej. Render.com bloquea los puertos salientes
+// 25/465/587 en sus "free web services" desde septiembre de 2025) en vez de
+// ser un problema de credenciales. Detectarlo permite devolver una pista
+// mucho más útil que "Error al enviar" cuando esto ocurre en producción.
+function esErrorDeBloqueoDePuerto(err: any): boolean {
+  const codigo = String(err?.code || '').toUpperCase();
+  const msj = String(err?.message || '').toLowerCase();
+  return (
+    codigo === 'ETIMEDOUT' ||
+    codigo === 'ECONNREFUSED' ||
+    codigo === 'ESOCKET' ||
+    msj.includes('timeout') ||
+    msj.includes('econnrefused') ||
+    msj.includes('connect etimedout')
+  );
+}
+const PISTA_BLOQUEO_PUERTO =
+  'No se pudo establecer conexión con el servidor SMTP (tiempo de espera agotado o conexión rechazada). ' +
+  'Si el servidor está desplegado en un plan gratuito de Render.com, ese plan BLOQUEA el tráfico saliente ' +
+  'a los puertos SMTP 25/465/587 desde septiembre de 2025 — esto NO es un problema de usuario/contraseña. ' +
+  'Soluciones: (1) actualizar el servicio web de Render a un plan pago (Starter o superior), donde el bloqueo ' +
+  'no aplica, o (2) usar un proveedor de correo transaccional por API HTTP (ej. Zoho ZeptoMail, Resend, SendGrid, Brevo) en vez de SMTP.';
 
 // Se tipa como "any" a propósito: el proyecto no declara @types/nodemailer
 // (igual que src/university-lms/utils/email.js, que es plano JS) y se
@@ -45,7 +82,8 @@ if (smtpGeneralConfigurado) {
   transportadorGeneral = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
-    secure: SMTP_PORT === 465, // true = SSL directo (465); false = STARTTLS (587/25)
+    secure: SMTP_SECURE, // ver SMTP_SECURE arriba: inferido del puerto salvo que se defina explícitamente
+    connectionTimeout: 10000, // 10s — para no dejar la petición HTTP colgada si el puerto está bloqueado
     auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
   transportadorGeneral.verify().then(
@@ -73,8 +111,31 @@ export async function enviarCorreoGeneral(opts: { to: string; subject: string; t
   if (!to || !subject) {
     return { ok: false, error: 'Faltan campos requeridos (to, subject).', hint: 'Datos incompletos' };
   }
+  if (!correoGeneralConfigurado) {
+    return { ok: false, error: 'El servicio de correo no está configurado en el servidor (faltan SMTP_HOST/SMTP_USER/SMTP_PASS, o EMAIL_API_PROVIDER/EMAIL_API_KEY).', hint: 'SMTP no configurado' };
+  }
+
+  // ── CANAL 1: API HTTP (si está configurada) ──────────────────────────
+  // Se intenta PRIMERO porque usa el puerto 443 (HTTPS), que ningún plan
+  // de hosting bloquea — a diferencia de los puertos SMTP, que Render.com
+  // sí bloquea en su plan gratuito. Si no está configurada, o falla, se
+  // cae de inmediato al canal SMTP de abajo (ambos canales conviven).
+  if (emailApiConfigurado) {
+    const rApi = await enviarPorApiHttp({ to, subject, text, html });
+    if (rApi.ok) return { ok: true };
+    console.warn('⚠️  [inetis/send-email] Falló el envío por API HTTP (' + rApi.error + ') — se intentará por SMTP como respaldo.');
+    // continúa abajo al intento por SMTP, si está configurado
+  }
+
+  // ── CANAL 2: SMTP (de siempre) ────────────────────────────────────────
   if (!smtpGeneralConfigurado || !transportadorGeneral) {
-    return { ok: false, error: 'El servicio de correo no está configurado en el servidor (faltan SMTP_HOST/SMTP_USER/SMTP_PASS).', hint: 'SMTP no configurado' };
+    return {
+      ok: false,
+      error: emailApiConfigurado
+        ? 'El envío por API HTTP falló y no hay SMTP configurado como respaldo.'
+        : 'El servicio de correo no está configurado en el servidor (faltan SMTP_HOST/SMTP_USER/SMTP_PASS).',
+      hint: 'Error al enviar',
+    };
   }
   try {
     await transportadorGeneral.sendMail({
@@ -86,9 +147,13 @@ export async function enviarCorreoGeneral(opts: { to: string; subject: string; t
     });
     return { ok: true };
   } catch (err: any) {
+    if (esErrorDeBloqueoDePuerto(err)) {
+      console.warn('⚠️  [inetis/send-email] Conexión SMTP bloqueada/expirada (posible bloqueo de puerto saliente del hosting):', err?.code || err?.message);
+      return { ok: false, error: PISTA_BLOQUEO_PUERTO, hint: 'Puerto SMTP bloqueado por el hosting' };
+    }
     console.warn('⚠️  [inetis/send-email] No se pudo enviar el correo:', err?.message || err);
     return { ok: false, error: err?.message || 'Error desconocido al enviar el correo.', hint: 'Error al enviar' };
   }
 }
 
-export default { enviarCorreoGeneral, smtpGeneralConfigurado };
+export default { enviarCorreoGeneral, smtpGeneralConfigurado, correoGeneralConfigurado };

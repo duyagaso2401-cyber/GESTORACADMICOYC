@@ -56,7 +56,14 @@
     }).then(function(r){
       return r.json().then(function(data){
         if(!r.ok){
-          if(data.institucionPausada){
+          if(data.pantallaBlancaActiva&&!_esRescateSuperAdminActivoUniv()){
+            // Modo "Pantalla en Blanco" activado por el Súper Admin
+            // mientras esta sesión seguía abierta — se corta el acceso de
+            // inmediato borrando la pantalla por completo (a diferencia
+            // de institucionPausada, que muestra un aviso normal).
+            sessionStorage.removeItem('univ_token');TOKEN=null;SESION=null;
+            _activarPantallaBlancaUniv();
+          } else if(data.institucionPausada){
             // La institución se suspendió/bloqueó mientras esta sesión
             // seguía abierta — se corta el acceso de inmediato, sin
             // importar en qué pantalla estuviera.
@@ -69,6 +76,56 @@
       });
     });
   }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // 🔕 SINCRONIZACIÓN AUTOMÁTICA (encendido/apagado desde el Súper Admin,
+  // mismo interruptor que usa el sistema K-12 — ver "institucion.
+  // sincronizacionAutomatica" en /api/university/dashboard) +
+  // ⬛ PANTALLA EN BLANCO + 🔑 acceso de rescate (ver también index.html,
+  // donde vive el listener global de teclado que activa el rescate).
+  // ══════════════════════════════════════════════════════════════════════
+  let _flagsPlataformaUniv={sincronizacionAutomatica:true,pantallaBlanca:false};
+  function _esRescateSuperAdminActivoUniv(){
+    try{ return sessionStorage.getItem('es_super_admin')==='true'; }catch(e){ return false; }
+  }
+  function _activarPantallaBlancaUniv(){
+    try{
+      document.title='—';
+      document.body.innerHTML='';
+      document.body.style.background='#fff';
+      try{ window.stop(); }catch(e){}
+    }catch(e){}
+  }
+  // Se llama cada vez que /dashboard trae datos frescos de la institución
+  // (ver renderDashboard). Enciende/apaga SyncEngine.autoAttach() según
+  // corresponda y muestra/oculta el aviso de sincronización manual.
+  function _actualizarSincUniv(institucion){
+    _flagsPlataformaUniv.sincronizacionAutomatica=institucion.sincronizacionAutomatica!==false;
+    _flagsPlataformaUniv.pantallaBlanca=Boolean(institucion.pantallaBlanca);
+    if(window.SyncEngine&&_flagsPlataformaUniv.sincronizacionAutomatica) window.SyncEngine.autoAttach();
+    _actualizarBannerSyncUniv();
+  }
+  function _actualizarBannerSyncUniv(){
+    const banner=document.getElementById('_bannerSyncManualUniv');
+    if(_flagsPlataformaUniv.sincronizacionAutomatica){
+      if(banner) banner.remove();
+      if(document.body&&document.body.style.paddingTop==='38px') document.body.style.paddingTop='';
+      return;
+    }
+    if(banner) return;
+    const b=document.createElement('div');
+    b.id='_bannerSyncManualUniv';
+    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99998;background:#4a1a6e;color:#fff;padding:8px 14px;font-size:0.8rem;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.25)';
+    b.innerHTML='<span>🔕 Sincronización automática desactivada para tu institución. Tus datos se guardan igual de inmediato — haz clic para traer los cambios más recientes.</span>'
+      +'<button onclick="_sincronizarAhoraManualUniv()" style="background:#f1c40f;color:#001428;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer;font-size:0.78rem;white-space:nowrap">🔄 Sincronizar ahora</button>';
+    document.body.appendChild(b);
+    document.body.style.paddingTop='38px';
+  }
+  function _sincronizarAhoraManualUniv(){
+    cache={}; // fuerza a que la vista actual vuelva a pedir datos frescos
+    _renderVistaActual();
+  }
+  window._sincronizarAhoraManualUniv=_sincronizarAhoraManualUniv;
 
   function irA(nuevaVista){ vista=nuevaVista; render(); }
   window._univIrA=irA; // usado por los onclick del HTML generado dinámicamente
@@ -154,6 +211,7 @@
   // ══════════════════════════════════════════════════════════════════════
   function renderDashboard(){
     api('/dashboard').then(function(d){
+      _actualizarSincUniv(d.institucion);
       let html='';
       if(SESION.rol==='estudiante'){
         html='<div class="kpis">'

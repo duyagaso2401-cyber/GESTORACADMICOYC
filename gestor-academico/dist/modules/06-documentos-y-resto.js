@@ -1155,6 +1155,16 @@ function guardarAsistencia(){
               meta:{estId:estId,estNombre:nomEst,acudiente:nomAcud,fecha:asistFecha,grado:asistGrado,asignatura:asignaturaN,docente:sesion.n,inst:db.nombre||''}})
           }).catch(function(){});
         }catch(ex){}
+        // Alerta adicional (correo + notify) SOLO si el % acumulado de
+        // inasistencia de este estudiante en esta asignatura ya cruzó el
+        // umbral crítico configurado — ver _verificarAlertaInasistenciaCriticaSiAplica()
+        // en 03-app-core.js. No se envía correo por cada ausencia individual,
+        // solo al cruzar el umbral (evita saturar de correos al acudiente).
+        try{
+          if(typeof _verificarAlertaInasistenciaCriticaSiAplica==='function'){
+            _verificarAlertaInasistenciaCriticaSiAplica(estId,asistGrado,asistCId);
+          }
+        }catch(ex){}
       });
       if(typeof _solicitarYMostrarNotifNavegador === 'function'){
         _solicitarYMostrarNotifNavegador(
@@ -4357,6 +4367,15 @@ function renderObsAulaLista(){
   ];
   const tipoOpts=tiposObs.map(t=>`<option value="${t.v}">${t.label}</option>`).join('');
   const colorTipo=v=>(tiposObs.find(t=>t.v===v)||{color:'#555'}).color;
+  // Gravedad: determina si esta observación dispara una alerta automática
+  // por correo/notificación push al acudiente (solo Moderada/Grave, para no
+  // saturar de correos por cada observación menor). Por defecto "Leve" —
+  // el/la docente decide subir el nivel cuando la situación lo amerite.
+  const graveOpts=[
+    {v:'Leve',label:'🟢 Leve (sin alerta automática)'},
+    {v:'Moderada',label:'🟡 Moderada (alerta al acudiente)'},
+    {v:'Grave',label:'🔴 Grave (alerta urgente al acudiente)'},
+  ].map(g=>`<option value="${g.v}">${g.label}</option>`).join('');
   const isAdmin = sesion && sesion.r === 'admin';
 
   wrap.innerHTML=ests.map((e,idx)=>{
@@ -4411,6 +4430,7 @@ function renderObsAulaLista(){
         <b style="font-size:0.8rem;color:#003366;display:block;margin-bottom:8px">📝 Registrar Nueva Observación de Aula</b>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <select id="obsAulaTipo_${e.id}" style="padding:7px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.83rem;flex:1;min-width:180px">${tipoOpts}</select>
+          <select id="obsAulaGravedad_${e.id}" style="padding:7px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.83rem;flex:1;min-width:200px">${graveOpts}</select>
           <input id="obsAulaFechaObs_${e.id}" type="text" placeholder="Fecha (ej: hoy)" value="${new Date().toLocaleDateString('es-CO')}" style="padding:7px 10px;border:1px solid #ccd;border-radius:6px;font-size:0.83rem;width:130px">
         </div>
         <textarea id="obsAulaTxt_${e.id}" rows="3" placeholder="Describa la situación, comportamiento, acuerdo pedagógico o reconocimiento..."
@@ -4435,6 +4455,7 @@ function toggleObsAulaForm(estId){
 
 function guardarObsAula(estId,per){
   const tipo=document.getElementById('obsAulaTipo_'+estId)?.value||'Otro';
+  const gravedad=document.getElementById('obsAulaGravedad_'+estId)?.value||'Leve';
   const txt=(document.getElementById('obsAulaTxt_'+estId)?.value||'').trim();
   const fecha=document.getElementById('obsAulaFechaObs_'+estId)?.value||new Date().toLocaleDateString('es-CO');
   if(!txt){customAlert('Escriba el texto de la observación.');return;}
@@ -4451,6 +4472,7 @@ function guardarObsAula(estId,per){
       per: String(per),
       txt,
       tipo,
+      gravedad,
       doc: sesion.n || sesion.u,
       docente: sesion.u,
       fecha,
@@ -4461,6 +4483,15 @@ function guardarObsAula(estId,per){
 
   _showToast('✅ Observación de aula registrada con éxito.', 'success', 3000);
   renderObsAulaLista();
+
+  // Alerta automática por correo + notificación (que a su vez dispara push)
+  // al acudiente, solo cuando la gravedad es Moderada o Grave y el tipo no
+  // es "Logro" (un reconocimiento positivo no necesita una alerta urgente).
+  // Mismo patrón que _dispararAlertaBajoDesempenoSiAplica() para bajo
+  // rendimiento académico — ver 03-app-core.js.
+  if((gravedad==='Moderada'||gravedad==='Grave')&&tipo!=='Logro'&&typeof _dispararAlertaObsAulaSiAplica==='function'){
+    _dispararAlertaObsAulaSiAplica(estIdNum,tipo,gravedad,txt,per);
+  }
 }
 
 function editarObsAula(estId, obsId, obsIdx){

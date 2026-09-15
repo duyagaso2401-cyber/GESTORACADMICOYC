@@ -27,6 +27,7 @@
 // adicional, nunca un requisito para que el resto del sistema funcione.
 // =====================================================================
 import nodemailer from 'nodemailer';
+import { enviarPorApiHttp, emailApiConfigurado } from '../../lib/email-http-provider.js';
 
 const SMTP_HOST = process.env.SMTP_HOST || '';
 const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
@@ -34,7 +35,32 @@ const SMTP_USER = process.env.SMTP_USER || '';
 const SMTP_PASS = process.env.SMTP_PASS || '';
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 
+// SMTP_SECURE es OPCIONAL: si no se define explícitamente, se infiere del
+// puerto (465 = SSL directo; cualquier otro = STARTTLS). Ver la misma
+// constante en src/lib/email-general.ts para más detalle.
+const SMTP_SECURE_ENV = (process.env.SMTP_SECURE || '').trim().toLowerCase();
+const SMTP_SECURE = SMTP_SECURE_ENV === '' ? SMTP_PORT === 465 : (SMTP_SECURE_ENV === 'true' || SMTP_SECURE_ENV === '1');
+
 export const smtpConfigurado = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+// "Algo" está configurado si hay SMTP O el canal de API HTTP (ver
+// src/lib/email-http-provider.js) — ambos pueden convivir.
+export const correoNotifConfigurado = smtpConfigurado || emailApiConfigurado;
+
+// Detecta si el fallo de envío se debe a que el puerto SMTP saliente está
+// bloqueado por el hosting (ej. Render.com en su plan gratuito bloquea los
+// puertos 25/465/587 desde septiembre de 2025) en vez de a credenciales
+// incorrectas — ver detalle en src/lib/email-general.ts.
+function esErrorDeBloqueoDePuerto(err) {
+  const codigo = String(err?.code || '').toUpperCase();
+  const msj = String(err?.message || '').toLowerCase();
+  return (
+    codigo === 'ETIMEDOUT' ||
+    codigo === 'ECONNREFUSED' ||
+    codigo === 'ESOCKET' ||
+    msj.includes('timeout') ||
+    msj.includes('econnrefused')
+  );
+}
 
 let transportador = null;
 
@@ -42,7 +68,8 @@ if (smtpConfigurado) {
   transportador = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
-    secure: SMTP_PORT === 465, // true = SSL directo (465); false = STARTTLS (587/25)
+    secure: SMTP_SECURE, // inferido del puerto salvo que SMTP_SECURE lo fuerce explícitamente
+    connectionTimeout: 10000, // 10s — evita dejar la notificación colgada si el puerto está bloqueado
     auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
   // Verificación de conexión en segundo plano al arrancar — solo informativa,
@@ -81,6 +108,18 @@ function escaparHtml(s) {
  * para quien quiera loguear el resultado. */
 export async function enviarCorreoNotificacion({ destinatarioEmail, titulo, cuerpo, urlAccion }) {
   if (!destinatarioEmail) return false;
+  if (!correoNotifConfigurado) return false;
+
+  // ── CANAL 1: API HTTP (si está configurada) — puerto 443, nunca
+  // bloqueado por el hosting. Se intenta primero; si falla o no está
+  // configurada, cae al SMTP de siempre (ambos canales conviven).
+  if (emailApiConfigurado) {
+    const rApi = await enviarPorApiHttp({ to: destinatarioEmail, subject: titulo, html: plantillaHtml({ titulo, cuerpo, urlAccion }) });
+    if (rApi.ok) return true;
+    console.warn('⚠️  [university-lms] Falló el envío por API HTTP (' + rApi.error + ') — se intentará por SMTP como respaldo.');
+  }
+
+  // ── CANAL 2: SMTP (de siempre) ────────────────────────────────────────
   if (!smtpConfigurado || !transportador) return false;
   try {
     await transportador.sendMail({
@@ -91,9 +130,18 @@ export async function enviarCorreoNotificacion({ destinatarioEmail, titulo, cuer
     });
     return true;
   } catch (err) {
+    if (esErrorDeBloqueoDePuerto(err)) {
+      console.warn(
+        '⚠️  [university-lms] Conexión SMTP bloqueada o expirada (código: ' + (err?.code || 'desconocido') + '). ' +
+        'Si el servidor corre en un plan gratuito de Render.com, ese plan bloquea los puertos SMTP 25/465/587 ' +
+        'desde septiembre de 2025 (no es un problema de usuario/contraseña). Soluciones: actualizar el servicio ' +
+        'de Render a un plan pago, o usar un proveedor de correo por API HTTP (Zoho ZeptoMail, Resend, SendGrid, Brevo).'
+      );
+      return false;
+    }
     console.warn('⚠️  [university-lms] No se pudo enviar el correo de notificación:', err.message);
     return false;
   }
 }
 
-export default { enviarCorreoNotificacion, smtpConfigurado };
+export default { enviarCorreoNotificacion, smtpConfigurado, correoNotifConfigurado };

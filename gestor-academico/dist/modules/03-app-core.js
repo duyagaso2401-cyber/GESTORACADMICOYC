@@ -846,6 +846,20 @@ function _migrateGestorDB(data){
     plat.modulosDesactivados=plat.modulosDesactivados.filter(function(id){return id!=='repositorio';});
     if(!plat.fechaCreacion) plat.fechaCreacion=new Date().toISOString().slice(0,10);
     if(typeof plat.activa==='undefined') plat.activa=true;
+    // Sincronización automática en segundo plano (traer cambios de otros
+    // dispositivos cada pocos minutos y refrescar la pantalla): por
+    // defecto ENCENDIDA para no cambiar el comportamiento de ninguna
+    // institución existente. El Súper Admin puede apagarla por
+    // institución (botón "🔄 Sincronización" en el panel) — con ella
+    // apagada, los datos se siguen guardando exactamente igual de
+    // inmediato (eso nunca depende de esto), solo deja de refrescarse la
+    // pantalla sola: aparece un aviso arriba invitando a sincronizar a
+    // mano cuando la persona quiera ver cambios recientes de otros.
+    if(typeof plat.sincronizacionAutomatica==='undefined') plat.sincronizacionAutomatica=true;
+    // "Pantalla en blanco": bloqueo manual total de acceso, decisión 100%
+    // del Súper Admin (no hay lógica de pagos/fechas automática). Por
+    // defecto APAGADA (false) para todas las instituciones.
+    if(typeof plat.pantallaBlanca==='undefined') plat.pantallaBlanca=false;
     // Migración: sistema de años lectivos por plataforma
     if(!plat.anioActivo) plat.anioActivo=String(new Date().getFullYear());
     if(!Array.isArray(plat.aniosDisponibles)||!plat.aniosDisponibles.length) plat.aniosDisponibles=[plat.anioActivo];
@@ -1825,6 +1839,17 @@ async function doLoginGestor(){
       updGestorDB(d=>{d.superAdmin.p=nuevoHash;return d;});
     }
     gestorSesion={logged:true};_gestorPag='plataformas';renderGestorAdmin();_initGestorNotifPoll();
+    // Rescate transparente: con estas mismas credenciales YA verificadas,
+    // se le pide al servidor un token de rescate (ver _pedirTokenRescate)
+    // para que "🚀 Entrar" a inspeccionar una institución con "Pantalla en
+    // Blanco" (ver entrarPlataforma) funcione de inmediato, sin tener que
+    // usar aparte el atajo de teclado "super" — el Súper Admin nunca se
+    // autobloquea. Se espera (await) a que termine ANTES de continuar, por
+    // si el primer clic en "Entrar" ocurre enseguida; si esta llamada
+    // fallara (por ejemplo, sin conexión un instante), no se interrumpe el
+    // login — solo no podrá entrar a una institución bloqueada hasta que
+    // se restablezca la conexión, o usando el atajo "super" como alternativa.
+    await _pedirTokenRescate({u,p});
   } else {customAlert('Credenciales de Administrador General incorrectas.');}
 }
 // ============================================================
@@ -2609,6 +2634,8 @@ function htmlGestorPlataformas(){
         <button class="btn btn-orange" style="font-size:0.82rem;padding:7px 13px" onclick="abrirEditarPlat('${plat.id}')">✎ Editar</button>
         <button class="btn" style="background:${plat.activa?'#7f8c8d':'#27ae60'};font-size:0.82rem;padding:7px 13px" onclick="toggleActivarPlat('${plat.id}')">${plat.activa?'⏸ Suspender':'▶ Activar'}</button>
         <button class="btn" style="background:${plat.bloqueada?'#e74c3c':'#8e44ad'};font-size:0.82rem;padding:7px 13px" onclick="toggleBloquearPlat('${plat.id}')">${plat.bloqueada?'🔓 Desbloquear':'🔒 Bloquear acceso'}</button>
+        <button class="btn" style="background:${plat.sincronizacionAutomatica===false?'#7f8c8d':'#2980b9'};font-size:0.82rem;padding:7px 13px" onclick="toggleSincronizacionPlat('${plat.id}')" title="Si se apaga, esta institución deja de refrescar la pantalla sola con cambios de otros dispositivos — se le muestra un aviso para sincronizar manualmente. El guardado de datos nunca se ve afectado.">${plat.sincronizacionAutomatica===false?'🔕 Sinc. manual':'🔄 Sinc. automática'}</button>
+        <button class="btn" style="background:${plat.pantallaBlanca?'#c0392b':'#34495e'};font-size:0.82rem;padding:7px 13px" onclick="togglePantallaBlancaPlat('${plat.id}')" title="Bloqueo manual total de acceso para esta institución (pantalla en blanco). Decisión 100% manual, sin lógica de pagos automática.">${plat.pantallaBlanca?'⚪ Quitar pantalla en blanco':'⬛ Modo Pantalla en Blanco'}</button>
         <button class="btn" style="background:#16a085;font-size:0.82rem;padding:7px 13px" onclick="abrirModalExportarEstDoc('${plat.id}')" title="Copiar estudiantes/docentes de esta institución hacia otra">📋 Exportar Est./Doc.</button>
         <button class="btn btn-red" style="font-size:0.82rem;padding:7px 13px" onclick="eliminarPlataforma('${plat.id}')">🗑</button>
           <button class="btn btn-blue" style="font-size:0.82rem;padding:7px 13px" onclick="descargarHTMLInstitucion('${plat.id}')" title="Descargar portal HTML de esta institución">⬇ HTML</button>
@@ -3290,6 +3317,28 @@ async function guardarEditarPlat(){
   _gestorEditPlatId=null;_gestorPag='plataformas';renderGestorAdmin();
 }
 function toggleActivarPlat(platId){updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.activa=!p.activa;return d;});renderGestorAdmin();}
+// Enciende/apaga la sincronización automática en segundo plano de una
+// institución (ver comentario junto a "sincronizacionAutomatica" en
+// _migrateGestorDB). Con ella apagada, el frontend de esa institución deja
+// de refrescar la pantalla sola cada pocos minutos con cambios de otros
+// dispositivos — el guardado de sus propios datos NUNCA se ve afectado por
+// este interruptor, solo la conveniencia de ver en el momento lo que otros
+// hayan cambiado.
+function toggleSincronizacionPlat(platId){
+  updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.sincronizacionAutomatica=(p.sincronizacionAutomatica===false);return d;});
+  renderGestorAdmin();
+}
+// Enciende/apaga el modo "Pantalla en Blanco" de una institución — bloqueo
+// manual total de acceso, decisión 100% del Súper Admin (no hay lógica de
+// pagos ni fechas de corte automática en la base de datos). Con esto
+// activo, ningún usuario de esa institución (ningún rol) puede ver ni usar
+// el sistema hasta que se apague de nuevo, salvo el propio Súper Admin
+// (que sigue pudiendo "Entrar" a la plataforma para revisarla) o quien
+// tenga el acceso de rescate (ver _esRescateSuperAdminActivo).
+function togglePantallaBlancaPlat(platId){
+  updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.pantallaBlanca=!p.pantallaBlanca;return d;});
+  renderGestorAdmin();
+}
 // ============================================================
 // 📋 EXPORTAR ESTUDIANTES/DOCENTES ENTRE INSTITUCIONES
 // Permite copiar estudiantes y/o docentes de una institución hacia
@@ -4263,7 +4312,11 @@ function _updateSyncChip(state){
 // perder lo que ya calificó mientras estaba sin señal.
 // ============================================================
 window.addEventListener('online',function(){
+  // El envío de cambios pendientes (_pushDB) NUNCA depende del interruptor
+  // de sincronización automática — eso es guardado, no sincronización, y
+  // debe funcionar siempre.
   if(window._hayCambiosSinSincronizar) _pushDB();
+  if(!_sincronizacionAutoHabilitadaAhora()) return;
   if(sesion||gestorSesion) _syncAll(false);
 });
 window.addEventListener('offline',function(){
@@ -4294,6 +4347,7 @@ let _syncInterval=setInterval(function(){
   if(document.visibilityState==='hidden') return;
   const haySesionActiva=!!((typeof sesion!=='undefined'&&sesion)||(typeof gestorSesion!=='undefined'&&gestorSesion));
   if(!haySesionActiva) return;
+  if(!_sincronizacionAutoHabilitadaAhora()) return;
   _syncAll(false);
 },180000); // antes cada 20s — se subió a 3 minutos: los cambios propios ya se guardan de inmediato (ver saveDB), esto solo trae lo que OTRAS personas hayan cambiado mientras tanto, y no hace falta que sea tan frecuente — cada sincronización de fondo interrumpía lo que la persona estuviera haciendo en pantalla en ese momento (formularios, pestañas activas, etc.), y era la causa de varios de los problemas reportados
 
@@ -4304,9 +4358,198 @@ setInterval(function(){_updateSyncChip('ok');},30000);
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState==='visible'){
     _updateSyncChip('ok');
-    _syncAll(false);
+    if(_sincronizacionAutoHabilitadaAhora()) _syncAll(false);
   }
 });
+
+// ============================================================
+// 🔕 SINCRONIZACIÓN AUTOMÁTICA POR INSTITUCIÓN (encendido/apagado desde
+// el Súper Admin) + ⬛ PANTALLA EN BLANCO (bloqueo manual de acceso) +
+// 🔑 ACCESO DE RESCATE para el Súper Admin.
+// ------------------------------------------------------------------------
+// Ver plat.sincronizacionAutomatica y plat.pantallaBlanca en
+// _migrateGestorDB, y los botones correspondientes en el panel del
+// Súper Admin (toggleSincronizacionPlat / togglePantallaBlancaPlat).
+// ============================================================
+
+// Devuelve la plataforma (institución) de la sesión actualmente abierta
+// en este navegador, o null si no hay ninguna (ej. todavía en el login,
+// o es el propio Súper Admin sin haber entrado a ninguna institución).
+function _obtenerPlatActual(){
+  if(!window._currentPlatSK) return null;
+  try{ return gestorDB.platforms.find(function(x){return x.sk===window._currentPlatSK;})||null; }catch(e){ return null; }
+}
+
+// El Súper Admin (gestorSesion) nunca se ve afectado por el interruptor de
+// sincronización automática de una institución — es una comodidad propia
+// del panel del Súper Admin, no algo que dependa de la configuración de
+// una institución cliente.
+function _sincronizacionAutoHabilitadaAhora(){
+  if(typeof gestorSesion!=='undefined'&&gestorSesion) return true;
+  const plat=_obtenerPlatActual();
+  if(!plat) return true; // por defecto encendida si aún no se sabe a qué institución pertenece
+  return plat.sincronizacionAutomatica!==false;
+}
+
+// Muestra u oculta el aviso fijo en la parte superior de la pantalla que
+// invita a sincronizar manualmente cuando la institución actual tiene la
+// sincronización automática apagada. IMPORTANTE: esto NUNCA afecta el
+// guardado de notas/asistencia/etc. — eso se envía siempre de inmediato
+// por su propio camino (saveDB/updDB), sin pasar por aquí. Lo único que
+// cambia es si la pantalla se refresca sola con cambios de OTROS
+// dispositivos, o si hay que pedirlo con el botón "Sincronizar ahora".
+function _actualizarBannerSyncManual(){
+  const banner=document.getElementById('_bannerSyncManual');
+  const debeMostrarse=!_sincronizacionAutoHabilitadaAhora();
+  if(!debeMostrarse){
+    if(banner) banner.remove();
+    if(document.body&&document.body.style.paddingTop==='38px') document.body.style.paddingTop='';
+    return;
+  }
+  if(banner) return; // ya está visible
+  const b=document.createElement('div');
+  b.id='_bannerSyncManual';
+  b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99998;background:#1a3a5c;color:#fff;padding:8px 14px;font-size:0.8rem;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.25)';
+  b.innerHTML='<span>🔕 Sincronización automática desactivada para tu institución. Tus datos se guardan igual de inmediato — haz clic para traer los cambios más recientes de otros dispositivos.</span>'
+    +'<button onclick="_sincronizarAhoraManual()" style="background:#f1c40f;color:#001428;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer;font-size:0.78rem;white-space:nowrap">🔄 Sincronizar ahora</button>';
+  document.body.appendChild(b);
+  document.body.style.paddingTop='38px'; // evita que el aviso tape el encabezado normal
+}
+function _sincronizarAhoraManual(){
+  _syncAll(true);
+}
+
+// ── "Pantalla en Blanco" ────────────────────────────────────────────────
+function _activarPantallaBlanca(){
+  try{
+    document.title='—';
+    document.body.innerHTML='';
+    document.body.style.background='#fff';
+    try{ window.stop(); }catch(e){}
+  }catch(e){}
+}
+
+// ── Acceso de rescate del Súper Admin ────────────────────────────────────
+// REDISEÑADO (Ronda 4): antes, la contraseña de rescate se verificaba
+// SOLO comparando un hash SHA-256 guardado aquí mismo, en el navegador —
+// funcionaba, pero era una verificación 100% del lado del cliente: nada
+// impedía que alguien con conocimientos técnicos llamara directamente a
+// la API sin pasar por esta pantalla. Ahora el hash YA NO vive en este
+// archivo: al escribir "super" se pide la contraseña y se manda su hash
+// al servidor (POST /api/inetis/rescate/verificar), que la compara contra
+// RESCATE_SUPER_ADMIN_HASH (variable de entorno en Render) y, si coincide,
+// devuelve un token firmado (12h de validez) que de ahí en adelante viaja
+// automáticamente en cada petición a /api/inetis/db (ver
+// _envolverFetchParaRescate más abajo) — así el servidor, no solo la
+// pantalla, reconoce el rescate y deja pasar operaciones sobre una
+// institución con "Pantalla en Blanco"/bloqueo activo (ver
+// _verificarEstadoInstitucionK12 y RESCATE_SUPER_ADMIN_HASH en
+// src/index.ts). Para cambiar esta contraseña: calcule el nuevo hash SHA-256
+// (en la consola del navegador, F12, en cualquier página):
+//   await crypto.subtle.digest('SHA-256', new TextEncoder().encode('SU_NUEVA_CONTRASEÑA'))
+//     .then(b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''))
+// y ponga ese valor en la variable de entorno RESCATE_SUPER_ADMIN_HASH en
+// Render — no hace falta tocar ningún archivo de código para cambiarla.
+async function _sha256Hex(texto){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(texto));
+  return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+}
+function _esRescateSuperAdminActivo(){
+  try{ return sessionStorage.getItem('es_super_admin')==='true'; }catch(e){ return false; }
+}
+function _tokenRescateSuperAdmin(){
+  try{ return sessionStorage.getItem('rescate_token')||''; }catch(e){ return ''; }
+}
+// Le pide al servidor un token de rescate — aceptando CUALQUIERA de dos
+// pruebas: (a) {hashRescate}, el hash SHA-256 de la contraseña maestra de
+// rescate (flujo del atajo de teclado "super"), o (b) {u,p}, las mismas
+// credenciales reales del Súper Admin que ya se acaban de verificar en
+// doLoginGestor() (flujo transparente al iniciar sesión normalmente, para
+// que "Entrar" a una institución bloqueada funcione sin pedir la
+// contraseña de rescate aparte). Si el servidor confirma cualquiera de
+// las dos, se guarda el token en sessionStorage — de ahí en adelante viaja
+// solo en esta pestaña, nunca se comparte entre instituciones ni queda en
+// el HTML.
+async function _pedirTokenRescate(body){
+  try{
+    const r=await fetch(API_BASE+'/api/inetis/rescate/verificar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok&&d&&d.ok&&d.token){
+      try{ sessionStorage.setItem('es_super_admin','true'); sessionStorage.setItem('rescate_token',d.token); }catch(e){}
+      return true;
+    }
+    return false;
+  }catch(e){ return false; }
+}
+// Intercepta window.fetch UNA sola vez aquí en vez de modificar cada uno
+// de los más de 20 puntos del código que llaman a fetch('/api/inetis/db',
+// ...) para guardar/cargar datos de una institución: si hay un token de
+// rescate vigente en esta pestaña, se le agrega automáticamente la
+// cabecera X-Rescate-Token a toda petición hacia /api/inetis/db. Así el
+// servidor puede reconocer al Súper Admin en modo rescate sin tener que
+// tocar cada llamada existente una por una (y sin riesgo de dejar alguna
+// sin cubrir por descuido).
+(function _envolverFetchParaRescate(){
+  const _fetchOriginal=window.fetch.bind(window);
+  window.fetch=function(input,init){
+    try{
+      const url=typeof input==='string'?input:(input&&input.url)||'';
+      if(url.indexOf('/api/inetis/db')!==-1){
+        const token=_tokenRescateSuperAdmin();
+        if(token){
+          init=init||{};
+          init.headers=Object.assign({},init.headers||{},{'X-Rescate-Token':token});
+        }
+      }
+    }catch(e){}
+    return _fetchOriginal(input,init);
+  };
+})();
+(function _instalarRescateSuperAdminGlobal(){
+  let _buffer='';
+  window.addEventListener('keyup',function(ev){
+    // No interferir si la persona está escribiendo en un campo normal del
+    // sistema (usuario/contraseña/notas/etc.) — solo se activa cuando NO
+    // hay un input/textarea con foco, igual que un atajo de teclado global.
+    const act=document.activeElement;
+    const enCampo=act&&/^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName);
+    if(enCampo) return;
+    if(!ev.key||ev.key.length!==1) { _buffer=''; return; }
+    _buffer=(_buffer+ev.key).slice(-5).toLowerCase();
+    if(_buffer==='super'){
+      _buffer='';
+      const pass=prompt('🔑 Acceso de rescate del Súper Admin\n\nEscriba la contraseña maestra:');
+      if(pass===null) return;
+      _sha256Hex(pass).then(function(hash){
+        return _pedirTokenRescate({hashRescate:hash});
+      }).then(function(ok){
+        if(ok){
+          alert('✅ Acceso de rescate activado para esta pestaña.');
+          window.location.reload();
+        } else {
+          alert('❌ Contraseña incorrecta.');
+        }
+      });
+    }
+  });
+})();
+
+// Verificación periódica de "Pantalla en Blanco" para sesiones YA
+// abiertas — independiente del interruptor de sincronización automática
+// (esto es una medida de acceso, no de conveniencia, así que debe seguir
+// funcionando siempre, aunque la institución tenga la sincronización
+// automática apagada). Consulta cada minuto la lista de instituciones
+// (una consulta liviana, ya usada en otras partes) y corta el acceso de
+// inmediato si el Súper Admin activó el bloqueo mientras la persona ya
+// tenía la sesión abierta.
+setInterval(function(){
+  if(typeof sesion==='undefined'||!sesion||!window._currentPlatSK) return;
+  if(typeof gestorSesion!=='undefined'&&gestorSesion) return; // el Súper Admin nunca se autobloquea a sí mismo
+  _pullGestorDB().catch(function(){}).then(function(){
+    const plat=_obtenerPlatActual();
+    if(plat&&plat.pantallaBlanca&&!_esRescateSuperAdminActivo()){ _activarPantallaBlanca(); }
+  });
+},60000);
 
 // ============================================================
 // ── NOTIFICACIONES DEL NAVEGADOR (Push visual) ─────────────────────────────
@@ -5243,6 +5486,16 @@ function renderApp(){
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
   if(typeof htmlAvisoDocente==='undefined'){setTimeout(renderApp,30);return;}
   _iniciarControlTiempoSesion();
+  // "Pantalla en Blanco" — se revisa también aquí (no solo al momento del
+  // login) para cubrir el caso de una sesión restaurada automáticamente
+  // al recargar la página (localStorage) sin volver a pasar por el
+  // formulario de acceso. El Súper Admin (gestorSesion) nunca se
+  // autobloquea al previsualizar una institución con "🚀 Entrar".
+  if(!(typeof gestorSesion!=='undefined'&&gestorSesion)){
+    const _platAct=_obtenerPlatActual();
+    if(_platAct&&_platAct.pantallaBlanca&&!_esRescateSuperAdminActivo()){ _activarPantallaBlanca(); return; }
+  }
+  _actualizarBannerSyncManual();
   if(sesion.r==='elecciones'){iaRemoveWidget();renderElecciones();return;}
   if(sesion.r==='padre'){iaRemoveWidget();renderPadre();return;}
   if(sesion.r==='estudiante'){iaRemoveWidget();renderEstudiante();return;}
@@ -6070,7 +6323,12 @@ function attachLogoListeners(){
     const file=this.files[0];if(!file) return;
     const ext=(file.name.split('.').pop()||'').toLowerCase();
     if(!['png','jpg','jpeg'].includes(ext)){customAlert('⚠️ Solo se permiten archivos PNG o JPG.');this.value='';return;}
-    if(file.size>2*1024*1024){customAlert('⚠️ El archivo supera el límite de 2 MB. Comprima la imagen e intente de nuevo.');this.value='';return;}
+    // Límite subido de 2 MB a 8 MB: fileToCloudinaryUrl() ahora comprime la
+    // imagen automáticamente en el navegador (Canvas → JPEG ~80%) antes de
+    // subirla, así que el usuario ya no necesita comprimirla manualmente
+    // antes de seleccionarla. 8 MB sigue evitando archivos absurdamente
+    // grandes (p.ej. fotos RAW) que tardarían demasiado en procesarse.
+    if(file.size>8*1024*1024){customAlert('⚠️ El archivo supera el límite de 8 MB. Use una imagen más liviana e intente de nuevo.');this.value='';return;}
     fileToCloudinaryUrl(file,function(url){
       if(!url) return; // la subida falló; fileToCloudinaryUrl ya avisó con una alerta
       let logoAnterior=null;
@@ -6131,26 +6389,84 @@ function _cloudinaryThumb(url,size){
   if(url.indexOf('/upload/w_')!==-1) return url; // ya tiene una transformación aplicada
   return url.replace('/upload/','/upload/w_'+size+',h_'+size+',c_fill,g_face,q_auto,f_auto/');
 }
+// ── PILAR 3: Compresión de imágenes en el navegador antes de subir ────────
+// Redimensiona (máx. 1280×1280 por defecto) y recomprime a JPEG calidad
+// ~0.8 usando <canvas>, para reducir fotos de 3-5 MB a ~50-100 KB antes de
+// enviarlas a Cloudinary. Es "best effort": si algo falla (SVG, GIF animado,
+// navegador sin soporte de canvas.toBlob, imagen corrupta, etc.) resuelve
+// con el archivo ORIGINAL sin comprimir, para que la subida nunca se rompa
+// por culpa de este paso. Si la versión comprimida termina pesando más que
+// la original (puede pasar con imágenes ya muy comprimidas) se descarta y
+// se sube la original también.
+function _comprimirImagenAntesDeSubir(file,opciones){
+  return new Promise(function(resolve){
+    opciones=opciones||{};
+    const maxAncho=opciones.maxAncho||1280;
+    const maxAlto=opciones.maxAlto||1280;
+    const calidad=opciones.calidad||0.8;
+    const umbralMin=opciones.umbralMin!==undefined?opciones.umbralMin:120*1024; // no molestarse si ya es pequeña
+    if(!file||!file.type||file.type.indexOf('image/')!==0||file.type==='image/svg+xml'||file.type==='image/gif'){
+      resolve(file);return;
+    }
+    if(!window.HTMLCanvasElement||!window.URL||!URL.createObjectURL){resolve(file);return;}
+    if(file.size<=umbralMin){resolve(file);return;}
+    let url;
+    try{ url=URL.createObjectURL(file); }catch(e){ resolve(file);return; }
+    const img=new Image();
+    img.onload=function(){
+      try{
+        let w=img.naturalWidth||img.width,h=img.naturalHeight||img.height;
+        if(!w||!h){URL.revokeObjectURL(url);resolve(file);return;}
+        const escala=Math.min(1,maxAncho/w,maxAlto/h);
+        if(escala<1){w=Math.round(w*escala);h=Math.round(h*escala);}
+        const canvas=document.createElement('canvas');
+        canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');
+        if(!ctx){URL.revokeObjectURL(url);resolve(file);return;}
+        ctx.drawImage(img,0,0,w,h);
+        canvas.toBlob(function(blob){
+          URL.revokeObjectURL(url);
+          if(!blob||!blob.size||blob.size>=file.size){resolve(file);return;}
+          const nombreSalida=(file.name||'imagen').replace(/\.[^.]+$/,'')+'.jpg';
+          try{
+            resolve(new File([blob],nombreSalida,{type:'image/jpeg'}));
+          }catch(e){
+            // Safari viejo puede no soportar el constructor File con blobs grandes
+            blob.name=nombreSalida;
+            resolve(blob);
+          }
+        },'image/jpeg',calidad);
+      }catch(e){
+        try{URL.revokeObjectURL(url);}catch(e2){}
+        resolve(file);
+      }
+    };
+    img.onerror=function(){ try{URL.revokeObjectURL(url);}catch(e){} resolve(file); };
+    img.src=url;
+  });
+}
 function fileToCloudinaryUrl(file,cb,carpeta){
   if(!file) return;
-  const fd=new FormData();
-  fd.append('archivo',file);
-  fd.append('carpeta',carpeta||'general');
-  fd.append('sk',_skActual?(_skActual()||''):'');
-  fetch(API_BASE+'/api/inetis/upload',{method:'POST',body:fd})
-    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j}; }); })
-    .then(function(res){
-      if(!res.ok||!res.j||!res.j.url){
-        customAlert('❌ No se pudo subir el archivo'+(res.j&&res.j.error?(': '+res.j.error):'.')+' Intente de nuevo.');
+  _comprimirImagenAntesDeSubir(file).then(function(archivoFinal){
+    const fd=new FormData();
+    fd.append('archivo',archivoFinal);
+    fd.append('carpeta',carpeta||'general');
+    fd.append('sk',_skActual?(_skActual()||''):'');
+    fetch(API_BASE+'/api/inetis/upload',{method:'POST',body:fd})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j}; }); })
+      .then(function(res){
+        if(!res.ok||!res.j||!res.j.url){
+          customAlert('❌ No se pudo subir el archivo'+(res.j&&res.j.error?(': '+res.j.error):'.')+' Intente de nuevo.');
+          cb(null);
+          return;
+        }
+        cb(res.j.url);
+      })
+      .catch(function(){
+        customAlert('❌ No se pudo subir el archivo. Verifique su conexión e intente de nuevo.');
         cb(null);
-        return;
-      }
-      cb(res.j.url);
-    })
-    .catch(function(){
-      customAlert('❌ No se pudo subir el archivo. Verifique su conexión e intente de nuevo.');
-      cb(null);
-    });
+      });
+  });
 }
 // Sube una captura de cámara (canvas.toDataURL, que produce un texto Base64)
 // a Cloudinary igual que un archivo normal — se convierte primero a Blob y
@@ -6172,25 +6488,32 @@ function dataUriToCloudinaryUrl(dataUri,cb,carpeta,nombreArchivo){
 // mimetype para /upload genérico, pero para PDFs conviene forzarlo.
 function fileToCloudinaryUrlTipo(file,cb,carpeta,resourceType){
   if(!file) return;
-  const fd=new FormData();
-  fd.append('archivo',file);
-  fd.append('carpeta',carpeta||'general');
-  fd.append('sk',_skActual?(_skActual()||''):'');
-  if(resourceType) fd.append('resourceType',resourceType);
-  fetch(API_BASE+'/api/inetis/upload',{method:'POST',body:fd})
-    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j}; }); })
-    .then(function(res){
-      if(!res.ok||!res.j||!res.j.url){
-        customAlert('❌ No se pudo subir el archivo'+(res.j&&res.j.error?(': '+res.j.error):'.')+' Intente de nuevo.');
+  // Si resourceType es 'raw' (PDFs/documentos) no tiene sentido pasar por
+  // canvas — _comprimirImagenAntesDeSubir() ya se auto-excluye para
+  // cualquier archivo que no sea image/*, así que es seguro llamarla
+  // siempre aquí también (no-op para no-imágenes).
+  _comprimirImagenAntesDeSubir(resourceType==='raw'?null:file).then(function(archivoFinal){
+    archivoFinal=archivoFinal||file;
+    const fd=new FormData();
+    fd.append('archivo',archivoFinal);
+    fd.append('carpeta',carpeta||'general');
+    fd.append('sk',_skActual?(_skActual()||''):'');
+    if(resourceType) fd.append('resourceType',resourceType);
+    fetch(API_BASE+'/api/inetis/upload',{method:'POST',body:fd})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j}; }); })
+      .then(function(res){
+        if(!res.ok||!res.j||!res.j.url){
+          customAlert('❌ No se pudo subir el archivo'+(res.j&&res.j.error?(': '+res.j.error):'.')+' Intente de nuevo.');
+          cb(null);
+          return;
+        }
+        cb(res.j.url);
+      })
+      .catch(function(){
+        customAlert('❌ No se pudo subir el archivo. Verifique su conexión e intente de nuevo.');
         cb(null);
-        return;
-      }
-      cb(res.j.url);
-    })
-    .catch(function(){
-      customAlert('❌ No se pudo subir el archivo. Verifique su conexión e intente de nuevo.');
-      cb(null);
-    });
+      });
+  });
 }
 
 // ============================================================
@@ -6799,7 +7122,7 @@ function htmlCarga(){
   if(db.nivelEducativo==='UNIVERSIDAD'&&window._lmsAsigParaCargaCache===null) _lmsCargarAsigParaCarga();
   const docentes=db.users.filter(u=>u.r==='docente');
   const docsRows=docentes.map(u=>`<tr>
-    <td>${u.foto?`<img src="${_cloudinaryThumb(u.foto,80)}" class="photo-cell">`:'—'}</td>
+    <td>${u.foto?`<img src="${_cloudinaryThumb(u.foto,80)}" class="photo-cell" loading="lazy">`:'—'}</td>
     <td style="text-align:left">${u.n}</td><td>${u.cedula||'—'}</td><td>${u.u}</td><td>${u.cargo||'DOCENTE'}</td>
     <td style="white-space:nowrap">
       ${u.decreto?`<span style="background:${u.decreto==='1278'?'#d5e8fd':'#fef3cd'};color:#1a1a2e;padding:2px 7px;border-radius:10px;font-size:0.75rem;font-weight:700">${u.decreto}</span>`:'<span style="color:#aaa;font-size:0.8rem">—</span>'}
@@ -7279,7 +7602,7 @@ function htmlEstTabla(grado){
     <td>${(_pagEst.pagina-1)*_pagEst.porPagina+i+1}</td>
     <td style="text-align:left">
       <div style="display:flex;align-items:center;gap:7px">
-        ${e.foto?`<img src="${_cloudinaryThumb(e.foto,64)}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid #003366;flex-shrink:0" onclick="abrirZoomFoto('${e.foto}','${fmtNombreEst(e)}',event)">`:`<span style="width:32px;height:32px;border-radius:50%;background:#c5d8f0;border:2px solid #003366;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0;color:#1a1a2e">👤</span>`}
+        ${e.foto?`<img src="${_cloudinaryThumb(e.foto,64)}" loading="lazy" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid #003366;flex-shrink:0" onclick="abrirZoomFoto('${e.foto}','${fmtNombreEst(e)}',event)">`:`<span style="width:32px;height:32px;border-radius:50%;background:#c5d8f0;border:2px solid #003366;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0;color:#1a1a2e">👤</span>`}
         <div>
           <div style="font-weight:bold;font-size:0.85rem">${fmtNombreEst(e)}</div>
           <div style="font-size:0.72rem;color:#888">${e.tipoDoc?e.tipoDoc+' ':''}<b>${e.numDoc||'—'}</b> · ${e.modalidad==='online'?'💻':'🏫'}</div>
@@ -10104,7 +10427,7 @@ function htmlPlanilla(){
         <td style="background:#f7f9fb;border:1px solid #ddd;padding:4px 5px;text-align:center;font-size:0.7rem;color:#5d6d7e;font-weight:bold;min-width:52px;vertical-align:middle;user-select:all" title="ID interno del estudiante">${e.id}</td>
         <td style="text-align:left;font-weight:500;border:1px solid #ddd;padding:4px 6px;font-size:0.82rem">
           <div style="display:flex;align-items:center;gap:7px">
-            ${e.foto?`<img src="${_cloudinaryThumb(e.foto,92)}" onclick="abrirZoomFoto('${e.foto}','${e.n.replace(/'/g,"\\'")}',event)" style="width:46px;height:52px;border-radius:6px;object-fit:cover;border:2px solid #003366;flex-shrink:0;cursor:pointer;box-shadow:0 1px 5px rgba(0,0,0,.18);transition:transform .15s" onmouseover="this.style.transform='scale(1.12)'" onmouseout="this.style.transform='scale(1)'" title="Toca para ampliar foto">`:`<span style="width:46px;height:52px;border-radius:6px;background:#c5d8f0;display:inline-flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;border:2px solid #aaa;color:#1a1a2e">👤</span>`}
+            ${e.foto?`<img src="${_cloudinaryThumb(e.foto,92)}" loading="lazy" onclick="abrirZoomFoto('${e.foto}','${e.n.replace(/'/g,"\\'")}',event)" style="width:46px;height:52px;border-radius:6px;object-fit:cover;border:2px solid #003366;flex-shrink:0;cursor:pointer;box-shadow:0 1px 5px rgba(0,0,0,.18);transition:transform .15s" onmouseover="this.style.transform='scale(1.12)'" onmouseout="this.style.transform='scale(1)'" title="Toca para ampliar foto">`:`<span style="width:46px;height:52px;border-radius:6px;background:#c5d8f0;display:inline-flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;border:2px solid #aaa;color:#1a1a2e">👤</span>`}
             <span>${e.n}</span>
           </div>
         </td>
@@ -10531,6 +10854,75 @@ function _dispararAlertaBajoDesempenoSiAplica(estId,cId,per,baseAntes,baseDespue
     const cuerpo=`Estimado/a ${est.acudiente||'Acudiente'},\n\nLe informamos que su acudido/a ${est.n}, estudiante del grado ${est.g} de ${db.nombre||'nuestra institución'}, acaba de presentar desempeño BAJO en la asignatura ${carga.m} durante el Período ${per} del año ${db.anio||''}.\n\nLe invitamos a comunicarse con el director(a) de grupo o con rectoría para acordar un plan de mejoramiento.\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
     fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({to:est.email,subject:`⚠️ Alerta Académica automática — ${carga.m} — ${est.n}`,text:cuerpo})
+    }).catch(()=>{});
+  }
+}
+// ── Alerta automática por observación de aula (comportamiento, asistencia
+// puntual, u otros aspectos registrados por el docente) ────────────────────
+// Mismo patrón que _dispararAlertaBajoDesempenoSiAplica(): notificación
+// in-app (que ya dispara push automáticamente vía /api/inetis/notify →
+// enviarPushParaNotificacion en el servidor) + correo directo al acudiente
+// si tiene email registrado. Solo se llama para gravedad Moderada/Grave
+// (ver guardarObsAula() en 06-documentos-y-resto.js), para no saturar de
+// correos por cada observación menor.
+function _dispararAlertaObsAulaSiAplica(estId,tipo,gravedad,txt,per){
+  const est=db.ests.find(x=>x.id===estId);if(!est) return;
+  const urgente=gravedad==='Grave';
+  const iconoTipo={Comportamental:'😤',Académica:'📚',Asistencia:'📅',Otro:'📝'}[tipo]||'📝';
+  const msgN=`${urgente?'🔴':'🟡'} Alerta ${gravedad} automática: ${est.n} (${est.g}) — ${tipo}: ${txt.slice(0,140)}${txt.length>140?'…':''}`;
+  fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sk:_skActual(),kind:'alerta-observador',actor:'Sistema (automático)',message:msgN,
+      meta:{estId:est.id,estNombre:est.n,grado:est.g,tipo,gravedad,periodo:per,acudiente:est.acudiente||'',automatica:true,fecha:new Date().toISOString()}})
+  }).catch(()=>{});
+  if(est.email){
+    const cuerpo=`Estimado/a ${est.acudiente||'Acudiente'},\n\nLe informamos que su acudido/a ${est.n}, estudiante del grado ${est.g} de ${db.nombre||'nuestra institución'}, tiene una nueva observación de aula de tipo "${tipo}" con nivel de gravedad ${gravedad.toUpperCase()}, registrada durante el Período ${per} del año ${db.anio||''}:\n\n"${txt}"\n\n${urgente?'Le invitamos a comunicarse cuanto antes con el director(a) de grupo o con rectoría.':'Le invitamos a comunicarse con el director(a) de grupo si desea más información.'}\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
+    fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({to:est.email,subject:`${urgente?'🔴':'🟡'} Alerta ${gravedad} — ${tipo} — ${est.n}`,text:cuerpo})
+    }).catch(()=>{});
+  }
+}
+// ── Alerta automática por inasistencia crítica ──────────────────────────────
+// Se llama después de guardar una asistencia (ver guardarAsistencia() en
+// 06-documentos-y-resto.js) para cada estudiante marcado ausente. Calcula
+// el % de inasistencia del estudiante en esa asignatura (misma fórmula que
+// analizarInasistenciaAdan()) usando el umbral db.config.pctInasistenciaCritica
+// (25% por defecto) ya configurado por la institución. Para no enviar un
+// correo cada vez que se registra una nueva ausencia una vez cruzado el
+// umbral, se guarda una marca "ya notificado" en el propio registro del
+// estudiante (est.alertasInasistencia[anio_cargaId]) — solo se reenvía si el
+// porcentaje BAJA del umbral y luego lo vuelve a cruzar (ej. tras justificar
+// ausencias), igual que la alerta académica solo dispara al cruzar hacia abajo.
+function _verificarAlertaInasistenciaCriticaSiAplica(estId,grado,cId){
+  const est=db.ests.find(x=>String(x.id)===String(estId));if(!est) return;
+  const pctCrit=Number(db.config?.pctInasistenciaCritica||25);
+  const clases=(db.asistencia||[]).filter(a=>!a.deletedAt&&a.grado===grado&&String(a.cargaId)===String(cId));
+  const totalClases=clases.length;
+  if(totalClases<3) return; // muestra insuficiente para que el % sea significativo
+  const aus=clases.filter(c=>(c.ausentes||[]).some(x=>String(x)===String(estId))).length;
+  const pctAus=(aus/totalClases)*100;
+  const clave=String(db.anio||'')+'_'+String(cId);
+  const yaNotificado=!!(est.alertasInasistencia&&est.alertasInasistencia[clave]);
+  if(pctAus<pctCrit){
+    // Bajó del umbral (p.ej. ausencias justificadas después) — se limpia la
+    // marca para que, si vuelve a cruzar el umbral más adelante, sí avise de nuevo.
+    if(yaNotificado){
+      updDB(d=>{const e2=d.ests.find(x=>String(x.id)===String(estId));if(e2&&e2.alertasInasistencia)delete e2.alertasInasistencia[clave];return d;});
+    }
+    return;
+  }
+  if(yaNotificado) return; // ya se avisó por esta combinación año+asignatura, no repetir
+  const carga=db.carga.find(x=>String(x.id)===String(cId));
+  const asig=carga?(carga.m||carga.a):'la asignatura';
+  updDB(d=>{const e2=d.ests.find(x=>String(x.id)===String(estId));if(!e2)return d;if(!e2.alertasInasistencia)e2.alertasInasistencia={};e2.alertasInasistencia[clave]=true;return d;});
+  const msgN=`🔴 Alerta de Inasistencia Crítica automática: ${est.n} (${est.g}) alcanzó ${pctAus.toFixed(1)}% de inasistencia en ${asig} (umbral: ${pctCrit}%).`;
+  fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sk:_skActual(),kind:'alerta-inasistencia',actor:'Sistema (automático)',message:msgN,
+      meta:{estId:est.id,estNombre:est.n,grado:est.g,asignatura:asig,pctInasistencia:Number(pctAus.toFixed(1)),umbral:pctCrit,acudiente:est.acudiente||'',automatica:true,fecha:new Date().toISOString()}})
+  }).catch(()=>{});
+  if(est.email){
+    const cuerpo=`Estimado/a ${est.acudiente||'Acudiente'},\n\nLe informamos que su acudido/a ${est.n}, estudiante del grado ${est.g} de ${db.nombre||'nuestra institución'}, ha alcanzado un ${pctAus.toFixed(1)}% de inasistencia en ${asig}, superando el umbral crítico institucional del ${pctCrit}%.\n\nSegún la normatividad institucional, esto puede implicar riesgo de pérdida de la asignatura por inasistencia. Le invitamos a comunicarse cuanto antes con el director(a) de grupo, coordinación o rectoría para conocer el estado y acordar un plan de acompañamiento.\n\nAtentamente,\n${db.rectora||'La Rectoría'}\n${db.nombre||'Institución Educativa'}\nTeléfono: ${db.telInst||'—'}   ·   Correo: ${db.emailInst||'—'}`;
+    fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({to:est.email,subject:`🔴 Alerta de Inasistencia Crítica — ${asig} — ${est.n}`,text:cuerpo})
     }).catch(()=>{});
   }
 }
@@ -11995,20 +12387,55 @@ function _generarPdfBoletin(estudiantes,per,plantilla){
   pdfBoletines();
   window._boletinEstudiantesOverride=null;
 }
+// ── PILAR 4 (rendimiento/costos): descarga masiva de boletines ─────────────
+// NOTA IMPORTANTE sobre el alcance real de esta mejora: la generación del
+// PDF de los boletines ocurre 100% EN EL NAVEGADOR (jsPDF, ver
+// _generarBoletinesPDF más arriba) — el servidor nunca genera bytes de PDF,
+// solo firma un código de autenticidad (HMAC) por boletín. Esto significa
+// que la RAM de Render nunca estuvo en riesgo con la descarga masiva
+// (ver CHECKLIST_DESPLIEGUE.md, sección Pilar 4, para la explicación
+// completa); lo que sí podía dar problemas era el NAVEGADOR del usuario:
+// la versión anterior disparaba TODOS los grados "a ciegas" con setTimeout
+// espaciados 400ms, sin esperar a que cada uno terminara — con un colegio
+// de muchos grados y cientos de estudiantes, esto podía apilar varios PDFs
+// pesados generándose en simultáneo, consumir mucha memoria del navegador
+// y disparar la descarga de varios archivos casi al mismo tiempo (lo cual
+// además hace que el navegador bloquee las descargas por parecer spam).
+// Se cambió a una COLA SECUENCIAL: un grado a la vez, esperando (await) a
+// que termine antes de empezar el siguiente, con una barra de progreso
+// visible. No se introduce JSZip (se respeta la decisión ya tomada en el
+// código de mantener "un PDF por grado" sin empaquetar en un solo ZIP).
 async function descargarTodosBoletinesGrados(){
   var per=Number(document.getElementById('infPer')?.value||1);
-  var plantilla=window.boletinPlantilla||'clasico';
   var isAdmin=sesion.r==='admin';
   var gradosDB=isAdmin?db.grados:db.grados.filter(g=>gradosDelDocente(sesion.u).includes(g.n));
   if(!gradosDB.length){customAlert('No hay grados disponibles.');return;}
-  if(!await customConfirm('Se generarán boletines de '+gradosDB.length+' grado(s) para el periodo P'+per+'. Puede tomar unos segundos. ¿Continuar?')) return;
-  gradosDB.forEach(function(g,i){
-    setTimeout(function(){
-      var fakeGrado=document.getElementById('infGrado');
+  if(!await customConfirm('Se generarán boletines de '+gradosDB.length+' grado(s) para el periodo P'+per+', uno por uno. Puede tomar unos segundos por grado. ¿Continuar?')) return;
+
+  const fakeGrado=document.getElementById('infGrado');
+  let ok=0, fallidos=[];
+  for(let i=0;i<gradosDB.length;i++){
+    const g=gradosDB[i];
+    _showToast('📄 Generando boletines de "'+g.n+'"… ('+(i+1)+'/'+gradosDB.length+')','info',60000);
+    try{
       if(fakeGrado) fakeGrado.value=g.n;
-      pdfBoletines();
-    },i*400);
-  });
+      await pdfBoletines();
+      ok++;
+    }catch(e){
+      console.error('Error generando boletines de '+g.n,e);
+      fallidos.push(g.n);
+    }
+    // Pequeña pausa entre descargas (no entre generaciones — esa parte ya
+    // se esperó con await): le da tiempo al navegador de procesar la
+    // descarga anterior antes de disparar la siguiente, y evita que
+    // Chrome/Firefox bloqueen descargas múltiples muy seguidas.
+    if(i<gradosDB.length-1) await new Promise(r=>setTimeout(r,350));
+  }
+  if(fallidos.length){
+    _showToast('⚠️ Boletines generados: '+ok+'/'+gradosDB.length+'. Fallaron: '+fallidos.join(', '),'warn',8000);
+  }else{
+    _showToast('✅ Boletines generados correctamente: '+ok+' grado(s).','success',5000);
+  }
 }
 
 function cargarObsEstudiantes(){
@@ -12689,10 +13116,17 @@ function pdfConsolidado(){
   doc.save(`Consolidado_${grado}_P${per}_${db.anio}.pdf`);
 }
 
-function pdfBoletines(){
+async function pdfBoletines(){
   const gradoEl=document.getElementById('infGrado');const perEl=document.getElementById('infPer');
   if(!gradoEl||!perEl){customAlert('Use el botón desde la pestaña Boletines.');return;}
-  _generarBoletinesPDF(gradoEl.value,Number(perEl.value),false);
+  // Se agrega "return" y "async" (antes no los tenía) para que quien llame
+  // a pdfBoletines() pueda esperar (await) a que termine de generarse el
+  // PDF de este grado antes de seguir con el siguiente — lo usa
+  // descargarTodosBoletinesGrados() para generar los boletines masivos UNO
+  // POR UNO en vez de dispararlos todos "a ciegas" con setTimeout. No
+  // cambia en nada el comportamiento cuando se usa desde un botón normal
+  // (un clic → un boletín), solo habilita este nuevo uso encadenado.
+  return _generarBoletinesPDF(gradoEl.value,Number(perEl.value),false);
 }
 function pdfInformeFinalAnio(){
   const gradoEl=document.getElementById('infGradoFinal');if(!gradoEl) return;
@@ -14150,7 +14584,7 @@ function cargarListaObservador(){
         <td style="text-align:left">
           <div style="display:flex;align-items:center;gap:10px">
             ${e.foto
-              ?`<img src="${_cloudinaryThumb(e.foto,112)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2.5px solid #003366;flex-shrink:0;box-shadow:0 2px 6px rgba(0,0,0,0.18)">`
+              ?`<img src="${_cloudinaryThumb(e.foto,112)}" loading="lazy" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2.5px solid #003366;flex-shrink:0;box-shadow:0 2px 6px rgba(0,0,0,0.18)">`
               :`<span style="width:56px;height:56px;border-radius:50%;background:#c5d8f0;border:2.5px solid #aaa;display:inline-flex;align-items:center;justify-content:center;font-size:1.4rem;flex-shrink:0;color:#1a1a2e">👤</span>`}
             <span style="font-weight:500">${e.n}</span>
           </div>
@@ -14657,11 +15091,11 @@ function htmlEleccionesAdmin(){
   if(!db.elecciones[anioE]) db.elecciones[anioE]={personeros:[],contralores:[],votantes:[],votos:{personero:{},contralor:{},blancosP:0,blancosC:0}};
   const el=db.elecciones[anioE];
   const personeroRows=(el.personeros||[]).map((p,i)=>`<tr>
-    <td>${p.foto?`<img src="${_cloudinaryThumb(p.foto,88)}" style="width:36px;height:44px;object-fit:cover;border-radius:3px">`:'—'}</td>
+    <td>${p.foto?`<img src="${_cloudinaryThumb(p.foto,88)}" loading="lazy" style="width:36px;height:44px;object-fit:cover;border-radius:3px">`:'—'}</td>
     <td style="text-align:left">${p.nombre}</td><td>${p.grado}</td>
     <td><button class="btn-sm" style="background:#c0392b" onclick="eliminarCandidato('personero',${i})">🗑</button></td></tr>`).join('');
   const contralorRows=(el.contralores||[]).map((p,i)=>`<tr>
-    <td>${p.foto?`<img src="${_cloudinaryThumb(p.foto,88)}" style="width:36px;height:44px;object-fit:cover;border-radius:3px">`:'—'}</td>
+    <td>${p.foto?`<img src="${_cloudinaryThumb(p.foto,88)}" loading="lazy" style="width:36px;height:44px;object-fit:cover;border-radius:3px">`:'—'}</td>
     <td style="text-align:left">${p.nombre}</td><td>${p.grado}</td>
     <td><button class="btn-sm" style="background:#c0392b" onclick="eliminarCandidato('contralor',${i})">🗑</button></td></tr>`).join('');
   const totalVotos=Object.values(el.votos.personero||{}).reduce((a,b)=>a+b,0)+(el.votos.blancosP||0);
@@ -16002,6 +16436,15 @@ function procesarComandoVoz(texto){
 let _pmModal=null;
 
 function abrirPreMatriculaPublica(){
+  // Cierra la brecha señalada en la Ronda 2: esta pantalla es pública (no
+  // exige iniciar sesión), así que el bloqueo de "Pantalla en Blanco" que
+  // ya se revisa al momento de iniciar sesión no la cubría. gestorDB (la
+  // lista de instituciones del Súper Admin) ya está cargada en este punto
+  // — se llega aquí desde la pantalla de bienvenida/login de la
+  // institución, que la necesita para pintar el escudo, así que no hace
+  // falta ninguna petición adicional para esta verificación.
+  const _plat=window._currentPlatId?gestorDB.platforms.find(x=>x.id===window._currentPlatId):null;
+  if(_plat&&_plat.pantallaBlanca&&!_esRescateSuperAdminActivo()){ _activarPantallaBlanca(); return; }
   pag='pre-matricula-publica';
   render();
 }
@@ -16779,6 +17222,12 @@ function renderPortalInstitucion(platId,rolPre){
     }
     if(!sesionData){customAlert('❌ Usuario o contraseña incorrectos.\n\nVerifique sus credenciales.');return;}
     if(p.bloqueada&&rol!=='admin'){customAlert('🔒 Esta plataforma está temporalmente bloqueada por el administrador del sistema. Comuníquese con su institución.');return;}
+    // "Pantalla en Blanco" — bloqueo manual total activado por el Súper
+    // Admin para esta institución. Se aplica a TODOS los roles (a
+    // diferencia de "bloqueada", que exceptúa a admin) porque es un
+    // interruptor de "cortar el acceso por completo", no un aviso. El
+    // único bypass es el acceso de rescate (ver _esRescateSuperAdminActivo).
+    if(p.pantallaBlanca&&!_esRescateSuperAdminActivo()){_activarPantallaBlanca();return;}
     // ────────────────────────────────────────────────────────────────────
     // DESVÍO AL SISTEMA INDEPENDIENTE DE EDUCACIÓN SUPERIOR — única
     // conexión entre este portal y ese sistema aparte. Las credenciales ya
@@ -16810,19 +17259,33 @@ function renderPortalInstitucion(platId,rolPre){
     pag=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla';
     _sseInit();
     _checkSchemaMigrationBanner();
+    _actualizarBannerSyncManual();
     render();
   }
   function previewLogoGestor(inputId,previewId,hiddenId){
     const file=document.getElementById(inputId).files[0];
     if(!file)return;
-    if(file.size>300000){customAlert('La imagen debe ser menor a 300KB para mejor rendimiento.');return;}
-    const reader=new FileReader();
-    reader.onload=function(e){
-      const data=e.target.result;
-      document.getElementById(hiddenId).value=data;
-      document.getElementById(previewId).innerHTML='<img src="'+data+'" style="max-width:100%;max-height:100%;object-fit:contain">';
-    };
-    reader.readAsDataURL(file);
+    // Este campo se guarda como Base64 inline (no sube a Cloudinary), así
+    // que su peso importa mucho más que en otros formularios. Antes se
+    // rechazaba de plano cualquier archivo >300KB obligando al usuario a
+    // comprimirlo por su cuenta; ahora se comprime automáticamente en el
+    // navegador (Canvas → JPEG ~80%, máx. 800×800 para este uso puntual de
+    // escudo pequeño) y solo se rechaza si, aun comprimida, sigue pesando
+    // demasiado para guardarla inline con tranquilidad.
+    if(file.size>8*1024*1024){customAlert('⚠️ El archivo supera el límite de 8 MB. Use una imagen más liviana e intente de nuevo.');return;}
+    _comprimirImagenAntesDeSubir(file,{maxAncho:800,maxAlto:800,calidad:0.8,umbralMin:80*1024}).then(function(archivoFinal){
+      if(archivoFinal.size>600000){
+        customAlert('⚠️ La imagen sigue siendo muy pesada incluso después de comprimirla. Use una imagen más pequeña e intente de nuevo.');
+        return;
+      }
+      const reader=new FileReader();
+      reader.onload=function(e){
+        const data=e.target.result;
+        document.getElementById(hiddenId).value=data;
+        document.getElementById(previewId).innerHTML='<img src="'+data+'" style="max-width:100%;max-height:100%;object-fit:contain">';
+      };
+      reader.readAsDataURL(archivoFinal);
+    });
   }
   function descargarHTMLInstitucion(platId){
     const p=gestorDB.platforms.find(x=>x.id===platId);

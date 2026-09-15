@@ -24,6 +24,7 @@ import { db } from '../db/index.js';
 import { kvStore, lmsPlanesEstudio, lmsAsignaturasUniversidad, lmsAulasVirtuales, lmsUnidades, lmsRecursos, lmsActividades, lmsEntregas, univSecciones, univMatriculas, univCalificacionesCortes, univPerfiles, univConfigCortes, univPensums, univPensumAsignaturas, univFacultades, univDepartamentos, univPeriodosAcademicos, univParametros, univCorrequisitos, univBancoPreguntas, univPreguntas, univCuestionarios, univCuestionarioPreguntas, univIntentosCuestionario, univGradebookCategorias } from '../db/schema.js';
 import { eq, and, asc, sql } from 'drizzle-orm';
 import { uploadMemoria, subirBufferACloudinary } from '../lib/upload.js';
+import { leerFichaPlataformaGestor as _leerFichaPlataformaGestorCacheada, verificarEstadoInstitucion } from '../lib/gestor-cache.js';
 import { GoogleGenAI } from '@google/genai';
 import type { Express } from 'express';
 interface ArchivoSubidoMulter { buffer: Buffer; mimetype: string; originalname: string; size: number; }
@@ -32,26 +33,59 @@ const router = Router();
 
 const UNIV_SIGN_SECRET = process.env.DOC_SIGN_SECRET || ''; // reutiliza la misma clave del servidor que ya protege boletines/enlaces — no hace falta una nueva variable de entorno
 const SESION_HORAS_VALIDEZ = 12;
-const GESTOR_SK = '__gestor_academico_yc__'; // misma clave que ya usa el sistema K-12 para la lista de instituciones del Súper Admin
+
+// Lee la ficha de una institución dentro de la lista del Súper Admin
+// (gestorDB.platforms) — es el mismo registro que usa el panel del
+// Súper Admin del sistema K-12 (activa/bloqueada/sincronizacionAutomatica/
+// pantallaBlanca viven ahí, NO en la base de datos propia de la
+// institución). Devuelve null si no hay registro del gestor todavía, o si
+// esa institución no aparece en la lista.
+//
+// REFACTORIZADO (Ronda 4): antes esta función hacía su propia consulta a
+// kv_store en CADA llamada — como esto se ejecuta en CADA petición del
+// sistema universitario (no solo al iniciar sesión), duplicaba lecturas
+// contra Neon con el sistema K-12, que necesitaba exactamente lo mismo
+// para su propio candado de "Pantalla en Blanco" (ver src/index.ts). Ahora
+// ambos comparten una única caché corta en src/lib/gestor-cache.ts — el
+// comportamiento externo de esta función no cambió en nada.
+async function _leerFichaPlataformaGestor(sk: string): Promise<any | null> {
+  return _leerFichaPlataformaGestorCacheada(sk);
+}
 
 // Verifica, contra el registro REAL del Súper Admin (no algo que el
-// cliente pueda alterar), si la institución está activa y desbloqueada.
+// cliente pueda alterar), si la institución está activa, desbloqueada y
+// sin el modo "Pantalla en Blanco" activado.
 // Se usa tanto al iniciar sesión como en CADA petición posterior — así,
-// si el Súper Admin suspende o bloquea la institución mientras alguien
-// ya tiene una sesión abierta, esa sesión deja de poder hacer nada de
-// inmediato (no solo se bloquean los inicios de sesión nuevos).
-export async function verificarInstitucionActiva(sk: string): Promise<{ ok: boolean; motivo?: string }> {
+// si el Súper Admin suspende, bloquea o activa la pantalla en blanco de
+// la institución mientras alguien ya tiene una sesión abierta, esa
+// sesión deja de poder hacer nada de inmediato (no solo se bloquean los
+// inicios de sesión nuevos).
+export async function verificarInstitucionActiva(sk: string): Promise<{ ok: boolean; motivo?: string; pantallaBlanca?: boolean }> {
+  const estado = await verificarEstadoInstitucion(sk);
+  // Se traduce "pantallaBlancaActiva" (nombre usado en el módulo
+  // compartido, para no chocar con el campo "pantallaBlanca" que ya viaja
+  // dentro de "institucion" en /dashboard) de vuelta a "pantallaBlanca"
+  // (nombre que ya usaban los llamadores existentes de esta función) —
+  // así no hace falta tocar nada más en este archivo.
+  return { ok: estado.ok, motivo: estado.motivo, pantallaBlanca: estado.pantallaBlancaActiva };
+}
+
+// Trae las dos banderas configurables por el Súper Admin que el frontend
+// de Educación Superior necesita mostrar/respetar: si debe sincronizar
+// automáticamente en segundo plano, y si el modo "Pantalla en Blanco"
+// está activo (esta segunda ya se corta más arriba en el middleware, pero
+// se expone también aquí por si el frontend la necesita para pintar algo
+// puntual). Ambas con default seguro (true / false) si la institución
+// todavía no tiene el campo migrado.
+async function _obtenerFlagsPlataforma(sk: string): Promise<{ sincronizacionAutomatica: boolean; pantallaBlanca: boolean }> {
   try {
-    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
-    if (!rows.length) return { ok: true }; // si no hay registro del gestor (entorno sin ese dato aún), no bloquea por esto
-    const gestorDB = rows[0].value as any;
-    const plat = (gestorDB?.platforms || []).find((p: any) => p.sk === sk);
-    if (!plat) return { ok: true }; // institución no encontrada en la lista del gestor — no es motivo para bloquear aquí
-    if (plat.activa === false) return { ok: false, motivo: 'Esta institución está suspendida por el administrador del sistema.' };
-    if (plat.bloqueada) return { ok: false, motivo: 'Esta institución está bloqueada por el administrador del sistema.' };
-    return { ok: true };
+    const plat = await _leerFichaPlataformaGestor(sk);
+    return {
+      sincronizacionAutomatica: plat && plat.sincronizacionAutomatica === false ? false : true,
+      pantallaBlanca: Boolean(plat && plat.pantallaBlanca),
+    };
   } catch {
-    return { ok: true }; // ante un error de esta verificación puntual, no se tumba todo el sistema — se deja pasar
+    return { sincronizacionAutomatica: true, pantallaBlanca: false };
   }
 }
 
@@ -154,7 +188,15 @@ router.use(exigirSesion);
 // siquiera con un token todavía válido se puede seguir usando el sistema.
 router.use(async (req: any, res, next) => {
   const estado = await verificarInstitucionActiva(req.sesionUniv.sk);
-  if (!estado.ok) return res.status(403).json({ error: estado.motivo, institucionPausada: true });
+  if (!estado.ok) {
+    // pantallaBlanca es un motivo DISTINTO de institucionPausada: el
+    // frontend reacciona a cada uno de forma diferente (pantallaBlanca
+    // borra la pantalla por completo; institucionPausada muestra un
+    // aviso normal). Se manda "pantallaBlancaActiva" (no "pantallaBlanca")
+    // para no chocar con el campo del mismo nombre que ya viaja dentro de
+    // "institucion" en /dashboard.
+    return res.status(403).json({ error: estado.motivo, institucionPausada: !estado.pantallaBlanca, pantallaBlancaActiva: Boolean(estado.pantallaBlanca) });
+  }
   next();
 });
 
@@ -168,6 +210,7 @@ router.get('/dashboard', async (req: any, res) => {
     const { sk, rol, userId } = req.sesionUniv;
     const inst = await leerInstitucion(sk);
     if (!inst) return res.status(404).json({ error: 'Institución no encontrada.' });
+    const flagsPlat = await _obtenerFlagsPlataforma(sk);
     if (rol === 'estudiante') {
       const est = (inst.ests || []).find((e: any) => String(e.id) === String(userId));
       if (!est) return res.status(404).json({ error: 'Estudiante no encontrado.' });
@@ -177,7 +220,7 @@ router.get('/dashboard', async (req: any, res) => {
         .where(and(eq(univMatriculas.sk, sk), eq(univMatriculas.estudianteId, String(userId))));
       const totalCreditos = misSecciones.reduce((s, c) => s + (Number(c.creditos) || 0), 0);
       return res.json({
-        institucion: { nombre: inst.nombre, rectora: inst.rectora, anio: inst.anio },
+        institucion: { nombre: inst.nombre, rectora: inst.rectora, anio: inst.anio, ...flagsPlat },
         estudiante: { nombre: est.n, grupo: est.g, planEstudioId: est.planEstudioId || null },
         creditosInscritos: totalCreditos,
         asignaturasInscritas: misSecciones.length,
@@ -186,7 +229,7 @@ router.get('/dashboard', async (req: any, res) => {
     if (rol === 'docente') {
       const misSecciones = await db.select({ grupo: univSecciones.grupo }).from(univSecciones).where(and(eq(univSecciones.sk, sk), eq(univSecciones.catedraticoU, userId)));
       return res.json({
-        institucion: { nombre: inst.nombre, rectora: inst.rectora, anio: inst.anio },
+        institucion: { nombre: inst.nombre, rectora: inst.rectora, anio: inst.anio, ...flagsPlat },
         catedratico: { nombre: inst.users?.find((u: any) => u.u === userId)?.n || '' },
         asignaturasACargo: misSecciones.length,
         grupos: [...new Set(misSecciones.map((s) => s.grupo))],
@@ -195,7 +238,7 @@ router.get('/dashboard', async (req: any, res) => {
     // admin
     const planes = await db.select().from(lmsPlanesEstudio).where(eq(lmsPlanesEstudio.sk, sk));
     return res.json({
-      institucion: { nombre: inst.nombre, rectora: inst.rectora, anio: inst.anio },
+      institucion: { nombre: inst.nombre, rectora: inst.rectora, anio: inst.anio, ...flagsPlat },
       totalEstudiantes: (inst.ests || []).length,
       totalDocentes: (inst.users || []).filter((u: any) => u.r === 'docente').length,
       totalPlanesEstudio: planes.length,

@@ -79,8 +79,65 @@ td:first-child,th:first-child{text-align:left}
         return t ? { Authorization: 'Bearer ' + t } : {};
       },
     });
-    window.SyncEngine.autoAttach();
+    // autoAttach() YA NO se llama aquí de forma incondicional: ahora
+    // depende de si el Súper Admin dejó encendida la sincronización
+    // automática para esta institución (por defecto sí). app.js llama a
+    // SyncEngine.autoAttach() por su cuenta, solo si corresponde, en
+    // cuanto conoce ese dato (ver _actualizarSincUniv() en app.js).
   }
+</script>
+<script>
+  // ══════════════════════════════════════════════════════════════════════
+  // 🔑 ACCESO DE RESCATE DEL SÚPER ADMIN (independiente del portal K-12) —
+  // NOTA IMPORTANTE (actualizada en la Ronda 4): en el portal K-12
+  // (03-app-core.js) este mecanismo ahora verifica la contraseña contra el
+  // SERVIDOR (POST /api/inetis/rescate/verificar), porque ahí un token de
+  // rescate válido realmente destraba operaciones de datos. AQUÍ, en
+  // cambio, el bloqueo real de la Universidad ocurre 100% del lado del
+  // servidor (ver verificarInstitucionActiva en src/routes/university.ts)
+  // y A PROPÓSITO no tiene ninguna excepción para el Súper Admin — es la
+  // "barrera sólida" mencionada en el checklist de despliegue. Por eso
+  // esto que sigue es solo un mecanismo LOCAL/cosmético: evita que la
+  // pantalla en blanco se siga re-disparando sola en ESTA pestaña, pero
+  // NO desbloquea ningún dato real del servidor (las llamadas a
+  // /api/university/* seguirán fallando mientras la institución tenga la
+  // Pantalla en Blanco activada, sin excepción). Si quiere cambiar esta
+  // contraseña, calcule su hash SHA-256 (consola del navegador, F12):
+  //   await crypto.subtle.digest('SHA-256', new TextEncoder().encode('SU_NUEVA_CONTRASEÑA'))
+  //     .then(b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''))
+  // y reemplace el valor de abajo — ya NO necesita coincidir con nada del
+  // portal K-12 (ese ahora vive solo en el servidor, vía la variable de
+  // entorno RESCATE_SUPER_ADMIN_HASH).
+  // ══════════════════════════════════════════════════════════════════════
+  (function () {
+    const HASH_RESCATE = '7010613a7e0b177b8fb237c038fbac1d8f0f3673479b2514dee2e5c66afd4d31'; // hash de la contraseña de rescate configurada — ver instrucciones arriba para cambiarla
+    async function sha256Hex(texto) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(texto));
+      return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+    }
+    let buffer = '';
+    window.addEventListener('keyup', function (ev) {
+      const act = document.activeElement;
+      const enCampo = act && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName);
+      if (enCampo) return;
+      if (!ev.key || ev.key.length !== 1) { buffer = ''; return; }
+      buffer = (buffer + ev.key).slice(-5).toLowerCase();
+      if (buffer === 'super') {
+        buffer = '';
+        const pass = prompt('🔑 Acceso de rescate del Súper Admin\n\nEscriba la contraseña maestra:');
+        if (pass === null) return;
+        sha256Hex(pass).then(function (hash) {
+          if (hash === HASH_RESCATE) {
+            try { sessionStorage.setItem('es_super_admin', 'true'); } catch (e) {}
+            alert('✅ Acceso de rescate activado para esta pestaña.');
+            window.location.reload();
+          } else {
+            alert('❌ Contraseña incorrecta.');
+          }
+        });
+      }
+    });
+  })();
 </script>
 </body>
 </html>

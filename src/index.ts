@@ -26,6 +26,7 @@ import { eq, desc, and, isNull, or } from 'drizzle-orm';
 import { GoogleGenAI } from '@google/genai';
 import webpush from 'web-push';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
+import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
 import { enviarCorreoGeneral } from './lib/email-general.js';
 
@@ -83,6 +84,101 @@ function _jsonEstable(obj: unknown): string {
 }
 function _firmarBlob(datos: unknown): string {
   return crypto.createHmac('sha256', DOC_SIGN_SECRET).update(_jsonEstable(datos)).digest('hex').slice(0, 16).toUpperCase();
+}
+
+// ============================================================
+// ACCESO DE RESCATE DEL SÚPER ADMIN + BLOQUEO SERVIDOR K-12 (Ronda 4)
+// ------------------------------------------------------------------
+// Antes, el modo "Pantalla en Blanco" del portal K-12 (a diferencia del
+// universitario) solo se revisaba en el navegador — nada impedía que
+// alguien con conocimientos técnicos llamara directamente a
+// GET/POST /api/inetis/db sin pasar por la pantalla de login. Ahora se
+// revisa también AQUÍ, en el servidor (ver el gate agregado más abajo en
+// esas dos rutas), usando la misma fuente de verdad (gestorDB.platforms)
+// que ya usa el sistema universitario — vía la caché compartida en
+// src/lib/gestor-cache.ts.
+//
+// Para que el Súper Admin nunca se autobloquee, existe un "token de
+// rescate": un token firmado (HMAC, reutilizando DOC_SIGN_SECRET, igual
+// que ya se hace para firmar boletines) que el cliente adjunta como
+// cabecera "X-Rescate-Token" en cada petición a /api/inetis/db mientras
+// esté en modo rescate. El servidor lo entrega solo si prueba CUALQUIERA
+// de dos cosas:
+//   (a) conoce la contraseña MAESTRA de rescate (RESCATE_SUPER_ADMIN_HASH,
+//       variable de entorno — el atajo de teclado "super" en el frontend),
+//   (b) conoce las credenciales REALES del Súper Admin, las mismas que ya
+//       usa para entrar a su propio panel (gestorDB.superAdmin) — así,
+//       iniciar sesión normalmente como Súper Admin y usar "🚀 Entrar" en
+//       una institución bloqueada funciona sin pedir nada aparte.
+// ============================================================
+
+// Hash SHA-256 de la contraseña maestra de rescate. Por defecto coincide
+// con la contraseña configurada en el frontend (ver comentario junto a
+// _sha256Hex en 03-app-core.js) para que todo funcione sin configuración
+// adicional — pero SE RECOMIENDA fijar esta variable de entorno en Render
+// con el hash de una contraseña propia, distinta a la de fábrica y,
+// preferiblemente, distinta también de la contraseña real del Súper Admin
+// (defensa en profundidad: si una de las dos se filtra, la otra sigue
+// protegida). Calcule el hash con:
+//   node -e "console.log(require('crypto').createHash('sha256').update('SU_CONTRASEÑA').digest('hex'))"
+const RESCATE_SUPER_ADMIN_HASH = (process.env.RESCATE_SUPER_ADMIN_HASH || '7010613a7e0b177b8fb237c038fbac1d8f0f3673479b2514dee2e5c66afd4d31').toLowerCase();
+
+function _compararHashesSeguro(a: string, b: string): boolean {
+  try {
+    const bufA = Buffer.from(String(a || ''), 'hex');
+    const bufB = Buffer.from(String(b || ''), 'hex');
+    if (bufA.length !== bufB.length || !bufA.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
+// Replica en el servidor (Node) el mismo esquema PBKDF2 que ya usa el
+// navegador (Web Crypto) para las contraseñas del Súper Admin/rector/
+// docente — ver _hashPassword/_verificarPassword en 03-app-core.js.
+// Formato guardado: "pbkdf2$<saltHex>$<hashHex>" (100.000 iteraciones,
+// SHA-256, salida de 256 bits). Si la contraseña guardada no tiene ese
+// formato, es una contraseña heredada sin cifrar — se compara tal cual,
+// igual que ya hace el cliente.
+function _verificarPasswordSuperAdminServidor(passwordIngresada: string, valorGuardado: string): boolean {
+  try {
+    if (!valorGuardado) return false;
+    const esHash = typeof valorGuardado === 'string' && valorGuardado.indexOf('pbkdf2$') === 0 && valorGuardado.split('$').length === 3;
+    if (!esHash) return passwordIngresada === valorGuardado;
+    const partes = valorGuardado.split('$');
+    const salt = Buffer.from(partes[1], 'hex');
+    const derivado = crypto.pbkdf2Sync(passwordIngresada, salt, 100000, 32, 'sha256').toString('hex');
+    return _compararHashesSeguro(derivado, partes[2]);
+  } catch {
+    return false;
+  }
+}
+
+const RESCATE_TOKEN_VALIDEZ_MS = 12 * 60 * 60 * 1000; // 12 horas — igual que la sesión del sistema universitario
+function _firmarRescate(payload: unknown): string {
+  return crypto.createHmac('sha256', DOC_SIGN_SECRET || 'inseguro-configure-DOC_SIGN_SECRET').update(_jsonEstable(payload)).digest('hex');
+}
+function generarTokenRescate(): string {
+  const payload = { exp: Date.now() + RESCATE_TOKEN_VALIDEZ_MS };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return payloadB64 + '.' + _firmarRescate(payload);
+}
+function verificarTokenRescate(token: string): boolean {
+  try {
+    const [payloadB64, firma] = String(token || '').split('.');
+    if (!payloadB64 || !firma) return false;
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+    if (_firmarRescate(payload) !== firma) return false;
+    if (!payload.exp || Date.now() > payload.exp) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function _tieneRescateValido(req: any): boolean {
+  const token = req.headers['x-rescate-token'];
+  return typeof token === 'string' && !!token && verificarTokenRescate(token);
 }
 
 // ============================================================
@@ -203,7 +299,49 @@ const limitadorGeneral = rateLimit({
   legacyHeaders: false,
   message: { error: 'Demasiadas peticiones en poco tiempo. Espere un momento.' },
 });
+// ── PILAR 2 (rendimiento/costos): limitadores dedicados y más estrictos ────
+// para rutas sensibles específicas, ADEMÁS del limitadorGeneral de arriba
+// (ambos corren — este es un límite extra, más ajustado, solo para estas
+// rutas puntuales). Objetivo: frenar bots que intenten "email bombing" con
+// /send-email, o barridos automatizados sobre la consulta pública de
+// boletines, sin afectar el uso normal de la plataforma.
+//
+// Nota sobre "/api/auth/login": ese endpoint literal no existe en este
+// proyecto — el login real (K-12 y el que emite el token que usa después
+// el sistema universitario en /api/university/auth/token) ocurre en
+// POST /api/inetis/db, que YA está cubierto por limitadorLogin desde 2024
+// (ver arriba). No se duplica aquí para no aplicar dos límites distintos
+// al mismo endpoint.
+const limitadorEmail = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5, // 5 correos por minuto por IP — suficiente para un usuario legítimo reintentando, insuficiente para bombardear una bandeja de entrada o agotar la cuota del proveedor de correo
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Demasiadas solicitudes de envío de correo en poco tiempo. Espere un minuto e intente de nuevo.' },
+});
+const limitadorBoletinPublico = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20, // 20 consultas por minuto por IP — cómodo para un padre/estudiante consultando varias veces, restrictivo para un bot que intente adivinar códigos o barrer consultas
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas consultas en poco tiempo. Espere un momento e intente de nuevo.' },
+});
+// Limitador estricto para el endpoint de rescate del Súper Admin: es, por
+// diseño, el único lugar de todo el sistema K-12 donde se prueba una
+// contraseña contra el servidor en un endpoint público — sin este límite,
+// alguien podría intentar adivinarla por fuerza bruta.
+const limitadorRescate = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Demasiados intentos en poco tiempo. Espere un momento e intente de nuevo.' },
+});
 app.use('/api/inetis/db', limitadorLogin);
+app.use('/api/inetis/send-email', limitadorEmail);
+app.use('/api/inetis/boletin/verificar', limitadorBoletinPublico);
+app.use('/api/inetis/consulta-rapida', limitadorBoletinPublico); // cubre también /api/inetis/consulta-rapida/generar (mismo prefijo)
+app.use('/api/inetis/rescate', limitadorRescate);
 app.use('/api/', limitadorGeneral);
 
 // ============================================================
@@ -399,10 +537,53 @@ app.get('/api/inetis/events', (req, res) => {
 
 const GESTOR_SK = '__gestor_academico_yc__';
 
+// ============================================================
+// POST /api/inetis/rescate/verificar — emite el "token de rescate" del
+// Súper Admin (ver el bloque de comentarios grande más arriba, junto a
+// RESCATE_SUPER_ADMIN_HASH). Acepta CUALQUIERA de dos pruebas:
+//   { hashRescate } — hash SHA-256 de la contraseña maestra de rescate
+//                      (atajo de teclado "super" en cualquier pantalla)
+//   { u, p }         — las credenciales reales del Súper Admin (mismo
+//                      "usuario"/"contraseña" de gestorDB.superAdmin),
+//                      para el flujo transparente al iniciar sesión
+// ============================================================
+app.post('/api/inetis/rescate/verificar', async (req, res) => {
+  try {
+    const { hashRescate, u, p } = req.body as { hashRescate?: string; u?: string; p?: string };
+    let autorizado = false;
+    if (hashRescate && typeof hashRescate === 'string') {
+      autorizado = _compararHashesSeguro(hashRescate.toLowerCase(), RESCATE_SUPER_ADMIN_HASH);
+    }
+    if (!autorizado && u && p) {
+      const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+      const gestorDB: any = rows[0]?.value || null;
+      const superAdmin = gestorDB?.superAdmin;
+      if (superAdmin && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || ''))) {
+        autorizado = true;
+      }
+    }
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales incorrectas.' });
+    return res.json({ ok: true, token: generarTokenRescate() });
+  } catch (e) {
+    console.error('POST /api/inetis/rescate/verificar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
 app.get('/api/inetis/db', async (req, res) => {
   try {
     const sk = String(req.query.sk || '');
     if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    // Candado de "Pantalla en Blanco"/institución bloqueada — ver el
+    // bloque de comentarios grande más arriba. Antes esto solo se
+    // revisaba en el navegador; ahora también aquí, salvo que la petición
+    // traiga un token de rescate válido (Súper Admin).
+    if (!_tieneRescateValido(req)) {
+      const estado = await verificarEstadoInstitucion(sk);
+      if (!estado.ok) {
+        return res.status(403).json({ error: estado.motivo, institucionPausada: !!estado.institucionPausada, pantallaBlancaActiva: !!estado.pantallaBlancaActiva });
+      }
+    }
     const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
     if (!rows.length) return res.json({ data: null, version: null });
     const version = rows[0].updatedAt ? rows[0].updatedAt.toISOString() : null;
@@ -459,6 +640,16 @@ app.post('/api/inetis/db', async (req, res) => {
   try {
     const { sk, data, baseVersion } = req.body as { sk: string; data: unknown; baseVersion?: string | null };
     if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    // Mismo candado que en el GET de arriba — ver comentarios ahí. Se
+    // repite la verificación aquí porque este es un endpoint aparte: leer
+    // los datos de una institución bloqueada y GUARDAR datos nuevos son
+    // dos acciones distintas, y ambas deben quedar cubiertas.
+    if (!_tieneRescateValido(req)) {
+      const estado = await verificarEstadoInstitucion(sk);
+      if (!estado.ok) {
+        return res.status(403).json({ error: estado.motivo, institucionPausada: !!estado.institucionPausada, pantallaBlancaActiva: !!estado.pantallaBlancaActiva });
+      }
+    }
 
     if (baseVersion !== undefined) {
       const existing = await db.select().from(kvStore).where(eq(kvStore.key, sk));
@@ -511,6 +702,12 @@ app.post('/api/inetis/gestordb', async (req, res) => {
         set: { value: data as any, updatedAt: new Date() },
       });
     broadcastChange(GESTOR_SK);
+    // Invalida de inmediato la caché compartida (ver src/lib/gestor-cache.ts)
+    // que usan tanto el candado de "Pantalla en Blanco" del K-12 (arriba)
+    // como el del sistema universitario — así, cuando el Súper Admin
+    // activa/desactiva/edita algo desde su panel, el efecto es instantáneo
+    // en vez de esperar hasta 8 segundos a que la caché expire sola.
+    invalidarCacheGestorDB();
     return res.json({ ok: true });
   } catch (e) {
     console.error('POST /api/inetis/gestordb', e);
