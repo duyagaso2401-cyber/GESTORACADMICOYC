@@ -186,17 +186,32 @@ async function enviarConResend(p: ParametrosEnvioApi): Promise<ResultadoEnvioApi
 async function enviarConZeptoMail(p: ParametrosEnvioApi): Promise<ResultadoEnvioApi> {
   // ZeptoMail espera la cabecera Authorization con el valor COMPLETO que
   // el panel de Zoho entrega (normalmente algo como "Zoho-enczapikey
-  // wSs...") — por eso aquí se manda EMAIL_API_KEY tal cual, sin agregarle
-  // ningún prefijo "Bearer". Un error muy común es copiar SOLO el token
-  // sin el prefijo "Zoho-enczapikey " — si EMAIL_API_KEY no empieza por
-  // "Zoho-enczapikey", se avisa explícitamente en los logs para que sea
-  // fácil de detectar sin tener que interpretar el error crudo de Zoho.
-  if (!/^zoho-enczapikey\s/i.test(EMAIL_API_KEY)) {
+  // wSs..."), no solo el token. Un error MUY común (confirmado en
+  // producción: ver CHECKLIST_DESPLIEGUE.md Ronda 8) es copiar SOLO el
+  // token largo desde el panel de Zoho, sin las palabras "Zoho-enczapikey "
+  // que aparecen delante de él — quedando algo como "wSs..." en vez de
+  // "Zoho-enczapikey wSs...". ZeptoMail rechaza eso con 401 "Invalid API
+  // Token found", un mensaje que no deja nada claro que el problema sea
+  // justamente el prefijo faltante.
+  //
+  // En vez de solo AVISAR del problema (como se hacía antes) y obligar a
+  // ir a corregirlo en Render, aquí se CORRIGE automáticamente: si el
+  // valor no trae ya el prefijo esperado, se le agrega antes de usarlo.
+  // Esto es seguro en los dos sentidos: si el valor YA traía el prefijo,
+  // no se toca nada (la comparación es insensible a mayúsculas/minúsculas
+  // pero el valor usado de ahí en adelante es siempre el original tal
+  // cual); si NO lo traía, agregarlo es exactamente lo que ZeptoMail
+  // necesita para poder evaluar el token — nunca puede "empeorar" un
+  // token que de por sí no iba a funcionar sin el prefijo.
+  let claveZepto = EMAIL_API_KEY;
+  if (!/^zoho-enczapikey\s/i.test(claveZepto)) {
     console.warn(
-      '⚠️  [email-http-provider] EMAIL_API_KEY no empieza con el prefijo esperado "Zoho-enczapikey " — ' +
+      '⚠️  [email-http-provider] EMAIL_API_KEY no traía el prefijo esperado "Zoho-enczapikey " — ' +
       'es un error de configuración muy común (copiar solo el token, sin el prefijo, desde el panel de Zoho). ' +
-      'Revise el valor completo del "Send Mail Token" en Zoho ZeptoMail → API/SMTP Tokens.'
+      'Se agregó automáticamente para este envío, pero es más seguro corregir el valor guardado en Render: ' +
+      'debe ser el "Send Mail Token" COMPLETO tal como lo muestra Zoho ZeptoMail → API/SMTP Tokens, comillas incluidas fuera, prefijo incluido dentro.'
     );
+    claveZepto = 'Zoho-enczapikey ' + claveZepto;
   }
   const cuerpoEnvio = {
     from: { address: EMAIL_API_FROM },
@@ -210,7 +225,7 @@ async function enviarConZeptoMail(p: ParametrosEnvioApi): Promise<ResultadoEnvio
     resp = await fetch('https://api.zeptomail.com/v1.1/email', {
       method: 'POST',
       headers: {
-        Authorization: EMAIL_API_KEY,
+        Authorization: claveZepto,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(cuerpoEnvio),

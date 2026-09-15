@@ -424,6 +424,31 @@ La respuesta te va a decir, sin rodeos, una de dos cosas:
 
 ---
 
+## Ronda 8 — Causa confirmada con datos reales, y corregida automáticamente en el código
+
+Esta vez tu evidencia sí incluyó el momento exacto del intento de envío, y eso permitió confirmar la causa con certeza — ya no es hipótesis.
+
+### Lo que confirmaron tus logs
+
+En el log apareció, de nuevo, mi propia advertencia: *"EMAIL_API_KEY no empieza con el prefijo esperado 'Zoho-enczapikey'"* — pero esta vez con el arreglo de comillas de la Ronda 6 ya desplegado y funcionando. Eso descarta el problema de comillas (ya estaba resuelto) y confirma algo más simple: **el valor guardado en `EMAIL_API_KEY` en Render es solo el token largo (algo como `wSs...`), sin las palabras `Zoho-enczapikey ` que Zoho muestra delante de él en su panel** — probablemente porque, al copiarlo, se seleccionó solo la parte que parece "la clave" y no la línea completa. ZeptoMail exige el texto completo con ese prefijo; sin él, responde exactamente lo que viste: `401 Invalid API Token found`.
+
+### Lo que corregí (esta vez en el código, no solo con un aviso)
+
+Hasta la Ronda 7, el código solo AVISABA en los logs si faltaba el prefijo, pero seguía enviando el valor tal cual — dejando la corrección completamente en tus manos. **Ahora, en `src/lib/email-http-provider.ts`, si `EMAIL_API_KEY` no trae ya el prefijo `Zoho-enczapikey `, el propio código se lo agrega automáticamente antes de cada envío por ZeptoMail.** Esto es seguro en los dos sentidos: si el valor ya estaba completo, no se toca nada; si le faltaba el prefijo (tu caso), agregarlo es exactamente lo que ZeptoMail necesita para aceptar el token — nunca puede "empeorar" algo que sin el prefijo de todas formas no iba a funcionar.
+
+Con este cambio, **es muy probable que el envío ya funcione sin que tengas que tocar nada en Render** — pero de todas formas, cuando tengas un momento, te recomiendo entrar a Render → tu servicio → Environment → `EMAIL_API_KEY` y pegar el valor completo tal como Zoho lo muestra (con el prefijo incluido). No es obligatorio ya (el código lo compensa automáticamente), pero es la forma más prolija y explícita de tenerlo configurado, y evita depender de esta corrección automática si en el futuro cambias de proveedor de correo.
+
+### Qué debes hacer tú ahora
+
+1. **Vuelve a desplegar** este ZIP (Manual Deploy en Render).
+2. **Prueba de nuevo con el endpoint de la Ronda 7** (`POST /api/inetis/email-status/enviar-prueba` con tu `to` y `hashRescate` — ver Ronda 7 arriba para el paso a paso completo). Esta vez debería devolver `{"ok":true,...}`.
+3. Si `ok:true`, ya puedes probar "Recuperar Contraseña" directamente desde la pantalla real — debería llegar el correo.
+4. Si por algún motivo sigue devolviendo `ok:false`, copia el campo `"error"` completo de la respuesta — a estas alturas, con el prefijo ya corregido automáticamente, cualquier error que quede sería una causa distinta (por ejemplo, el remitente `contacto@gestoracademicoyc.com` sin verificar como dominio de envío dentro de tu cuenta de ZeptoMail, que es el motivo de rechazo más común después de un token con el formato correcto).
+
+**Cómo lo verifiqué:** recompilé `src/lib/email-http-provider.ts` con TypeScript — 0 errores nuevos (los mismos 25 de siempre en `schema.ts`, sin relación con esto). Escribí y corrí 6 casos de prueba aislados para la lógica de auto-corrección del prefijo (token sin prefijo, con prefijo en minúsculas, en mayúsculas, ya correcto, vacío, y un caso límite sin el espacio después del prefijo) — los 6 pasaron. No pude confirmar el envío real contra tu cuenta de ZeptoMail (no tengo tu token), así que el resultado del `curl` de prueba de la Ronda 7, ejecutado después de este redeploy, es la verificación final que falta.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.
