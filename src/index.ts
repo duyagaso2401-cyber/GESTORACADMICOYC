@@ -29,7 +29,7 @@ import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } f
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
 import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado } from './lib/email-general.js';
-import { emailApiConfigurado, emailApiProveedor } from './lib/email-http-provider.js';
+import { emailApiConfigurado, emailApiProveedor, enviarPorApiHttp } from './lib/email-http-provider.js';
 
 // ============================================================
 // MONITOREO DE ERRORES (Sentry) — OPCIONAL.
@@ -358,6 +358,11 @@ app.use('/api/inetis/send-email', limitadorEmail);
 app.use('/api/inetis/boletin/verificar', limitadorBoletinPublico);
 app.use('/api/inetis/consulta-rapida', limitadorBoletinPublico); // cubre también /api/inetis/consulta-rapida/generar (mismo prefijo)
 app.use('/api/inetis/rescate', limitadorRescate);
+// Mismo limitador estricto que /api/inetis/rescate: el nuevo endpoint de
+// abajo (POST /api/inetis/email-status/enviar-prueba) también exige una
+// contraseña para usarse, así que merece la misma protección contra
+// fuerza bruta.
+app.use('/api/inetis/email-status', limitadorRescate);
 app.use('/api/', limitadorGeneral);
 
 // ============================================================
@@ -908,6 +913,66 @@ app.get('/api/inetis/email-status', (_req, res) => {
     smtpConfigurado: smtpGeneralConfigurado,
     algunCanalConfigurado: correoGeneralConfigurado,
   });
+});
+
+// ------------------------------------------------------------------
+// POST /api/inetis/email-status/enviar-prueba
+// ------------------------------------------------------------------
+// El endpoint de arriba (GET /email-status) solo dice si las variables
+// de entorno están PRESENTES — no dice si el envío REAL funciona (un
+// token con formato válido pero revocado, o un remitente no verificado
+// en ZeptoMail, igual pasarían esa prueba). Este endpoint SÍ intenta un
+// envío real y de una vez devuelve, en la propia respuesta JSON, el
+// error exacto del proveedor — así se puede diagnosticar con un solo
+// comando `curl`, sin tener que ir a buscarlo entre el resto de los
+// logs de Render (que se mezclan con cada petición normal del sistema).
+//
+// Protegido con la misma contraseña maestra de rescate que ya existe
+// (RESCATE_SUPER_ADMIN_HASH — ver arriba) para que no sea un endpoint
+// público de envío de correo libre; y con el mismo limitador estricto
+// que /api/inetis/rescate (5 intentos/minuto) contra fuerza bruta.
+//
+// Uso:
+//   curl -X POST https://TU-DOMINIO/api/inetis/email-status/enviar-prueba \
+//     -H "Content-Type: application/json" \
+//     -d '{"to":"tu-correo-personal@gmail.com","hashRescate":"<sha256 de tu contraseña de rescate>"}'
+//
+// Para calcular hashRescate a partir de la contraseña, en la consola del
+// navegador (F12), en cualquier página del sistema:
+//   crypto.subtle.digest("SHA-256", new TextEncoder().encode("Gestor2026*"))
+//     .then(b=>console.log([...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("")))
+app.post('/api/inetis/email-status/enviar-prueba', async (req, res) => {
+  try {
+    const { to, hashRescate } = req.body as { to?: string; hashRescate?: string };
+    const autorizado = typeof hashRescate === 'string' && hashRescate.length > 0 && _compararHashesSeguro(hashRescate.toLowerCase(), RESCATE_SUPER_ADMIN_HASH);
+    if (!autorizado) {
+      return res.status(403).json({ ok: false, error: 'hashRescate inválido o faltante.' });
+    }
+    if (!to) {
+      return res.status(400).json({ ok: false, error: 'Falta el campo "to" (correo de prueba donde recibir el envío).' });
+    }
+    if (!emailApiConfigurado) {
+      return res.status(200).json({
+        ok: false,
+        canalProbado: 'ninguno',
+        error: 'El canal por API HTTP no está configurado (EMAIL_API_PROVIDER/EMAIL_API_KEY ausentes) — no hay nada que probar todavía.',
+      });
+    }
+    // Se prueba DIRECTAMENTE el canal por API HTTP (sin caer a SMTP), para
+    // que la respuesta aísle con certeza si el problema está ahí — si se
+    // dejara caer a SMTP automáticamente (como hace el flujo real), un
+    // fallo de SMTP por puerto bloqueado podría mezclarse en la misma
+    // respuesta y hacer más confuso el diagnóstico.
+    const resultado = await enviarPorApiHttp({
+      to: String(to),
+      subject: 'Correo de prueba — Gestor Académico YC',
+      text: 'Este es un correo de prueba generado por /api/inetis/email-status/enviar-prueba para verificar que el canal de correo por API HTTP funciona correctamente.',
+    });
+    return res.status(200).json({ ok: resultado.ok, canalProbado: emailApiProveedor, error: resultado.error || null });
+  } catch (e: any) {
+    console.error('POST /api/inetis/email-status/enviar-prueba', e);
+    return res.status(500).json({ ok: false, error: e?.message || 'Error interno al intentar el envío de prueba.' });
+  }
 });
 
 // ============================================================

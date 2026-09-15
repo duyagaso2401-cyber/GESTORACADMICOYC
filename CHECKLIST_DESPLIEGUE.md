@@ -384,6 +384,46 @@ Tus logs mostraban, repetidas veces, este error: `ValidationError: ERR_ERL_UNEXP
 
 ---
 
+## Ronda 7 — Sigue fallando tras la Ronda 6: agregué una prueba de envío real para dejar de adivinar
+
+Revisé lo que me compartiste con cuidado, y tengo que ser directo: **los logs de Render que me pasaste esta vez son solo del arranque del servidor** (desde que se reinició hasta "Your service is live"), no del momento exacto en que intentaste "Recuperar Contraseña". Por eso no aparece ahí ningún mensaje de ZeptoMail ni de `[email-http-provider]` — esos solo se imprimen en el instante de un intento de envío real, y ese instante no quedó capturado en lo que copiaste.
+
+Lo que sí es un dato valioso: `/api/inetis/email-status` ahora muestra `apiHttpConfigurado: true` con `"zeptomail"`, así que las variables SÍ están llegando al proceso con el formato correcto (si hubieran seguido con comillas de más, como sospechaba en la Ronda 6, este endpoint igual habría dicho `true` — ese endpoint solo confirma que la variable no está vacía, no que su contenido sea válido para ZeptoMail). Es decir: el arreglo de comillas de la Ronda 6 no está de más, pero por sí solo no prueba ni descarta que el token en sí sea correcto.
+
+**En vez de seguir pidiéndote que copies logs de Render (que se mezclan con el tráfico normal del sistema y es fácil perder el momento exacto), agregué una forma de probar el envío real con un solo comando, que te devuelve el error exacto de ZeptoMail de inmediato, en la misma respuesta:**
+
+```
+POST /api/inetis/email-status/enviar-prueba
+Body: { "to": "tu-correo-personal@gmail.com", "hashRescate": "<hash de tu contraseña de rescate>" }
+```
+
+Protegido con la misma contraseña maestra de rescate que ya usas (`Gestor2026*` por defecto, o la que hayas puesto en `RESCATE_SUPER_ADMIN_HASH`), para que no sea un endpoint público de envío de correo libre para cualquiera.
+
+**Cómo obtener el hash que pide (`hashRescate`):** abre la consola del navegador (F12) en cualquier página del sistema y pega esto, cambiando la contraseña si usaste una distinta a `Gestor2026*`:
+
+```js
+crypto.subtle.digest("SHA-256", new TextEncoder().encode("Gestor2026*"))
+  .then(b=>console.log([...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("")))
+```
+
+Copia el texto largo que imprime (eso es el `hashRescate`), y luego ejecuta esto en una terminal (cambiando el dominio, el correo de destino y el hash):
+
+```bash
+curl -X POST https://gestoracademicoyc.com/api/inetis/email-status/enviar-prueba \
+  -H "Content-Type: application/json" \
+  -d '{"to":"tu-correo-personal@gmail.com","hashRescate":"PEGA_AQUÍ_EL_HASH"}'
+```
+
+La respuesta te va a decir, sin rodeos, una de dos cosas:
+- `{"ok":true,...}` → el envío por ZeptoMail SÍ funciona — si "Recuperar Contraseña" sigue sin funcionar después de esto, el problema estaría en otra parte del flujo (no en el correo en sí), y con eso ya sabríamos dónde seguir mirando.
+- `{"ok":false,"canalProbado":"zeptomail","error":"..."}` → el campo `"error"` va a traer el mensaje EXACTO que devuelve ZeptoMail (por ejemplo, si el token sigue siendo inválido, si el remitente no está verificado en tu cuenta de ZeptoMail, o cualquier otro motivo de rechazo) — cópiame exactamente ese texto y con eso sí puedo decirte la causa exacta, en vez de seguir descartando posibilidades una por una.
+
+**Nota honesta:** esta prueba solo cubre el canal por API HTTP (ZeptoMail), a propósito — no cae a SMTP como sí hace el flujo real de "Recuperar Contraseña", para que la respuesta no mezcle dos posibles fallas distintas en un solo mensaje confuso. El SMTP ya sabemos, por tus propios logs, que falla por tiempo de espera agotado (`Connection timeout`) — es el bloqueo de puertos SMTP de Render en el plan gratuito, documentado desde rondas anteriores, y no es el canal que nos interesa arreglar (para eso existe precisamente el canal por API HTTP).
+
+**Cómo lo verifiqué:** recompilé `src/index.ts` con TypeScript — 0 errores nuevos (los mismos 25 de siempre en `schema.ts`). Escribí y corrí 7 casos de prueba aislados para la lógica de autorización del nuevo endpoint (hash correcto, hash correcto en mayúsculas, hash incorrecto, hash ausente/vacío, hash con caracteres no válidos, falta el campo "to") — los 7 pasaron. No pude ejecutar la prueba de envío real contra tu cuenta de ZeptoMail (no tengo tu contraseña de rescate ni tus credenciales), así que el resultado de tu propio `curl` es, esta vez sí, el dato que hace falta para cerrar este tema de una vez.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.
