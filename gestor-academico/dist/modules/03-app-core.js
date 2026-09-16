@@ -706,7 +706,27 @@ async function _pushDB(){
       _lastSyncTs=Date.now();
       const j=await r.json().catch(()=>({}));
       window._dbVersion=j&&j.version?j.version:window._dbVersion;
-      window._dbBaseSnapshot=_clonarDB(db);
+      // Ronda 21 — CORRECCIÓN DE FONDO DE LA CAUSA RAÍZ DE "SE BORRAN LAS
+      // NOTAS Y REAPARECE LA ANTERIOR": la base de la fusión de 3 vías
+      // (_dbBaseSnapshot) debe ser EXACTAMENTE los datos que el servidor
+      // acaba de confirmar — nunca "lo que sea que 'db' tenga en este
+      // instante". Entre que este envío salió y llegó esta respuesta (un
+      // viaje de red, puede tardar de milisegundos a varios segundos con
+      // mala señal) el docente pudo haber calificado OTRA celda más; esa
+      // nota nueva SÍ está en "db" pero el servidor todavía no la tiene.
+      // Antes esta línea hacía "_clonarDB(db)", que adelantaba la base con
+      // esa nota-todavía-sin-confirmar como si ya fuera un hecho conocido
+      // por ambos lados. Si después llegaba una sincronización de fondo o
+      // un conflicto 409 (de este mismo guardado o de cualquier otro campo)
+      // ANTES de que esa nota terminara de confirmarse por su cuenta, la
+      // fusión de 3 vías la interpretaba como "esto ya lo sabíamos los dos,
+      // no cambió" y la reemplazaba por el valor que el servidor sí tenía
+      // confirmado (el anterior) — exactamente el síntoma reportado. Ahora
+      // se usa el propio "_json" que se envió (fijo, no se mueve aunque
+      // "db" seguia cambiando mientras se esperaba la respuesta), así la
+      // base nunca avanza más rápido que lo que el servidor realmente
+      // confirmó.
+      try{ window._dbBaseSnapshot=JSON.parse(_json); }catch(_ep){ window._dbBaseSnapshot=_clonarDB(db); }
     }
   }catch(e){
     // Sin conexión (o el servidor no respondió): el cambio ya quedó guardado
@@ -745,7 +765,17 @@ async function _resolverConflictoDB(conflicto,_sk){
     const {result,conflictos,detalles}=_merge3way(base,mine,theirs);
     db=result;
     window._dbVersion=conflicto.version||null;
-    window._dbBaseSnapshot=_clonarDB(db);
+    // Ronda 21: NO se marca esto como "ya confirmado por el servidor" — el
+    // resultado de esta fusión todavía no se le ha enviado a nadie (eso lo
+    // hace saveDB(), unas líneas más abajo). Adelantar aquí la base con
+    // datos que siguen sin confirmar era, junto con el mismo problema en
+    // _pushDB(), la causa raíz de que una nota recién combinada pudiera
+    // "desaparecer" si llegaba otra sincronización antes de que el
+    // reintento de guardado terminara de confirmarse de verdad. La base se
+    // deja tal como estaba (sigue siendo un ancestro común válido, solo que
+    // un poco más antiguo — eso nunca causa pérdida de datos, como mucho
+    // una fusión redundante pero inofensiva) y se actualiza correctamente,
+    // solo cuando ESE reintento se confirme, dentro de _pushDB().
     try{ localStorage.setItem(_sk,JSON.stringify(db)); }catch(e){}
     _registrarConflictoBitacora(_sk,conflictos,detalles,'push-conflicto-409');
     _showToast(conflictos>0
@@ -4565,7 +4595,24 @@ async function _syncAll(force){
             db=_fus.result;
             _registrarConflictoBitacora(_sk,_fus.conflictos,_fus.detalles,'pull-periodico');
             window._dbVersion=_j2.version!==undefined?_j2.version:window._dbVersion;
-            window._dbBaseSnapshot=_clonarDB(db);
+            // Ronda 21 — misma corrección de fondo que en _pushDB()/
+            // _resolverConflictoDB(): si TODAVÍA hay un cambio local sin
+            // confirmar por el servidor (_hayCambiosSinSincronizar), esta
+            // fusión NO se marca como la nueva base "confirmada" — eso era
+            // precisamente la causa raíz del bug reportado ("se borran las
+            // notas, después aparecen las que tenían"): una nota recién
+            // ingresada (todavía en camino, agrupada cada 350ms) quedaba
+            // marcada aquí como "ya sabida por ambos lados" antes de que el
+            // servidor la confirmara de verdad, y una sincronización o
+            // conflicto posterior la reemplazaba por el valor viejo. En vez
+            // de eso, se reintenta el envío ahora mismo (con la versión ya
+            // actualizada) — y solo cuando ESE envío se confirme de verdad
+            // (dentro de _pushDB()) se actualiza la base.
+            if(!window._hayCambiosSinSincronizar){
+              window._dbBaseSnapshot=_clonarDB(db);
+            }else{
+              saveDB();
+            }
             try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
             _dChanged=JSON.stringify(db)!==_prev2;
           }
