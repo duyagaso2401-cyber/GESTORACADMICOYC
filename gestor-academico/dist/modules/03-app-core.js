@@ -699,7 +699,6 @@ async function _pushDB(){
       return;
     }
     if(r.ok){
-      window._hayCambiosSinSincronizar=false;
       _fallosConsecutivosGuardado=0;
       _saludYaReportadaEstaEpisodio=false;
       _updateSyncChip('ok');
@@ -727,6 +726,28 @@ async function _pushDB(){
       // base nunca avanza más rápido que lo que el servidor realmente
       // confirmó.
       try{ window._dbBaseSnapshot=JSON.parse(_json); }catch(_ep){ window._dbBaseSnapshot=_clonarDB(db); }
+      // Ronda 22 — SEGUNDA PARTE DE LA MISMA FAMILIA DE CAUSA RAÍZ: esta
+      // bandera ("window._hayCambiosSinSincronizar") existe para decirle al
+      // resto del código "todavía hay algo escrito localmente que el
+      // servidor no ha confirmado, ten cuidado". Antes se apagaba (=false)
+      // apenas CUALQUIER guardado terminaba en éxito, sin fijarse si mientras
+      // ESE guardado viajaba, el docente ya había calificado otra celda más
+      // (lo cual programa un guardado NUEVO, todavía sin confirmar). Eso
+      // apagaba la bandera de protección un guardado antes de tiempo, y
+      // dejaba a esa nota nueva desprotegida exactamente en la misma ventana
+      // de riesgo que la Ronda 21 ya había cerrado para "_dbBaseSnapshot" —
+      // una sincronización de fondo que llegara en ese instante podía volver
+      // a interpretar esa nota nueva como "ya sabida por ambos lados" y
+      // perderla. La solución es la misma idea: comparar el "_json" fijo que
+      // ESTE envío llevaba contra el "_lastDbJson" actual (que sí se mueve
+      // cada vez que se llama saveDB()). Si siguen siendo iguales, no hay
+      // ningún guardado más nuevo en camino y es seguro apagar la bandera.
+      // Si ya cambiaron, quiere decir que hay una nota más nueva pendiente
+      // (su propio saveDB() ya programó su propio _pushDB()) y la bandera
+      // debe seguir encendida hasta que ESA se confirme.
+      if(_json===_lastDbJson){
+        window._hayCambiosSinSincronizar=false;
+      }
     }
   }catch(e){
     // Sin conexión (o el servidor no respondió): el cambio ya quedó guardado
