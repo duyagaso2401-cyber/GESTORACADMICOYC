@@ -4348,8 +4348,23 @@ async function _syncAll(force){
       // ha guardado), dando la sensación de que la nota "se borró". Se deja
       // pendiente y se aplica en cuanto la persona termine de escribir ese
       // campo (evento "blur"), o como respaldo, a los pocos segundos.
+      //
+      // CORRECCIÓN: la Planilla NO usa un <input> para calificar — el
+      // docente elige la nota desde el popup táctil "🎯 Seleccione la
+      // nota" (abrirPopupNota/seleccionarNotaRapido). Antes, esta
+      // protección solo miraba INPUT/TEXTAREA/SELECT, así que mientras el
+      // popup estaba abierto (_popupActive=true) NO se consideraba "estoy
+      // editando": un refresco de fondo reconstruía toda la tabla debajo
+      // del popup, y el botón de la celda al que apuntaba el popup quedaba
+      // huérfano (desprendido del DOM) — su posición se recalculaba contra
+      // un elemento fantasma y el popup "saltaba" a la esquina de la
+      // pantalla en pleno instante de digitar/seleccionar la nota. Ahora
+      // también se considera "editando" mientras el popup de nota está
+      // abierto, así que el refresco espera a que se cierre (ver
+      // cerrarPopupNota, que aplica la actualización pendiente apenas se
+      // cierra) en vez de interrumpir la selección a medias.
       const _act=document.activeElement;
-      const _editando=_act&&/^(INPUT|TEXTAREA|SELECT)$/.test(_act.tagName)&&document.body.contains(_act);
+      const _editando=(_act&&/^(INPUT|TEXTAREA|SELECT)$/.test(_act.tagName)&&document.body.contains(_act))||_popupActive;
       if(_editando&&!force){
         window._syncRenderPendiente=true;
         return;
@@ -4749,7 +4764,24 @@ function _makeSseChannel(sk, connHolder, reconHolder, skHolder){
           // guardó), forzar el re-render aquí causaba que CUALQUIER acción en
           // CUALQUIER módulo devolviera la pantalla a su estado inicial segundos
           // después de guardar (perdía scroll, pestañas abiertas, filtros, foco).
-          if(msg.type==='change') _syncAll(false);
+          //
+          // CORRECCIÓN (bug reportado — la Planilla se refrescaba sola aunque
+          // el Súper Admin hubiera apagado la "Sincronización Automática" de
+          // la institución): este canal en tiempo real (SSE) seguía llamando
+          // a _syncAll() con CUALQUIER evento "change" del servidor, sin
+          // importar el interruptor — a diferencia del temporizador de
+          // polling (_syncInterval, más abajo) y del listener de
+          // "visibilitychange", que sí lo respetaban. Como el eco de un
+          // guardado de OTRO docente/dispositivo llega por este mismo canal,
+          // esto disparaba una sincronización de fondo (con su fusión de
+          // datos y su posible re-render) exactamente en el módulo — la
+          // Planilla — donde más molesta: aunque el guardado propio nunca
+          // se pierde (va por saveDB/_pushDB, que no depende de esto), el
+          // refresco en sí no debía ejecutarse con el interruptor en OFF.
+          // La verificación de "Pantalla en Blanco" (más abajo, cada 60s)
+          // sigue funcionando igual — es un mecanismo de seguridad aparte,
+          // deliberadamente independiente de este interruptor.
+          if(msg.type==='change'&&_sincronizacionAutoHabilitadaAhora()) _syncAll(false);
         }catch(e){}
       };
       conn.onopen=function(){
@@ -10847,6 +10879,16 @@ function abrirPopupNota(estId,campo,btnEl){
 
   function posicionarPopup(){
     const p=document.getElementById('popupNota');if(!p) return;
+    // Defensa adicional: si el botón de la celda al que apunta este popup
+    // ya no está en el documento (por ejemplo, una sincronización forzada
+    // — "Sincronizar ahora" — reconstruyó la tabla mientras el popup seguía
+    // abierto), su getBoundingClientRect() devolvería todo en 0 y el popup
+    // "saltaría" a la esquina superior izquierda de la pantalla, dando la
+    // sensación de parpadeo/salto de pantalla reportada. En ese caso es
+    // más seguro cerrar el popup (la nota, si ya se seleccionó, siempre se
+    // guarda ANTES de llegar aquí — ver seleccionarNotaRapido) que dejarlo
+    // flotando en un sitio equivocado apuntando a un botón que ya no existe.
+    if(!btnEl||!document.body.contains(btnEl)){ cerrarPopupNota(); return; }
     const r=btnEl.getBoundingClientRect();
     const pw=p.offsetWidth||340;const ph=p.offsetHeight||300;
     const vw=window.innerWidth;const vh=window.innerHeight;
@@ -10934,6 +10976,23 @@ function iniciarVozNota(estId,campo){
 
 function cerrarPopupNota(){
   _popupActive=false;
+  // Si mientras el popup estaba abierto llegó una sincronización de fondo
+  // que quedó en espera (ver "_editando" en _syncAll — el popup de nota
+  // ahora cuenta como "editando"), esta es la señal de que ya es seguro
+  // aplicarla: se hace igual que cuando se termina de escribir en un
+  // campo de texto (mismo patrón que el listener global de "blur", con el
+  // mismo pequeño respiro de 80ms para que la nota recién seleccionada —
+  // que se guarda justo DESPUÉS de este cierre, ver seleccionarNotaRapido —
+  // alcance a aplicarse primero). _reaplicarPendientes() dentro del
+  // render se encarga de que cualquier nota aún pendiente de "GUARDAR
+  // CAMBIOS" se siga viendo con su borde amarillo tras el refresco.
+  if(window._syncRenderPendiente){
+    window._syncRenderPendiente=false;
+    setTimeout(function(){
+      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); }); }
+      else if(gestorSesion){ renderGestorAdmin(); }
+    },80);
+  }
   const p=document.getElementById('popupNota');
   if(!p) return;
   if(p._cleanRepos) p._cleanRepos();
@@ -11987,6 +12046,12 @@ function _promedioNotasActEst(cId,per,estId){
   });
   return n?parseFloat((s/n).toFixed(2)):null;
 }
+// Escapa texto para usarlo dentro de un atributo HTML (ej. title="...") —
+// usado para mostrar la observación de una nota de actividad como tooltip
+// sin arriesgar que comillas u otros caracteres rompan el HTML generado.
+function _escAttrNAC(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
 function htmlNotasActividades(){
   const isAdmin=sesion.r==='admin';
@@ -12005,14 +12070,15 @@ function htmlNotasActividades(){
   else if(!ests.length) tabla=`${_htmlEstadoVacio('🎓','No hay estudiantes en este grado.')}`;
   else if(!cols.length) tabla=`<div class="warn-box">ℹ️ Aún no ha agregado columnas de notas para esta asignatura y periodo. Use el botón "➕ Agregar nota" para comenzar.</div>`;
   else {
-    const headCols=cols.map(c=>`<th style="font-size:0.76rem;background:#003366;color:#fff">${c.nombre}<br><button title="Quitar esta columna de esta asignatura/periodo (no borra los datos ya registrados)" onclick="quitarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.85);color:#c0392b;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">✕ quitar</button></th>`).join('');
+    const headCols=cols.map(c=>`<th style="font-size:0.76rem;background:#003366;color:#fff">${c.nombre}<br><button title="Aplicar la misma nota a todos los estudiantes de este grado en esta columna" onclick="replicarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.92);color:#003366;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">📋 Replicar a todos</button><br><button title="Quitar esta columna de esta asignatura/periodo (no borra los datos ya registrados)" onclick="quitarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.85);color:#c0392b;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">✕ quitar</button></th>`).join('');
     const rows=ests.map(e=>{
       const cells=cols.map(c=>{
         const v=_valorNotaAct(cId,per,c.id,e.id);
         const val=v&&typeof v.valor==='number'?v.valor:null;
         const fh=v&&v.fecha?`${v.fecha}${v.hora?' '+v.hora:''}`:'';
+        const obsIcon=v&&v.obs?`<span id="nac-obs-${e.id}-${c.id}" title="${_escAttrNAC(v.obs)}" style="cursor:help;margin-left:3px">📝</span>`:`<span id="nac-obs-${e.id}-${c.id}" style="display:none"></span>`;
         return `<td style="border:1px solid #ddd;padding:3px 4px;text-align:center">
-          <button id="nac-btn-${e.id}-${c.id}" class="nota-btn" onclick="abrirPopupNotaAct('${e.id}','${c.id}')" style="background:${val!=null?colorNota(val):'#eee'};color:${val!=null?'#fff':'#888'};font-weight:bold;font-size:0.82rem;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;min-width:44px;min-height:34px">${val!=null?val.toFixed(1):'—'}</button><br><span id="nac-fh-${e.id}-${c.id}" style="font-size:0.6rem;color:#888">${fh}</span>
+          <button id="nac-btn-${e.id}-${c.id}" class="nota-btn" onpointerdown="event.preventDefault();abrirPopupNotaAct('${e.id}','${c.id}',this)" style="background:${val!=null?colorNota(val):'#eee'};color:${val!=null?'#fff':'#888'};font-weight:bold;font-size:0.82rem;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;min-width:44px;min-height:34px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">${val!=null?val.toFixed(1):'—'}</button><br><span id="nac-fh-${e.id}-${c.id}" style="font-size:0.6rem;color:#888">${fh}</span>${obsIcon}
         </td>`;
       }).join('');
       const prom=_promedioNotasActEst(cId,per,e.id);
@@ -12039,7 +12105,7 @@ function htmlNotasActividades(){
     ${carga?`<div class="info-box"><b>Grado:</b> ${carga.g} | <b>Área:</b> ${carga.a} | <b>Docente:</b> ${carga.dn}</div>`:''}
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
       <button class="btn btn-blue" ${carga?'':'disabled'} onclick="abrirModalAgregarColNotaAct()">➕ Agregar nota</button>
-      <button class="btn btn-green" ${(carga&&cols.length)?'':'disabled'} onclick="abrirModalSincronizarNotaAct()" title="Sincroniza el promedio de este módulo con la columna que elija en la Planilla">🔄 Sincronizar con Planilla</button>
+      <button class="btn btn-green" ${(carga&&cols.length)?'':'disabled'} onclick="abrirModalSincronizarNotaAct()" title="Sincroniza el promedio de este módulo con la columna que elija en la Planilla">🔄 Sincronizar Promedio con Planilla</button>
       <button class="btn btn-teal" ${(carga&&cols.length)?'':'disabled'} onclick="descargarNotasActExcel()" title="Descarga un Excel con las columnas actuales para llenar fuera de línea">📥 Descargar Excel</button>
       <button class="btn btn-orange" ${(carga&&cols.length)?'':'disabled'} onclick="document.getElementById('fileNotasActExcel').click()" title="Carga un Excel previamente descargado desde aquí">📤 Cargar Excel</button>
       <input type="file" id="fileNotasActExcel" accept=".xlsx,.xls" style="display:none" onchange="cargarNotasActExcel(this)">
@@ -12123,36 +12189,199 @@ async function quitarColNotaAct(colId){
   renderApp();
 }
 
-// ── Popup: ingresar nota + fecha + hora de la actividad ──
-function abrirPopupNotaAct(estId,colId){
+// ============================================================
+// VOZ PARA ENTRADA DE NOTAS EN "NOTAS DE ACTIVIDADES EN CLASE"
+// Mismo mecanismo que iniciarVozNota() de la Planilla (mismo idioma,
+// mismo reconocimiento de números en español, misma tolerancia 0.0–5.0),
+// pero guardando por el camino propio de este módulo
+// (_guardarNotaAct/cerrarPopupNotaAct) en vez del de la Planilla, porque
+// las notas de actividad viven en db.notasAct (con fecha/hora/observación)
+// y no en db.ests[].nts. Se duplica en vez de generalizar la función de la
+// Planilla para no arriesgar ese código, ya probado y en producción.
+// ============================================================
+let _vozNotaActRec=null;
+function iniciarVozNotaAct(estId,colId){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){customAlert('Use Chrome o Edge para dictado por voz.');return;}
+  const statusEl=document.getElementById('vozNotaActStatus');
+  const btn=document.getElementById('vozNotaActBtn');
+  if(_vozNotaActRec){try{_vozNotaActRec.stop();}catch(e){}_vozNotaActRec=null;
+    if(btn){btn.textContent='🎙️ Dictar por Voz';btn.style.background='#8e44ad';}
+    if(statusEl)statusEl.textContent='';return;}
+  _vozNotaActRec=new SR();
+  _vozNotaActRec.lang='es-CO';_vozNotaActRec.continuous=false;_vozNotaActRec.interimResults=false;
+  if(btn){btn.textContent='⏹ Detener';btn.style.background='#c0392b';}
+  if(statusEl)statusEl.textContent='🎙️ Escuchando... diga el número (ej: "cuatro punto cinco", "3.5", "cinco")';
+  _vozNotaActRec.onresult=function(ev){
+    let txt=(ev.results[0]&&ev.results[0][0]&&ev.results[0][0].transcript)||'';
+    txt=txt.toLowerCase().trim();
+    const mapPal={
+      'cero':0,'uno':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,
+      'un punto':1,'dos punto':2,'tres punto':3,'cuatro punto':4,
+      'uno punto':1,'cero punto':0,
+      'un coma':1,'dos coma':2,'tres coma':3,'cuatro coma':4
+    };
+    let val=null;
+    const numMatch=txt.match(/(\d+)[.,\s]*(\d?)/);
+    if(numMatch){
+      const entero=parseInt(numMatch[1]);const dec=numMatch[2]?parseInt(numMatch[2]):0;
+      val=parseFloat((entero+dec/10).toFixed(1));
+    }
+    if(val===null){
+      for(const [k,v] of Object.entries(mapPal)){
+        if(txt.startsWith(k)){
+          const resto=txt.slice(k.length).trim();
+          const dec2=resto.match(/^(\d)/);
+          val=dec2?parseFloat(v+parseInt(dec2[1])/10):v;
+          break;
+        }
+      }
+    }
+    if(val!==null&&val>=0&&val<=5){
+      val=Math.round(val*10)/10;
+      if(statusEl)statusEl.textContent='✅ Nota: '+val.toFixed(1);
+      // A diferencia del atajo de voz de la Planilla (que cierra el popup
+      // ANTES de guardar), aquí conviene guardar con el popup todavía
+      // abierto: _guardarNotaAct() lee la fecha/hora/observación de sus
+      // propios campos en ese instante, y es _guardarNotaAct() quien cierra
+      // el popup al terminar.
+      setTimeout(function(){_guardarNotaAct(estId,colId,val);},400);
+    } else {
+      if(statusEl)statusEl.textContent='❌ No reconocido ("'+txt+'"). Intente de nuevo.';
+      _vozNotaActRec=null;if(btn){btn.textContent='🎙️ Dictar por Voz';btn.style.background='#8e44ad';}
+    }
+    if(_vozNotaActRec){_vozNotaActRec=null;if(btn){btn.textContent='🎙️ Dictar por Voz';btn.style.background='#8e44ad';}}
+  };
+  _vozNotaActRec.onerror=function(){
+    if(statusEl)statusEl.textContent='❌ Error de micrófono.';
+    _vozNotaActRec=null;if(btn){btn.textContent='🎙️ Dictar por Voz';btn.style.background='#8e44ad';}
+  };
+  _vozNotaActRec.onend=function(){
+    if(_vozNotaActRec){_vozNotaActRec=null;if(btn){btn.textContent='🎙️ Dictar por Voz';btn.style.background='#8e44ad';}}
+  };
+  try{_vozNotaActRec.start();}catch(e){if(statusEl)statusEl.textContent='Error al iniciar micrófono.';_vozNotaActRec=null;}
+}
+
+// ── Popup: ingresar nota de actividad ──────────────────────────────────
+// Reutiliza el MISMO menú desplegable de selección rápida (rejilla de
+// botones 0.0–5.0, con accesos cualitativos S/A/B/D para grados
+// iniciales) que ya usa la Planilla principal (ver abrirPopupNota()),
+// en vez del campo de texto numérico que tenía antes esta pantalla —
+// así calificar aquí se siente exactamente igual que en la Planilla.
+// La fecha/hora de la actividad se conservan como campos editables
+// (es lo que distingue a este módulo de la Planilla: cada nota de
+// actividad queda fechada), y se capturan al momento de tocar el botón
+// de la nota, no antes.
+function abrirPopupNotaAct(estId,colId,btnEl){
   const old=document.getElementById('popupNotaAct');if(old)old.remove();
+  _popupActive=true; // misma bandera que usa el popup de la Planilla: protege contra que un refresco de fondo interrumpa la selección (ver _syncAll)
   const cId=Number(notaActCId),per=Number(notaActPer);
+  const carga=db.carga.find(x=>x.id===cId);
   const v=_valorNotaAct(cId,per,colId,estId)||{};
   const hoy=new Date();
   const fechaDef=v.fecha||hoy.toISOString().slice(0,10);
   const horaDef=v.hora||hoy.toTimeString().slice(0,5);
+  const _esInicial=carga?esGradoInicial(carga.g):false;
   const popup=document.createElement('div');
   popup.id='popupNotaAct';
-  popup.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
-  popup.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:320px;width:100%;color:#1a1a2e">
-    <h4 style="color:#003366;margin-bottom:12px">🎯 Registrar nota</h4>
-    <label class="lbl">Nota (0.0 – 5.0)</label>
-    <input type="number" id="nacValor" min="0" max="5" step="0.1" value="${v.valor!=null?v.valor:''}" style="width:100%;margin-bottom:10px;padding:8px;font-size:1rem;text-align:center">
-    <label class="lbl">Fecha</label>
-    <input type="date" id="nacFecha" value="${fechaDef}" style="width:100%;margin-bottom:10px">
-    <label class="lbl">Hora</label>
-    <input type="time" id="nacHora" value="${horaDef}" style="width:100%;margin-bottom:14px">
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-green" style="flex:1" onclick="_guardarNotaAct('${estId}','${colId}')">💾 Guardar</button>
-      <button class="btn btn-gray" style="flex:1" onclick="cerrarPopupNotaAct()">✕ Cerrar</button>
-    </div>
-  </div>`;
+  popup.style.cssText='position:fixed;z-index:99999;background:#fff;border:2px solid #003366;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.4);padding:12px;width:340px;max-width:94vw;max-height:92vh;overflow-y:auto;touch-action:none';
+  const obsDef=v.obs||'';
+  let html='<div style="font-size:0.85rem;font-weight:bold;color:#003366;margin-bottom:8px;text-align:center;border-bottom:2px solid #003366;padding-bottom:6px">🎯 Registrar nota de actividad</div>';
+  html+='<div style="display:flex;gap:8px;margin-bottom:10px">'
+    +'<div style="flex:1"><label class="lbl" style="font-size:0.7rem">Fecha</label><input type="date" id="nacFecha" value="'+fechaDef+'" style="width:100%;padding:5px;font-size:0.8rem"></div>'
+    +'<div style="flex:1"><label class="lbl" style="font-size:0.7rem">Hora</label><input type="time" id="nacHora" value="'+horaDef+'" style="width:100%;padding:5px;font-size:0.8rem"></div>'
+    +'</div>';
+  // Observación de texto (opcional) — se guarda junto con la nota, la
+  // fecha y la hora al tocar cualquiera de los botones de abajo. Igual
+  // que fecha/hora, se lee al momento de guardar, así que se puede
+  // escribir antes o después de elegir la nota.
+  html+='<label class="lbl" style="font-size:0.7rem">Observación (opcional)</label>'
+    +'<textarea id="nacObs" rows="2" placeholder="Ej.: Entregó tarde, participó activamente, con apoyo del acudiente..." style="width:100%;padding:6px;font-size:0.8rem;margin-bottom:10px;resize:vertical;font-family:inherit">'+obsDef.replace(/</g,'&lt;')+'</textarea>';
+  if(_esInicial){
+    html+='<div style="background:#f0f4ff;border:1px solid #c0d0f0;border-radius:8px;padding:10px;margin-bottom:10px;color:#1a1a2e">';
+    html+='<div style="font-size:0.75rem;font-weight:bold;color:#003366;margin-bottom:7px;text-align:center">🌟 Escala Cualitativa (Transición/Preescolar)</div>';
+    const cualOpts=[
+      {lbl:'S — SUPERIOR',val:4.8,color:'#1a5276',desc:'4.7 – 5.0'},
+      {lbl:'A — ALTO',val:4.2,color:'#27ae60',desc:'4.0 – 4.6'},
+      {lbl:'B — BÁSICO',val:3.4,color:'#e67e22',desc:'3.0 – 3.9'},
+      {lbl:'D — BAJO',val:1.5,color:'#c0392b',desc:'0.0 – 2.9'}
+    ];
+    html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+    cualOpts.forEach(function(o){
+      html+='<button class="nota-btn" onpointerdown="event.preventDefault();event.stopPropagation();_guardarNotaAct(\''+estId+'\',\''+colId+'\','+o.val+')" style="padding:8px 4px;font-size:0.78rem;font-weight:bold;background:'+o.color+';color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation;line-height:1.3">'+o.lbl+'<br><span style="font-size:0.62rem;opacity:0.85">'+o.desc+'</span></button>';
+    });
+    html+='</div></div>';
+    html+='<div style="font-size:0.73rem;text-align:center;color:#7f8c8d;margin-bottom:8px">— o ingrese nota exacta —</div>';
+  }
+  const rangos=[[0.0,0.9],[1.0,1.9],[2.0,2.9],[3.0,3.9],[4.0,4.9],[5.0,5.0]];
+  const colsR={'0':'#c0392b','1':'#c0392b','2':'#c0392b','3':'#e67e22','4':'#27ae60','5':'#1a5276'};
+  const labelsR={'0':'BAJO','1':'BAJO','2':'BAJO','3':'BÁSICO','4':'ALTO','5':'SUPERIOR'};
+  rangos.forEach(([min,max])=>{
+    const piso=String(Math.floor(min));
+    const col=colsR[piso]||'#333';
+    const lbl=labelsR[piso]||'';
+    html+='<div style="display:flex;gap:3px;margin-bottom:5px;align-items:center">';
+    html+='<span style="font-size:0.65rem;font-weight:bold;color:'+col+';min-width:44px;text-align:right;padding-right:4px">'+lbl+'</span>';
+    let v2=min;
+    while(v2<=max+0.001){
+      const vf=parseFloat(v2.toFixed(1));
+      html+='<button class="nota-btn" onpointerdown="event.preventDefault();event.stopPropagation();_guardarNotaAct(\''+estId+'\',\''+colId+'\','+vf+')" style="flex:1;padding:8px 1px;font-size:0.82rem;font-weight:bold;background:'+col+';color:#fff;border:none;border-radius:5px;cursor:pointer;min-width:28px;min-height:38px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">'+vf.toFixed(1)+'</button>';
+      v2=parseFloat((v2+0.1).toFixed(1));
+    }
+    html+='</div>';
+  });
+  // Dictado por voz — mismo mecanismo que ya usa el popup de la Planilla
+  // (iniciarVozNota), adaptado a este módulo (iniciarVozNotaAct) porque
+  // guarda con _guardarNotaAct()/cerrarPopupNotaAct() en vez de las
+  // funciones propias de la Planilla.
+  html+='<div style="margin-top:10px;border-top:1px solid #eee;padding-top:10px;text-align:center"><button id="vozNotaActBtn" onpointerdown="event.preventDefault();iniciarVozNotaAct(\''+estId+'\',\''+colId+'\')" style="background:#8e44ad;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:0.82rem;cursor:pointer;min-height:36px;touch-action:manipulation">🎙️ Dictar por Voz</button><div id="vozNotaActStatus" style="font-size:0.7rem;color:#888;margin-top:3px"></div></div>';
+  html+='<div style="text-align:center;margin-top:8px"><button onpointerdown="event.preventDefault();cerrarPopupNotaAct()" style="font-size:0.82rem;padding:8px 22px;background:#7f8c8d;color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation">✕ Cerrar</button></div>';
+  popup.innerHTML=html;
+  popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
   _activarAccesibilidadPopup(popup, cerrarPopupNotaAct, 'Registrar nota de actividad');
+
+  // Posicionamiento junto a la celda tocada, igual que el popup de la
+  // Planilla — con la misma defensa: si el botón-ancla deja de existir
+  // (ej. la tabla se reconstruyó por otra vía), el popup se cierra solo
+  // en vez de saltar a la esquina de la pantalla.
+  function posicionarPopupNAC(){
+    const p=document.getElementById('popupNotaAct');if(!p) return;
+    if(!btnEl||!document.body.contains(btnEl)){ cerrarPopupNotaAct(); return; }
+    const r=btnEl.getBoundingClientRect();
+    const pw=p.offsetWidth||340;const ph=p.offsetHeight||300;
+    const vw=window.innerWidth;const vh=window.innerHeight;
+    let top=r.bottom+8;let left=r.left;
+    if(top+ph>vh-10) top=Math.max(10,r.top-ph-8);
+    if(left+pw>vw-10) left=Math.max(10,vw-pw-10);
+    if(left<5) left=5;
+    p.style.top=top+'px';p.style.left=left+'px';
+  }
+  if(btnEl) posicionarPopupNAC(); else { popup.style.top='50%';popup.style.left='50%';popup.style.transform='translate(-50%,-50%)'; }
+  const _reposNAC=()=>{if(document.getElementById('popupNotaAct')) posicionarPopupNAC(); else{window.removeEventListener('scroll',_reposNAC,true);window.removeEventListener('resize',_reposNAC);}};
+  if(btnEl){
+    window.addEventListener('scroll',_reposNAC,{passive:true,capture:true});
+    window.addEventListener('resize',_reposNAC,{passive:true});
+    const p2=document.getElementById('popupNotaAct');
+    if(p2) p2._cleanRepos=()=>{window.removeEventListener('scroll',_reposNAC,true);window.removeEventListener('resize',_reposNAC);};
+  }
 }
 function cerrarPopupNotaAct(){
+  _popupActive=false;
+  // Mismo patrón que cerrarPopupNota() de la Planilla (Ronda 14): si un
+  // refresco de fondo quedó en espera mientras este popup estaba abierto,
+  // se aplica apenas se cierra, con el mismo pequeño respiro para que la
+  // nota recién guardada —si la hubo— se alcance a aplicar primero.
+  if(window._syncRenderPendiente){
+    window._syncRenderPendiente=false;
+    setTimeout(function(){
+      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); }); }
+      else if(gestorSesion){ renderGestorAdmin(); }
+    },80);
+  }
   const p=document.getElementById('popupNotaAct');
   if(!p) return;
+  if(p._cleanRepos) p._cleanRepos();
   _liberarAccesibilidadPopup(p);
   p.remove();
 }
@@ -12177,6 +12406,11 @@ function _refrescarCeldaNotaAct(estId,colId){
   }
   const fhEl=document.getElementById('nac-fh-'+estId+'-'+colId);
   if(fhEl) fhEl.textContent=v&&v.fecha?(v.fecha+(v.hora?' '+v.hora:'')):'';
+  const obsEl2=document.getElementById('nac-obs-'+estId+'-'+colId);
+  if(obsEl2){
+    if(v&&v.obs){ obsEl2.textContent='📝';obsEl2.title=v.obs;obsEl2.style.display='inline';obsEl2.style.cursor='help';obsEl2.style.marginLeft='3px'; }
+    else { obsEl2.textContent='';obsEl2.removeAttribute('title');obsEl2.style.display='none'; }
+  }
   const promEl=document.getElementById('nac-prom-'+estId);
   if(promEl){
     const prom=_promedioNotasActEst(cId,per,estId);
@@ -12184,19 +12418,103 @@ function _refrescarCeldaNotaAct(estId,colId){
     promEl.style.color=prom!=null?colorNota(prom):'#aaa';
   }
 }
-function _guardarNotaAct(estId,colId){
-  const valor=Math.min(5,Math.max(0,parseFloat(document.getElementById('nacValor').value)||0));
-  const fecha=document.getElementById('nacFecha').value||new Date().toISOString().slice(0,10);
-  const hora=document.getElementById('nacHora').value||'';
+// Se llama al tocar un botón de nota dentro de abrirPopupNotaAct() — "valor"
+// llega directo del botón elegido (rejilla 0.0–5.0 o acceso cualitativo
+// S/A/B/D), igual que seleccionarNotaRapido() en la Planilla. La fecha, la
+// hora y la observación de texto se siguen leyendo de los campos del
+// popup (se pueden ajustar ANTES de tocar el botón de la nota, ej. para
+// registrar una actividad de un día anterior o dejar un comentario).
+function _guardarNotaAct(estId,colId,valor){
+  const fechaEl=document.getElementById('nacFecha'),horaEl=document.getElementById('nacHora'),obsEl=document.getElementById('nacObs');
+  const valorNum=Math.min(5,Math.max(0,parseFloat(valor)||0));
+  const fecha=(fechaEl&&fechaEl.value)||new Date().toISOString().slice(0,10);
+  const hora=(horaEl&&horaEl.value)||'';
+  const obs=(obsEl&&obsEl.value.trim())||'';
   const cId=Number(notaActCId),per=Number(notaActPer);
   const key=cId+'_'+per+'_'+colId+'_'+estId;
   updDB(d=>{
     d.notasAct=d.notasAct||{};
-    d.notasAct[key]={valor,fecha,hora};
+    d.notasAct[key]={valor:valorNum,fecha,hora,obs};
     return d;
   });
   cerrarPopupNotaAct();
   _refrescarCeldaNotaAct(estId,colId);
+}
+
+// ===== REPLICAR LA MISMA NOTA A TODOS LOS ESTUDIANTES DE UNA COLUMNA =====
+// Mismo principio que replicarColumna()/aplicarReplicaColumna() de la
+// Planilla principal: el docente elige UNA nota desde la misma rejilla de
+// botones, y se aplica de inmediato a todos los estudiantes del grado en
+// esa columna de actividad — con la fecha y hora de "ahora" para todos
+// (si algún estudiante necesita una fecha distinta, se ajusta luego desde
+// su propia celda). Solo toca `db.notasAct` de este módulo; nunca escribe
+// en `db.ests[].nts` (eso solo ocurre al usar "🔄 Sincronizar Promedio con
+// Planilla", de forma explícita y separada).
+function replicarColNotaAct(colId){
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const carga=db.carga.find(x=>x.id===cId);
+  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  const col=(db.notasActColumnas||[]).find(c=>c.id===colId);
+  const ests=db.ests.filter(x=>x.g===carga.g);
+  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  const old=document.getElementById('popupNotaAct');if(old)old.remove();
+  _popupActive=true;
+  const popup=document.createElement('div');
+  popup.id='popupNotaAct';
+  popup.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99999;background:#fff;border:3px solid #003366;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.5);padding:14px;width:360px;max-width:94vw;max-height:92vh;overflow-y:auto;touch-action:none';
+  const rangos=[[0.0,0.9],[1.0,1.9],[2.0,2.9],[3.0,3.9],[4.0,4.9],[5.0,5.0]];
+  const cols={'0':'#c0392b','1':'#c0392b','2':'#c0392b','3':'#e67e22','4':'#27ae60','5':'#1a5276'};
+  const labels={'0':'BAJO','1':'BAJO','2':'BAJO','3':'BÁSICO','4':'ALTO','5':'SUPERIOR'};
+  let html='<div style="font-size:0.92rem;font-weight:bold;color:#003366;margin-bottom:6px;text-align:center">📋 REPLICAR NOTA A TODOS</div>';
+  html+='<div style="font-size:0.78rem;color:#555;margin-bottom:8px;text-align:center;line-height:1.35"><b>Columna:</b> '+(col?col.nombre:colId)+'<br><b>Asignatura:</b> '+carga.m+' ('+carga.g+')<br><b>Periodo:</b> '+notaActPer+' &nbsp;|&nbsp; <b>Estudiantes:</b> '+ests.length+'</div>';
+  html+='<div style="background:#eaf4fb;border:1px solid #aed6f1;border-radius:5px;padding:6px;font-size:0.72rem;color:#1a5276;margin-bottom:8px;text-align:center">ℹ️ Se registrará con la fecha y hora de hoy para todos. Puede corregir la fecha de un estudiante en particular después, tocando su propia celda.</div>';
+  html+='<div style="border-top:2px solid #003366;padding-top:8px;margin-bottom:6px;text-align:center;font-size:0.8rem;font-weight:bold;color:#003366">Seleccione la nota para aplicar a TODOS</div>';
+  rangos.forEach(([min,max])=>{
+    const piso=String(Math.floor(min));
+    const col2=cols[piso]||'#333';
+    const lbl=labels[piso]||'';
+    html+='<div style="display:flex;gap:3px;margin-bottom:5px;align-items:center">';
+    html+='<span style="font-size:0.65rem;font-weight:bold;color:'+col2+';min-width:44px;text-align:right;padding-right:4px">'+lbl+'</span>';
+    let v=min;
+    while(v<=max+0.001){
+      const vf=parseFloat(v.toFixed(1));
+      html+='<button onpointerdown="event.preventDefault();event.stopPropagation();aplicarReplicaNotaAct(\''+colId+'\','+vf+')" style="flex:1;padding:8px 1px;font-size:0.82rem;font-weight:bold;background:'+col2+';color:#fff;border:none;border-radius:5px;cursor:pointer;min-width:28px;min-height:38px;touch-action:manipulation;-webkit-tap-highlight-color:transparent">'+vf.toFixed(1)+'</button>';
+      v=parseFloat((v+0.1).toFixed(1));
+    }
+    html+='</div>';
+  });
+  html+='<div style="text-align:center;margin-top:10px"><button onpointerdown="event.preventDefault();cerrarPopupNotaAct()" style="font-size:0.82rem;padding:8px 22px;background:#7f8c8d;color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation">✕ Cancelar</button></div>';
+  popup.innerHTML=html;
+  popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
+  document.body.appendChild(popup);
+  _activarAccesibilidadPopup(popup, cerrarPopupNotaAct, 'Replicar nota de actividad a todos');
+}
+function aplicarReplicaNotaAct(colId,valor){
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const carga=db.carga.find(x=>x.id===cId);
+  if(!carga){cerrarPopupNotaAct();return;}
+  const numVal=Math.min(5,Math.max(0,parseFloat(valor)||0));
+  const ests=db.ests.filter(x=>x.g===carga.g);
+  const hoy=new Date();
+  const fecha=hoy.toISOString().slice(0,10),hora=hoy.toTimeString().slice(0,5);
+  updDB(d=>{
+    d.notasAct=d.notasAct||{};
+    ests.forEach(e=>{
+      const key=cId+'_'+per+'_'+colId+'_'+e.id;
+      // Se conserva la observación que ese estudiante ya tuviera para esta
+      // celda (si la había) — replicar la NOTA a todos no debe borrar en
+      // silencio un comentario individual que el docente ya había escrito.
+      const obsPrevia=(d.notasAct[key]&&d.notasAct[key].obs)||'';
+      d.notasAct[key]={valor:numVal,fecha,hora,obs:obsPrevia};
+    });
+    return d;
+  });
+  cerrarPopupNotaAct();
+  // Refresco granular: solo las celdas de esta columna y los promedios de
+  // los estudiantes afectados — sin renderApp(), mismo principio que el
+  // resto de este módulo y de la Planilla.
+  ests.forEach(e=>_refrescarCeldaNotaAct(e.id,colId));
+  _toastPlan('✅ Nota '+numVal.toFixed(1)+' aplicada a '+ests.length+' estudiante(s) en esta columna.','#27ae60');
 }
 
 // ── Sincronización del promedio del módulo con una columna elegida de la Planilla ──
@@ -12209,7 +12527,7 @@ function abrirModalSincronizarNotaAct(){
   modal.id='modalSyncNAC';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
   modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%;text-align:center;color:#1a1a2e">
-    <h4 style="color:#003366;margin-bottom:8px">🔄 Sincronizar con Planilla</h4>
+    <h4 style="color:#003366;margin-bottom:8px">🔄 Sincronizar Promedio con Planilla</h4>
     <p style="font-size:0.82rem;color:#666;margin-bottom:12px">¿Con cuál columna de la Planilla desea sincronizar el promedio de este módulo? La nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás columnas.</p>
     <div style="display:flex;flex-wrap:wrap;justify-content:center">${opts}</div>
     <button class="btn btn-gray" style="margin-top:14px" onclick="document.getElementById('modalSyncNAC').remove()">✕ Cancelar</button>
@@ -12237,8 +12555,13 @@ function _confirmarSyncNAC(colKey){
     return d;
   });
   _pushDB();
+  // Sin renderApp(): esta pantalla ("Notas de Actividades en Clase") no
+  // muestra ninguna de las columnas de la Planilla que se acaban de
+  // actualizar (solo escribió en db.ests[].nts, que la Planilla lee por su
+  // cuenta la próxima vez que se abra) — reconstruir la pantalla aquí no
+  // cambiaría nada visible y solo causaría el parpadeo/pérdida de foco que
+  // se busca evitar. El aviso de confirmación es suficiente.
   customAlert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nLa nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás notas.');
-  renderApp();
 }
 
 // ── Exportar / importar masivo en Excel (mismo patrón que la Planilla) ──

@@ -735,6 +735,125 @@ Las 3 se crean solas al arrancar el servidor (`ALTER TABLE ... ADD COLUMN IF NOT
 
 ---
 
+## Ronda 14 — Corrección crítica: la Planilla de Notas se sincronizaba sola aunque el Súper Admin la hubiera apagado, y podía perder/desubicar notas durante ese refresco
+
+Reportaste 3 síntomas concretos en la Planilla de Calificaciones del docente: (1) la sincronización automática se seguía ejecutando aunque el Súper Admin la hubiera desactivado para la institución, (2) la pantalla parpadeaba/saltaba y perdía el scroll mientras se calificaba, y (3) ese refresco podía reemplazar/desubicar las notas recién ingresadas antes de guardarlas. Investigué a fondo el mecanismo de sincronización de `03-app-core.js` (motor "invisible" ya construido en la Ronda 11, más el canal en tiempo real por Server-Sent Events) y encontré la causa raíz exacta de cada síntoma. Es una corrección 100% de frontend — no se tocó ningún endpoint ni tabla del backend.
+
+### 1 — Causa raíz del síntoma 1: el canal en tiempo real (SSE) ignoraba el interruptor del Súper Admin
+
+El proyecto ya tenía, desde la Ronda 12, el interruptor `plat.sincronizacionAutomatica` (panel del Súper Admin → botón "🔄 Sinc. automática" / "🔕 Sinc. manual" por institución) y la función `_sincronizacionAutoHabilitadaAhora()` que lo consulta. Y, en efecto, el temporizador de polling (`_syncInterval`, cada 3 minutos) y el listener de "volver a la pestaña" (`visibilitychange`) sí lo respetaban correctamente.
+
+**Lo que no lo respetaba:** el canal de sincronización en tiempo real (Server-Sent Events, `_makeSseChannel`/`_connectSSEPlat`), que queda permanentemente abierto mientras la sesión está activa. Su manejador `onmessage` llamaba a `_syncAll(false)` ante **cualquier** evento `"change"` que el servidor difundiera — incluido el eco del propio guardado de cualquier otro docente/dispositivo — **sin revisar el interruptor**. Como este eco llega prácticamente en tiempo real cada vez que alguien guarda algo en la institución, era la vía más frecuente por la que se disparaba una sincronización de fondo con el interruptor en "OFF": exactamente el síntoma 1 que reportaste.
+
+**Corrección:** se agregó la misma verificación que ya usan el polling y el `visibilitychange` — `if(msg.type==='change'&&_sincronizacionAutoHabilitadaAhora()) _syncAll(false);`. La verificación periódica de "Pantalla en Blanco" (cada 60 segundos) sigue funcionando exactamente igual sin este cambio — es, a propósito, un mecanismo de seguridad aparte que nunca dependió de este interruptor (evita que alguien bloqueado por el Súper Admin siga con la sesión abierta), y no toca en ningún momento las notas de la Planilla.
+
+### 2 y 3 — Causa raíz de los síntomas 2 y 3: el popup de selección de nota no contaba como "estoy editando"
+
+La Planilla no usa una casilla de texto libre para calificar — el docente elige la nota desde un popup táctil ("🎯 Seleccione la nota", con botones de rango 0.0–5.0 y accesos rápidos cualitativos para Preescolar/Transición). `_syncAll()` ya tenía, desde la Ronda 12, una protección: si detecta que hay un `INPUT`/`TEXTAREA`/`SELECT` con el foco activo, NO reconstruye la pantalla de inmediato — la deja pendiente hasta que la persona termine (evento `blur`). Pero esa protección solo miraba esos 3 tipos de campo, y el popup de nota está hecho de `<button>`, así que **nunca calificaba como "editando"**.
+
+Efecto concreto: si una sincronización de fondo se disparaba (por ejemplo, por el bug del punto 1, o por el eco normal de OTRO docente guardando algo) justo mientras el popup de nota estaba abierto, `_syncAll()` procedía de inmediato a reconstruir toda la tabla debajo del popup. El botón de la celda al que apuntaba el popup quedaba huérfano (desprendido del DOM), y el cálculo de posición del popup (que se recalcula contra ese botón en cada scroll/resize) terminaba usando un elemento fantasma cuyas coordenadas son todas cero — el popup "saltaba" de golpe a la esquina superior izquierda de la pantalla. Esto explica el parpadeo/salto reportado, y — más importante — interrumpía visualmente al docente justo mientras seleccionaba una nota, dando la sensación de que "la planilla se comió la nota" aunque los datos ya guardados nunca se perdían realmente (ver el mecanismo de notas pendientes de abajo).
+
+**Correcciones aplicadas (las 3 trabajan juntas):**
+- `_syncAll()` ahora también considera "estoy editando" cuando el popup de nota está abierto (`_popupActive`, una bandera que el propio popup ya mantenía). Con eso, un refresco de fondo mientras se está calificando queda en espera — igual que ya pasaba con un campo de texto — en vez de reconstruir la tabla a medio proceso.
+- `cerrarPopupNota()` ahora aplica ese refresco en espera apenas el popup se cierra (se seleccione una nota o se cierre con "✕"), con el mismo patrón (y el mismo pequeño respiro de 80ms) que ya usaba el listener global de `blur` para los campos de texto — así los datos de la nube se muestran apenas es seguro hacerlo, sin interrumpir la selección a medio hacer.
+- Defensa adicional en el propio posicionador del popup: si en algún otro escenario el botón-ancla ya no está en el documento (por ejemplo, tras una sincronización **manual forzada** con el botón "🔄 Sincronizar ahora" — que, a propósito, sigue refrescando de inmediato aunque haya algo en edición, porque es una acción explícita del usuario), el popup se cierra solo en vez de saltar a la esquina de la pantalla.
+
+### Por qué las notas nunca se perdían de verdad, aunque se sintiera así
+
+Vale aclarar, porque cambia la gravedad real del reporte: el sistema YA tenía, desde la Ronda 11, un mecanismo de "notas pendientes" (`_notasPendientes`/`_reaplicarPendientes()`) diseñado específicamente para que un refresco en tiempo real nunca borre lo que el docente acaba de calificar — tanto en modo manual (nota pendiente, borde amarillo, hasta pulsar "GUARDAR CAMBIOS") como en modo auto-guardado (el valor ya queda escrito en la base de datos local — `db` — de inmediato, antes de que cualquier sincronización de fondo pueda siquiera ejecutarse, y la fusión de 3 vías (`_merge3way`) está diseñada para conservar el valor local cuando el servidor todavía no lo tiene). Revisé ese mecanismo a fondo y sigue siendo correcto. El problema real de esta ronda era la **interrupción/desubicación visual en pleno acto de calificar** (síntomas 1 y 2) — que es justo lo que las 3 correcciones de arriba resuelven — y no una pérdida silenciosa de datos ya confirmados.
+
+### Guardado en sí: ya cumplía lo pedido, sin cambios necesarios
+
+Revisé también los requisitos de "autoguardado reactivo a eventos, nunca por temporizador" y "sin re-renderizado masivo del DOM": ya se cumplían desde la Ronda 11 y no hizo falta tocarlos. El guardado de una nota (`saveNota()`) se dispara únicamente al elegir un valor en el popup (evento, no un timer), nunca hace `innerHTML` de toda la tabla ni `location.reload()`, y actualiza solo la fila del estudiante afectado (`_refrescarFilaPlanilla()`) — el mismo camino que usa tanto el modo automático como el guardado por lotes ("GUARDAR CAMBIOS"). No se encontró ningún `setInterval`/`setTimeout` que reconstruyera la tabla completa por su cuenta.
+
+### Cómo se verificó todo esto (Ronda 14)
+
+- JavaScript del frontend: `node --check` sobre `03-app-core.js`, `06-documentos-y-resto.js` y `universidad/app.js` — sin errores de sintaxis tras cada bloque de cambios.
+- 1 script de prueba aislado nuevo, con 16 casos: el interruptor de sincronización bloqueando (o no) el canal SSE en cada combinación relevante (ON/OFF/sin plataforma resuelta aún/canal del Súper Admin, que nunca depende del interruptor de una institución/tipo de mensaje distinto a "change"), la detección de "editando" con el popup de nota abierto o cerrado (con y sin un campo de texto adicional en foco), el efecto de esa detección sobre si `_syncAll()` renderiza de inmediato o difiere (incluyendo que la sincronización manual forzada sigue renderizando de inmediato, sin cambios), el comportamiento de `cerrarPopupNota()` al limpiar el refresco pendiente y programar el render diferido (o no hacer nada si no había nada pendiente), y el cierre defensivo del popup cuando su botón-ancla ya no existe en el documento.
+- Se confirmó que el módulo de universidad (LMS/SIS, `universidad/app.js`) usa un motor de sincronización completamente distinto (`window.SyncEngine`, de `07-sync-engine.js`) que ya respeta su propio interruptor correctamente (`if(_flagsPlataformaUniv.sincronizacionAutomatica) window.SyncEngine.autoAttach()`) — no tenía el bug del canal SSE de la Planilla del K-12 y no requirió cambios.
+- Cero dependencias nuevas agregadas en `package.json` — todo el ajuste reutiliza banderas y funciones que ya existían en el propio archivo (`_sincronizacionAutoHabilitadaAhora()`, `_popupActive`, `window._syncRenderPendiente`, `_renderPreservandoContexto()`).
+- No se modificó ningún archivo del backend (`src/`) en esta ronda — es una corrección exclusivamente de frontend.
+
+---
+
+## Ronda 15 — "Notas de Actividades en Clase": réplica por columna, popup de selección rápida igual al de la Planilla, y sincronización del promedio sin parpadeos
+
+Pediste integrar en el módulo "Notas de Actividades en Clase" varias capacidades que la Planilla principal ya tenía, más cerrar el ciclo de sincronización del promedio. Antes de tocar nada revisé a fondo el módulo (`htmlNotasActividades()` y funciones asociadas en `03-app-core.js`) y encontré que 2 de los 4 requerimientos ya estaban resueltos desde una ronda anterior — se documentan igual abajo para que quede constancia de qué se verificó y qué se construyó nuevo. Es una actualización 100% de frontend — no se modificó ningún archivo del backend (`src/`), porque este módulo, igual que la Planilla, guarda todo dentro del mismo blob JSON de la institución (`db.notasActColumnas`, `db.notasActAsignadas`, `db.notasAct`) a través del mismo endpoint genérico que ya existe.
+
+### 1 — Réplica de notas por columna + popup de selección rápida (NUEVO)
+
+- **"📋 Replicar a todos" en cada columna:** se agregó, junto al botón "✕ quitar" que ya tenía cada encabezado de columna, un nuevo botón que abre un selector de nota (idéntica rejilla de botones 0.0–5.0 que usa `replicarColumna()` en la Planilla) y, al elegir un valor, lo aplica de inmediato a **todos los estudiantes del grado** en esa columna — con la fecha y hora de "hoy" para todos (si algún estudiante necesita otra fecha, se corrige después tocando su propia celda). Nuevas funciones: `replicarColNotaAct(colId)` / `aplicarReplicaNotaAct(colId,valor)`.
+- **Popup de la celda, ahora igual al de la Planilla:** el popup para calificar una actividad individual (`abrirPopupNotaAct`) usaba antes un campo de texto numérico simple. Se reemplazó por **el mismo menú de selección rápida** que ya usa la Planilla principal (`abrirPopupNota`): la rejilla de botones 0.0–5.0 por rango de desempeño (BAJO/BÁSICO/ALTO/SUPERIOR), más los 4 accesos cualitativos S/A/B/D para Transición/Preescolar cuando el grado de la asignatura lo amerita (`esGradoInicial()`, la misma detección que ya usa la Planilla). Se conservaron los campos de fecha y hora — son lo que distingue a este módulo de la Planilla (cada nota de actividad queda fechada) — ahora ubicados arriba de la rejilla, editables antes de tocar el botón de la nota.
+  - **Adaptación documentada:** interpretamos "el mismo menú desplegable... permitiendo seleccionar observaciones, estados o notas predefinidas" como la misma rejilla de selección rápida de valores 0.0–5.0 que ya usa la Planilla (con sus accesos cualitativos), no como un sistema nuevo de "estados" u "observaciones" de texto libre — el módulo sigue siendo de notas numéricas 0.0–5.0, igual que el resto del sistema de calificaciones. Si lo que necesitas es además poder dejar una observación de texto por actividad (no solo nota + fecha/hora), dínoslo y se agrega como un campo adicional del popup.
+  - No se incluyó el botón de dictado por voz que sí tiene el popup de la Planilla — no vino pedido explícitamente y su lógica actual está atada a las columnas de la Planilla (SER/SABER/HACER); se puede adaptar a este módulo si lo necesitas.
+  - **Protección heredada de la Ronda 14, automática:** como este popup ahora usa la misma bandera `_popupActive` que ya protege al popup de la Planilla contra un refresco de fondo a mitad de la selección, quedó protegido contra exactamente el mismo bug que se corrigió ahí (parpadeo/salto de posición si una sincronización llega mientras el popup está abierto) sin tener que reconstruir esa lógica de nuevo — se cierra de forma defensiva si su botón-ancla deja de existir, y aplica cualquier refresco en espera justo al cerrarse.
+
+### 2 — Contexto Grado + Asignatura + Periodo y promedio automático (YA EXISTÍA — verificado, sin cambios de código)
+
+Este requerimiento ya estaba completamente resuelto desde antes de esta ronda:
+
+- Las columnas de actividades se asignan con la clave `db.notasActAsignadas[cargaId_periodo]` — como cada `cargaId` (`db.carga`) ya identifica de forma única una combinación Grado+Asignatura+Docente, esa clave por sí sola captura estrictamente el contexto Grado+Asignatura+Periodo que pediste: la misma columna del catálogo compartido (ej. "Talleres 1") puede reutilizarse en distintas asignaturas/grados/periodos sin mezclar sus valores entre sí, porque cada valor se guarda con la clave completa `cargaId_periodo_columnaId_estudianteId`.
+- La tabla ya tenía, al final, una columna fija "PROMEDIO" (`_promedioNotasActEst()`) que promedia en tiempo real todas las columnas activas de ese periodo para cada estudiante, y se recalcula sola tras cada guardado individual (`_refrescarCeldaNotaAct`) sin reconstruir la tabla.
+- Se verificó con 4 casos de prueba nuevos que un cambio en una carga/periodo no se filtra a otro grado, asignatura o periodo que reutilice la misma columna del catálogo — ver la sección de verificación más abajo.
+
+### 3 — Sincronización del promedio con la Planilla: ajustada para no perder el foco ni parpadear
+
+La sincronización en sí (elegir Ser/Saber/Hacer y actualizar la columna correspondiente en `db.ests[].nts` para todo el grupo, con el promedio redondeado a 1 decimal) también ya existía (`abrirModalSincronizarNotaAct` / `_confirmarSyncNAC`), incluyendo el redondeo exacto que pediste (`Math.round(promedio*10)/10`). Se ajustaron 2 cosas:
+
+- **Nombre del botón y del modal**, ahora literalmente "🔄 Sincronizar Promedio con Planilla" (antes decía solo "Sincronizar con Planilla"), para que coincida con lo que pediste.
+- **Se quitó el `renderApp()` que se ejecutaba al terminar la sincronización.** Esa reconstrucción completa de la pantalla no cambiaba nada visible — esta pantalla ("Notas de Actividades en Clase") no muestra ninguna de las columnas de la Planilla que la sincronización actualiza, solo escribe en `db.ests[].nts`, que la Planilla lee por su cuenta la próxima vez que se abra — así que solo causaba el parpadeo/pérdida de posición que pediste evitar, sin ningún beneficio. El aviso de confirmación (✅ con el número de estudiantes sincronizados) se conserva igual.
+
+### Resumen de funciones nuevas de esta ronda
+
+| Función | Para qué |
+|---|---|
+| `replicarColNotaAct(colId)` | Abre el selector de nota para aplicar a todos los estudiantes de una columna de actividad |
+| `aplicarReplicaNotaAct(colId,valor)` | Aplica la nota elegida a todos los estudiantes del grado en esa columna, con la fecha/hora de hoy |
+
+`abrirPopupNotaAct`, `cerrarPopupNotaAct` y `_guardarNotaAct` se reescribieron (mismos nombres, nueva implementación) para usar la rejilla de selección rápida en vez del campo numérico.
+
+### Cómo se verificó todo esto (Ronda 15)
+
+- JavaScript del frontend: `node --check` sobre `03-app-core.js`, `06-documentos-y-resto.js` y `universidad/app.js` — sin errores de sintaxis.
+- 1 script de prueba aislado nuevo, con 17 casos: el contexto estricto Grado+Asignatura+Periodo (una columna del catálogo reutilizada en 2 cargas/grados distintos nunca mezcla sus valores; cambiar de periodo no arrastra notas de otro periodo), el promedio automático combinando varias columnas activas, la réplica a todos afectando únicamente al grado de la carga activa (verificado que un estudiante de OTRO grado con una carga distinta que reutiliza la misma columna del catálogo no se ve tocado), el recorte de valores fuera de rango (por debajo de 0.0 o por encima de 5.0) tanto en la réplica como en el guardado individual, y la sincronización con la Planilla (redondeo a 1 decimal, que un estudiante sin promedio se omite en vez de escribir un 0 por error, y que sincronizar dos columnas distintas del mismo estudiante no se pisan entre sí).
+- Se revisó que las funciones de exportar/importar Excel de este módulo (`descargarNotasActExcel`/`cargarNotasActExcel`) leen `db.notasAct` directamente y no dependen del popup — no requirieron ningún cambio.
+- Cero dependencias nuevas agregadas en `package.json` — toda la réplica y el nuevo popup reutilizan exactamente el mismo patrón visual y las mismas funciones auxiliares (`colorNota`, `esGradoInicial`, `_activarAccesibilidadPopup`, `_toastPlan`, `_popupActive`) que ya usaba la Planilla principal.
+- No se modificó ningún archivo del backend (`src/`) en esta ronda.
+
+### Lo que queda pendiente de tu decisión (documentado, no resuelto a ciegas)
+
+1. **Observaciones de texto por actividad:** si además de la nota numérica necesitas poder registrar una observación escrita por actividad (no solo fecha/hora), dínoslo y se agrega como campo adicional del popup y de `db.notasAct`.
+2. **Dictado por voz en este módulo:** la Planilla principal tiene un botón de dictado por voz en su popup; no se replicó aquí porque su lógica actual está atada a los campos de la Planilla (SER/SABER/HACER) y no vino pedido explícitamente — se puede adaptar si lo necesitas.
+
+---
+
+## Ronda 16 — "Notas de Actividades en Clase": los 2 puntos que quedaron abiertos en la Ronda 15 (observaciones de texto por actividad y dictado por voz)
+
+Pediste completar los 2 puntos que la Ronda 15 dejó documentados como pendientes: agregar una observación de texto por actividad (hasta ahora el popup solo guardaba nota + fecha + hora) y extender a este módulo el dictado por voz que ya tenía la Planilla principal. Es una actualización 100% de frontend sobre el mismo archivo de la ronda anterior (`03-app-core.js`) — no se tocó ningún endpoint ni tabla del backend (`src/`).
+
+### 1 — Observación de texto por actividad (NUEVO)
+
+- El popup para calificar una actividad (`abrirPopupNotaAct`) ahora incluye un campo de texto opcional ("Observación (opcional)", con ejemplos de ayuda como "Entregó tarde, participó activamente, con apoyo del acudiente...") justo debajo de fecha/hora. Igual que fecha y hora, se lee al momento de tocar cualquiera de los botones de nota (rejilla 0.0–5.0 o los accesos cualitativos S/A/B/D), así que se puede escribir antes o después de elegir el valor.
+- La observación se guarda como un cuarto campo (`obs`) dentro del mismo registro `db.notasAct[cargaId_periodo_columnaId_estudianteId]` que ya tenía `valor`, `fecha` y `hora` — no se creó una estructura de datos nueva. Las notas registradas antes de esta ronda (sin el campo `obs`) se siguen leyendo sin problema: se tratan como observación vacía.
+- Cuando una celda tiene observación, la tabla muestra un pequeño ícono 📝 junto a la fecha/hora; al pasar el cursor por encima (`title="..."`) se ve el texto completo. Este ícono se mantiene sincronizado tanto en el renderizado inicial de la tabla como en el refresco granular de una sola celda (`_refrescarCeldaNotaAct`) que ya usa este módulo para no repintar toda la pantalla al guardar una nota — se agregó un escape de caracteres (`_escAttrNAC`, nuevo) para que una observación con comillas, `&`, `<` o `>` nunca rompa el HTML de la tabla.
+- **"📋 Replicar a todos" no pisa las observaciones individuales:** al aplicar una misma nota a todo el grado desde una columna, cada estudiante conserva la observación que ya tuviera escrita para esa celda (si la había) — solo se reemplaza el valor numérico, la fecha y la hora, igual que antes. Esto evita que una réplica masiva borre en silencio un comentario individual que el docente ya había registrado.
+
+### 2 — Dictado por voz en este módulo (NUEVO)
+
+- El popup de nota de actividad ahora tiene el mismo botón "🎙️ Dictar por Voz" que ya usa la Planilla principal, con el mismo reconocimiento de voz en español (`es-CO`) y el mismo parseo de números dictados (dígitos con punto o coma decimal, o palabras como "cuatro", "cero", etc.), incluida la misma tolerancia 0.0–5.0.
+- **Decisión de diseño, documentada a propósito:** en vez de generalizar/reutilizar la función `iniciarVozNota()` de la Planilla, se duplicó como una función nueva y separada (`iniciarVozNotaAct`), con sus propios identificadores de pantalla (`vozNotaActBtn`/`vozNotaActStatus`, distintos a los de la Planilla) y que guarda por el camino propio de este módulo (`_guardarNotaAct`, que registra fecha/hora/observación en `db.notasAct`) en vez del camino de la Planilla (que escribe directo en `db.ests[].nts`). Se optó por duplicar en vez de compartir código para no arriesgar la función de la Planilla, que ya está probada en producción — mismo criterio que ya se usó en la Ronda 15 para el popup de selección rápida.
+- Al reconocer un número válido, la nota se guarda dejando el popup abierto un instante (para que se alcancen a leer fecha, hora y la observación ya escrita en ese momento) y luego se cierra solo, igual que al tocar un botón de la rejilla.
+
+### Cómo se verificó todo esto (Ronda 16)
+
+- JavaScript del frontend: `node --check` sobre `03-app-core.js`, `06-documentos-y-resto.js` y `universidad/app.js` — sin errores de sintaxis tras el conjunto de cambios.
+- 1 script de prueba aislado nuevo, con 23 casos: el guardado y la lectura de la observación de texto (incluida una observación de solo espacios, que se normaliza a vacía, y notas guardadas antes de esta ronda sin el campo `obs`, que no revientan al leerse), que "Replicar a todos" preserva la observación previa de cada estudiante (y no revienta si un estudiante no tenía nota ni observación previas en esa celda), el escapado de caracteres especiales de `_escAttrNAC` (comillas, `&`, `<`, `>`, valores vacíos/nulos), y el reconocimiento de números dictados por voz para este módulo (dígitos con punto o coma, enteros, palabras simples, "cero" como nota válida 0.0, valores fuera de rango o texto no reconocido) — incluyendo la confirmación de que una nota dictada por voz aquí se guarda en `db.notasAct` (con fecha/hora/observación) y no en `db.ests[].nts` como en la Planilla.
+- Se dejó documentado en el propio script de prueba un matiz de comportamiento ya existente y heredado tal cual de la Planilla (no una regresión de esta ronda): al dictar una frase compuesta en palabras como "tres punto cinco", el reconocimiento toma el entero inicial ("tres") porque las palabras sueltas se revisan antes que sus variantes compuestas en la lista de reconocimiento — así funciona hoy también el dictado por voz de la Planilla, y se preservó intacto a propósito en vez de "corregirlo" por nuestra cuenta en una ronda que no lo pedía.
+- Cero dependencias nuevas agregadas en `package.json` — la observación de texto usa un campo adicional en la misma estructura de datos que ya existía, y el dictado por voz reutiliza la misma API del navegador (`SpeechRecognition`/`webkitSpeechRecognition`) que ya usaba la Planilla.
+- No se modificó ningún archivo del backend (`src/`) en esta ronda — es una corrección exclusivamente de frontend, y con esto quedan resueltos los 2 puntos que la Ronda 15 había dejado documentados como pendientes.
+
+---
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.
