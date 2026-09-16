@@ -657,6 +657,34 @@ export const finSuscripciones = pgTable('fin_suscripciones', {
   index('fin_suscripciones_estado_idx').on(t.estado),
 ]);
 
+// ════════════════════════════════════════════════════════════════════════════
+// AGENTE AUTÓNOMO Y AUDITOR SUPREMO DEL ECOSISTEMA — bitácora de auditorías.
+// ------------------------------------------------------------------------------
+// Una fila por CADA hallazgo/acción del agente (no una fila por ciclo de
+// auditoría completo) — así el panel "🤖 Auditoría IA / Agente" puede listar,
+// filtrar y contar hallazgos individuales sin tener que desempacar un JSON
+// gigante por fila. "details" (JSONB) es, a propósito, el único lugar donde
+// el agente puede guardar cualquier metadato adicional que necesite en el
+// futuro (ids afectados, valores antes/después, sugerencias de columnas
+// nuevas para que un desarrollador las revise, etc.) — ver la regla de
+// "Control de Esquema de BD" en src/services/ecosystemAgent.js: el agente
+// tiene prohibido ejecutar ALTER TABLE/CREATE TABLE en tiempo de ejecución,
+// así que cualquier dato nuevo que necesite recordar SIEMPRE va aquí dentro,
+// nunca como una columna física nueva.
+export const agentAuditLogs = pgTable('agent_audit_logs', {
+  id:             serial('id').primaryKey(),
+  timestamp:      timestamp('timestamp', { withTimezone: true }).defaultNow(),
+  category:       text('category').notNull(),                 // 'Academico' | 'Tecnico' | 'Sincronizacion'
+  issueDetected:  text('issue_detected').notNull(),
+  actionTaken:    text('action_taken').notNull().default(''),
+  status:         text('status').notNull().default('Informativo'), // 'Corregido' | 'Alerta' | 'Informativo'
+  details:        jsonb('details').default({}),
+}, (t) => [
+  index('agent_audit_logs_timestamp_idx').on(t.timestamp),
+  index('agent_audit_logs_category_idx').on(t.category),
+  index('agent_audit_logs_status_idx').on(t.status),
+]);
+
 export const univGradebookCategorias = pgTable('univ_gradebook_categorias', {
   id:          serial('id').primaryKey(),
   sk:          text('sk').notNull(),

@@ -505,6 +505,29 @@ async function initDb() {
       );
       CREATE INDEX IF NOT EXISTS fin_suscripciones_estado_idx ON fin_suscripciones(estado);
       ALTER TABLE fin_suscripciones ADD COLUMN IF NOT EXISTS alerta_vencimiento_enviada BOOLEAN NOT NULL DEFAULT FALSE;
+
+      -- ════════════════════════════════════════════════════════════════
+      -- AGENTE AUTÓNOMO Y AUDITOR SUPREMO DEL ECOSISTEMA — bitácora.
+      -- Ver el comentario detallado en src/db/schema.ts (agentAuditLogs).
+      -- Esta creación ocurre UNA SOLA VEZ al arrancar el servidor (igual
+      -- que el resto de tablas de este bloque) — es el mecanismo normal
+      -- de despliegue del proyecto, no algo que el propio agente ejecute
+      -- en tiempo de ejecución. El agente en sí NUNCA emite ALTER TABLE ni
+      -- CREATE TABLE — ver la regla de "Control de Esquema de BD" en
+      -- src/services/ecosystemAgent.js.
+      -- ════════════════════════════════════════════════════════════════
+      CREATE TABLE IF NOT EXISTS agent_audit_logs (
+        id SERIAL PRIMARY KEY,
+        timestamp TIMESTAMPTZ DEFAULT NOW(),
+        category TEXT NOT NULL,
+        issue_detected TEXT NOT NULL,
+        action_taken TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'Informativo',
+        details JSONB DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS agent_audit_logs_timestamp_idx ON agent_audit_logs(timestamp);
+      CREATE INDEX IF NOT EXISTS agent_audit_logs_category_idx ON agent_audit_logs(category);
+      CREATE INDEX IF NOT EXISTS agent_audit_logs_status_idx ON agent_audit_logs(status);
     `);
     console.log("✅ Tablas verificadas/creadas en Neon exitosamente.");
   } catch (err) {

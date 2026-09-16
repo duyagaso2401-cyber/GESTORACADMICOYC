@@ -695,7 +695,7 @@ async function _resolverConflictoDB(conflicto,_sk){
     _showToast(conflictos>0
       ? '⚠️ Se combinaron cambios guardados por otra persona; '+conflictos+' valor(es) coincidentes se resolvieron automáticamente.'
       : '🔄 Se combinaron automáticamente cambios guardados por otra persona.', conflictos>0?'warning':'info', 5500);
-    const _reaplicarConSync=function(){ renderApp(); _reaplicarPendientes(); };
+    const _reaplicarConSync=function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); };
     _renderPreservandoContexto(_reaplicarConSync);
     // Reintentar el guardado ya fusionado con la nueva versión base
     saveDB();
@@ -2186,6 +2186,7 @@ function renderGestorAdmin(){
   else if(_gestorPag==='analitica') contenido=htmlGestorAnalitica();
   else if(_gestorPag==='planes') contenido=htmlGestorPlanes();
   else if(_gestorPag==='salud') contenido=htmlGestorSalud();
+  else if(_gestorPag==='agenteia') contenido=htmlGestorAgenteIA();
   document.getElementById('app').innerHTML=`
   <div class="gestor-admin-wrap">
     <div class="gestor-topbar">
@@ -2207,6 +2208,7 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#2471a3" onclick="_gestorPag='analitica';renderGestorAdmin()" title="Ver gráficas de uso real de la plataforma por institución y por rol">📊 Analítica de Uso</button>
         <button class="tbtn" style="background:#186a3b" onclick="_gestorPag='planes';renderGestorAdmin()" title="Gestionar el plan y el estado de facturación de cada institución">💰 Planes y Facturación</button>
         <button class="tbtn" style="background:#922b21" onclick="_gestorPag='salud';renderGestorAdmin()" title="Detectar instituciones con problemas de guardado o papelera creciendo sin control">🏥 Salud del Sistema</button>
+        <button class="tbtn" style="background:#16a085" onclick="_gestorPag='agenteia';renderGestorAdmin()" title="Historial del Agente Administrador y Auditor Supremo del ecosistema: rendimiento académico, inasistencias, integridad técnica y sincronización">🤖 Auditoría IA / Agente</button>
         <button class="tbtn" style="background:#2980b9;position:relative" onclick="_gestorPag='notificaciones';renderGestorAdmin()">🔔 <span id="notifBadgeTxt">Notif</span><span id="notifBadge" style="display:none;background:#e74c3c;color:#fff;border-radius:10px;font-size:0.65rem;padding:1px 5px;margin-left:2px;font-weight:bold">0</span></button>
         <button class="tbtn" style="background:#27ae60;font-size:0.74rem" onclick="descargarRespaldoGestor()" title="Descargar respaldo JSON del sistema gestor">💾 Respaldo</button>
         <button class="tbtn" style="background:#e67e22;font-size:0.74rem" onclick="document.getElementById('fileRespaldoGestor').click()" title="Cargar respaldo JSON del sistema gestor">📂 Cargar</button>
@@ -2226,6 +2228,7 @@ function renderGestorAdmin(){
   // de que este refresco (más pesado) empiece a competir por la red.
   if(_gestorPag==='plataformas') setTimeout(function(){ if(!_entrandoAPlataforma) _refrescarStatsPlataformasReal(); },1200);
   if(_gestorPag==='salud') setTimeout(_refrescarSaludSistema,150);
+  if(_gestorPag==='agenteia') setTimeout(_refrescarAgenteIA,150);
 }
 
 
@@ -2934,6 +2937,122 @@ async function _refrescarSaludSistema(){
       <td><button class="btn-sm" style="background:#2980b9" onclick="entrarPlataforma('${p.plat.id}',null,this)">🔎 Entrar a revisar</button></td>
     </tr>`;
   }).join('')}</tbody></table></div></div>`;
+}
+
+// ── 🤖 AUDITORÍA IA / AGENTE — panel del Agente Administrador y Auditor
+// Supremo del Ecosistema (src/services/ecosystemAgent.js). Mismo patrón
+// visual que htmlGestorSalud()/_refrescarSaludSistema() de arriba: tarjeta
+// con estado + tabla con filtros, refrescada por fetch tras el primer
+// render (ver el setTimeout en renderGestorAdmin()). ────────────────────
+let _agenteLogsCache=[];
+let _agenteFiltroStatus='';
+let _agenteFiltroCategoria='';
+
+function htmlGestorAgenteIA(){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px">
+    <h3 style="color:#003366;margin:0">🤖 Auditoría IA / Agente</h3>
+    <button class="btn" id="btnDispararAuditoriaAgente" style="background:#16a085" onclick="_dispararAuditoriaAgente()">▶️ Disparar Auditoría Ahora</button>
+  </div>
+  <p style="font-size:0.83rem;color:#666;margin-bottom:14px">Historial del Agente Administrador y Auditor Supremo del ecosistema: rendimiento académico, inasistencias, integridad técnica de la base de datos Neon y estado de la sincronización. Corre solo (todos los domingos, 2:00 a.m. hora Colombia) o bajo demanda con el botón de arriba — nunca modifica una nota real ingresada por un docente; ante un problema académico, solo genera una alerta.</p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+    <select id="agenteFiltroStatus" style="padding:6px 8px;border-radius:6px;border:1px solid #ccc;font-size:0.8rem" onchange="_agenteFiltroStatus=this.value;_refrescarAgenteIA()">
+      <option value="">Todos los estados</option>
+      <option value="Corregido">🟢 Corregido</option>
+      <option value="Alerta">🟡 Alerta</option>
+      <option value="Informativo">🔵 Informativo</option>
+    </select>
+    <select id="agenteFiltroCategoria" style="padding:6px 8px;border-radius:6px;border:1px solid #ccc;font-size:0.8rem" onchange="_agenteFiltroCategoria=this.value;_refrescarAgenteIA()">
+      <option value="">Todas las categorías</option>
+      <option value="Academico">📚 Académico</option>
+      <option value="Tecnico">🛠️ Técnico</option>
+      <option value="Sincronizacion">🔄 Sincronización</option>
+    </select>
+    <span id="agenteEstadoGemini" style="font-size:0.76rem;color:#888"></span>
+  </div>
+  <div id="agenteIaResultado"><div class="card"><p class="empty" style="padding:30px">⏳ Cargando bitácora del agente...</p></div></div>`;
+}
+
+async function _refrescarAgenteIA(){
+  const cont=document.getElementById('agenteIaResultado');
+  if(!cont) return;
+  try{
+    const qs=new URLSearchParams();
+    if(_agenteFiltroStatus) qs.set('status',_agenteFiltroStatus);
+    if(_agenteFiltroCategoria) qs.set('category',_agenteFiltroCategoria);
+    qs.set('limit','150');
+    const [rEstado,jLogs]=await Promise.all([
+      fetch(API_BASE+'/api/agent/status').then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
+      fetch(API_BASE+'/api/agent/logs?'+qs.toString()).then(function(r){return r.json();}).catch(function(){return {logs:[]};})
+    ]);
+    const badgeGemini=document.getElementById('agenteEstadoGemini');
+    if(badgeGemini){
+      badgeGemini.textContent = rEstado&&rEstado.geminiConfigurado ? ('🟢 Gemini activo ('+rEstado.modelo+')') : '⚪ Modo determinista (GEMINI_API_KEY no configurada)';
+    }
+    _agenteLogsCache=jLogs.logs||[];
+    if(!_agenteLogsCache.length){
+      cont.innerHTML='<div class="card"><p class="empty" style="padding:30px">Sin auditorías registradas todavía con estos filtros. Use "▶️ Disparar Auditoría Ahora" para generar la primera.</p></div>';
+      return;
+    }
+    const badgeInfo={'Corregido':{c:'#27ae60',l:'🟢 Corregido'},'Alerta':{c:'#f39c12',l:'🟡 Alerta'},'Informativo':{c:'#2980b9',l:'🔵 Informativo'}};
+    const catIcon={'Academico':'📚','Tecnico':'🛠️','Sincronizacion':'🔄'};
+    cont.innerHTML=`<div class="card"><div class="over"><table><thead><tr style="background:#16a085;color:#fff">
+      <th style="text-align:left">Fecha y hora</th><th style="text-align:left">Categoría</th><th style="text-align:left">Problema detectado</th><th style="text-align:left">Acción autónoma ejecutada</th><th>Estado</th><th>Detalle</th>
+    </tr></thead><tbody>${_agenteLogsCache.map(function(l,i){
+      const b=badgeInfo[l.status]||badgeInfo['Informativo'];
+      let fecha='—';
+      try{ fecha=new Date(l.timestamp).toLocaleString('es-CO',{dateStyle:'short',timeStyle:'short'}); }catch(e){}
+      return `<tr>
+        <td style="white-space:nowrap;font-size:0.78rem">${fecha}</td>
+        <td style="font-size:0.78rem;white-space:nowrap">${catIcon[l.category]||''} ${l.category||''}</td>
+        <td style="text-align:left;font-size:0.8rem;max-width:340px">${String(l.issueDetected||'').replace(/</g,'&lt;')}</td>
+        <td style="text-align:left;font-size:0.8rem;max-width:340px">${String(l.actionTaken||'').replace(/</g,'&lt;')}</td>
+        <td><span style="background:${b.c};color:#fff;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:bold;white-space:nowrap">${b.l}</span></td>
+        <td><button class="btn-sm" style="background:#5d6d7e" onclick="_verDetalleLogAgente(${i})">🔎 Ver JSON</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div></div>`;
+  }catch(e){
+    cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">⚠️ No se pudo cargar la bitácora del agente: '+(e&&e.message?e.message:'error desconocido')+'</p></div>';
+  }
+}
+
+async function _dispararAuditoriaAgente(){
+  const btn=document.getElementById('btnDispararAuditoriaAgente');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Auditando...'; }
+  try{
+    const r=await fetch(API_BASE+'/api/agent/run-full-audit',{method:'POST'});
+    const j=await r.json();
+    if(j.sinCambios){
+      _showToast('✅ Auditoría ejecutada: sin actividad nueva desde el último ciclo — nada que corregir (cero llamadas adicionales a la base de datos o a Gemini).','info',5500);
+    } else if(j.ok){
+      _showToast('✅ Auditoría completa: '+j.hallazgosTecnicos+' hallazgo(s) técnico(s), '+j.hallazgosAcademicos+' académico(s), '+j.reparacionesAplicadas+' institución(es) reparada(s).','success',6500);
+    } else {
+      _showToast('⚠️ '+(j.mensaje||j.error||'No se pudo completar la auditoría.'),'warn',6000);
+    }
+    _refrescarAgenteIA();
+  }catch(e){
+    _showToast('Error al disparar la auditoría: '+e.message,'error',5000);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='▶️ Disparar Auditoría Ahora'; }
+  }
+}
+
+// Mismo patrón de modal ya usado en este panel (ver abrirModulosModal()):
+// overlay fijo agregado a #gestorModalContainer, cerrado con .remove().
+function _verDetalleLogAgente(i){
+  const log=_agenteLogsCache[i];
+  if(!log) return;
+  const cont=document.getElementById('gestorModalContainer')||document.body;
+  const old=document.getElementById('agenteDetalleOv');if(old)old.remove();
+  const ov=document.createElement('div');
+  ov.id='agenteDetalleOv';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.68);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:22px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto;box-shadow:0 10px 50px rgba(0,0,0,0.4);color:#1a1a2e">
+    <h3 style="color:#003366;margin-bottom:10px;border-bottom:3px solid #003366;padding-bottom:10px">🔎 Detalle del hallazgo</h3>
+    <pre style="background:#f4f6f7;padding:12px;border-radius:6px;font-size:0.76rem;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-word">${JSON.stringify(log,null,2).replace(/</g,'&lt;')}</pre>
+    <div style="text-align:center;margin-top:14px"><button class="btn btn-gray" onclick="document.getElementById('agenteDetalleOv').remove()">✕ Cerrar</button></div>
+  </div>`;
+  ov.addEventListener('click',function(ev){ if(ev.target===ov) ov.remove(); });
+  cont.appendChild(ov);
 }
 
 function htmlGestorPlanes(){
@@ -3728,7 +3847,14 @@ function _actualizarChipTiempoSesion(restanteMs){
 
 function _avisoTiempoSesion(minRestantes){
   const hayPendientes=(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0);
-  const msjPend=hayPendientes?'\n\n⚠️ Tiene notas SIN GUARDAR en la Planilla — pulse "GUARDAR CAMBIOS" ahora mismo para no perderlas.':'';
+  // Ronda 18: el mismo aviso ahora también considera las notas de
+  // actividad pendientes de "Notas de Actividades en Clase" (antes solo
+  // avisaba de la Planilla, aunque este otro módulo ya podía tener sus
+  // propias notas sin guardar en modo manual).
+  const hayPendientesNAC=(typeof _notasActPendientes==='object'&&_notasActPendientes&&Object.keys(_notasActPendientes).length>0);
+  let msjPend='';
+  if(hayPendientes) msjPend+='\n\n⚠️ Tiene notas SIN GUARDAR en la Planilla — pulse "GUARDAR CAMBIOS" ahora mismo para no perderlas.';
+  if(hayPendientesNAC) msjPend+='\n\n⚠️ Tiene notas SIN GUARDAR en "Notas de Actividades en Clase" — pulse "GUARDAR CAMBIOS" en ese módulo ahora mismo para no perderlas.';
   const txt=minRestantes===1?'1 minuto':minRestantes+' minutos';
   customAlert('⏰ Le queda(n) '+txt+' de sesión.\n\nPor política de la institución, la sesión se cerrará automáticamente al agotarse el tiempo para ahorrar recursos del sistema.\n\nGuarde los cambios que esté realizando.'+msjPend);
 }
@@ -3737,6 +3863,14 @@ function _forzarCierrePorTiempo(){
   try{
     if(typeof _notasPendientes==='object'&&_notasPendientes&&Object.keys(_notasPendientes).length>0&&typeof _aplicarNotasPendientesEnDB==='function'){
       _aplicarNotasPendientesEnDB();
+      _pushDB();
+    }
+    // Ronda 18: mismo respaldo de último momento, ahora también para las
+    // notas de actividad pendientes (antes se perdían silenciosamente si
+    // la sesión se cerraba por tiempo mientras el docente tenía notas de
+    // actividad sin confirmar en modo Guardado Manual).
+    if(typeof _notasActPendientes==='object'&&_notasActPendientes&&Object.keys(_notasActPendientes).length>0&&typeof _aplicarNotasActPendientesEnDB==='function'){
+      _aplicarNotasActPendientesEnDB();
       _pushDB();
     }
   }catch(e){}
@@ -4289,6 +4423,31 @@ async function _syncAll(force){
   // otro todavía no), y renderizar en ese instante podía producir saltos de
   // pantalla o mostrar datos mezclados de dos instituciones distintas.
   if(_entrandoAPlataforma) return;
+  // ============================================================
+  // 🔧 RONDA 18 — BUG 2 (Respeto a la bandera del Súper Admin): hasta
+  // ahora, cada punto que dispara una sincronización de FONDO (el
+  // temporizador de polling _syncInterval, el evento "online", el evento
+  // "visibilitychange" y el mensaje SSE de _makeSseChannel) revisaba
+  // _sincronizacionAutoHabilitadaAhora() ANTES de llamar a _syncAll() —
+  // funcionaba, pero la propia _syncAll() confiaba en que cada uno de
+  // esos puntos (los de HOY y los que se agreguen en el futuro) recordara
+  // hacer esa revisión. Ese es exactamente el mismo tipo de olvido que
+  // causó el Bug 1 de esta misma ronda (un módulo nuevo — "Notas de
+  // Actividades en Clase" — que no heredó una convención existente).
+  //
+  // Para que la bandera del Súper Admin no pueda volver a "saltarse" por
+  // un punto de llamada que olvide revisarla (presente o futuro), la
+  // propia _syncAll() ahora se niega a tocar la red si la sincronización
+  // automática está apagada — salvo que sea una sincronización EXPLÍCITA
+  // pedida por la persona (force=true: botón "🔄 Sincronizar ahora" del
+  // aviso, o clic en el ícono ☁️), que debe seguir funcionando siempre,
+  // incluso con el interruptor en OFF, porque es una acción deliberada y
+  // puntual, no un proceso de fondo. IMPORTANTE: esto NUNCA afecta el
+  // GUARDADO de las notas/asistencia/etc. del propio docente (saveDB/
+  // _pushDB) — eso jamás depende de este interruptor, ver más abajo.
+  if(!force&&!_sincronizacionAutoHabilitadaAhora()){
+    return;
+  }
   _syncInProgress=true;
   _updateSyncChip('syncing');
   try{
@@ -4376,7 +4535,7 @@ async function _syncAll(force){
       if(force&&(_gChanged||_dChanged)) _showSyncToast('🔄 Datos actualizados desde la nube');
       if(gestorSesion){
         if(gestorEnPlataforma){
-          _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); });
+          _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); });
         }else{renderGestorAdmin();}
       } else if(sesion){
         // Para todos los roles: solo re-renderizar cuando hay cambios reales o
@@ -4385,7 +4544,7 @@ async function _syncAll(force){
         // no interrumpir lo que se esté haciendo — por ejemplo, un docente
         // escribiendo una nota justo cuando llega esta sincronización.
         if(_dChanged||_gChanged||force){
-          _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); });
+          _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); });
         }
       }
     }
@@ -5561,7 +5720,7 @@ if(typeof document!=='undefined'){
     if(!tag||!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return;
     window._syncRenderPendiente=false;
     setTimeout(function(){
-      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); }); }
+      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); }); }
       else if(gestorSesion){ renderGestorAdmin(); }
     },80); // pequeño respiro para que el propio guardado del campo (onblur/onchange) termine de aplicarse primero
   },true);
@@ -10989,7 +11148,7 @@ function cerrarPopupNota(){
   if(window._syncRenderPendiente){
     window._syncRenderPendiente=false;
     setTimeout(function(){
-      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); }); }
+      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); }); }
       else if(gestorSesion){ renderGestorAdmin(); }
     },80);
   }
@@ -11015,9 +11174,29 @@ function _toggleAutoGuardar(){
   if(btn){btn.textContent=_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF';btn.style.background=_autoGuardar?'#27ae60':'#7f8c8d';}
   const manualWrap=document.getElementById('_wrapGuardarManual');
   if(manualWrap)manualWrap.style.display=_autoGuardar?'none':'flex';
+  const manualWrapNAC=document.getElementById('_wrapGuardarManualNAC');
+  if(manualWrapNAC)manualWrapNAC.style.display=_autoGuardar?'none':'flex';
   if(_autoGuardar&&Object.keys(_notasPendientes).length){
     _aplicarNotasPendientesEnDB();_actualizarIndicadorPendientes();renderApp();
   }
+  // Ronda 18: al volver a activar el guardado automático, las notas de
+  // actividad que hubieran quedado pendientes también se confirman de
+  // una vez — mismo comportamiento que ya tenía la Planilla.
+  if(_autoGuardar&&Object.keys(_notasActPendientes).length){
+    _aplicarNotasActPendientesEnDB();_actualizarIndicadorPendientesNAC();renderApp();
+  }
+}
+
+// Aplica todas las notas de actividad pendientes y refresca la pantalla —
+// llamada por el botón "💾 GUARDAR CAMBIOS" de "Notas de Actividades en
+// Clase" (mismo patrón que guardarPlanilla() para la Planilla).
+function guardarNotasActividades(){
+  const n=Object.keys(_notasActPendientes).length;
+  if(!n){_toastPlan('No hay notas de actividad pendientes por guardar.','#7f8c8d');return;}
+  _aplicarNotasActPendientesEnDB();
+  _actualizarIndicadorPendientesNAC();
+  renderApp();
+  _toastPlan('✅ '+n+' nota(s) de actividad guardada(s).','#27ae60');
 }
 
 function _actualizarIndicadorPendientes(){
@@ -11048,6 +11227,78 @@ function _reaplicarPendientes(){
     }
   });
   _actualizarIndicadorPendientes();
+}
+
+// ============================================================
+// 🔧 RONDA 18 — BUG 1 (Respeto al Guardado Manual): "Notas de Actividades
+// en Clase" guardaba SIEMPRE de inmediato (updDB→saveDB→_pushDB, con su
+// debounce de red de 350ms) sin importar si el docente había activado
+// "Guardado Manual" desde la Planilla — a diferencia de la Planilla, que
+// ya respetaba ese interruptor desde su primera versión (ver _autoGuardar,
+// seleccionarNotaRapido/seleccionarNota más arriba). Como "Guardado
+// Manual" es una sola preferencia GLOBAL de la institución (db.config.
+// autoGuardar), el docente que la activaba esperando que NINGÚN guardado
+// se disparara solo hasta pulsar "GUARDAR CAMBIOS" veía que, en este
+// módulo específico, las notas de actividad se seguían enviando al
+// servidor al instante de todos modos — el bug reportado.
+//
+// La corrección extiende EXACTAMENTE el mismo mecanismo de "notas
+// pendientes" que ya usa la Planilla (_notasPendientes/_notasPendientes
+// EnDB/_reaplicarPendientes) a este módulo, en su propia variable
+// (_notasActPendientes) para no arriesgar el código ya probado de la
+// Planilla: mientras _autoGuardar esté en false, cada nota/replicación
+// se queda en memoria (borde amarillo, indicador "⚠️ N sin guardar") y
+// solo se escribe en la base de datos —en un único updDB()— al pulsar el
+// nuevo botón "💾 GUARDAR CAMBIOS" de esta pantalla.
+// ============================================================
+let _notasActPendientes={};
+
+// Aplica TODAS las notas de actividad pendientes a la base de datos en
+// una sola llamada a updDB() (mismo principio de "un solo guardado en
+// lote" que _aplicarNotasPendientesEnDB() de la Planilla).
+function _aplicarNotasActPendientesEnDB(){
+  const keys=Object.keys(_notasActPendientes);
+  if(!keys.length) return;
+  const pending=JSON.parse(JSON.stringify(_notasActPendientes));
+  _notasActPendientes={};
+  updDB(function(d){
+    d.notasAct=d.notasAct||{};
+    keys.forEach(function(k){
+      const p=pending[k];
+      d.notasAct[k]={valor:p.valor,fecha:p.fecha,hora:p.hora,obs:p.obs||''};
+    });
+    return d;
+  });
+}
+
+function _actualizarIndicadorPendientesNAC(){
+  const n=Object.keys(_notasActPendientes).length;
+  document.querySelectorAll('[id="__pendIndNAC"]').forEach(function(el){
+    if(n>0){el.textContent='⚠️ '+n+' nota(s) sin guardar';el.style.display='inline-block';}
+    else{el.style.display='none';}
+  });
+}
+
+// Restaura el borde amarillo de las notas de actividad pendientes después
+// de cualquier re-render (mismo principio que _reaplicarPendientes() de
+// la Planilla) — necesario porque una sincronización de fondo (con la
+// bandera de sincronización automática activa) puede reconstruir esta
+// pantalla mientras hay notas de actividad sin guardar.
+function _reaplicarPendientesNAC(){
+  const keys=Object.keys(_notasActPendientes);
+  if(!keys.length) return;
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  keys.forEach(function(k){
+    const p=_notasActPendientes[k];
+    // Comparar por los campos explícitos del pendiente (NO por partir la
+    // llave con split('_')): colId puede traer sus propios guiones bajos
+    // (ver _confirmarAgregarColNAC: 'nac_'+Date.now()+'_'+random...), así
+    // que partir la cadena rompería la comparación. Solo se re-aplica si
+    // coincide con la asignatura/periodo actualmente abiertos en pantalla.
+    if(Number(p.cId)!==cId||Number(p.per)!==per) return;
+    _refrescarCeldaNotaAct(p.estId,p.colId);
+  });
+  _actualizarIndicadorPendientesNAC();
 }
 
 // ── Auditoría: registra en d.logNotas quién cambió una nota, de qué valor a qué valor y cuándo ──
@@ -12034,6 +12285,13 @@ function _colsActAsignadas(cId,per){
 }
 function _valorNotaAct(cId,per,colId,estId){
   const key=cId+'_'+per+'_'+colId+'_'+estId;
+  // Ronda 18: una nota pendiente (modo "Guardado Manual") tiene prioridad
+  // visual sobre lo ya guardado en db.notasAct — mismo principio que
+  // seleccionarNotaRapido()/_reaplicarPendientes() de la Planilla, para
+  // que la celda, el promedio y el popup siempre reflejen lo último que
+  // el docente eligió, aunque todavía no se haya confirmado con "GUARDAR
+  // CAMBIOS".
+  if(_notasActPendientes[key]) return _notasActPendientes[key];
   return (db.notasAct||{})[key]||null;
 }
 function _promedioNotasActEst(cId,per,estId){
@@ -12112,6 +12370,11 @@ function htmlNotasActividades(){
     </div>
     <div id="_nacXlsxMsg" style="display:none;border-radius:6px;padding:8px 12px;font-size:0.8rem;margin-bottom:10px"></div>
     ${tabla}
+    <div id="_wrapGuardarManualNAC" style="display:${(()=>{_cargarAutoGuardar();return _autoGuardar?'none':'flex'})()};align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn btn-green" onclick="guardarNotasActividades()">💾 GUARDAR CAMBIOS</button>
+      <span id="__pendIndNAC" style="display:none;background:#f1c40f;color:#333;font-weight:bold;font-size:0.8rem;padding:5px 12px;border-radius:20px;border:2px solid #d4ac0d">⚠️ 0 nota(s) sin guardar</span>
+      <span style="font-size:0.72rem;color:#888">🕹 Modo Guardado Manual activo (configurado desde la Planilla) — estas notas de actividad tampoco se envían solas hasta pulsar "GUARDAR CAMBIOS".</span>
+    </div>
   </div>`;
 }
 function cambiarNotaActPer(v){notaActPer=v;renderApp();}
@@ -12375,7 +12638,7 @@ function cerrarPopupNotaAct(){
   if(window._syncRenderPendiente){
     window._syncRenderPendiente=false;
     setTimeout(function(){
-      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); }); }
+      if(gestorSesion&&gestorEnPlataforma||sesion){ _renderPreservandoContexto(function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); }); }
       else if(gestorSesion){ renderGestorAdmin(); }
     },80);
   }
@@ -12398,11 +12661,17 @@ function _refrescarCeldaNotaAct(estId,colId){
   const cId=Number(notaActCId),per=Number(notaActPer);
   const v=_valorNotaAct(cId,per,colId,estId);
   const val=v&&typeof v.valor==='number'?v.valor:null;
+  const key=cId+'_'+per+'_'+colId+'_'+estId;
+  const pendiente=!!_notasActPendientes[key];
   const btn=document.getElementById('nac-btn-'+estId+'-'+colId);
   if(btn){
     btn.textContent=val!=null?val.toFixed(1):'—';
     btn.style.background=val!=null?colorNota(val):'#eee';
     btn.style.color=val!=null?'#fff':'#888';
+    // Ronda 18: mismo borde amarillo que usa la Planilla para una nota
+    // pendiente de "GUARDAR CAMBIOS" en modo Guardado Manual.
+    btn.style.outline=pendiente?'3px solid #f1c40f':'';
+    btn.title=pendiente?'Nota pendiente de guardar — pulse GUARDAR CAMBIOS':'';
   }
   const fhEl=document.getElementById('nac-fh-'+estId+'-'+colId);
   if(fhEl) fhEl.textContent=v&&v.fecha?(v.fecha+(v.hora?' '+v.hora:'')):'';
@@ -12432,11 +12701,21 @@ function _guardarNotaAct(estId,colId,valor){
   const obs=(obsEl&&obsEl.value.trim())||'';
   const cId=Number(notaActCId),per=Number(notaActPer);
   const key=cId+'_'+per+'_'+colId+'_'+estId;
-  updDB(d=>{
-    d.notasAct=d.notasAct||{};
-    d.notasAct[key]={valor:valorNum,fecha,hora,obs};
-    return d;
-  });
+  // Ronda 18 — BUG 1: respetar "Guardado Manual" (_autoGuardar), igual que
+  // ya lo hace seleccionarNotaRapido()/seleccionarNota() en la Planilla.
+  if(_autoGuardar){
+    updDB(d=>{
+      d.notasAct=d.notasAct||{};
+      d.notasAct[key]={valor:valorNum,fecha,hora,obs};
+      return d;
+    });
+  }else{
+    // Modo manual: se queda en memoria (borde amarillo) hasta que el
+    // docente pulse "GUARDAR CAMBIOS" en esta pantalla — NINGÚN
+    // temporizador ni evento de fondo la envía al servidor antes de eso.
+    _notasActPendientes[key]={estId,colId,cId,per,valor:valorNum,fecha,hora,obs};
+    _actualizarIndicadorPendientesNAC();
+  }
   cerrarPopupNotaAct();
   _refrescarCeldaNotaAct(estId,colId);
 }
@@ -12497,24 +12776,36 @@ function aplicarReplicaNotaAct(colId,valor){
   const ests=db.ests.filter(x=>x.g===carga.g);
   const hoy=new Date();
   const fecha=hoy.toISOString().slice(0,10),hora=hoy.toTimeString().slice(0,5);
-  updDB(d=>{
-    d.notasAct=d.notasAct||{};
+  // Ronda 18 — BUG 1: "Replicar a todos" también debe respetar "Guardado
+  // Manual" — antes escribía siempre de inmediato con updDB(), sin
+  // importar el interruptor.
+  if(_autoGuardar){
+    updDB(d=>{
+      d.notasAct=d.notasAct||{};
+      ests.forEach(e=>{
+        const key=cId+'_'+per+'_'+colId+'_'+e.id;
+        // Se conserva la observación que ese estudiante ya tuviera para esta
+        // celda (si la había) — replicar la NOTA a todos no debe borrar en
+        // silencio un comentario individual que el docente ya había escrito.
+        const obsPrevia=(d.notasAct[key]&&d.notasAct[key].obs)||'';
+        d.notasAct[key]={valor:numVal,fecha,hora,obs:obsPrevia};
+      });
+      return d;
+    });
+  }else{
     ests.forEach(e=>{
       const key=cId+'_'+per+'_'+colId+'_'+e.id;
-      // Se conserva la observación que ese estudiante ya tuviera para esta
-      // celda (si la había) — replicar la NOTA a todos no debe borrar en
-      // silencio un comentario individual que el docente ya había escrito.
-      const obsPrevia=(d.notasAct[key]&&d.notasAct[key].obs)||'';
-      d.notasAct[key]={valor:numVal,fecha,hora,obs:obsPrevia};
+      const obsPrevia=(_notasActPendientes[key]&&_notasActPendientes[key].obs)||((db.notasAct||{})[key]&&db.notasAct[key].obs)||'';
+      _notasActPendientes[key]={estId:e.id,colId,cId,per,valor:numVal,fecha,hora,obs:obsPrevia};
     });
-    return d;
-  });
+    _actualizarIndicadorPendientesNAC();
+  }
   cerrarPopupNotaAct();
   // Refresco granular: solo las celdas de esta columna y los promedios de
   // los estudiantes afectados — sin renderApp(), mismo principio que el
   // resto de este módulo y de la Planilla.
   ests.forEach(e=>_refrescarCeldaNotaAct(e.id,colId));
-  _toastPlan('✅ Nota '+numVal.toFixed(1)+' aplicada a '+ests.length+' estudiante(s) en esta columna.','#27ae60');
+  _toastPlan((_autoGuardar?'✅ Nota ':'🕹 Nota (pendiente de guardar) ')+numVal.toFixed(1)+' aplicada a '+ests.length+' estudiante(s) en esta columna.','#27ae60');
 }
 
 // ── Sincronización del promedio del módulo con una columna elegida de la Planilla ──

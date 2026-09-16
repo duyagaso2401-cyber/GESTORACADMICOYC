@@ -33,6 +33,10 @@ import { verificarFirmaWompi, verificarFirmaMercadoPago, verificarFirmaStripe, n
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
 import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado } from './lib/email-general.js';
 import { emailApiConfigurado, emailApiProveedor, enviarPorApiHttp } from './lib/email-http-provider.js';
+import { sseClients, broadcastChange } from './lib/sync-bus.js';
+import { registrarActividadPlataforma, iniciarKeepAliveInteligente, estadoActividadReciente } from './lib/keep-alive.js';
+import agentRouter from './routes/agent.js';
+import * as ecosystemAgent from './services/ecosystemAgent.js';
 
 // ============================================================
 // MONITOREO DE ERRORES (Sentry) — OPCIONAL.
@@ -574,17 +578,11 @@ INSTRUCCIONES:
 }
 
 // ── SSE (Server-Sent Events) ──────────────────────────────────────────────────
-
-const sseClients = new Map<string, Set<express.Response>>();
-
-function broadcastChange(sk: string, extra?: Record<string, unknown>) {
-  const clients = sseClients.get(sk);
-  if (!clients || clients.size === 0) return;
-  const msg = `data: ${JSON.stringify({ type: 'change', sk, ts: Date.now(), ...extra })}\n\n`;
-  clients.forEach(res => {
-    try { res.write(msg); } catch {}
-  });
-}
+// "sseClients"/"broadcastChange" ahora viven en src/lib/sync-bus.ts (mismo
+// mecanismo de siempre, solo reubicado) para que el nuevo AGENTE AUTÓNOMO Y
+// AUDITOR SUPREMO DEL ECOSISTEMA (src/services/ecosystemAgent.js) también
+// pueda forzar un aviso de sincronización con su herramienta
+// `triggerSystemSync`, sin crear una dependencia circular con este archivo.
 
 // ── Servir portal frontend ────────────────────────────────────────────────────
 
@@ -601,8 +599,17 @@ function servePortal(_req: express.Request, res: express.Response) {
 // A03 · RUTAS — SALUD Y SINCRONIZACIÓN EN TIEMPO REAL (SSE)
 // ============================================================
 
+// ── KEEP-ALIVE INTELIGENTE (Render) ─────────────────────────────────────────
+// Este endpoint ya existía (health-check simple); se amplía para que el
+// propio mecanismo de auto-ping adaptativo (src/lib/keep-alive.ts) y
+// cualquier monitor externo (UptimeRobot, cron-job.org, etc.) puedan ver,
+// además de "ok:true", si hubo actividad reciente en la plataforma — sin
+// romper compatibilidad con quien solo revisa "ok"/código 200. Se mantiene
+// deliberadamente liviano (sin consultar Neon) para que sirva también como
+// el propio "ping" que mantiene despierto el contenedor de Render.
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ts: new Date().toISOString() });
+  const estado = estadoActividadReciente();
+  res.json({ ok: true, ts: new Date().toISOString(), ...estado });
 });
 
 app.get('/api/inetis/events', (req, res) => {
@@ -807,6 +814,11 @@ app.post('/api/inetis/db', async (req, res) => {
     // tener que esperar ni volver a golpear Neon.
     guardarDbCache(sk, data, nowTs, true);
     broadcastChange(sk);
+    // KEEP-ALIVE INTELIGENTE: cada guardado real (nota, planilla, asistencia,
+    // sincronización...) cuenta como "actividad reciente" para que el
+    // auto-ping adaptativo mantenga intervalos cortos mientras hay uso, y los
+    // espacie solo cuando de verdad no está pasando nada — ver keep-alive.ts.
+    registrarActividadPlataforma(sk);
     return res.json({ ok: true, version: nowTs.toISOString() });
   } catch (e) {
     console.error('POST /api/inetis/db', e);
@@ -2484,6 +2496,11 @@ Proporciona:
 
 app.use('/api/repositorio', repositorioRouter);
 app.use('/api/lms', lmsRouter);
+// AGENTE AUTÓNOMO Y AUDITOR SUPREMO DEL ECOSISTEMA — ver
+// src/services/ecosystemAgent.js y src/routes/agent.js. Router propio (no
+// exige sesión de institución: lo usa el Súper Admin desde su panel, y el
+// cron interno lo llama directamente sin pasar por HTTP).
+app.use('/api/agent', agentRouter);
 // Sistema INDEPENDIENTE de Educación Superior — ver el comentario al
 // inicio de src/routes/university.ts. No comparte lógica con el resto
 // del backend K-12; solo lee/escribe el mismo kv_store para no duplicar
@@ -2881,4 +2898,15 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('🗄️  Respaldo automático semanal programado (revisión cada 12 horas).');
   iniciarTareasAutonomasProgramadas();
   console.log('🤖 Tareas autónomas programadas: cierre de planillas (diario, medianoche Colombia), alertas de ausentismo (semanal, opcional por institución), limpieza de tokens/códigos vencidos (cada 6 horas).');
+
+  // ── AGENTE AUTÓNOMO Y AUDITOR SUPREMO DEL ECOSISTEMA ──────────────────────
+  if (!key) {
+    console.warn('⚠️  [EcosystemAgent] GEMINI_API_KEY no configurada — el Agente Auditor operará en modo de auditoría determinista (reglas fijas, sin razonamiento generativo ni Function Calling). El servidor sigue funcionando con normalidad.');
+  } else {
+    console.log(`✅  [EcosystemAgent] Agente Auditor Supremo listo con Function Calling. Modelo: ${ecosystemAgent.AGENT_MODEL}`);
+  }
+  ecosystemAgent.iniciarAuditoriaProgramada();
+  console.log('🕵️  [EcosystemAgent] Auditoría global programada: todos los domingos a las 2:00 a.m. (hora de Colombia). Disparo manual disponible en POST /api/agent/run-full-audit.');
+  iniciarKeepAliveInteligente();
+  console.log('💓 Keep-Alive Inteligente activo — GET /api/health se autopingea cada 15–30 min si hubo actividad reciente, y espacia el intervalo hasta 2 horas en ventanas de inactividad prolongada (madrugada sin uso).');
 });
