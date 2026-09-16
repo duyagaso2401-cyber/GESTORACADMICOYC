@@ -37,6 +37,10 @@ import { sseClients, broadcastChange } from './lib/sync-bus.js';
 import { registrarActividadPlataforma, iniciarKeepAliveInteligente, estadoActividadReciente } from './lib/keep-alive.js';
 import agentRouter from './routes/agent.js';
 import * as ecosystemAgent from './services/ecosystemAgent.js';
+// Ronda 20: "bitácora de conflictos" propuesta en el checklist de la Ronda
+// 19 — archivo nuevo y separado de routes/agent.js (ver el comentario en
+// src/routes/sync-log.js sobre por qué no se tocó ese archivo).
+import syncLogRouter from './routes/sync-log.js';
 
 // ============================================================
 // MONITOREO DE ERRORES (Sentry) — OPCIONAL.
@@ -2501,6 +2505,11 @@ app.use('/api/lms', lmsRouter);
 // exige sesión de institución: lo usa el Súper Admin desde su panel, y el
 // cron interno lo llama directamente sin pasar por HTTP).
 app.use('/api/agent', agentRouter);
+// Ronda 20: bitácora de conflictos de sincronización — ver
+// src/routes/sync-log.js. Reutiliza agent_audit_logs (categoría
+// "Sincronizacion"), por eso las filas aparecen solas en el mismo panel
+// "🤖 Auditoría IA / Agente" sin tener que tocar routes/agent.js.
+app.use('/api/sync-log', syncLogRouter);
 // Sistema INDEPENDIENTE de Educación Superior — ver el comentario al
 // inicio de src/routes/university.ts. No comparte lógica con el resto
 // del backend K-12; solo lee/escribe el mismo kv_store para no duplicar

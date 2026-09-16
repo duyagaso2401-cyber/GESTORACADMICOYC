@@ -493,7 +493,7 @@ function _profundamenteIgual(a,b){
   if(a===b) return true;
   try{ return JSON.stringify(a)===JSON.stringify(b); }catch(e){ return false; }
 }
-function _mergeArregloPorId(base,mine,theirs,combinarValor,campoClave){
+function _mergeArregloPorId(base,mine,theirs,combinarValor,campoClave,path,detalles){
   const ck=campoClave||'id';
   let conf=0;
   const bMap=new Map((base||[]).map(x=>[String(x[ck]),x]));
@@ -505,22 +505,32 @@ function _mergeArregloPorId(base,mine,theirs,combinarValor,campoClave){
   const out=[];
   ordenIds.forEach(id=>{
     const enB=bMap.has(id), enM=mMap.has(id), enT=tMap.has(id);
+    // Ronda 20: se arma una "ruta" legible (ej. "ests[id=45].nts.…") para
+    // que, si este elemento termina en un conflicto real, la bitácora
+    // pueda decir EXACTAMENTE cuál registro fue, no solo "hubo un conflicto".
+    const itemPath=(path||'')+'['+ck+'='+id+']';
     if(!enB){
-      if(enM&&enT){ const r=combinarValor(undefined,mMap.get(id),tMap.get(id)); out.push(r.v); conf+=r.conf; }
+      if(enM&&enT){ const r=combinarValor(undefined,mMap.get(id),tMap.get(id),itemPath,detalles); out.push(r.v); conf+=r.conf; }
       else if(enM){ out.push(mMap.get(id)); }
       else if(enT){ out.push(tMap.get(id)); }
       return;
     }
     if(!enM&&!enT) return; // eliminado por ambos lados
     if(!enM){
-      if(enT && !_profundamenteIgual(tMap.get(id),bMap.get(id))){ out.push(tMap.get(id)); conf++; }
+      if(enT && !_profundamenteIgual(tMap.get(id),bMap.get(id))){
+        out.push(tMap.get(id)); conf++;
+        if(detalles) detalles.push({path:itemPath,tipo:'eliminado_local_editado_remoto',base:_resumirValorBitacora(bMap.get(id)),mine:'(eliminado)',theirs:_resumirValorBitacora(tMap.get(id)),gano:'theirs'});
+      }
       return;
     }
     if(!enT){
-      if(!_profundamenteIgual(mMap.get(id),bMap.get(id))){ out.push(mMap.get(id)); conf++; }
+      if(!_profundamenteIgual(mMap.get(id),bMap.get(id))){
+        out.push(mMap.get(id)); conf++;
+        if(detalles) detalles.push({path:itemPath,tipo:'editado_local_eliminado_remoto',base:_resumirValorBitacora(bMap.get(id)),mine:_resumirValorBitacora(mMap.get(id)),theirs:'(eliminado)',gano:'mine'});
+      }
       return;
     }
-    const r=combinarValor(bMap.get(id),mMap.get(id),tMap.get(id));
+    const r=combinarValor(bMap.get(id),mMap.get(id),tMap.get(id),itemPath,detalles);
     out.push(r.v); conf+=r.conf;
   });
   return {v:out,conf};
@@ -538,7 +548,21 @@ function _mergeArregloPorContenido(base,mine,theirs){
   });
   return {v:out,conf:0};
 }
-function _combinarValorMerge(base,mine,theirs){
+// Ronda 20: bitácora de conflictos — versión acotada/segura de un valor para
+// guardar en la auditoría (nunca el objeto completo sin límite: un curso con
+// muchos estudiantes podría producir un "details" enorme en la base de
+// datos). Los primitivos (número/booleano/nulo) se guardan tal cual porque
+// ya son cortos; strings y objetos/arreglos se recortan a 300 caracteres.
+function _resumirValorBitacora(v){
+  if(v===undefined) return null;
+  if(v===null||typeof v==='number'||typeof v==='boolean') return v;
+  if(typeof v==='string') return v.length>300?v.slice(0,300)+'…':v;
+  try{
+    const s=JSON.stringify(v);
+    return s.length>300?s.slice(0,300)+'…':s;
+  }catch(e){ return '(no serializable)'; }
+}
+function _combinarValorMerge(base,mine,theirs,path,detalles){
   if(_profundamenteIgual(mine,theirs)) return {v:theirs,conf:0};
   const mIgualB=_profundamenteIgual(mine,base);
   const tIgualB=_profundamenteIgual(theirs,base);
@@ -551,7 +575,8 @@ function _combinarValorMerge(base,mine,theirs){
     const claves=new Set([...Object.keys(base&&esObjB?base:{}),...Object.keys(mine),...Object.keys(theirs)]);
     const out={};let conf=0;
     claves.forEach(k=>{
-      const r=_combinarValorMerge(esObjB?base[k]:undefined,mine[k],theirs[k]);
+      const subPath=(path?path+'.':'')+k;
+      const r=_combinarValorMerge(esObjB?base[k]:undefined,mine[k],theirs[k],subPath,detalles);
       if(r.v!==undefined) out[k]=r.v;
       conf+=r.conf;
     });
@@ -585,19 +610,49 @@ function _combinarValorMerge(base,mine,theirs){
     const idsOk=arr=>arr.length===0||arr.every(x=>x&&typeof x==='object'&&x.id!==undefined);
     const usOk=arr=>arr.length===0||arr.every(x=>x&&typeof x==='object'&&x.u!==undefined);
     const nsOk=arr=>arr.length===0||arr.every(x=>x&&typeof x==='object'&&x.n!==undefined);
-    if(idsOk(baseArr)&&idsOk(mine)&&idsOk(theirs)) return _mergeArregloPorId(baseArr,mine,theirs,_combinarValorMerge,'id');
-    if(usOk(baseArr)&&usOk(mine)&&usOk(theirs)) return _mergeArregloPorId(baseArr,mine,theirs,_combinarValorMerge,'u');
-    if(nsOk(baseArr)&&nsOk(mine)&&nsOk(theirs)) return _mergeArregloPorId(baseArr,mine,theirs,_combinarValorMerge,'n');
+    if(idsOk(baseArr)&&idsOk(mine)&&idsOk(theirs)) return _mergeArregloPorId(baseArr,mine,theirs,_combinarValorMerge,'id',path,detalles);
+    if(usOk(baseArr)&&usOk(mine)&&usOk(theirs)) return _mergeArregloPorId(baseArr,mine,theirs,_combinarValorMerge,'u',path,detalles);
+    if(nsOk(baseArr)&&nsOk(mine)&&nsOk(theirs)) return _mergeArregloPorId(baseArr,mine,theirs,_combinarValorMerge,'n',path,detalles);
     return _mergeArregloPorContenido(baseArr,mine,theirs);
   }
   // Primitivos o tipos distintos que cambiaron por ambos lados a la vez:
   // no hay forma automática de saber cuál "gana" — se prioriza lo que ya
   // quedó guardado en el servidor y se cuenta como conflicto real.
+  // Ronda 20: este es exactamente el caso que la bitácora de conflictos
+  // propuesta en la Ronda 19 necesita capturar — dos personas cambiando el
+  // MISMO valor casi al mismo tiempo — así que aquí se registra el detalle
+  // completo (qué campo, qué valor traía cada lado, cuál ganó).
+  if(detalles) detalles.push({path:path||'(raíz)',tipo:'valor_en_conflicto',base:_resumirValorBitacora(base),mine:_resumirValorBitacora(mine),theirs:_resumirValorBitacora(theirs),gano:'theirs'});
   return {v:theirs,conf:1};
 }
 function _merge3way(base,mine,theirs){
-  const r=_combinarValorMerge(base,mine,theirs);
-  return {result:r.v, conflictos:r.conf};
+  // Ronda 20: "detalles" acumula, por referencia, cada conflicto real
+  // encontrado durante la fusión (campo exacto + qué valor traía cada lado +
+  // cuál ganó) — antes solo se contaba CUÁNTOS conflictos hubo ("conf"),
+  // ahora también se sabe QUÉ fue exactamente lo combinado, para poder
+  // registrarlo en la bitácora de auditoría (ver _registrarConflictoBitacora).
+  const detalles=[];
+  const r=_combinarValorMerge(base,mine,theirs,'',detalles);
+  return {result:r.v, conflictos:r.conf, detalles};
+}
+// Ronda 20 — "bitácora de conflictos" propuesta en el checklist de la Ronda
+// 19: cada vez que una fusión de 3 vías encuentra al menos un conflicto
+// real (dos personas cambiando el mismo dato casi al mismo tiempo), se
+// manda una copia del detalle al servidor para quedar en agent_audit_logs
+// (categoría "Sincronizacion"), visible en el panel "🤖 Auditoría IA /
+// Agente" del Súper Admin. Es "fire-and-forget" (igual que el aviso de
+// salud del guardado, más abajo en _pushDB): si falla el envío o no hay
+// conexión, NO afecta ni retrasa el guardado real del docente — es solo
+// evidencia para poder confirmar o descartar con datos concretos si algún
+// conflicto alguna vez ocasionó la pérdida de una nota.
+function _registrarConflictoBitacora(_sk,conflictos,detalles,origen){
+  if(!conflictos||!detalles||!detalles.length) return;
+  try{
+    fetch(API_BASE+'/api/sync-log/conflicto',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({sk:_sk,docente:(typeof sesion!=='undefined'&&sesion&&(sesion.n||sesion.u))||'—',
+        rol:(typeof sesion!=='undefined'&&sesion)?sesion.r:'', origen:origen||'', conflictos:conflictos,
+        detalles:detalles.slice(0,50)})}).catch(function(){});
+  }catch(_eb){}
 }
 
 function saveDB(){
@@ -687,11 +742,12 @@ async function _resolverConflictoDB(conflicto,_sk){
     const theirs=_migrateDB(conflicto.data);
     const base=window._dbBaseSnapshot||theirs;
     const mine=db;
-    const {result,conflictos}=_merge3way(base,mine,theirs);
+    const {result,conflictos,detalles}=_merge3way(base,mine,theirs);
     db=result;
     window._dbVersion=conflicto.version||null;
     window._dbBaseSnapshot=_clonarDB(db);
     try{ localStorage.setItem(_sk,JSON.stringify(db)); }catch(e){}
+    _registrarConflictoBitacora(_sk,conflictos,detalles,'push-conflicto-409');
     _showToast(conflictos>0
       ? '⚠️ Se combinaron cambios guardados por otra persona; '+conflictos+' valor(es) coincidentes se resolvieron automáticamente.'
       : '🔄 Se combinaron automáticamente cambios guardados por otra persona.', conflictos>0?'warning':'info', 5500);
@@ -4188,6 +4244,27 @@ function escBadge(v,grande){const n=esc(v);const e=escEmoji(v);const c=n==='SUPE
 function escNorm(v){const c=db.config||{};const es=c.escalaS||4.7,ea=c.escalaA||4.0,eb=c.escalaB||3.0;return v>=es?'superior':v>=ea?'alto':v>=eb?'basico':'bajo';}
 function colorNota(v){return v<3?'#c0392b':v>=4.7?'#1a7531':v>=4.0?'#1a5276':'#333';}
 
+// ============================================================
+// 🔧 RONDA 19 — Apariencia de las celdas de nota SIN CALIFICAR (Planilla):
+// antes, una celda SER/SABER/HACER/columna extra/RECUP./NIVELACIÓN que
+// nunca había recibido una nota se mostraba como "0.0" en rojo — EXACTAMENTE
+// igual que una nota reprobatoria ya registrada — así que un docente que
+// entraba a un grado recién creado (o a un periodo que aún nadie calificó)
+// veía una fila entera en rojo y creía que las notas "se habían borrado".
+// Esta misma base de código YA usaba la convención "0 = todavía no se
+// aplicó" para decidir la RECUPERACIÓN (rec>0) y la NIVELACIÓN (niv>0) —
+// aquí solo se extiende esa MISMA convención a la apariencia, para las 5
+// columnas de nota (SER/SABER/HACER/extra/RECUP./NIVELACIÓN): se muestran
+// como una caja gris con un guion "—" (igual que las celdas sin calificar
+// de "Notas de Actividades en Clase") hasta que el docente ingresa una nota
+// real — momento en el que cambian de aspecto normalmente. La celda sigue
+// siendo un botón que se puede tocar para calificar en cualquier momento.
+function _estiloCeldaNota(val){
+  const n=Number(val)||0;
+  if(!n) return {sinCalificar:true,texto:'—',bg:'#eee',color:'#888'};
+  return {sinCalificar:false,texto:n.toFixed(1),bg:colorNota(n),color:'#fff'};
+}
+
 // Normaliza texto para comparaciones de nombres tolerantes a errores
 // típicos de digitación: espacios de más, tildes, mayúsculas/minúsculas.
 // Esto es SOLO el respaldo para datos antiguos (ver más abajo) — la
@@ -4486,6 +4563,7 @@ async function _syncAll(force){
             const _base=window._dbBaseSnapshot||_pulled;
             const _fus=_merge3way(_base,db,_pulled);
             db=_fus.result;
+            _registrarConflictoBitacora(_sk,_fus.conflictos,_fus.detalles,'pull-periodico');
             window._dbVersion=_j2.version!==undefined?_j2.version:window._dbVersion;
             window._dbBaseSnapshot=_clonarDB(db);
             try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
@@ -10779,12 +10857,16 @@ function htmlPlanilla(){
       const areasP=calcAreasPerd(e.id,carga.g);const elegible=np===_numPer&&areasP>=1&&areasP<=2;
       const _esInicialG=esGradoInicial(carga.g);
       const mkBtn=(val,campo,bg)=>{
-        const _q=_esInicialG?notaACualitativo(val):null;
+        // Ronda 19: ver _estiloCeldaNota() — 0 se muestra como "sin
+        // calificar" (caja gris, guion), no como una nota reprobatoria roja.
+        const est=_estiloCeldaNota(val);
+        const _q=(_esInicialG&&!est.sinCalificar)?notaACualitativo(val):null;
+        const letraHtml=_q?`<span style="font-size:0.55rem;display:block;margin-top:1px;font-weight:bold;opacity:0.92">${_q.letra}</span>`:'';
         // Periodo cerrado y NO es admin: solo lectura, sin botón ni eventos táctiles
         if(!_perActTabla&&!_isAdminTabla){
-          return `<td style="background:${bg||'#f7f7f7'};border:1px solid #ddd;padding:3px 4px;text-align:center"><span title="Periodo cerrado" style="background:${colorNota(val)};color:#fff;font-weight:bold;font-size:0.85rem;border-radius:4px;padding:6px 8px;display:inline-flex;align-items:center;justify-content:center;flex-direction:column;min-width:44px;min-height:36px;opacity:0.75;cursor:default;user-select:none">${val.toFixed(1)}${_esInicialG&&_q?`<span style="font-size:0.55rem;display:block;margin-top:1px;font-weight:bold;opacity:0.92">${_q.letra}</span>`:''}</span></td>`;
+          return `<td style="background:${bg||'#f7f7f7'};border:1px solid #ddd;padding:3px 4px;text-align:center"><span title="${est.sinCalificar?'Periodo cerrado — sin calificar':'Periodo cerrado'}" style="background:${est.bg};color:${est.color};font-weight:bold;font-size:0.85rem;border-radius:4px;padding:6px 8px;display:inline-flex;align-items:center;justify-content:center;flex-direction:column;min-width:44px;min-height:36px;opacity:0.75;cursor:default;user-select:none">${est.texto}${letraHtml}</span></td>`;
         }
-        return `<td style="background:${bg||'#fff'};border:1px solid #ddd;padding:3px 4px;text-align:center"><button id="nota-btn-${e.id}-${campo}" class="nota-btn" style="background:${colorNota(val)};color:#fff;font-weight:bold;font-size:0.85rem;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;min-width:44px;min-height:36px;touch-action:manipulation;-webkit-tap-highlight-color:transparent" onpointerdown="event.preventDefault();abrirPopupNota('${e.id}','${campo}',this)">${val.toFixed(1)}${_esInicialG&&_q?`<span style="font-size:0.55rem;display:block;margin-top:1px;font-weight:bold;opacity:0.92">${_q.letra}</span>`:''}</button></td>`;
+        return `<td style="background:${bg||'#fff'};border:1px solid #ddd;padding:3px 4px;text-align:center"><button id="nota-btn-${e.id}-${campo}" class="nota-btn"${est.sinCalificar?' title="Sin calificar — toque para ingresar la nota"':''} style="background:${est.bg};color:${est.color};font-weight:bold;font-size:0.85rem;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;min-width:44px;min-height:36px;touch-action:manipulation;-webkit-tap-highlight-color:transparent" onpointerdown="event.preventDefault();abrirPopupNota('${e.id}','${campo}',this)">${est.texto}${letraHtml}</button></td>`;
       };
       const nivCell=np===_numPer?(elegible?mkBtn(niv,'niv','#f3e5f5'):`<td style="background:#f5f5f5;border:1px solid #ddd;padding:5px 6px;color:#1a1a2e"><span style="color:#aaa;font-size:0.74rem">N/A</span></td>`):'';
       let p3Cell='';
@@ -10819,9 +10901,9 @@ function htmlPlanilla(){
           </div>
         </td>
         ${baseCells}
-        <td style="color:${base<3?'#c0392b':'#333'};font-weight:bold;border:1px solid #ddd;padding:5px 6px;text-align:center" id="base-${e.id}">${base.toFixed(1)}</td>
+        <td style="color:${!base?'#aaa':(base<3?'#c0392b':'#333')};font-weight:bold;border:1px solid #ddd;padding:5px 6px;text-align:center" id="base-${e.id}">${!base?'—':base.toFixed(1)}</td>
         ${mkBtn(rec,'rec','#fffde7')}
-        <td style="font-weight:bold;font-size:1rem;color:${colorNota(defFinal)};border:1px solid #ddd;padding:5px 6px;text-align:center" id="def-${e.id}">${defFinal.toFixed(1)}${_esInicialG?`<br><span style="font-size:2rem;line-height:1;display:block">${escEmoji(defFinal)}</span><span style="font-size:0.72rem;font-weight:bold;background:${notaACualitativo(defFinal).color};color:#fff;border-radius:4px;padding:1px 6px;display:inline-block;margin-top:1px">${notaACualitativo(defFinal).letra}</span>`:''}</td>
+        <td style="font-weight:bold;font-size:1rem;color:${(!base&&!rec&&!niv)?'#aaa':colorNota(defFinal)};border:1px solid #ddd;padding:5px 6px;text-align:center" id="def-${e.id}">${(!base&&!rec&&!niv)?'—':(defFinal.toFixed(1)+(_esInicialG?`<br><span style="font-size:2rem;line-height:1;display:block">${escEmoji(defFinal)}</span><span style="font-size:0.72rem;font-weight:bold;background:${notaACualitativo(defFinal).color};color:#fff;border-radius:4px;padding:1px 6px;display:inline-block;margin-top:1px">${notaACualitativo(defFinal).letra}</span>`:''))}</td>
         ${nivCell}
         ${p3Cell}
       </tr>`;
@@ -11172,6 +11254,12 @@ function _toggleAutoGuardar(){
   updDB(d=>{if(!d.config)d.config={};d.config.autoGuardar=_autoGuardar;return d;});
   const btn=document.getElementById('_btnAutoGuardar');
   if(btn){btn.textContent=_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF';btn.style.background=_autoGuardar?'#27ae60':'#7f8c8d';}
+  // Ronda 19: el mismo botón ahora también existe en "Notas de Actividades
+  // en Clase" (id distinto porque las dos pantallas nunca están en el DOM
+  // al mismo tiempo, pero así queda a prueba de futuros cambios) — se
+  // actualiza igual, sea cual sea la pantalla desde la que se tocó.
+  const btnNAC=document.getElementById('_btnAutoGuardarNAC');
+  if(btnNAC){btnNAC.textContent=_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF';btnNAC.style.background=_autoGuardar?'#27ae60':'#7f8c8d';}
   const manualWrap=document.getElementById('_wrapGuardarManual');
   if(manualWrap)manualWrap.style.display=_autoGuardar?'none':'flex';
   const manualWrapNAC=document.getElementById('_wrapGuardarManualNAC');
@@ -11220,8 +11308,13 @@ function _reaplicarPendientes(){
     const notaVal=parseFloat(p.valor);
     const btnNota=document.getElementById('nota-btn-'+p.estId+'-'+p.campo);
     if(btnNota){
-      btnNota.textContent=isNaN(notaVal)?'0.0':notaVal.toFixed(1);
-      btnNota.style.background=colorNota(isNaN(notaVal)?0:notaVal);
+      // Ronda 19: mismo criterio "sin calificar" (0 → caja gris) que el
+      // resto de la Planilla — el borde amarillo de "pendiente" se conserva
+      // igual, independientemente del valor.
+      const est=_estiloCeldaNota(isNaN(notaVal)?0:notaVal);
+      btnNota.textContent=est.texto;
+      btnNota.style.background=est.bg;
+      btnNota.style.color=est.color;
       btnNota.style.outline='3px solid #f1c40f';
       btnNota.title='Nota pendiente de guardar — pulse GUARDAR CAMBIOS para confirmar';
     }
@@ -11468,19 +11561,23 @@ function _refrescarFilaPlanilla(estId){
     const btn=document.getElementById('nota-btn-'+estId+'-'+campo);
     if(!btn) return; // ej. NIVELACIÓN cuando el estudiante no es elegible (celda "N/A", sin botón)
     const val=(campo==='rec')?rec:(campo==='niv')?niv:(nd[campo]||0);
-    const _q=_esInicialG?notaACualitativo(val):null;
-    btn.innerHTML=Number(val).toFixed(1)+(_esInicialG&&_q?`<span style="font-size:0.55rem;display:block;margin-top:1px;font-weight:bold;opacity:0.92">${_q.letra}</span>`:'');
-    btn.style.background=colorNota(Number(val));
+    // Ronda 19: mismo criterio "sin calificar" que htmlPlanilla()/mkBtn().
+    const est=_estiloCeldaNota(val);
+    const _q=(_esInicialG&&!est.sinCalificar)?notaACualitativo(val):null;
+    btn.innerHTML=est.texto+(_esInicialG&&_q?`<span style="font-size:0.55rem;display:block;margin-top:1px;font-weight:bold;opacity:0.92">${_q.letra}</span>`:'');
+    btn.style.background=est.bg;
+    btn.style.color=est.color;
+    btn.title=est.sinCalificar?'Sin calificar — toque para ingresar la nota':'';
     btn.style.outline='none';
-    btn.title='';
   });
 
   const bEl=document.getElementById('base-'+estId);
-  if(bEl){bEl.textContent=base.toFixed(1);bEl.style.color=base<3?'#c0392b':'#333';}
+  if(bEl){bEl.textContent=!base?'—':base.toFixed(1);bEl.style.color=!base?'#aaa':(base<3?'#c0392b':'#333');}
   const dEl=document.getElementById('def-'+estId);
   if(dEl){
-    dEl.style.color=colorNota(defFinal);
-    dEl.innerHTML=defFinal.toFixed(1)+(_esInicialG?(`<br><span style="font-size:2rem;line-height:1;display:block">${escEmoji(defFinal)}</span><span style="font-size:0.72rem;font-weight:bold;background:${notaACualitativo(defFinal).color};color:#fff;border-radius:4px;padding:1px 6px;display:inline-block;margin-top:1px">${notaACualitativo(defFinal).letra}</span>`):'');
+    const defSinCalificar=!base&&!rec&&!niv;
+    dEl.style.color=defSinCalificar?'#aaa':colorNota(defFinal);
+    dEl.innerHTML=defSinCalificar?'—':(defFinal.toFixed(1)+(_esInicialG?(`<br><span style="font-size:2rem;line-height:1;display:block">${escEmoji(defFinal)}</span><span style="font-size:0.72rem;font-weight:bold;background:${notaACualitativo(defFinal).color};color:#fff;border-radius:4px;padding:1px 6px;display:inline-block;margin-top:1px">${notaACualitativo(defFinal).letra}</span>`):''));
   }
 
   // Columna "NECESITA PARA GANAR" (solo visible en periodos anteriores al último)
@@ -11605,8 +11702,12 @@ function seleccionarNotaRapido(estId,campo,valor){
   _notasPendientes[key]={estId,campo,valor,cId:_cId,per:_per};
   _actualizarIndicadorPendientes();
   if(btnNota){
-    btnNota.textContent=notaVal.toFixed(1);
-    btnNota.style.background=colorNota(notaVal);
+    // Ronda 19: mismo criterio "sin calificar" (0 → caja gris) del resto de
+    // la Planilla, aunque siga pendiente de confirmar con GUARDAR CAMBIOS.
+    const est=_estiloCeldaNota(notaVal);
+    btnNota.textContent=est.texto;
+    btnNota.style.background=est.bg;
+    btnNota.style.color=est.color;
     btnNota.style.outline='3px solid #f1c40f';
     btnNota.title='Nota pendiente de guardar — pulse GUARDAR CAMBIOS';
   }
@@ -11631,8 +11732,12 @@ function seleccionarNota(estId,campo,valor){
   _notasPendientes[key]={estId,campo,valor,cId:_cId,per:_per};
   _actualizarIndicadorPendientes();
   if(btnNota){
-    btnNota.textContent=notaVal.toFixed(1);
-    btnNota.style.background=colorNota(notaVal);
+    // Ronda 19: mismo criterio "sin calificar" (0 → caja gris) del resto de
+    // la Planilla, aunque siga pendiente de confirmar con GUARDAR CAMBIOS.
+    const est=_estiloCeldaNota(notaVal);
+    btnNota.textContent=est.texto;
+    btnNota.style.background=est.bg;
+    btnNota.style.color=est.color;
     btnNota.style.outline='3px solid #f1c40f';
     btnNota.title='Nota pendiente de guardar — pulse GUARDAR CAMBIOS';
   }
@@ -12312,6 +12417,12 @@ function _escAttrNAC(s){
 }
 
 function htmlNotasActividades(){
+  // Ronda 19: se refresca _autoGuardar aquí mismo (no solo dentro del wrap
+  // de "GUARDAR CAMBIOS" más abajo) porque ahora esta pantalla también
+  // dibuja su PROPIO botón "⚡/🕹 Auto-guardar" (antes solo existía en la
+  // Planilla, obligando al docente a salir de este módulo para cambiar el
+  // modo).
+  _cargarAutoGuardar();
   const isAdmin=sesion.r==='admin';
   const mats=db.carga.filter(x=>isAdmin||x.d===sesion.u);
   if(!notaActCId&&mats.length) notaActCId=String(mats[0].id);
@@ -12367,13 +12478,16 @@ function htmlNotasActividades(){
       <button class="btn btn-teal" ${(carga&&cols.length)?'':'disabled'} onclick="descargarNotasActExcel()" title="Descarga un Excel con las columnas actuales para llenar fuera de línea">📥 Descargar Excel</button>
       <button class="btn btn-orange" ${(carga&&cols.length)?'':'disabled'} onclick="document.getElementById('fileNotasActExcel').click()" title="Carga un Excel previamente descargado desde aquí">📤 Cargar Excel</button>
       <input type="file" id="fileNotasActExcel" accept=".xlsx,.xls" style="display:none" onchange="cargarNotasActExcel(this)">
+      <button id="_btnAutoGuardarNAC" onclick="_toggleAutoGuardar()" title="${_autoGuardar?'Las notas de actividad se guardan al instante — haga clic para cambiar a modo manual':'Las notas de actividad esperan GUARDAR CAMBIOS — haga clic para activar guardado automático'}" style="background:${_autoGuardar?'#27ae60':'#7f8c8d'};color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:0.82rem;cursor:pointer;font-weight:bold;min-height:38px">
+        ${_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF'}
+      </button>
     </div>
     <div id="_nacXlsxMsg" style="display:none;border-radius:6px;padding:8px 12px;font-size:0.8rem;margin-bottom:10px"></div>
     ${tabla}
-    <div id="_wrapGuardarManualNAC" style="display:${(()=>{_cargarAutoGuardar();return _autoGuardar?'none':'flex'})()};align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px">
+    <div id="_wrapGuardarManualNAC" style="display:${_autoGuardar?'none':'flex'};align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px">
       <button class="btn btn-green" onclick="guardarNotasActividades()">💾 GUARDAR CAMBIOS</button>
       <span id="__pendIndNAC" style="display:none;background:#f1c40f;color:#333;font-weight:bold;font-size:0.8rem;padding:5px 12px;border-radius:20px;border:2px solid #d4ac0d">⚠️ 0 nota(s) sin guardar</span>
-      <span style="font-size:0.72rem;color:#888">🕹 Modo Guardado Manual activo (configurado desde la Planilla) — estas notas de actividad tampoco se envían solas hasta pulsar "GUARDAR CAMBIOS".</span>
+      <span style="font-size:0.72rem;color:#888">🕹 Modo Guardado Manual activo — estas notas de actividad no se envían solas hasta pulsar "GUARDAR CAMBIOS". Es la misma preferencia del botón "⚡/🕹 Auto-guardar" de arriba (y de la Planilla): cambiarla aquí también la cambia allá.</span>
     </div>
   </div>`;
 }
