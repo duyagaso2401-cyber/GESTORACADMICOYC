@@ -8,45 +8,51 @@
 // existente) de vez en cuando: para Render eso cuenta exactamente igual que
 // una visita real, así que el contenedor nunca se considera "inactivo".
 //
-// La parte "inteligente" (pedida explícitamente) es que la frecuencia de ese
-// auto-ping se ADAPTA a la actividad real de la plataforma en vez de ser fija:
-//   • Si hubo actividad real hace poco (alguien guardó una nota, una
-//     planilla, una asistencia — ver registrarActividadPlataforma(), que
-//     POST /api/inetis/db llama en cada guardado exitoso) → auto-ping cada
-//     15 minutos: son las horas en que de verdad importa que el servidor no
-//     se duerma.
-//   • Si NO hay actividad reciente pero sigue siendo horario "activo" del
-//     día (fuera de la ventana de madrugada configurada) → cada 30 minutos.
-//   • Si además cae dentro de la ventana de madrugada/inactividad prolongada
-//     (por defecto 12:00 a.m.–5:00 a.m., hora de Colombia) → el intervalo se
-//     espacia hasta 2 horas (o se pausa del todo, según
-//     KEEP_ALIVE_MODO_MADRUGADA), para no generar tráfico de red innecesario
-//     contra Render en las horas en que nadie va a notar ni a sufrir un
-//     arranque en frío ocasional.
+// RONDA 24 — HORARIO ADAPTATIVO SEGÚN LA VENTANA OPERATIVA REAL DE LA
+// INSTITUCIÓN (pedido explícito, reemplaza el esquema "por actividad
+// detectada" que tenía este archivo desde la Ronda 17):
+//   • VENTANA ACTIVA (trabajo docente/administrativo real, por defecto
+//     2:00 p.m.–6:00 p.m. hora de Colombia): auto-ping cada 14 minutos —
+//     con margen de sobra frente al tiempo de suspensión de Render (15
+//     minutos en el plan gratuito), para que el servidor nunca llegue a
+//     dormirse mientras hay actividad esperada.
+//   • VENTANA DE REPOSO PROFUNDO (el resto del día, por defecto 6:00 p.m.–
+//     2:00 p.m. del día siguiente): CERO auto-pings — el mecanismo no
+//     genera ningún tráfico de red hacia Render en esas horas, dejando que
+//     el servidor se suspenda solo si de verdad nadie lo usa. Si alguien sí
+//     entra fuera de la ventana activa (una excepción real, no la regla),
+//     esa misma visita ya cuenta como actividad para Render — el auto-ping
+//     no es la única forma de mantenerlo despierto, solo evita pagar el
+//     costo de red cuando se sabe de antemano que nadie va a estar ahí.
+// Los 3 números (inicio/fin de la ventana activa e intervalo del ping) son
+// configurables por variable de entorno sin tener que tocar código, por si
+// la institución cambia su horario de trabajo.
 //
-// No agrega ninguna dependencia nueva: usa el "fetch" nativo de Node (ya
-// disponible desde Node 18, la misma versión que ya exige este proyecto) y
-// un temporizador simple (setInterval), siguiendo el mismo patrón que ya
-// usan iniciarRespaldosAutomaticosProgramados()/iniciarTareasAutonomasProgramadas()
-// en src/index.ts — ningún runner nuevo tipo "node-cron" hacía falta para
-// esto, exactamente igual que en esos dos mecanismos ya existentes.
+// Qué se conserva de la versión anterior (Ronda 17), sin duplicar ni volver
+// a implementar: registrarActividadPlataforma()/estadoActividadReciente()
+// siguen existiendo con la misma firma — GET /api/health y POST
+// /api/inetis/db (ver src/index.ts) los siguen llamando exactamente igual,
+// sin necesidad de tocar esos archivos — solo que ahora son puramente
+// informativos (quién quiera saber "¿hubo actividad hace poco?" lo sigue
+// pudiendo consultar), y ya NO deciden la frecuencia del auto-ping: eso lo
+// decide únicamente la ventana horaria de este archivo, tal como se pidió.
+// Tampoco se agrega ninguna dependencia nueva: se sigue usando "fetch"
+// nativo de Node y un temporizador simple (setInterval), igual que ya usan
+// iniciarRespaldosAutomaticosProgramados()/iniciarTareasAutonomasProgramadas()
+// en src/index.ts.
 // ════════════════════════════════════════════════════════════════════════════
 
-const VENTANA_INACTIVA_INICIO_HORA = parseInt(process.env.KEEP_ALIVE_MADRUGADA_INICIO || '0', 10);   // 12:00 a.m.
-const VENTANA_INACTIVA_FIN_HORA    = parseInt(process.env.KEEP_ALIVE_MADRUGADA_FIN    || '5', 10);   // 5:00 a.m.
-const MODO_MADRUGADA = (process.env.KEEP_ALIVE_MODO_MADRUGADA || 'espaciar').trim(); // 'espaciar' | 'pausar'
-const ACTIVIDAD_RECIENTE_MIN_MS = 30 * 60 * 1000;      // últimos 30 min = "hay actividad"
-const INTERVALO_ACTIVO_MS       = 15 * 60 * 1000;      // 15 min con actividad reciente
-const INTERVALO_SIN_ACTIVIDAD_MS = 30 * 60 * 1000;     // 30 min sin actividad, pero en horario normal
-const INTERVALO_MADRUGADA_MS    = 2 * 60 * 60 * 1000;  // 2 horas en ventana de madrugada sin actividad
-const TICK_MS = 5 * 60 * 1000; // revisa cada 5 min si ya toca hacer el siguiente auto-ping
+const VENTANA_ACTIVA_INICIO_HORA = parseInt(process.env.KEEP_ALIVE_ACTIVA_INICIO_HORA || '14', 10); // 2:00 p.m.
+const VENTANA_ACTIVA_FIN_HORA    = parseInt(process.env.KEEP_ALIVE_ACTIVA_FIN_HORA    || '18', 10); // 6:00 p.m.
+const INTERVALO_ACTIVO_MS = (parseInt(process.env.KEEP_ALIVE_INTERVALO_ACTIVO_MIN || '14', 10)) * 60 * 1000; // cada 14 min dentro de la ventana activa
+const TICK_MS = 60 * 1000; // revisa cada minuto si toca hacer el siguiente auto-ping (sin red: solo lee el reloj) — da precisión de ±1 min sobre el intervalo de 14 min y sobre el arranque/apagado exacto de la ventana
 
 let _ultimaActividadGlobalAt = 0;
 const _ultimaActividadPorSk = new Map<string, number>();
 let _ultimoAutoPingAt = 0;
 let _tickTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Llamado desde POST /api/inetis/db (y puede llamarse desde cualquier otro endpoint de escritura real) cada vez que hay un guardado exitoso. */
+/** Llamado desde POST /api/inetis/db (y puede llamarse desde cualquier otro endpoint de escritura real) cada vez que hay un guardado exitoso. Ronda 24: se conserva sin cambios de firma — sigue siendo información útil (para el panel de salud / diagnóstico), aunque ya no controla la frecuencia del auto-ping. */
 export function registrarActividadPlataforma(sk?: string): void {
   const ahora = Date.now();
   _ultimaActividadGlobalAt = ahora;
@@ -65,31 +71,31 @@ function _horaColombia(): number {
   }
 }
 
-function _enVentanaMadrugada(): boolean {
+/** true = hora actual (Colombia) dentro de la ventana operativa activa (por defecto 2:00 p.m.–6:00 p.m.). */
+function _enVentanaActiva(): boolean {
   const h = _horaColombia();
-  if (VENTANA_INACTIVA_INICIO_HORA <= VENTANA_INACTIVA_FIN_HORA) {
-    return h >= VENTANA_INACTIVA_INICIO_HORA && h < VENTANA_INACTIVA_FIN_HORA;
+  if (VENTANA_ACTIVA_INICIO_HORA <= VENTANA_ACTIVA_FIN_HORA) {
+    return h >= VENTANA_ACTIVA_INICIO_HORA && h < VENTANA_ACTIVA_FIN_HORA;
   }
-  // Ventana que cruza medianoche (ej. 22 → 6)
-  return h >= VENTANA_INACTIVA_INICIO_HORA || h < VENTANA_INACTIVA_FIN_HORA;
+  // Ventana activa que cruzara medianoche (config no estándar) — se soporta igual, por completitud.
+  return h >= VENTANA_ACTIVA_INICIO_HORA || h < VENTANA_ACTIVA_FIN_HORA;
 }
 
 /** Resumen liviano usado por GET /api/health (sin tocar Neon) y por el propio auto-ping. */
-export function estadoActividadReciente(): { actividadReciente: boolean; minutosDesdeUltimaActividad: number | null; ventanaMadrugada: boolean } {
+export function estadoActividadReciente(): { actividadReciente: boolean; minutosDesdeUltimaActividad: number | null; ventanaActiva: boolean; ventanaMadrugada: boolean } {
   const ahora = Date.now();
   const minutos = _ultimaActividadGlobalAt ? Math.round((ahora - _ultimaActividadGlobalAt) / 60000) : null;
+  const ventanaActiva = _enVentanaActiva();
   return {
-    actividadReciente: !!_ultimaActividadGlobalAt && (ahora - _ultimaActividadGlobalAt) <= ACTIVIDAD_RECIENTE_MIN_MS,
+    actividadReciente: !!_ultimaActividadGlobalAt && (ahora - _ultimaActividadGlobalAt) <= 30 * 60 * 1000,
     minutosDesdeUltimaActividad: minutos,
-    ventanaMadrugada: _enVentanaMadrugada(),
+    ventanaActiva,
+    // "ventanaMadrugada" se conserva (mismo nombre de campo que antes de la
+    // Ronda 24) por compatibilidad con quien ya estuviera leyendo este JSON
+    // desde fuera (ej. un monitor externo) — ahora significa "fuera de la
+    // ventana activa", que es la ventana de reposo profundo pedida.
+    ventanaMadrugada: !ventanaActiva,
   };
-}
-
-function _intervaloVigenteMs(): number {
-  const { actividadReciente } = estadoActividadReciente();
-  if (actividadReciente) return INTERVALO_ACTIVO_MS;
-  if (_enVentanaMadrugada()) return INTERVALO_MADRUGADA_MS;
-  return INTERVALO_SIN_ACTIVIDAD_MS;
 }
 
 function _urlAutoPing(): string | null {
@@ -103,12 +109,12 @@ function _urlAutoPing(): string | null {
 }
 
 async function _tick(): Promise<void> {
-  if (_enVentanaMadrugada() && MODO_MADRUGADA === 'pausar' && !estadoActividadReciente().actividadReciente) {
-    return; // "Silencio en Inactividad": ni siquiera se intenta el auto-ping
-  }
-  const intervalo = _intervaloVigenteMs();
+  // Ronda 24 — regla central pedida: fuera de la ventana activa, CERO pings,
+  // sin excepción y sin ninguna otra condición (ni actividad reciente, ni
+  // nada) que pueda reactivarlo — es una "ventana de reposo profundo" real.
+  if (!_enVentanaActiva()) return;
   const ahora = Date.now();
-  if (ahora - _ultimoAutoPingAt < intervalo) return; // aún no toca
+  if (ahora - _ultimoAutoPingAt < INTERVALO_ACTIVO_MS) return; // aún no toca (cada 14 min dentro de la ventana)
   const url = _urlAutoPing();
   if (!url) return; // sin URL pública configurada (desarrollo local) — no hay nada que hacer
   _ultimoAutoPingAt = ahora;
@@ -128,6 +134,8 @@ export function iniciarKeepAliveInteligente(): void {
   if (_tickTimer) return; // idempotente — evita duplicar el temporizador si algo lo llama dos veces
   _tickTimer = setInterval(() => { _tick().catch(() => {}); }, TICK_MS);
   // Primer chequeo casi inmediato (con un pequeño respiro para que el
-  // servidor termine de levantar) en vez de esperar los 5 minutos del tick.
+  // servidor termine de levantar) en vez de esperar el primer TICK_MS —
+  // sigue sin hacer ningún ping si en ese momento no toca (fuera de la
+  // ventana activa, o dentro de ella pero aún no pasan los 14 min).
   setTimeout(() => { _tick().catch(() => {}); }, 15000);
 }

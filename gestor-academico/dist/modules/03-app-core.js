@@ -827,9 +827,25 @@ function updDB(fn){
     _showToast('🔒 Modo de solo lectura: no puede guardar ni modificar información.','warning',4000);
     return;
   }
-  _medirPerf('updDB (clonar+mutar)', function(){
-    db=fn(_clonarDB(db));
-  });
+  // Ronda 24 — VALIDACIÓN DE ESTADO MODIFICADO (DIRTY CHECKING): updDB() es
+  // el ÚNICO punto por el que pasan TODAS las mutaciones de "db" en todo el
+  // sistema (notas, asistencia, matrícula, configuración, etc.), así que es
+  // el lugar correcto para esta comprobación — protege a todos los módulos
+  // por igual, no solo a la Planilla. Antes, se llamaba a saveDB() SIEMPRE,
+  // incluso cuando "fn" terminaba siendo un "no-op" (ej. un docente reabre
+  // el selector de una nota y toca el mismo valor que ya tenía, o cualquier
+  // otra edición que en la práctica no cambia nada): eso programaba igual
+  // un guardado — escritura en localStorage, marcar "hay cambios sin
+  // sincronizar", y sobre todo, una petición POST real a la red — por algo
+  // que no era un cambio real. Ahora se compara "db" ANTES y DESPUÉS de
+  // aplicar "fn" con la misma función que ya usa la fusión de 3 vías para
+  // decidir si dos valores son "el mismo" (_profundamenteIgual, ya
+  // existente — no se duplica esa lógica); si el resultado es idéntico, no
+  // se llama a saveDB(): la petición a la red se aborta antes de siquiera
+  // programarse, en vez de enviarse y descubrir después que no hacía falta.
+  const _dbAntes=db;
+  db=_medirPerf('updDB (clonar+mutar)', function(){ return fn(_clonarDB(db)); });
+  if(_profundamenteIgual(_dbAntes,db)) return; // dirty-check: nada cambió de verdad -> no se guarda ni se toca la red
   saveDB();
 }
 

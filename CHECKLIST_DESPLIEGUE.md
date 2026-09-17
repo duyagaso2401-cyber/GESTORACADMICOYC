@@ -1133,6 +1133,74 @@ Pediste que cualquier docente pueda ver el consolidado de TODAS las asignaturas 
 
 **Regresión completa de esta ronda:** se reejecutaron los 24 scripts de prueba del proyecto completo (todas las rondas anteriores incluidas): **0 fallos en total**.
 
+## Ronda 24 — Optimización de red integral: dirty-checking definitivo en el autoguardado + Keep-Alive con horario fijo de la institución + auditoría del EcosystemAgent
+
+Pediste, en un solo mensaje estructurado en 3 partes, con una instrucción explícita de preservación por delante ("si algo ya está implementado y funcionando, MANTENLO INTACTO, no dupliques código"): (1) una corrección definitiva del autoguardado en Planilla con bandera del Súper Admin, chequeo de "dirty" para no enviar peticiones de red cuando no hay cambio real, y sin re-renderizados que borren casillas; (2) que el Keep-Alive de Render respete un horario fijo de la institución (activo 2:00 p.m.–6:00 p.m., dormido el resto del día); (3) verificar que el EcosystemAgent siga corriendo solo de madrugada/bajo demanda, sin polling continuo a Neon.
+
+Antes de tocar nada se auditó el código existente contra los 3 puntos, tal como pediste, y se encontró que dos de las tres partes del punto 1 y la totalidad del punto 3 **ya estaban correctamente implementadas desde rondas anteriores** — se dejaron intactas, sin duplicar ni reescribir. Solo se aplicaron los cambios genuinamente pendientes.
+
+### Punto 1a — Bandera del Súper Admin para Auto-guardar global: YA IMPLEMENTADA (Ronda 23) — se preservó sin tocar
+
+El interruptor `plat.autoGuardarHabilitado` por institución, con su botón en el panel del Súper Admin ("⚡ Auto-guardar habilitado" / "🚫 Auto-guardar desactivado" en la tarjeta de cada plataforma) y su verificación en `_autoGuardarHabilitadoPlat()` antes de mostrar el botón de Auto-guardar en Planilla y en Notas de Actividades, es exactamente el mecanismo que pedías en este punto — implementado en la Ronda 23, verificado de nuevo ahora y dejado sin ningún cambio. No se agregó una segunda bandera ni un segundo botón: habría sido duplicar lo que ya funciona.
+
+### Punto 1b — Validación de estado modificado (dirty checking / no-op de red): GENUINO — implementado esta ronda
+
+Este era el hueco real. Antes de esta ronda, cada vez que se llamaba a `updDB(fn)` — la única función por la que pasan TODAS las mutaciones del sistema (notas, asistencia, matrícula, configuración, etc., no solo Planilla) — se guardaba SIEMPRE al final, incluso cuando `fn` terminaba sin cambiar realmente nada (el caso típico: un docente reabre el selector de una nota y vuelve a tocar el mismo valor que ya tenía). Eso programaba, sin necesidad, una escritura en `localStorage`, la marca de "hay cambios sin sincronizar" y — lo más costoso — una petición POST real hacia Neon/Express.
+
+**Qué se corrigió:** `updDB()` ahora guarda una copia de `db` ANTES de aplicar la mutación, aplica la mutación, y compara el resultado contra ese "antes" con `_profundamenteIgual()` — la misma función que ya usa desde hace varias rondas el motor de fusión de 3 vías para decidir si dos valores son "el mismo" (no se creó ninguna función de comparación nueva ni paralela). Si el resultado es idéntico, la función retorna de inmediato **sin llamar a `saveDB()`**: la petición a la red se aborta antes de programarse, no se envía y se descarta después. Como `updDB()` es el único chokepoint de todo el sistema, esta protección cubre automáticamente a Planilla, Notas de Actividades, Asistencia, Matrícula y cualquier otro módulo que use la misma vía — sin tener que tocar cada uno por separado.
+
+Esto complementa, sin duplicar, el guardia de no-op que ya existía dentro de `_registrarCambioNota()` (que evita una entrada falsa en el historial de auditoría cuando el valor no cambia) — ese guardia seguía dejando pasar igual la petición de red completa; ahora ambos trabajan juntos: ni auditoría falsa, ni red de más.
+
+**Archivo modificado:** `gestor-academico/dist/modules/03-app-core.js`, función `updDB()`.
+
+**Cómo se verificó:** prueba automatizada nueva (`test_ronda24_dirtycheck.mjs`, 9 casos) con un contador simulado de "llamadas a la red", que confirma en particular el caso central pedido: re-seleccionar la MISMA nota que ya tenía (sin cambio real) produce **cero** peticiones de red nuevas y **cero** entradas nuevas en el historial de auditoría; una edición real inmediatamente después (o antes) del no-op sigue disparando el guardado con total normalidad — el chequeo de "dirty" no deja "atascado" el guardado; y un cambio real en cualquier otro campo de `db` (ej. configuración institucional, no relacionado con notas) también sigue guardando con normalidad, confirmando que la protección no rompe ningún otro módulo que comparta el mismo `updDB()`. `node --check` sin errores.
+
+### Punto 1c — Eliminar re-renderizados que borran casillas / pestañean la pantalla: YA IMPLEMENTADO (Rondas 17–23) — se preservó sin tocar
+
+Se auditaron los tres mecanismos que ya existían para esto y los tres siguen vigentes y correctos, sin necesidad de ningún cambio:
+
+1. `_renderPreservandoContexto()` — envuelve cualquier re-renderizado en segundo plano guardando y restaurando (con hasta 3 intentos) la posición de scroll, el elemento con foco por id, y la selección de texto activa, para que un refresco de fondo nunca le quite al docente la casilla en la que está escribiendo.
+2. Dentro de `_syncAll()`: si hay una casilla, selector o popup activo en ese momento (`_editando` / `_popupActive`), el re-renderizado se **difiere por completo** (queda marcado en `window._syncRenderPendiente`) en vez de interrumpir al docente a mitad de la edición.
+3. También dentro de `_syncAll()`: gracias al ETag/304 condicional ya existente, si el servidor no tiene nada nuevo, ni siquiera se llega a evaluar un re-renderizado — se descarta antes.
+
+Sobre "el autoguardado debe ejecutarse solo cuando se complete la edición de la asignatura o un lote completo de cambios": el sistema ya agrupa (`debounce` de 350 ms) las ediciones cercanas en el tiempo en un solo envío desde varias rondas atrás. Ampliar ese agrupamiento para esperar a que el docente "termine toda la asignatura" se evaluó y se descartó deliberadamente: alargar la ventana antes de guardar aumenta el riesgo de perder ediciones si el docente cierra la pestaña, se va la luz o falla la red antes de que se cumpla esa condición — contradiciendo el criterio de seguridad-ante-todo ya establecido en las Rondas 21–23 tras los incidentes reales de pérdida de notas. El chequeo de "dirty" del punto 1b es la forma concreta y segura de lograr el espíritu de "solo se envían cambios reales y válidos" sin reintroducir ese riesgo.
+
+### Punto 2 — Keep-Alive de Render con horario fijo de la institución: GENUINO — reescrito esta ronda
+
+El Keep-Alive existente (desde la Ronda 17) usaba un esquema "adaptativo por actividad reciente" (intervalos de 15/30/120 min según cuándo fue el último guardado real, con una ventana de madrugada estrecha de 12:00 a.m.–5:00 a.m.). Ese esquema no correspondía en nada al horario fijo pedido ahora, así que se reescribió por completo el módulo `src/lib/keep-alive.ts`:
+
+- **Ventana activa (trabajo docente/administrativo), por defecto 2:00 p.m.–6:00 p.m. hora de Colombia:** un ping ligero a `/api/health` cada 14 minutos (configurable) — con margen de sobra frente a los ~15 minutos de inactividad que hacen que Render suspenda el contenedor en el plan gratuito, para que el servidor nunca llegue a dormirse mientras hay actividad esperada.
+- **Ventana de reposo profundo, el resto del día (6:00 p.m.–2:00 p.m. del día siguiente):** **cero pings**, sin excepción y sin ninguna otra condición que pueda reactivarlo — si alguien entra igual fuera de esa ventana, esa visita real ya cuenta como actividad para Render por sí sola; el auto-ping simplemente deja de generar tráfico artificial cuando se sabe de antemano que no hace falta.
+- Los 3 números (hora de inicio y fin de la ventana activa, y minutos entre pings) son configurables por variable de entorno (`KEEP_ALIVE_ACTIVA_INICIO_HORA`, `KEEP_ALIVE_ACTIVA_FIN_HORA`, `KEEP_ALIVE_INTERVALO_ACTIVO_MIN`) sin tener que tocar código, por si la institución cambia su horario de trabajo.
+- Se conservaron, con la misma firma exacta, `registrarActividadPlataforma()` (llamada desde `POST /api/inetis/db` en cada guardado exitoso) e `iniciarKeepAliveInteligente()` (llamada al arrancar el servidor) — así que **`src/index.ts` no necesitó ningún cambio**. `estadoActividadReciente()` ahora también informa `ventanaActiva` (y conserva el campo `ventanaMadrugada`, repurpuesto como "fuera de la ventana activa", por si algo externo ya lo estaba leyendo por nombre).
+
+**Archivo modificado:** `src/lib/keep-alive.ts` (reescritura completa del módulo; sin dependencias nuevas, sigue usando `fetch` nativo y `setInterval`, igual que el resto de tareas programadas del proyecto).
+
+**Cómo se verificó:** prueba automatizada nueva (`test_ronda24_keepalive.mjs`, 11 casos) que simula el día completo minuto a minuto con la misma lógica exacta de la ventana y el intervalo, y confirma: cero pings en cualquier hora fuera de 14:00–18:00; los pings sí ocurren dentro de esa ventana, exactamente 18 en las 4 horas completas (uno cada 14 minutos, empezando de inmediato al entrar a la ventana, sin esperar los primeros 14 minutos); y los bordes exactos de la ventana (13:00 fuera, 14:00 dentro, 17:00 dentro, 18:00 fuera) se comportan como se pidió. `node --check` sin errores.
+
+*Verificación de TypeScript:* el archivo reescrito se compiló con el compilador real de TypeScript (`tsc --noEmit`, con los tipos de Node del propio proyecto) sobre una copia recién extraída del ZIP final — **0 errores**, confirmando que la sintaxis es válida y no solo por inspección manual.
+
+### Punto 3 — Auditoría del EcosystemAgent: YA IMPLEMENTADO CORRECTAMENTE — verificado, sin ningún cambio de código
+
+Se revisó `src/services/ecosystemAgent.js` a fondo, tal como pediste, y se confirmó que ya cumple exactamente lo pedido, desde antes de esta ronda:
+
+1. `iniciarAuditoriaProgramada()` usa un `setInterval` que revisa el reloj cada 10 minutos (sin ninguna consulta a Neon en esa revisión) y solo dispara la auditoría completa cuando `_esMomentoDeAuditoriaSemanal()` confirma que es domingo entre 2:00 y 2:15 a.m. hora de Colombia — un cron semanal real, no un polling de alta frecuencia.
+2. Un guardia (`_ultimaEjecucionCronDia`) evita que la auditoría se dispare dos veces el mismo día si el `setInterval` cae varias veces dentro de esa ventana de 15 minutos.
+3. Existe, además, un disparo manual bajo demanda del Súper Admin (`POST /api/agent/run-full-audit`) para cuando se necesite correr la auditoría fuera del ciclo semanal, sin tener que esperar a la madrugada del domingo.
+4. No se encontró ningún `setInterval` ni bucle adicional del agente haciendo *polling* activo contra Neon PostgreSQL — la única consulta real a la base de datos ocurre dentro de la auditoría misma, no en el temporizador que decide cuándo correrla.
+
+**Hallazgo transparente (no un defecto, una aclaración):** no existe hoy un interruptor específico "desactivar manualmente la auditoría" separado del cron — lo que sí existe es el disparo manual bajo demanda (punto 3 de arriba) y, por supuesto, el interruptor general del sistema de auditoría de conflictos de la Ronda 20 (categoría "Sincronizacion" en el panel del Súper Admin, que es un registro/bitácora, no un cron). El pedido de esta ronda era **verificar** el comportamiento del cron (ya correcto) y no pedía explícitamente agregar un nuevo interruptor de apagado manual del agente — así que no se agregó código nuevo para este punto, siguiendo tu instrucción de no duplicar ni alterar lo que ya funciona. Si quieres un interruptor dedicado para pausar el `EcosystemAgent` por completo desde el Súper Admin (más allá del disparo manual bajo demanda que ya existe), avísamelo y lo implemento en la próxima ronda como una funcionalidad nueva, no como una corrección.
+
+**Archivos revisados, sin ningún cambio de código:** `src/services/ecosystemAgent.js`, `src/index.ts` (se confirmó que sus 3 puntos de integración con `keep-alive.ts` — la importación, el uso en `GET /api/health`, la llamada en `POST /api/inetis/db`, y el arranque en el inicio del servidor — siguen siendo compatibles sin cambios con el módulo reescrito).
+
+**Regresión completa de esta ronda:** se reejecutaron los 26 scripts de prueba del proyecto completo (todas las rondas anteriores incluidas, más los 2 nuevos de esta ronda): **0 fallos en total**.
+
+### Resumen de archivos modificados en esta ronda
+
+- `gestor-academico/dist/modules/03-app-core.js` — dirty-checking agregado a `updDB()` (punto 1b). La bandera del Súper Admin (punto 1a) y las protecciones contra re-renderizado (punto 1c) se verificaron ya presentes y se dejaron intactas.
+- `src/lib/keep-alive.ts` — reescritura completa del horario (punto 2): ventana activa fija 2:00 p.m.–6:00 p.m. con pings cada 14 min, reposo total el resto del día.
+- **Sin cambios:** `src/services/ecosystemAgent.js` y `src/index.ts` — auditados y confirmados ya correctos (punto 3).
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.
