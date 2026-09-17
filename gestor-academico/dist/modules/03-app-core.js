@@ -799,11 +799,37 @@ async function _resolverConflictoDB(conflicto,_sk){
     // solo cuando ESE reintento se confirme, dentro de _pushDB().
     try{ localStorage.setItem(_sk,JSON.stringify(db)); }catch(e){}
     _registrarConflictoBitacora(_sk,conflictos,detalles,'push-conflicto-409');
-    _showToast(conflictos>0
-      ? '⚠️ Se combinaron cambios guardados por otra persona; '+conflictos+' valor(es) coincidentes se resolvieron automáticamente.'
-      : '🔄 Se combinaron automáticamente cambios guardados por otra persona.', conflictos>0?'warning':'info', 5500);
-    const _reaplicarConSync=function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); };
-    _renderPreservandoContexto(_reaplicarConSync);
+    // ============================================================
+    // 🔧 RONDA 28 — SUPRESIÓN TOTAL DEL AVISO + CERO renderApp() cuando el
+    // docente tiene Auto-guardar en ON y está dentro de Planilla o Notas de
+    // Actividades: se pidió que el guardado sea "transparente y sin
+    // interrupciones emergentes" y que el DOM de la tabla permanezca
+    // 100% intacto ante cualquier combinación automática de cambios. La
+    // fusión de 3 vías, el registro en la bitácora de auditoría y el
+    // reintento de guardado (saveDB(), abajo) NO cambian en nada — solo se
+    // omite el aviso flotante y se reemplaza renderApp() por un refresco
+    // celda por celda / fila por fila (mismo patrón ya usado en
+    // guardarNotasActividades() desde la Ronda 25), así el docente nunca ve
+    // la tabla reconstruirse ni saltar mientras califica.
+    //
+    // Fuera de esas dos pantallas, o con Auto-guardar en OFF, se conserva
+    // tal cual el comportamiento de la Ronda 25: si hubo un conflicto REAL
+    // de concurrencia (dos personas editando lo mismo casi al mismo
+    // tiempo), sigue avisándose con el mismo toast de siempre — ese caso no
+    // fue el que pediste silenciar, y seguir mostrándolo ahí seguía siendo
+    // lo más transparente para el resto de pantallas del sistema.
+    if(_debeSuprimirPollingPorAutoGuardarSilencioso()){
+      _reaplicarPendientes();
+      _reaplicarPendientesNAC();
+      if(pag==='planilla') _refrescarTodoPlanillaGranular();
+      else if(pag==='notas-actividades') _refrescarTodoNotasActGranular();
+    }else{
+      _showToast(conflictos>0
+        ? '⚠️ Se combinaron cambios guardados por otra persona; '+conflictos+' valor(es) coincidentes se resolvieron automáticamente.'
+        : '🔄 Se combinaron automáticamente cambios guardados por otra persona.', conflictos>0?'warning':'info', 5500);
+      const _reaplicarConSync=function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); };
+      _renderPreservandoContexto(_reaplicarConSync);
+    }
     // Reintentar el guardado ya fusionado con la nueva versión base
     saveDB();
   }catch(e){
@@ -4622,7 +4648,13 @@ async function _syncAll(force){
   // _debeSincronizarEnSegundoPlano(). Igual que con el interruptor del
   // Súper Admin, se centraliza en _syncAll() para que ningún punto de
   // llamada (presente o futuro) pueda "olvidarse" de revisarlo.
-  if(!force&&(!_sincronizacionAutoHabilitadaAhora()||!_debeSincronizarEnSegundoPlano())){
+  //
+  // Ronda 28 — misma centralización, un paso más allá: con Auto-guardar en
+  // ON y el docente dentro de Planilla o Notas de Actividades, TAMPOCO debe
+  // salir ninguna sincronización de fondo (ver _debeSuprimirPollingPor
+  // AutoGuardarSilencioso() arriba) — solo la acción explícita del botón
+  // "Sincronizar ahora" (force=true) sigue funcionando en ese caso.
+  if(!force&&(!_sincronizacionAutoHabilitadaAhora()||!_debeSincronizarEnSegundoPlano()||_debeSuprimirPollingPorAutoGuardarSilencioso())){
     return;
   }
   _syncInProgress=true;
@@ -4901,6 +4933,43 @@ function _autoGuardarHabilitadoPlat(){
 function _debeSincronizarEnSegundoPlano(){
   if(typeof _autoGuardarCargado!=='undefined'&&_autoGuardarCargado&&!_autoGuardar) return false;
   return true;
+}
+
+// ============================================================
+// 🔧 RONDA 28 — AUTOGUARDADO 100% SILENCIOSO EN PLANILLA Y NOTAS DE
+// ACTIVIDADES (Auto-guardar ON): la Ronda 25 ya apagaba el polling de
+// fondo en modo MANUAL; ahora se pidió ir más lejos y apagarlo TAMBIÉN en
+// modo Auto-guardar, pero solo mientras el docente tiene abierta,
+// concretamente, la pantalla de Planilla o la de Notas de Actividades —
+// las dos pantallas donde ese polling podía interrumpir visualmente la
+// calificación. El resto del sistema (Tablero, Consolidados, paneles del
+// Súper Admin, etc.) NO se ve afectado: ahí la sincronización de fondo
+// sigue funcionando exactamente igual que antes de esta ronda, porque no
+// hay ningún campo de nota que un polling pueda "hacer tambalear".
+//
+// Con esto activo:
+//   · El guardado del propio docente (updDB → saveDB → _pushDB, con su
+//     debounce de red de 350ms) sigue funcionando exactamente igual — eso
+//     JAMÁS dependió de este interruptor ni del de _sincronizacionAuto
+//     HabilitadaAhora(), y no se toca: cada nota que el docente digite
+//     sigue viajando sola, en segundo plano, hacia el backend/Neon.
+//   · Lo que se apaga es la LECTURA cruzada de fondo: ni el temporizador
+//     periódico (_syncInterval), ni el evento "online", ni "visibility
+//     change", ni el mensaje SSE de cambios, disparan una comparación
+//     contra el servidor mientras se está calificando en esa pantalla. Si
+//     otro dispositivo guarda algo mientras tanto, este no lo sabrá hasta
+//     que la persona cambie de pantalla, recargue o pulse el botón
+//     explícito "🔄 Sincronizar ahora" (que sigue funcionando siempre,
+//     como una acción deliberada del usuario — ver el "force" de
+//     _syncAll()).
+// La variable global "pag" (declarada al inicio del archivo) ya refleja
+// en todo momento qué pantalla tiene abierta la persona — se reutiliza
+// tal cual, sin necesidad de una bandera nueva de navegación.
+function _enPantallaDeCalificacion(){
+  return typeof pag!=='undefined'&&(pag==='planilla'||pag==='notas-actividades');
+}
+function _debeSuprimirPollingPorAutoGuardarSilencioso(){
+  return typeof _autoGuardarCargado!=='undefined'&&_autoGuardarCargado&&_autoGuardar&&_enPantallaDeCalificacion();
 }
 
 // Muestra u oculta el aviso fijo en la parte superior de la pantalla que
@@ -11840,6 +11909,22 @@ function _refrescarEstadisticaPlanilla(){
     '<div style="margin-top:8px">'+barC(cBajo,'#c0392b','BAJO')+barC(cBas,'#e67e22','BÁSICO')+barC(cAlto,'#1a5276','ALTO')+barC(cSup,'#1a7531','SUPERIOR')+'</div>'+
     '<div style="font-size:0.76rem;color:#888;margin-top:4px">Total: '+cTot+' | ✅ Aprob: '+(cBas+cAlto+cSup)+' | ❌ Repob: '+cBajo+'</div></div>';
 }
+// Ronda 28 — refresca TODA la tabla de la Planilla actualmente visible
+// (todas las filas del grado/asignatura/periodo abiertos, más la gráfica de
+// estadística) SIN llamar a renderApp() ni reconstruir un solo nodo del
+// DOM — reutiliza fila por fila el mismo helper granular de siempre
+// (_refrescarFilaPlanilla), que ya de por sí no toca nada si una celda no
+// existe en pantalla. Se usa específicamente cuando _resolverConflictoDB()
+// combina en memoria cambios guardados por otra persona mientras el
+// docente tiene Auto-guardar en ON y la Planilla abierta: los datos deben
+// quedar reflejados en pantalla, pero sin el parpadeo/tambaleo que
+// renderApp() produciría al reconstruir toda la tabla.
+function _refrescarTodoPlanillaGranular(){
+  const carga=planCId?db.carga.find(x=>x.id===Number(planCId)):null;
+  if(!carga) return;
+  db.ests.filter(x=>x.g===carga.g).forEach(function(e){ _refrescarFilaPlanilla(e.id); });
+  _refrescarEstadisticaPlanilla();
+}
 function _aplicarNotasPendientesEnDB(){
   const keys=Object.keys(_notasPendientes);
   if(!keys.length) return;
@@ -12559,20 +12644,24 @@ function _htmlLogNotasResultados(){
 // notas de actividades cotidianas (Actividad en clase, Talleres,
 // Actividad en casa, Participación en clases, Evaluación) con
 // fecha y hora. Puede agregar tantas columnas de cada tipo como
-// necesite (Taller 1, Taller 2...); el NOMBRE de cada columna es
-// un catálogo compartido por toda la institución, para que sea el
-// mismo entre docentes. El promedio resultante puede sincronizarse
-// —si el docente lo decide— con la columna que elija de la
-// Planilla, donde se computa automáticamente con el % configurado
-// para esa columna junto con las demás notas. Si no sincroniza, la
-// Planilla sigue funcionando exactamente igual que siempre.
+// necesite (Taller 1, Taller 2...). El promedio resultante puede
+// sincronizarse —si el docente lo decide— con la columna que elija
+// de la Planilla, donde se computa automáticamente con el %
+// configurado para esa columna junto con las demás notas. Si no
+// sincroniza, la Planilla sigue funcionando exactamente igual que
+// siempre.
+// Ronda 27: cada columna se numera y se crea de forma INDEPENDIENTE
+// por grado + asignatura/área + periodo + tipo de actividad — antes
+// existía un catálogo de nombres compartido por toda la institución
+// con la opción de "reutilizar" una columna ya existente de otra
+// asignatura/periodo, pero eso generaba confusión (se interpretaba
+// como "esto ya está en uso, se puede dañar") sin aportar ningún
+// beneficio real, así que se quitó de raíz — ver
+// abrirModalAgregarColNotaAct()/_confirmarAgregarColNAC() más abajo.
 // ============================================================
 let notaActPer='1', notaActCId='';
 const TIPOS_NOTAS_ACT=['Actividad en clase','Talleres','Actividad en casa','Participación en clases','Evaluación'];
 
-function _colsActCatalogoPorTipo(tipo){
-  return (db.notasActColumnas||[]).filter(c=>c.tipo===tipo).sort((a,b)=>a.numero-b.numero);
-}
 function _colsActAsignadas(cId,per){
   const key=cId+'_'+per;
   const ids=(db.notasActAsignadas||{})[key]||[];
@@ -12684,11 +12773,21 @@ function htmlNotasActividades(){
 function cambiarNotaActPer(v){notaActPer=v;renderApp();}
 function cambiarNotaActCId(v){notaActCId=v;renderApp();}
 
-// ── Modal: agregar columna (nueva o existente del catálogo compartido por tipo) ──
+// ── Modal: agregar columna ──────────────────────────────────────────────────
+// Ronda 27 — se eliminó por completo la opción de "reutilizar" una columna
+// del catálogo compartido de la institución: generaba confusión real (el
+// docente entendía "reutilizar" como "esto ya está en uso, se puede
+// dañar"), cuando en realidad nunca hubo riesgo de sobrescribir notas de
+// otra asignatura (cada nota vive bajo una llave que ya incluía la
+// asignatura y el periodo — ver _valorNotaAct). Aun así, la sola presencia
+// de esa opción era una fuente de enredo innecesaria, así que se quitó de
+// raíz: ahora cada columna nueva se numera y se crea de forma
+// INDEPENDIENTE por grado + asignatura/área + periodo + tipo de actividad
+// (las 4 variables que pediste), sin ningún catálogo para elegir de una
+// lista compartida. El docente solo elige el TIPO; el sistema calcula y
+// muestra de una vez el nombre que se va a crear.
 function abrirModalAgregarColNotaAct(){
   const old=document.getElementById('modalNotaAct');if(old)old.remove();
-  const cId=Number(notaActCId),per=Number(notaActPer);
-  const yaAsignadas=(db.notasActAsignadas||{})[cId+'_'+per]||[];
   const opts=TIPOS_NOTAS_ACT.map(t=>`<option value="${t}">${t}</option>`).join('');
   const modal=document.createElement('div');
   modal.id='modalNotaAct';
@@ -12696,53 +12795,69 @@ function abrirModalAgregarColNotaAct(){
   modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto;color:#1a1a2e">
     <h4 style="color:#003366;margin-bottom:12px">➕ Agregar nota</h4>
     <label class="lbl">Tipo de actividad</label>
-    <select id="nacTipo" onchange="_actualizarListaColExistentesNAC()" style="width:100%;margin-bottom:10px">${opts}</select>
-    <div id="nacExistentesWrap" style="margin-bottom:10px"></div>
+    <select id="nacTipo" onchange="_actualizarPreviewNuevaColNAC()" style="width:100%;margin-bottom:10px">${opts}</select>
+    <div id="nacPreviewWrap" style="margin-bottom:10px"></div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button class="btn btn-green" style="flex:1" onclick="_confirmarAgregarColNAC()">✔ Agregar</button>
       <button class="btn btn-gray" style="flex:1" onclick="document.getElementById('modalNotaAct').remove()">✕ Cancelar</button>
     </div>
   </div>`;
   document.body.appendChild(modal);
-  window._nacYaAsignadas=yaAsignadas;
-  _actualizarListaColExistentesNAC();
+  _actualizarPreviewNuevaColNAC();
 }
-function _actualizarListaColExistentesNAC(){
+// Calcula el próximo número/nombre para una columna nueva de este TIPO,
+// contando ÚNICAMENTE las columnas ya asignadas a ESTA MISMA combinación
+// de asignatura (grado+área, vía notaActCId) y periodo (notaActPer) —
+// nunca contra el catálogo completo de la institución. Así "Actividad en
+// clase 1" de Matemáticas 10° Periodo 1 es completamente independiente de
+// "Actividad en clase 1" de Español 11° Periodo 3: cada combinación
+// numera desde 1 por su cuenta.
+function _proximoNombreColNAC(tipo){
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const asignadasDeEsteTipo=_colsActAsignadas(cId,per).filter(c=>c.tipo===tipo);
+  const sigNum=(asignadasDeEsteTipo.reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
+  return {numero:sigNum,nombre:tipo+' '+sigNum};
+}
+function _actualizarPreviewNuevaColNAC(){
   const tipoSel=document.getElementById('nacTipo');if(!tipoSel) return;
   const tipo=tipoSel.value;
-  const existentes=_colsActCatalogoPorTipo(tipo).filter(c=>!(window._nacYaAsignadas||[]).includes(c.id));
-  const wrap=document.getElementById('nacExistentesWrap');
+  const {nombre}=_proximoNombreColNAC(tipo);
+  const wrap=document.getElementById('nacPreviewWrap');
   if(!wrap) return;
-  const sigNum=(_colsActCatalogoPorTipo(tipo).reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
   wrap.innerHTML=`
-    <label class="lbl">Columna</label>
-    <select id="nacColSel">
-      <option value="__nueva__">➕ Crear nueva: "${tipo} ${sigNum}"</option>
-      ${existentes.map(c=>`<option value="${c.id}">${c.nombre} (reutilizar)</option>`).join('')}
-    </select>
-    <div style="font-size:0.72rem;color:#888;margin-top:4px">El nombre de las columnas es compartido por todos los docentes. Si crea una nueva, quedará disponible para los demás.</div>`;
+    <div style="background:#eaf4fb;border:1px solid #aed6f1;border-radius:6px;padding:8px 10px;font-size:0.82rem;color:#1a5276">Se creará: <b>"${nombre}"</b></div>
+    <div style="font-size:0.72rem;color:#888;margin-top:4px">Esta columna quedará exclusiva de este grado, esta asignatura/área y este periodo — no se comparte ni se mezcla con otras asignaturas ni con otros periodos.</div>`;
 }
 function _confirmarAgregarColNAC(){
-  const tipo=document.getElementById('nacTipo').value;
-  const sel=document.getElementById('nacColSel').value;
+  const tipoSel=document.getElementById('nacTipo');
+  if(!tipoSel) return;
+  const tipo=tipoSel.value;
   const cId=Number(notaActCId),per=Number(notaActPer);
   const key=cId+'_'+per;
+  let nombreCreado='';
   updDB(d=>{
     d.notasActColumnas=d.notasActColumnas||[];
     d.notasActAsignadas=d.notasActAsignadas||{};
-    let colId=sel;
-    if(sel==='__nueva__'){
-      const sigNum=(d.notasActColumnas.filter(c=>c.tipo===tipo).reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
-      colId='nac_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-      d.notasActColumnas.push({id:colId,tipo,numero:sigNum,nombre:tipo+' '+sigNum});
-    }
+    const asignadasDeEsteTipo=(d.notasActAsignadas[key]||[]).map(id=>d.notasActColumnas.find(c=>c.id===id)).filter(c=>c&&c.tipo===tipo);
+    let sigNum=(asignadasDeEsteTipo.reduce((m,c)=>Math.max(m,c.numero||0),0))+1;
+    let nombre=tipo+' '+sigNum;
+    // Defensa: si por datos heredados de antes de esta ronda (cuando las
+    // columnas SÍ eran compartidas) ya existiera, asignada aquí mismo, una
+    // columna con ese nombre exacto, se salta al siguiente número en vez
+    // de bloquear al docente — nunca debe verse un nombre repetido dentro
+    // de la misma asignatura/periodo, y nunca hace falta preguntarle nada.
+    while(asignadasDeEsteTipo.some(c=>c.nombre===nombre)){ sigNum++; nombre=tipo+' '+sigNum; }
+    const colId='nac_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+    d.notasActColumnas.push({id:colId,tipo,numero:sigNum,nombre});
     const arr=d.notasActAsignadas[key]||[];
-    if(!arr.includes(colId)) arr.push(colId);
+    arr.push(colId);
     d.notasActAsignadas[key]=arr;
+    nombreCreado=nombre;
     return d;
   });
   document.getElementById('modalNotaAct').remove();
   renderApp();
+  _toastPlan('✅ Columna "'+nombreCreado+'" creada para esta asignatura y periodo.','#27ae60');
 }
 async function quitarColNotaAct(colId){
   if(!await customConfirm('¿Quitar esta columna de esta asignatura y periodo?\n\nLos datos ya registrados NO se eliminan, solo deja de mostrarse aquí. Puede volver a agregarla cuando la necesite.')) return;
@@ -12990,6 +13105,20 @@ function _refrescarCeldaNotaAct(estId,colId){
     promEl.textContent=prom!=null?prom.toFixed(2):'—';
     promEl.style.color=prom!=null?colorNota(prom):'#aaa';
   }
+}
+// Ronda 28 — mismo principio que _refrescarTodoPlanillaGranular(), para la
+// pantalla de Notas de Actividades: refresca cada celda/promedio de la
+// asignatura+periodo actualmente abiertos, celda por celda, sin llamar a
+// renderApp(). Se usa cuando _resolverConflictoDB() combina en memoria
+// cambios de otra persona mientras el docente tiene Auto-guardar en ON y
+// esta pantalla abierta.
+function _refrescarTodoNotasActGranular(){
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const carga=notaActCId?db.carga.find(x=>x.id===Number(notaActCId)):null;
+  if(!carga) return;
+  const ests=db.ests.filter(x=>x.g===carga.g);
+  const cols=_colsActAsignadas(cId,per);
+  ests.forEach(function(e){ cols.forEach(function(c){ _refrescarCeldaNotaAct(e.id,c.id); }); });
 }
 // Se llama al tocar un botón de nota dentro de abrirPopupNotaAct() — "valor"
 // llega directo del botón elegido (rejilla 0.0–5.0 o acceso cualitativo

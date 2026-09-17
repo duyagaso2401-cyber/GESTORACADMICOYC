@@ -1,0 +1,21 @@
+1. Entendido. Mantengamos la arquitectura exactamente como está hoy. La sincronización Offline-First actual mediante el navegador web e IndexedDB satisface plenamente las necesidades de baja conectividad. No agregues el mecanismo de nodos rurales ni las banderas de notificaciones por rol. Excelente trabajo manteniendo las 28 pruebas en verde y documentando el .env. Continuemos con el plan establecido. 2. Por favor ajusta en el módulo Notas Actividades para que cuando el docente quiera agregar una nota en el botón Agregar nota en la sección crear nueva, en el desplegable aparece un mensaje entre paréntesis esto por ejemplo(Actividad 1(reutilizar)) ese mensaje genera confusión ya que no se entiende a qué se refiere con reutilizar, ya que se interpreta como que ya está en uso y se pueda dañar lo que ya se tiene, es mejor que se generen y si está en uso diga está en uso y que se genere otra, aclaro(Deben ser independientes en cada periodo, grado, asignatura o área para evitar que se genere ese enredo de reutilizar) deben generarse de forma independiente por periodo, grado, asignatura o área, además de tipo de actividad a ingresar la nota. 3. Hola Claude, necesito resolver de forma definitiva y permanente la experiencia visual e interrupción del Autoguardado (Auto-guardar ON) en los módulos planilla de notas y Notas actividades del Gestor Académico YC. 
+
+El objetivo es lograr un autoguardado 100% silencioso, elegante y profesional, eliminando cualquier vestigio de parpadeo en el DOM o avisos intrusivos.
+
+POR FAVOR APLICA LAS SIGUIENTES REGLAS AL MODO AUTO-GUARDAR ON:
+
+1. AUTOGUARDADO SILENCIOSO Y DIRECTO (CLIENTE -> NUBE):
+   - Cada vez que el docente digite una nota, el sistema debe enviarla al backend/Neon de forma asíncrona (debounce/batch) para guardarla en la nube.
+   - ELIMINA por completo el polling o consulta periódica en segundo plano que compara el estado local contra el servidor mientras se edita. No debe haber lecturas cruzadas continuas.
+   - Si otro dispositivo inicia sesión en otra pantalla o momento, verá las notas actualizadas simplemente al cargar o refrescar la página. No necesitamos sincronización reactiva en tiempo real en la misma planilla si esta compromete la estabilidad visual.
+
+2. SUPRESIÓN TOTAL DE ALERTAS DE CONCURRENCIA MOLESTAS:
+   - Elimina de forma absoluta la alerta o aviso flotante "se actualizaron datos de otras personas" mientras el docente tiene la planilla abierta. 
+   - La guardada debe ser transparente y sin interrupciones emergentes.
+
+3. ESTABILIDAD ABSOLUTA DEL DOM (CERO RE-RENDERIZADO / CERO TAMBALEO):
+   - Al ejecutarse el autoguardado, el DOM de la tabla debe permanecer 100% intacto y estático. 
+   - Prohibido llamar a renderApp() o reconstruir nodos de la matriz de notas.
+   - Únicamente debe mutar el pequeño indicador visual de la casilla (ej. de "guardando..." a "guardado" o cambio de color de borde) de manera aislada sobre el input afectado.
+
+Asegúrate de mantener intactas las 28 pruebas en verde del proyecto y no modificar nada fuera del módulo de planilla de notas.
