@@ -980,6 +980,20 @@ function _migrateGestorDB(data){
     // pantalla sola: aparece un aviso arriba invitando a sincronizar a
     // mano cuando la persona quiera ver cambios recientes de otros.
     if(typeof plat.sincronizacionAutomatica==='undefined') plat.sincronizacionAutomatica=true;
+    // Ronda 23 — Auto-guardar de notas (Planilla y Notas de Actividades):
+    // por defecto HABILITADO para no cambiar el comportamiento de ninguna
+    // institución existente. El Súper Admin puede apagarlo por institución
+    // (botón "⚡ Auto-guardar" en este panel) como medida temporal mientras
+    // se sigue investigando un problema de sincronización reportado con
+    // Auto-guardar activo (ver CHECKLIST_DESPLIEGUE.md, Ronda 23). Con esto
+    // apagado, el botón de Auto-guardar deja de aparecer por completo en
+    // los paneles de Planilla y Notas de Actividades — de docentes,
+    // directivos docentes y cualquier otro rol que use esos módulos — y
+    // todos quedan forzados al modo manual "GUARDAR CAMBIOS", sin ninguna
+    // opción visible para volver a activarlo hasta que el Súper Admin lo
+    // decida. El guardado manual comparte el mismo mecanismo de fondo, así
+    // que sigue disponible exactamente igual que siempre.
+    if(typeof plat.autoGuardarHabilitado==='undefined') plat.autoGuardarHabilitado=true;
     // "Pantalla en blanco": bloqueo manual total de acceso, decisión 100%
     // del Súper Admin (no hay lógica de pagos/fechas automática). Por
     // defecto APAGADA (false) para todas las instituciones.
@@ -2762,6 +2776,7 @@ function htmlGestorPlataformas(){
         <button class="btn" style="background:${plat.activa?'#7f8c8d':'#27ae60'};font-size:0.82rem;padding:7px 13px" onclick="toggleActivarPlat('${plat.id}')">${plat.activa?'⏸ Suspender':'▶ Activar'}</button>
         <button class="btn" style="background:${plat.bloqueada?'#e74c3c':'#8e44ad'};font-size:0.82rem;padding:7px 13px" onclick="toggleBloquearPlat('${plat.id}')">${plat.bloqueada?'🔓 Desbloquear':'🔒 Bloquear acceso'}</button>
         <button class="btn" style="background:${plat.sincronizacionAutomatica===false?'#7f8c8d':'#2980b9'};font-size:0.82rem;padding:7px 13px" onclick="toggleSincronizacionPlat('${plat.id}')" title="Si se apaga, esta institución deja de refrescar la pantalla sola con cambios de otros dispositivos — se le muestra un aviso para sincronizar manualmente. El guardado de datos nunca se ve afectado.">${plat.sincronizacionAutomatica===false?'🔕 Sinc. manual':'🔄 Sinc. automática'}</button>
+        <button class="btn" style="background:${plat.autoGuardarHabilitado===false?'#c0392b':'#2980b9'};font-size:0.82rem;padding:7px 13px" onclick="toggleAutoGuardarPlat('${plat.id}')" title="Medida TEMPORAL mientras se investiga un problema de sincronización reportado con Auto-guardar activo. Si se apaga, el botón '⚡ Auto-guardar' desaparece por completo de Planilla y Notas de Actividades para todos los docentes y directivos docentes de esta institución — quedan forzados al modo manual 'GUARDAR CAMBIOS', sin ninguna opción visible para volver a activarlo hasta que usted lo decida aquí.">${plat.autoGuardarHabilitado===false?'🚫 Auto-guardar desactivado':'⚡ Auto-guardar habilitado'}</button>
         <button class="btn" style="background:${plat.pantallaBlanca?'#c0392b':'#34495e'};font-size:0.82rem;padding:7px 13px" onclick="togglePantallaBlancaPlat('${plat.id}')" title="Bloqueo manual total de acceso para esta institución (pantalla en blanco). Decisión 100% manual, sin lógica de pagos automática.">${plat.pantallaBlanca?'⚪ Quitar pantalla en blanco':'⬛ Modo Pantalla en Blanco'}</button>
         <button class="btn" style="background:#16a085;font-size:0.82rem;padding:7px 13px" onclick="abrirModalExportarEstDoc('${plat.id}')" title="Copiar estudiantes/docentes de esta institución hacia otra">📋 Exportar Est./Doc.</button>
         <button class="btn btn-red" style="font-size:0.82rem;padding:7px 13px" onclick="eliminarPlataforma('${plat.id}')">🗑</button>
@@ -3569,6 +3584,17 @@ function toggleActivarPlat(platId){updGestorDB(d=>{const p=d.platforms.find(x=>x
 // hayan cambiado.
 function toggleSincronizacionPlat(platId){
   updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.sincronizacionAutomatica=(p.sincronizacionAutomatica===false);return d;});
+  renderGestorAdmin();
+}
+// Ronda 23 — enciende/apaga, por institución, la capacidad de usar
+// Auto-guardar en Planilla y Notas de Actividades (ver comentario junto a
+// "autoGuardarHabilitado" en _migrateGestorDB). Con esto apagado, el botón
+// "⚡ Auto-guardar" desaparece por completo de ambos módulos para todos los
+// roles de esa institución — quedan forzados al modo manual "GUARDAR
+// CAMBIOS" — mientras se sigue investigando el problema de sincronización
+// reportado con Auto-guardar activo.
+function toggleAutoGuardarPlat(platId){
+  updGestorDB(d=>{const p=d.platforms.find(x=>x.id===platId);if(p) p.autoGuardarHabilitado=(p.autoGuardarHabilitado===false);return d;});
   renderGestorAdmin();
 }
 // Enciende/apaga el modo "Pantalla en Blanco" de una institución — bloqueo
@@ -4814,6 +4840,17 @@ function _sincronizacionAutoHabilitadaAhora(){
   const plat=_obtenerPlatActual();
   if(!plat) return true; // por defecto encendida si aún no se sabe a qué institución pertenece
   return plat.sincronizacionAutomatica!==false;
+}
+
+// Ronda 23 — igual patrón que _sincronizacionAutoHabilitadaAhora(), pero
+// para el interruptor de Auto-guardar de notas (ver comentario junto a
+// "autoGuardarHabilitado" en _migrateGestorDB). El Súper Admin nunca se ve
+// afectado por esto — es una comodidad propia de su panel.
+function _autoGuardarHabilitadoPlat(){
+  if(typeof gestorSesion!=='undefined'&&gestorSesion) return true;
+  const plat=_obtenerPlatActual();
+  if(!plat) return true; // por defecto habilitado si aún no se sabe a qué institución pertenece
+  return plat.autoGuardarHabilitado!==false;
 }
 
 // Muestra u oculta el aviso fijo en la parte superior de la pantalla que
@@ -11069,10 +11106,11 @@ function htmlPlanilla(){
       <div id="_wrapGuardarManual" style="display:${(()=>{_cargarAutoGuardar();return _autoGuardar?'none':'flex'})()};align-items:center;gap:10px;flex-wrap:wrap">
         <button class="btn btn-green" onclick="guardarPlanilla()">💾 GUARDAR CAMBIOS</button>
         <span id="__pendInd" style="display:none;background:#f1c40f;color:#333;font-weight:bold;font-size:0.8rem;padding:5px 12px;border-radius:20px;border:2px solid #d4ac0d">⚠️ 0 nota(s) sin guardar</span>
+        ${!_autoGuardarHabilitadoPlat()?'<span style="font-size:0.72rem;color:#888">🚫 Auto-guardar temporalmente desactivado por el administrador del sistema mientras se resuelve un problema técnico.</span>':''}
       </div>
-      <button id="_btnAutoGuardar" onclick="_toggleAutoGuardar()" title="${_autoGuardar?'Las notas se guardan al instante — haga clic para cambiar a modo manual':'Las notas esperan GUARDAR CAMBIOS — haga clic para activar guardado automático'}" style="background:${_autoGuardar?'#27ae60':'#7f8c8d'};color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:0.82rem;cursor:pointer;font-weight:bold;min-height:38px">
+      ${_autoGuardarHabilitadoPlat()?`<button id="_btnAutoGuardar" onclick="_toggleAutoGuardar()" title="${_autoGuardar?'Las notas se guardan al instante — haga clic para cambiar a modo manual':'Las notas esperan GUARDAR CAMBIOS — haga clic para activar guardado automático'}" style="background:${_autoGuardar?'#27ae60':'#7f8c8d'};color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:0.82rem;cursor:pointer;font-weight:bold;min-height:38px">
         ${_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF'}
-      </button>
+      </button>`:''}
     </div>
   </div>`;
 }
@@ -11316,8 +11354,22 @@ function cerrarPopupNota(){
 let _notasPendientes = {};
 // Auto-guardar: cuando está activo, las notas se guardan de inmediato sin pasar por pendientes.
 let _autoGuardar = false;
-function _cargarAutoGuardar(){ _autoGuardar=!!(db.config&&db.config.autoGuardar); }
+// Ronda 23: aunque la institución tenga guardada la preferencia de Auto-
+// guardar en "ON" (db.config.autoGuardar), si el Súper Admin desactivó la
+// CAPACIDAD de usarlo para esta institución (_autoGuardarHabilitadoPlat),
+// el resultado siempre es "OFF" — sin excepción y sin depender de qué
+// pantalla se abra primero.
+function _cargarAutoGuardar(){ _autoGuardar=_autoGuardarHabilitadoPlat()&&!!(db.config&&db.config.autoGuardar); }
 function _toggleAutoGuardar(){
+  if(!_autoGuardarHabilitadoPlat()){
+    // Defensa en profundidad: con el interruptor apagado por el Súper
+    // Admin, el botón ni siquiera se dibuja (ver htmlNotasActividades()/
+    // el render de Planilla), pero si por cualquier razón esta función se
+    // llegara a invocar igual (ej. una versión cacheada del navegador),
+    // no debe volver a activar el Auto-guardar.
+    customAlert('🚫 El Auto-guardar está temporalmente desactivado por el administrador del sistema para esta institución, mientras se resuelve un problema técnico. Puede seguir calificando normalmente con el modo manual — "💾 GUARDAR CAMBIOS".');
+    return;
+  }
   _autoGuardar=!_autoGuardar;
   updDB(d=>{if(!d.config)d.config={};d.config.autoGuardar=_autoGuardar;return d;});
   const btn=document.getElementById('_btnAutoGuardar');
@@ -12546,16 +12598,16 @@ function htmlNotasActividades(){
       <button class="btn btn-teal" ${(carga&&cols.length)?'':'disabled'} onclick="descargarNotasActExcel()" title="Descarga un Excel con las columnas actuales para llenar fuera de línea">📥 Descargar Excel</button>
       <button class="btn btn-orange" ${(carga&&cols.length)?'':'disabled'} onclick="document.getElementById('fileNotasActExcel').click()" title="Carga un Excel previamente descargado desde aquí">📤 Cargar Excel</button>
       <input type="file" id="fileNotasActExcel" accept=".xlsx,.xls" style="display:none" onchange="cargarNotasActExcel(this)">
-      <button id="_btnAutoGuardarNAC" onclick="_toggleAutoGuardar()" title="${_autoGuardar?'Las notas de actividad se guardan al instante — haga clic para cambiar a modo manual':'Las notas de actividad esperan GUARDAR CAMBIOS — haga clic para activar guardado automático'}" style="background:${_autoGuardar?'#27ae60':'#7f8c8d'};color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:0.82rem;cursor:pointer;font-weight:bold;min-height:38px">
+      ${_autoGuardarHabilitadoPlat()?`<button id="_btnAutoGuardarNAC" onclick="_toggleAutoGuardar()" title="${_autoGuardar?'Las notas de actividad se guardan al instante — haga clic para cambiar a modo manual':'Las notas de actividad esperan GUARDAR CAMBIOS — haga clic para activar guardado automático'}" style="background:${_autoGuardar?'#27ae60':'#7f8c8d'};color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:0.82rem;cursor:pointer;font-weight:bold;min-height:38px">
         ${_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF'}
-      </button>
+      </button>`:''}
     </div>
     <div id="_nacXlsxMsg" style="display:none;border-radius:6px;padding:8px 12px;font-size:0.8rem;margin-bottom:10px"></div>
     ${tabla}
     <div id="_wrapGuardarManualNAC" style="display:${_autoGuardar?'none':'flex'};align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px">
       <button class="btn btn-green" onclick="guardarNotasActividades()">💾 GUARDAR CAMBIOS</button>
       <span id="__pendIndNAC" style="display:none;background:#f1c40f;color:#333;font-weight:bold;font-size:0.8rem;padding:5px 12px;border-radius:20px;border:2px solid #d4ac0d">⚠️ 0 nota(s) sin guardar</span>
-      <span style="font-size:0.72rem;color:#888">🕹 Modo Guardado Manual activo — estas notas de actividad no se envían solas hasta pulsar "GUARDAR CAMBIOS". Es la misma preferencia del botón "⚡/🕹 Auto-guardar" de arriba (y de la Planilla): cambiarla aquí también la cambia allá.</span>
+      <span style="font-size:0.72rem;color:#888">${_autoGuardarHabilitadoPlat()?'🕹 Modo Guardado Manual activo — estas notas de actividad no se envían solas hasta pulsar "GUARDAR CAMBIOS". Es la misma preferencia del botón "⚡/🕹 Auto-guardar" de arriba (y de la Planilla): cambiarla aquí también la cambia allá.':'🚫 Auto-guardar temporalmente desactivado por el administrador del sistema mientras se resuelve un problema técnico — estas notas de actividad solo se envían al pulsar "GUARDAR CAMBIOS".'}</span>
     </div>
   </div>`;
 }
@@ -13161,6 +13213,7 @@ function htmlInformes(){
     return `<h3 class="sec-title">Consolidados de Calificaciones</h3>
     <div class="tab-btns">
       <button class="tab-btn active" onclick="mostrarTabInforme('consolidado',this)">📊 Consolidado</button>
+      <button class="tab-btn" onclick="mostrarTabInforme('consolidado-completo',this)">📚 Todas las Asignaturas</button>
       <button class="tab-btn" onclick="mostrarTabInforme('aprobacion',this)">❌ Aprobados/Reprobados</button>
       ${tabSeguimiento}
     </div>
@@ -13183,6 +13236,7 @@ function htmlInformes(){
   return `<h3 class="sec-title">Informes y Consolidados</h3>
   <div class="tab-btns">
     <button class="tab-btn active" onclick="mostrarTabInforme('consolidado',this)">📊 Consolidado</button>
+    <button class="tab-btn" onclick="mostrarTabInforme('consolidado-completo',this)">📚 Todas las Asignaturas</button>
     <button class="tab-btn" onclick="mostrarTabInforme('aprobacion',this)">❌ Aprobados/Reprobados</button>
     <button class="tab-btn" onclick="mostrarTabInforme('consolidado-general',this)">📈 Consolidado General</button>
     <button class="tab-btn" onclick="mostrarTabInforme('estadisticas',this)">📉 Estadísticas</button>
@@ -13229,6 +13283,22 @@ function mostrarTabInforme(tab,btn){
         <button class="btn btn-blue" onclick="pdfConsolidado()">📥 PDF</button>
         <button class="btn" style="background:#16a085;color:#fff" onclick="xlsxConsolidado()">📊 Excel</button>
       </div></div><div id="consolidadoWrap"></div>`;
+  } else if(tab==='consolidado-completo'){
+    // Ronda 23 — ver comentario junto a _datosConsolidadoCompletoEstudiante()
+    // más abajo para el detalle completo de esta funcionalidad.
+    wrap.innerHTML=`<div class="card">
+      <h4 class="card-title">📚 Consolidado Completo — Todas las Asignaturas y Todos los Periodos</h4>
+      <div class="info-box">Vea el consolidado de <b>TODAS</b> las asignaturas y <b>TODOS</b> los periodos de los estudiantes de cualquier grado de su asignación académica — de forma <b>masiva</b> (todo el grado de una vez) o <b>individual</b> (toque el nombre de un estudiante). Ambas modalidades se pueden descargar en PDF y en Excel.</div>
+      <div style="margin-bottom:12px"><label class="lbl">Grado</label><select id="infGradoCC" onchange="_cargarListaConsolidadoCompleto()">${gradOpts}</select></div>
+      <div class="flex-gap" style="margin-bottom:14px">
+        <button class="btn btn-blue" onclick="pdfConsolidadoCompletoMasivo()" title="Un PDF con una página por estudiante: todas las asignaturas y todos los periodos">📥 PDF Masivo (todo el grado)</button>
+        <button class="btn" style="background:#16a085;color:#fff" onclick="xlsxConsolidadoCompletoMasivo()" title="Un Excel con el detalle de todas las asignaturas y periodos de todos los estudiantes de este grado">📊 Excel Masivo (todo el grado)</button>
+      </div>
+      <h5 style="color:#003366;margin-bottom:8px">👆 O toque el nombre de un estudiante para ver y descargar su consolidado individual</h5>
+      <div id="consolidadoCompletoListaWrap"></div>
+      <div id="consolidadoCompletoDetalleWrap"></div>
+    </div>`;
+    setTimeout(_cargarListaConsolidadoCompleto,60);
   } else if(tab==='aprobacion'){
     const _numPerAp=_getNumPer();
     const _perOptsAp=Array.from({length:_numPerAp},function(_,i){return i+1;}).map(function(n){return '<option value="'+n+'">Periodo '+n+'</option>';}).join('');
@@ -13974,6 +14044,252 @@ function pdfConsolidadoDir(){
   doc.text(db.rectora,57,fy2+5,{align:'center'});doc.text((_nombreDirectorGrado(infoG.d)||sesion.n).toUpperCase(),225,fy2+5,{align:'center'});
   doc.setFont('helvetica','normal');doc.text('RECTOR(A)',57,fy2+10,{align:'center'});doc.text('DIRECTOR(A) DE GRUPO',225,fy2+10,{align:'center'});
   doc.save('SeguimientoAcademico_'+grado+'_P'+per+'_'+db.anio+'.pdf');
+}
+
+// ============================================================
+// RONDA 23 — CONSOLIDADO COMPLETO POR ESTUDIANTE (TODAS LAS ASIGNATURAS Y
+// TODOS LOS PERIODOS): antes, un docente normal solo podía ver el
+// consolidado de SUS PROPIAS asignaturas y un periodo a la vez (pestaña
+// "Consolidado", más arriba); ver TODAS las asignaturas de un grado con
+// TODOS los periodos juntos estaba reservado a Admin ("Consolidado
+// General") o al Director de Grupo ("Seguimiento Académico") — y aun así,
+// un periodo a la vez. Esta pestaña nueva ("📚 Todas las Asignaturas") da
+// esa misma visibilidad ampliada a CUALQUIER docente, para los grados de
+// su propia asignación académica (gradosDelDocente), en dos modalidades:
+// MASIVA (todo el grado de una vez) e INDIVIDUAL (un estudiante, eligiéndolo
+// de una lista con solo tocar su nombre) — ambas exportables a PDF y Excel.
+// ============================================================
+
+// Arma, para un estudiante y grado, la matriz completa: cada asignatura del
+// grado (agrupada por área) x cada periodo configurado (_getNumPer(), no
+// se asume que siempre son 4), más la definitiva anual de esa asignatura
+// (calcPromedioMat, ya usada en el resto del sistema) y los promedios
+// generales del estudiante por periodo y anual (calcPromedioEstPer /
+// calcPromedioEst). Se centraliza aquí para que la pantalla, el PDF y el
+// Excel muestren SIEMPRE exactamente los mismos números — nunca se
+// recalculan por separado en cada salida.
+function _datosConsolidadoCompletoEstudiante(estId,grado){
+  const e=db.ests.find(x=>x.id===estId);
+  const mats=db.carga.filter(x=>x.g===grado);
+  const numPer=_getNumPer();
+  if(!e||!mats.length) return null;
+  const areas={};
+  mats.forEach(m=>{const a=m.a||m.m;if(!areas[a]) areas[a]=[];areas[a].push(m);});
+  const filasPorArea=Object.keys(areas).map(area=>({
+    area,
+    asignaturas:areas[area].map(m=>({
+      mat:m,
+      porPeriodo:Array.from({length:numPer},(_,i)=>calcNotaDef(e.nts,m.id,i+1)),
+      definitiva:calcPromedioMat(estId,m.id)
+    }))
+  }));
+  const promPorPeriodo=Array.from({length:numPer},(_,i)=>calcPromedioEstPer(estId,grado,i+1));
+  const promAnual=calcPromedioEst(estId,grado);
+  const areasPerd=getAreasPerdidas(estId,grado);
+  return {est:e,grado,numPer,filasPorArea,promPorPeriodo,promAnual,areasPerd,puesto:puestoEst(estId,grado)};
+}
+
+// Lista de estudiantes del grado elegido — cada nombre es tocable/cliqueable
+// para abrir su consolidado individual (_verConsolidadoCompletoEstudiante).
+function _cargarListaConsolidadoCompleto(){
+  const grado=document.getElementById('infGradoCC')?.value||'';
+  const wrap=document.getElementById('consolidadoCompletoListaWrap');
+  const det=document.getElementById('consolidadoCompletoDetalleWrap');
+  if(det) det.innerHTML='';
+  if(!wrap) return;
+  const ests=db.ests.filter(x=>x.g===grado&&!x.deletedAt).sort((a,b)=>a.n.localeCompare(b.n));
+  if(!ests.length){wrap.innerHTML=_htmlEstadoVacio('🎓','No hay estudiantes en este grado.');return;}
+  wrap.innerHTML=`<div class="over"><table><thead><tr><th>#</th><th style="text-align:left">Estudiante (toque el nombre)</th><th>Prom. Anual</th><th>Puesto</th></tr></thead><tbody>
+    ${ests.map((e,i)=>{
+      const prom=calcPromedioEst(e.id,grado);
+      return `<tr style="cursor:pointer" onclick="_verConsolidadoCompletoEstudiante('${e.id}')" title="Toque para ver el consolidado completo de ${_escAttrNAC(e.n)}">
+        <td>${i+1}</td>
+        <td style="text-align:left;color:#003366;font-weight:600;text-decoration:underline">${e.n}</td>
+        <td style="font-weight:bold;color:${prom<3?'#c0392b':'#1a7531'}">${prom.toFixed(2)}</td>
+        <td>${puestoEst(e.id,grado)}°</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table></div>`;
+}
+
+// Dibuja en pantalla el consolidado (todas las asignaturas x todos los
+// periodos) de UN estudiante — se abre al tocar su nombre en la lista.
+function _verConsolidadoCompletoEstudiante(estId){
+  const grado=document.getElementById('infGradoCC')?.value||'';
+  const datos=_datosConsolidadoCompletoEstudiante(estId,grado);
+  const det=document.getElementById('consolidadoCompletoDetalleWrap');
+  if(!det) return;
+  if(!datos){det.innerHTML=`<div class="card">${_htmlEstadoVacio('📭','No hay asignaturas registradas (asignación académica) en este grado.')}</div>`;return;}
+  const perHeads=Array.from({length:datos.numPer},(_,i)=>`<th>P${i+1}</th>`).join('');
+  const filas=datos.filasPorArea.map(fa=>fa.asignaturas.map((a,ii)=>{
+    const celdas=a.porPeriodo.map(n=>`<td style="color:${n<3?'#c0392b':'#333'}">${n?n.toFixed(1):'—'}</td>`).join('');
+    return `<tr>${ii===0?`<td rowspan="${fa.asignaturas.length}" style="text-align:left;font-weight:600;background:#f4f8fc;vertical-align:top">${fa.area}</td>`:''}
+      <td style="text-align:left">${a.mat.m}</td><td style="font-size:0.72rem;text-align:left">${a.mat.dn}</td>
+      ${celdas}<td style="font-weight:bold;color:${a.definitiva&&a.definitiva<3?'#c0392b':'#1a7531'}">${a.definitiva?a.definitiva.toFixed(2):'—'}</td></tr>`;
+  }).join('')).join('');
+  const promHeads=datos.promPorPeriodo.map(p=>`<td style="font-weight:bold">${p.toFixed(2)}</td>`).join('');
+  det.innerHTML=`<div class="card" style="margin-top:14px">
+    <h4 class="card-title">📚 Consolidado Completo — ${datos.est.n}</h4>
+    <div class="flex-gap" style="margin-bottom:10px">
+      <span class="stat-box" style="background:#003366">📊 Prom. Anual: <b>${datos.promAnual.toFixed(2)}</b></span>
+      <span class="stat-box" style="background:#6c3483">🏅 Puesto: <b>${datos.puesto}°</b></span>
+      <span class="stat-box" style="background:${datos.areasPerd.length?'#c0392b':'#27ae60'}">❌ Áreas perd.: <b>${datos.areasPerd.length}</b></span>
+    </div>
+    ${datos.areasPerd.length?`<div class="warn-box" style="margin-bottom:10px">Áreas perdidas: ${datos.areasPerd.join(', ')}</div>`:''}
+    <div class="over"><table><thead><tr><th>Área</th><th style="text-align:left">Asignatura</th><th style="text-align:left">Docente</th>${perHeads}<th>DEFINITIVA</th></tr></thead>
+      <tbody>${filas}</tbody>
+      <tfoot><tr><td colspan="3" style="text-align:right;font-weight:bold">PROMEDIO DEL PERIODO →</td>${promHeads}<td style="font-weight:bold">${datos.promAnual.toFixed(2)}</td></tr></tfoot>
+    </table></div>
+    <div class="flex-gap" style="margin-top:12px">
+      <button class="btn btn-blue" onclick="pdfConsolidadoCompletoEstudiante('${estId}')">📥 PDF de ${datos.est.n.split(' ')[0]}</button>
+      <button class="btn" style="background:#16a085;color:#fff" onclick="xlsxConsolidadoCompletoEstudiante('${estId}')">📊 Excel de ${datos.est.n.split(' ')[0]}</button>
+    </div>
+  </div>`;
+  try{ det.scrollIntoView({behavior:'smooth',block:'nearest'}); }catch(e){}
+}
+
+// Dibuja UNA página del consolidado completo (todas las asignaturas x
+// todos los periodos) de un estudiante, sobre el "doc" (jsPDF) recibido —
+// compartida entre el PDF individual y el PDF masivo (una página por
+// estudiante) para que ambos se vean exactamente igual y nunca se
+// desincronicen entre sí.
+function _dibujarPaginaConsolidadoCompleto(doc,datos,grado){
+  doc.setFontSize(10);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
+  doc.text('CONSOLIDADO COMPLETO — TODAS LAS ASIGNATURAS Y PERIODOS',105,12,{align:'center',maxWidth:190});
+  doc.setFontSize(8);doc.setFont('helvetica','normal');doc.setTextColor(0);
+  doc.text(`${getROT3()} | Año: ${db.anio}`,105,18,{align:'center',maxWidth:190});
+  doc.setFontSize(9);doc.setFont('helvetica','bold');
+  doc.text(`ESTUDIANTE: ${datos.est.n}   GRADO: ${grado}   PUESTO: ${datos.puesto}°`,105,26,{align:'center',maxWidth:190});
+  const perHeads=Array.from({length:datos.numPer},(_,i)=>'P'+(i+1));
+  const head=[['ÁREA','ASIGNATURA','DOCENTE',...perHeads,'DEFINITIVA']];
+  const body=[];
+  datos.filasPorArea.forEach(fa=>{
+    fa.asignaturas.forEach((a,ii)=>{
+      body.push([ii===0?fa.area:'',a.mat.m,a.mat.dn,...a.porPeriodo.map(n=>n?n.toFixed(1):'—'),a.definitiva?a.definitiva.toFixed(2):'—']);
+    });
+  });
+  doc.autoTable({
+    head,body,startY:32,
+    styles:{fontSize:7.5,cellPadding:1.8,halign:'center'},
+    headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold'},
+    columnStyles:{0:{halign:'left',cellWidth:28},1:{halign:'left',cellWidth:42},2:{halign:'left',cellWidth:38,fontSize:6.8}},
+    didParseCell:d=>{if(d.section==='body'){const v=parseFloat(d.cell.raw);if(!isNaN(v)&&v<3) d.cell.styles.textColor=[192,57,43];}}
+  });
+  const fy=doc.lastAutoTable.finalY+6;
+  doc.setFontSize(8.5);doc.setFont('helvetica','bold');doc.setTextColor(0,51,102);
+  const pLabel=datos.promPorPeriodo.map((p,i)=>'P'+(i+1)+': '+p.toFixed(2)).join('   ');
+  doc.text('PROMEDIOS: '+pLabel+'   |   PROMEDIO ANUAL: '+datos.promAnual.toFixed(2),105,fy,{align:'center',maxWidth:190});
+  if(datos.areasPerd.length){
+    doc.setFontSize(8);doc.setTextColor(192,57,43);
+    doc.text('ÁREAS PERDIDAS: '+datos.areasPerd.join(', '),105,fy+6,{align:'center',maxWidth:190});
+    doc.setTextColor(0);
+  }
+}
+function pdfConsolidadoCompletoEstudiante(estId){
+  const grado=document.getElementById('infGradoCC')?.value||'';
+  const datos=_datosConsolidadoCompletoEstudiante(estId,grado);
+  if(!datos){customAlert('No hay datos para generar el PDF.');return;}
+  const doc=getPDF('p');
+  _dibujarPaginaConsolidadoCompleto(doc,datos,grado);
+  doc.save('ConsolidadoCompleto_'+datos.est.n.replace(/[^a-zA-Z0-9]/g,'_')+'_'+grado.replace(/[^a-zA-Z0-9]/g,'_')+'_'+db.anio+'.pdf');
+}
+// Un PDF con UNA PÁGINA POR ESTUDIANTE del grado — mismo diseño que el
+// individual (misma función _dibujarPaginaConsolidadoCompleto), en el
+// mismo espíritu que pdfBoletines()/descargarTodosBoletinesGrados() ya
+// usan para las descargas masivas de boletines.
+function pdfConsolidadoCompletoMasivo(){
+  const grado=document.getElementById('infGradoCC')?.value||'';
+  if(!grado){customAlert('Seleccione un grado.');return;}
+  const ests=db.ests.filter(x=>x.g===grado&&!x.deletedAt).sort((a,b)=>a.n.localeCompare(b.n));
+  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  const doc=getPDF('p');
+  let primero=true;
+  ests.forEach(e=>{
+    const datos=_datosConsolidadoCompletoEstudiante(e.id,grado);
+    if(!datos) return;
+    if(!primero) doc.addPage();
+    primero=false;
+    _dibujarPaginaConsolidadoCompleto(doc,datos,grado);
+  });
+  if(primero){customAlert('No hay asignaturas registradas (asignación académica) en este grado.');return;}
+  doc.save('ConsolidadoCompleto_'+grado.replace(/[^a-zA-Z0-9]/g,'_')+'_TodoElGrado_'+db.anio+'.pdf');
+}
+function xlsxConsolidadoCompletoEstudiante(estId){
+  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  const grado=document.getElementById('infGradoCC')?.value||'';
+  const datos=_datosConsolidadoCompletoEstudiante(estId,grado);
+  if(!datos){customAlert('No hay datos para exportar.');return;}
+  const inst=db.nombre||getROT3();
+  const encab=['ÁREA','ASIGNATURA','DOCENTE',...Array.from({length:datos.numPer},(_,i)=>'P'+(i+1)),'DEFINITIVA'];
+  const filas=[];
+  datos.filasPorArea.forEach(fa=>{
+    fa.asignaturas.forEach((a,ii)=>{
+      filas.push([ii===0?fa.area:'',a.mat.m,a.mat.dn,...a.porPeriodo.map(n=>parseFloat((n||0).toFixed(1))),parseFloat((a.definitiva||0).toFixed(2))]);
+    });
+  });
+  const filaProm=['','','PROMEDIO DEL PERIODO',...datos.promPorPeriodo.map(p=>parseFloat(p.toFixed(2))),parseFloat(datos.promAnual.toFixed(2))];
+  const ws=XLSX.utils.aoa_to_sheet([
+    [inst+' — Consolidado Completo — '+datos.est.n+' — Grado '+grado+' — '+db.anio],
+    ['Puesto en el grado: '+datos.puesto+'°  |  Promedio anual: '+datos.promAnual.toFixed(2)+(datos.areasPerd.length?'  |  Áreas perdidas: '+datos.areasPerd.join(', '):'')],
+    [],
+    encab,
+    ...filas,
+    [],
+    filaProm
+  ]);
+  ws['!cols']=[{wch:16},{wch:28},{wch:26},...Array.from({length:datos.numPer},()=>({wch:8})),{wch:12}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Consolidado');
+  _xlsxDescargarBlob(wb,'ConsolidadoCompleto_'+datos.est.n.replace(/[^a-zA-Z0-9]/g,'_')+'_'+grado.replace(/[^a-zA-Z0-9]/g,'_')+'_'+db.anio+'.xlsx');
+}
+// Excel masivo: TODOS los estudiantes del grado en una sola descarga, con
+// dos hojas — "Detalle por asignatura" (formato "tidy", una fila por
+// estudiante+asignatura, ideal para filtrar/ordenar en Excel) y "Resumen
+// por estudiante" (una fila por estudiante, con sus promedios por periodo,
+// el anual, el puesto y las áreas perdidas) — mismo patrón de 2 hojas que
+// ya usa xlsxConsolidado() (hoja del periodo + "Resumen Anual").
+function xlsxConsolidadoCompletoMasivo(){
+  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  const grado=document.getElementById('infGradoCC')?.value||'';
+  if(!grado){customAlert('Seleccione un grado.');return;}
+  const ests=db.ests.filter(x=>x.g===grado&&!x.deletedAt).sort((a,b)=>a.n.localeCompare(b.n));
+  if(!ests.length){customAlert('No hay estudiantes en este grado.');return;}
+  const inst=db.nombre||getROT3();
+  const numPer=_getNumPer();
+  const encabDet=['#','ESTUDIANTE','ÁREA','ASIGNATURA','DOCENTE',...Array.from({length:numPer},(_,i)=>'P'+(i+1)),'DEFINITIVA'];
+  const filasDet=[];
+  const filasRes=[];
+  ests.forEach((e,i)=>{
+    const datos=_datosConsolidadoCompletoEstudiante(e.id,grado);
+    if(!datos) return;
+    datos.filasPorArea.forEach(fa=>{
+      fa.asignaturas.forEach(a=>{
+        filasDet.push([i+1,e.n,fa.area,a.mat.m,a.mat.dn,...a.porPeriodo.map(n=>parseFloat((n||0).toFixed(1))),parseFloat((a.definitiva||0).toFixed(2))]);
+      });
+    });
+    filasRes.push([i+1,e.n,...datos.promPorPeriodo.map(p=>parseFloat(p.toFixed(2))),parseFloat(datos.promAnual.toFixed(2)),datos.puesto+'°',datos.areasPerd.length,datos.areasPerd.join(', ')]);
+  });
+  if(!filasDet.length){customAlert('No hay asignaturas registradas (asignación académica) en este grado.');return;}
+  const wb=XLSX.utils.book_new();
+  const wsDet=XLSX.utils.aoa_to_sheet([
+    [inst+' — Consolidado Completo — Grado '+grado+' — Todas las asignaturas y periodos — '+db.anio],
+    ['Generado: '+new Date().toLocaleDateString('es-CO')+' | Total estudiantes: '+ests.length],
+    [],
+    encabDet,
+    ...filasDet
+  ]);
+  wsDet['!cols']=[{wch:4},{wch:32},{wch:16},{wch:26},{wch:24},...Array.from({length:numPer},()=>({wch:8})),{wch:12}];
+  XLSX.utils.book_append_sheet(wb,wsDet,'Detalle por asignatura');
+  const encabRes=['#','ESTUDIANTE',...Array.from({length:numPer},(_,i)=>'P'+(i+1)),'PROM. ANUAL','PUESTO','ÁREAS PERD.','CUÁLES'];
+  const wsRes=XLSX.utils.aoa_to_sheet([
+    [inst+' — Resumen por Estudiante — Grado '+grado+' — '+db.anio],
+    [],
+    encabRes,
+    ...filasRes
+  ]);
+  wsRes['!cols']=[{wch:4},{wch:32},...Array.from({length:numPer},()=>({wch:8})),{wch:10},{wch:8},{wch:10},{wch:30}];
+  XLSX.utils.book_append_sheet(wb,wsRes,'Resumen por estudiante');
+  _xlsxDescargarBlob(wb,'ConsolidadoCompleto_'+grado.replace(/[^a-zA-Z0-9]/g,'_')+'_TodoElGrado_'+db.anio+'.xlsx');
 }
 
 // ============================================================

@@ -1095,6 +1095,44 @@ La corrección de la Ronda 21 sigue siendo necesaria y correcta — sin ella, el
 
 Dado lo delicado del tema y que ya hubo un caso donde una corrección previa resultó incompleta, te recomiendo hacer una prueba de estrés similar a la que ya hiciste (calificar varias celdas seguidas, rápido, mientras se sincroniza) después de desplegar este ZIP, y avisarme de inmediato si ves CUALQUIER comportamiento raro, por pequeño que sea — con capturas de pantalla como las que ya me mandaste, que fueron justo lo que permitió encontrar esto. Seguiré auditando con la misma seriedad si aparece cualquier otra señal.
 
+## Ronda 23 — Interruptor de emergencia del Súper Admin para Auto-guardar + nuevo módulo "Consolidado Completo" (todas las asignaturas y todos los periodos, masivo e individual)
+
+Esta ronda tiene dos partes independientes, pedidas juntas: (1) una medida de contención para el problema de sincronización que sigue reportándose con Auto-guardar activo, y (2) una funcionalidad nueva en Consolidados.
+
+### Parte 1 — Interruptor del Súper Admin para desactivar Auto-guardar por institución
+
+Probaste de nuevo después de la Ronda 22 y reportaste que el problema sigue ocurriendo con Auto-guardar en ON (aunque "menos persistente y fuerte"), y que se corrige al desactivar Auto-guardar y usar el modo manual — aunque en ese modo también notaste el aviso "se actualizó la nota por otra persona" apareciendo de forma confusa cuando fuiste tú mismo quien guardó. Pediste una forma de apagar el Auto-guardar desde el Súper Admin, por completo, mientras se sigue investigando a fondo.
+
+**Qué se hizo:** un interruptor nuevo en el panel del Súper Admin, por institución, con el mismo patrón ya usado para "🔄 Sincronización automática" y "⬛ Pantalla en Blanco" (mismo tipo de botón, mismo lugar, misma filosofía de decisión 100% manual del Súper Admin). Al apagarlo para una institución:
+
+1. El botón "⚡/🕹 Auto-guardar" desaparece POR COMPLETO de Planilla y de Notas de Actividades — para docentes, directivos docentes y cualquier otro rol que use esos módulos. No queda ninguna opción visible para volver a activarlo; solo el Súper Admin puede hacerlo, desde su propio panel.
+2. Todos quedan forzados al modo manual "💾 GUARDAR CAMBIOS" — el mismo modo que ya existía, sin ningún cambio en su comportamiento.
+3. Aunque la institución ya tuviera guardada la preferencia de un docente en "Auto-guardar: ON" desde antes de apagar el interruptor, el resultado es SIEMPRE "OFF" mientras el Súper Admin lo mantenga así — no puede colarse por ninguna pantalla ni quedar a medias.
+4. El propio Súper Admin nunca se ve afectado por este interruptor en su propio panel (igual que con Sincronización y Pantalla en Blanco).
+5. Por defecto queda **HABILITADO** para todas las instituciones (no cambia el comportamiento de nadie hasta que tú, como Súper Admin, decidas apagarlo para una institución concreta).
+
+**Cómo activarlo:** entra al panel del Súper Admin → "Plataformas Registradas" → en la tarjeta de la institución, botón "⚡ Auto-guardar habilitado" (se pone en rojo "🚫 Auto-guardar desactivado" al apagarlo).
+
+**Importante — esto es una medida de contención, no la corrección final:** el problema de fondo (por qué el modo manual también muestra a veces ese aviso confuso de "otra persona" cuando fuiste tú mismo) sigue bajo investigación. Con este interruptor apagado, aunque el aviso llegara a aparecer, la nota ya guardada con "GUARDAR CAMBIOS" queda protegida de la misma forma en que siempre ha estado protegida el modo manual — el riesgo real que motivó tu reporte (Auto-guardar borrando notas) queda eliminado de raíz para esa institución mientras se investiga más.
+
+**Cómo se verificó:** prueba automatizada nueva (`test_ronda23_autoguardar.mjs`, 9 casos) que confirma, en particular, el caso central: aunque la preferencia guardada de un docente sea "Auto-guardar: ON", si el Súper Admin apagó el interruptor, el resultado siempre es "OFF" — sin excepción. `node --check` sin errores.
+
+### Parte 2 — Nuevo módulo "📚 Todas las Asignaturas" en Consolidados
+
+Pediste que cualquier docente pueda ver el consolidado de TODAS las asignaturas y TODOS los periodos de los estudiantes de sus propios grados, de dos formas: masiva (todo el grado) e individual (tocando el nombre del estudiante), con descarga en PDF y Excel en ambas modalidades.
+
+**Antes:** un docente normal solo veía el consolidado de SUS PROPIAS asignaturas, un periodo a la vez (pestaña "Consolidado"). Ver TODAS las asignaturas de un grado junto, aunque fuera de un solo periodo, estaba reservado al Admin ("Consolidado General") o al Director de Grupo ("Seguimiento Académico"). Ninguna vista mostraba TODOS los periodos juntos, ni existía una forma de entrar al detalle de un solo estudiante con solo tocar su nombre.
+
+**Qué se agregó:** una pestaña nueva, "📚 Todas las Asignaturas", visible para cualquier docente (y para Admin) dentro de Consolidados — sin necesidad de activar ningún módulo nuevo, ya que vive dentro del módulo "Consolidados" que ya existía. Está disponible para los grados de la propia asignación académica de cada docente (`gradosDelDocente`), igual que el resto de esa pantalla.
+
+1. **Modalidad individual:** se elige un grado y aparece la lista de sus estudiantes — se toca el nombre y se despliega, en pantalla, una tabla con TODAS las asignaturas (agrupadas por área) en filas y TODOS los periodos configurados en columnas (P1, P2, P3, P4 o los que tenga la institución), más la nota "DEFINITIVA" anual de cada asignatura, el promedio del estudiante por periodo, el promedio anual, el puesto en el grado y las áreas perdidas. Debajo aparecen los botones "📥 PDF" y "📊 Excel" para ESE estudiante.
+2. **Modalidad masiva:** dos botones ("📥 PDF Masivo" y "📊 Excel Masivo") generan, de una sola vez, el consolidado de TODOS los estudiantes del grado — el PDF con una página por estudiante (mismo diseño que la vista individual) y el Excel con dos hojas: "Detalle por asignatura" (una fila por estudiante+asignatura, para poder filtrar/ordenar libremente en Excel) y "Resumen por estudiante" (promedios por periodo, anual, puesto y áreas perdidas, una fila por estudiante).
+3. Los tres formatos (pantalla, PDF, Excel) se alimentan de la MISMA función (`_datosConsolidadoCompletoEstudiante`), que a su vez usa exactamente los mismos cálculos que ya usa el resto del sistema (`calcNotaDef`, `calcPromedioMat`, `calcPromedioEstPer`, `calcPromedioEst`, `getAreasPerdidas`, `puestoEst`) — no se creó ningún cálculo de notas nuevo ni paralelo, para no arriesgar ninguna inconsistencia con lo que ya se muestra en Planilla, Boletines o los demás Consolidados.
+
+**Cómo se verificó:** prueba automatizada nueva (`test_ronda23_consolidado.mjs`, 17 casos) que confirma que la nueva función agregadora coincide EXACTAMENTE, en cada número que muestra (nota por periodo, definitiva por asignatura, promedio por periodo, promedio anual, áreas perdidas, puesto), con las funciones de cálculo de notas que el sistema ya usaba antes de esta ronda — incluyendo el caso de una asignatura nunca calificada (no se inventa una nota ni se cuela como "perdida" indebidamente) y el de un grado sin asignación académica (no lanza ningún error). `node --check` sin errores.
+
+**Regresión completa de esta ronda:** se reejecutaron los 24 scripts de prueba del proyecto completo (todas las rondas anteriores incluidas): **0 fallos en total**.
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.
