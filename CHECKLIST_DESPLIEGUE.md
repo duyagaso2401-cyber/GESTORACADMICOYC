@@ -1201,6 +1201,46 @@ Se revisó `src/services/ecosystemAgent.js` a fondo, tal como pediste, y se conf
 - `src/lib/keep-alive.ts` — reescritura completa del horario (punto 2): ventana activa fija 2:00 p.m.–6:00 p.m. con pings cada 14 min, reposo total el resto del día.
 - **Sin cambios:** `src/services/ecosystemAgent.js` y `src/index.ts` — auditados y confirmados ya correctos (punto 3).
 
+## Ronda 25 — Sincronización de fondo atada al modo de guardado + fin del último parpadeo pendiente en Notas de Actividades
+
+Pediste dos correcciones puntuales sobre la lógica de sincronización y el comportamiento de la Planilla: (1) que la sincronización de fondo dependa del modo de guardado (si Auto-guardar está OFF/manual, apagar por completo el polling y no comparar contra el servidor ni avisar de "cambios de otras personas"; si está ON, que la sincronización sea silenciosa salvo un conflicto real de concurrencia); (2) eliminar cualquier re-renderizado/tambaleo del DOM al guardar, actualizando solo el indicador visual de la casilla afectada.
+
+Antes de tocar nada se auditó todo el código de sincronización y de guardado de Planilla/Notas de Actividades, siguiendo la misma disciplina de las rondas anteriores. El resultado: la mayor parte de lo pedido en el punto 2 YA estaba correctamente implementado desde antes — se preservó sin duplicar — y se encontró y corrigió un hueco real en cada punto.
+
+### Punto 1 — Sincronización de fondo atada al modo de guardado: GENUINO — implementado esta ronda
+
+**Qué pasaba antes:** la sincronización de fondo (`_syncAll()`, disparada cada 3 minutos por `_syncInterval`, al volver a la pestaña, al recuperar conexión, o por el canal en tiempo real) solo respetaba el interruptor institucional del Súper Admin ("Sincronización Automática" — Ronda 18). Ese interruptor es independiente del modo de guardado con el que el docente esté trabajando en ese instante: aunque el docente hubiera activado el modo manual (Auto-guardar OFF) precisamente para evitar cualquier interferencia mientras califica a mano, el sistema seguía, cada 3 minutos, pidiendo el estado de la institución al servidor y comparándolo (fusión de 3 vías) contra lo que hay en pantalla — exactamente el tipo de actividad de fondo que el modo manual busca evitar.
+
+**Qué se corrigió:** se agregó `_debeSincronizarEnSegundoPlano()`, que revisa el modo de guardado actual de la sesión (`_autoGuardar`), y se sumó a la misma compuerta central que ya existía dentro de `_syncAll()` para el interruptor institucional (siguiendo el mismo patrón de la Ronda 18: centralizar la revisión en el único punto de entrada, para que ningún punto de llamada — presente o futuro — pueda "olvidarse" de respetarla). Con esto:
+
+1. **Auto-guardar en OFF (modo manual):** ninguna sincronización de fondo se ejecuta — ni siquiera se hace la petición al servidor —, así que no hay ninguna comparación de celdas locales contra el servidor, ni posibilidad de que se dispare un aviso de "cambios de otra persona" mientras el docente califica a mano. Una sincronización **explícita** (el botón "☁️ Sincronizar ahora") sigue funcionando siempre, porque es una acción deliberada y puntual, no un proceso de fondo.
+2. **Auto-guardar en ON (modo automático):** la sincronización de fondo sigue funcionando con toda normalidad.
+3. Se agregó `_autoGuardarCargado` para distinguir "todavía no se sabe el modo de guardado de esta sesión" (antes de que el docente abra Planilla o Notas de Actividades por primera vez) de "ya se sabe que está en modo manual" — así una sesión que nunca visita esas pantallas (ej. un Admin que solo revisa el Tablero) sigue sincronizando exactamente igual que antes de esta ronda, sin verse afectada por este cambio.
+4. El interruptor institucional del Súper Admin (Ronda 18) y el guardado real de notas/asistencia (`saveDB`/`_pushDB`, que nunca depende de ningún interruptor de sincronización) quedan intactos, sin tocar.
+
+**Sobre el aviso de "cambios de otra persona":** se auditó a fondo el código de avisos y se confirmó que el único que existe hoy (`⚠️/🔄 Se combinaron cambios guardados por otra persona`) se dispara ÚNICAMENTE cuando el servidor responde con un conflicto real (HTTP 409: el guardado de este docente chocó con el de otro que guardó primero) — exactamente el caso que pediste conservar ("a menos que haya un conflicto real de concurrencia guardado por otro usuario"). El aviso de "Datos actualizados desde la nube" solo aparece cuando la persona sincroniza manualmente (`force=true`); las sincronizaciones de fondo ya eran silenciosas desde rondas anteriores. No se encontró ningún aviso que se disparara de forma indebida en sincronizaciones de fondo silenciosas — este punto ya estaba correctamente implementado y se dejó intacto.
+
+**Archivo modificado:** `gestor-academico/dist/modules/03-app-core.js` — nueva función `_debeSincronizarEnSegundoPlano()`, nueva variable `_autoGuardarCargado`, y la compuerta central de `_syncAll()` ampliada para revisarla.
+
+**Cómo se verificó:** prueba automatizada nueva (`test_ronda25_syncmanual.mjs`, 14 casos) que confirma, en particular: en modo manual, cero llamadas de red nuevas en la sincronización de fondo (incluso repitiendo el intento varias veces, simulando el polling periódico); una sincronización explícita (`force=true`) sigue funcionando en modo manual; al reactivar Auto-guardar, la sincronización de fondo se reanuda con normalidad; el interruptor institucional del Súper Admin sigue bloqueando el polling igual que antes, sin importar el modo de guardado (no se rompió la Ronda 18); y una sesión que nunca cargó el estado de Auto-guardar (nunca abrió Planilla) sincroniza exactamente igual que antes de esta ronda.
+
+### Punto 2 — Eliminación de re-renderizado/tambaleo en el DOM al guardar
+
+**Auditoría previa (tal como se pidió):** se revisó todo el camino de guardado de Planilla y de Notas de Actividades. La Planilla (`saveNota()` para el guardado automático de una nota, y `guardarPlanilla()` para el lote de "GUARDAR CAMBIOS") y el guardado de UNA sola nota de actividad (`_guardarNotaAct()`) ya usaban, desde rondas anteriores, un "motor de sincronización invisible" que actualiza únicamente la celda/fila afectada en el DOM (`_refrescarFilaPlanilla()` / `_refrescarCeldaNotaAct()`) sin llamar nunca a `renderApp()` — se confirmó que esto ya funciona correctamente y se dejó intacto, sin duplicar.
+
+**Qué se corrigió de verdad:** el botón "💾 GUARDAR CAMBIOS" de **Notas de Actividades en Clase** (`guardarNotasActividades()`, el guardado por LOTE de esa pantalla) era la única excepción — seguía llamando a `renderApp()` al confirmar el lote, reconstruyendo el menú, el encabezado y la tabla completa. Es el mismo tipo de "hueco" encontrado en la Ronda 18 (un camino que no heredó una convención ya existente en otro lugar del sistema): la nota individual y el lote de la Planilla ya estaban protegidos, pero el lote de Notas de Actividades se había quedado atrás. Ahora `guardarNotasActividades()` captura qué celdas (estudiante + columna) se van a confirmar antes de aplicarlas, y refresca EXACTAMENTE esas celdas con `_refrescarCeldaNotaAct()` — igual que el resto del módulo —, sin ninguna llamada a `renderApp()`.
+
+**Archivo modificado:** `gestor-academico/dist/modules/03-app-core.js`, función `guardarNotasActividades()`.
+
+**Cómo se verificó:** prueba automatizada nueva (`test_ronda25_nac_render.mjs`, 12 casos) con un contador simulado de llamadas a `renderApp()`, que confirma el caso central: al confirmar un lote de 3 notas de actividad (de 2 estudiantes, en 2 columnas distintas), **cero** llamadas a `renderApp()` y exactamente 3 refrescos granulares — uno por cada celda que realmente cambió —, además de que los valores y observaciones quedan correctamente guardados en la base de datos y el aviso final reporta la cantidad correcta.
+
+**Regresión completa de esta ronda:** se reejecutaron los 28 scripts de prueba del proyecto completo (todas las rondas anteriores incluidas, más los 2 nuevos de esta ronda): **0 fallos en total**. `node --check` sin errores.
+
+### Resumen de archivos modificados en esta ronda
+
+- `gestor-academico/dist/modules/03-app-core.js` — único archivo modificado: (1) `_debeSincronizarEnSegundoPlano()` nueva + compuerta de `_syncAll()` ampliada (sincronización de fondo atada al modo de guardado); (2) `guardarNotasActividades()` corregida para refrescar solo las celdas afectadas, sin `renderApp()`.
+- **Sin cambios:** el resto del sistema de guardado granular de Planilla (`_refrescarFilaPlanilla`, `saveNota`, `guardarPlanilla`) y de Notas de Actividades por nota individual (`_guardarNotaAct`, `_refrescarCeldaNotaAct`), y el aviso de conflicto real de concurrencia (`_resolverConflictoDB`) — auditados y confirmados ya correctos.
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.

@@ -1,0 +1,78 @@
+Hola Claude, necesito diseñar e implementar el MÓDULO INTEGRAL DE GESTIÓN DOCUMENTAL, CONTRATACIÓN Y PERMISOS PARA ENTIDADES TERRITORIALES CERTIFICADAS (ETC) junto con la GESTIÓN DE EDUCACIÓN SUPERIOR / UNIVERSIDADES dentro del Gestor Académico YC.
+
+IMPORTANTE (ARQUITECTURA BAJO DEMANDA / FEATURE FLAGS):
+Para no congestionar ni alterar la base de datos Neon PostgreSQL antes de tiempo, estos módulos adicionales (ETC y Universidades) NO deben crear sus tablas ni ejecutar scripts de migración automáticamente al iniciar la aplicación. Ambos deben estar controlados de forma independiente y manual mediante Feature Flags desde el panel de Superadmin.
+
+======================================================================
+1. ACTIVACIÓN DINÁMICA POR SUPERADMIN (FEATURE FLAGS & MIGRACIONES LAZY)
+======================================================================
+- CONTROL DE ACTIVACIÓN POR BANDERAS (FEATURE FLAGS):
+  * Módulo Entidades Territoriales: `ENABLE_ETC_CONTRACTING_MODULE` (por defecto `false`).
+  * Módulo Universidades / Educación Superior: `ENABLE_UNIVERSITIES_MODULE` (por defecto `false`).
+- PANEL DE CONTROL EN SUPERADMIN:
+  * Incluir en la interfaz del Superadmin dos botones/switches independientes:
+    1. "Activar Módulo de Entidades Territoriales (ETC)"
+    2. "Activar Módulo de Universidades / Educación Superior"
+- MIGRACIONES SQL BAJO DEMANDA:
+  * Al presionar por primera vez cualquiera de los botones, el backend ejecutará el script de migración SQL correspondiente en Neon PostgreSQL para crear las tablas de ese módulo en específico.
+  * Mientras un módulo permanezca desactivado (`false`), sus endpoints en la API retornarán estado 403 / "Módulo no activado", los menús del frontend permanecerán ocultos y no se ejecutará ninguna consulta o script SQL sobre Neon.
+
+======================================================================
+2. REUTILIZACIÓN Y EXTENSIÓN DEL MÓDULO DE PERMISOS EXISTENTE
+======================================================================
+- EXTENSIÓN DEL FORMULARIO ACTUAL:
+  * Reutiliza la lógica y la interfaz del formulario de permisos/ausentismos ya construido en la plataforma (adaptado a los estándares de la Gobernación de Bolívar).
+  * Robustécelo agregando el disparo asíncrono de notificaciones por correo electrónico (vía Zoho Mail / Nodemailer) y alertas web cuando el Rector evalúe la solicitud (Aprobado|Rechazado|Con Observaciones).
+- MOTOR DE FORMULARIO DINÁMICO POR ENTIDAD (CUSTOM FIELDS):
+  * Permite que cada Entidad Territorial (ETC) pueda definir o personalizar los tipos de permisos, campos adicionales o requisitos de soporte PDF mediante un esquema dinámico guardado en un campo JSONB (`custom_form_schema`).
+- ESCALADO A LA ENTIDAD (MANUAL / AUTOMÁTICO):
+  * Configuración institucional `auto_report_entidad` (BOOLEAN).
+  * Modo Manual: El permiso aprobado permanece en la institución salvo que el Rector o Administrador presione el botón "Reportar Novedad a la Entidad Territorial".
+  * Modo Automático: Se sincroniza inmediatamente con el expediente del docente en la ETC al ser aprobado.
+
+======================================================================
+3. PARAMETRIZACIÓN LEGAL Y MEMBRETES DINÁMICOS POR ENTIDAD (ETC)
+======================================================================
+- PERFIL LEGAL Y MEMBRETE AUTOMÁTICO:
+  * La tabla de la Entidad Territorial debe almacenar sus datos legales completos: Nombre Oficial, Tipo (Departamento|Distrito|Municipio_Certificado), NIT, Dirección, Teléfono, Correo Oficial, Logo/Escudo URL y Firma Digital Autorizada.
+  * Todos los documentos, constancias, reportes de nómina/ausentismo y correos emitidos adaptarán automáticamente este membrete e identidad visual.
+
+======================================================================
+4. ACCESO HÍBRIDO Y EDICIÓN/ELIMINACIÓN POR ROLES (CRUD COMPLETO)
+======================================================================
+- TRES FLUJOS DE ACCESO HÍBRIDO (CONTRATACIÓN Y PERMISOS):
+  * FLUJO A (Docente Activo CON Plataforma YC): Autenticación con su usuario y contraseña institucional.
+  * FLUJO B (Docente Activo o Asignado SIN Plataforma YC): Acceso mediante Link Único / Token Seguro o Cédula + Código OTP enviado a correo/teléfono.
+  * FLUJO C (Aspirante / Convocatoria Nueva): Registro Público. Si es aprobado y la escuela usa YC, se provisionan credenciales automáticas por Zoho Mail. Si no usa YC, se guarda en el expediente digital de la ETC.
+- POLÍTICA DE EDICIÓN Y ELIMINACIÓN POR ROLES:
+  * Docente/Aspirante: Puede editar datos, reemplazar PDFs mal cargados o eliminar solicitudes en estado 'Pendiente'.
+  * Rector/Directivo: Puede editar respuestas de permisos, solicitar correcciones o revertir aprobaciones.
+  * Admin ETC y Superadmin: Control total CRUD (editar, eliminar, inactivar cualquier registro) dejando rastro en logs de auditoría.
+
+======================================================================
+5. ESTRUCTURA DE BASE DE DATOS EN NEON POSTGRESQL (MIGRACIONES CONDICIONALES)
+======================================================================
+Genera las funciones y scripts SQL que se ejecutarán ÚNICAMENTE al presionar su respectivo botón de activación en Superadmin:
+
+A. TABLAS MÓDULO ETC (Al presionar "Activar Módulo ETC"):
+- `etc_entidades`: id, nombre_entidad, tipo_entidad (Departamento|Distrito|Municipio_Certificado), nit, direccion, telefono, email_contacto, logo_url, firma_representante_url, custom_form_schema (JSONB), activo.
+- `etc_contratos`: id, entidad_id, docente_cedula, nombre_completo, correo, telefono, municipio, institucion_destino, usa_plataforma_yc (BOOLEAN), estado_contrato (Pendiente|Aprobado|Rechazado|Con_Observaciones), token_acceso_unico, creado_por, actualizado_por.
+- `etc_documentos`: id, contrato_id, tipo_documento (Cedula|HojaDeVida|Rut|Titulos|AptitudMedica), url_documento_cloud, estado_revision, observaciones_admin.
+- `docente_permisos`: (Extender la tabla existente o migrar) id, docente_id, institucion_id, entidad_id, tipo_permiso, fecha_inicio, fecha_fin, motivo, datos_adicionales (JSONB), url_soporte_cloud, estado (Pendiente|Aprobado|Rechazado|Con_Observaciones), respuesta_rector, reportado_entidad (BOOLEAN), fecha_reporte_entidad.
+
+B. TABLAS MÓDULO UNIVERSIDADES (Al presionar "Activar Módulo Universidades"):
+- `universidad_entidades`: id, nombre_universidad, codigo_snies, nit, logo_url, activo.
+- `universidad_programas`: id, universidad_id, nombre_programa, nivel (Pregrado|Posgrado|Maestria), facultad.
+- `universidad_docentes_estudiantes`: id, persona_cedula, tipo_rol (Catedratico|Planta|Estudiante), programa_id, datos_adicionales (JSONB).
+
+======================================================================
+6. ENDPOINTS Y OPTIMIZACIÓN EN NODE.JS / EXPRESS
+======================================================================
+- Endpoints de activación:
+  * `POST /api/superadmin/activar-modulo-etc`: Ejecuta la migración de ETC y activa `ENABLE_ETC_CONTRACTING_MODULE`.
+  * `POST /api/superadmin/activar-modulo-universidades`: Ejecuta la migración de Universidades y activa `ENABLE_UNIVERSITIES_MODULE`.
+- Middleware de protección: `checkModuleEnabled('ETC_CONTRACTING')` y `checkModuleEnabled('UNIVERSITIES')`.
+- `POST /api/contratacion/acceso-link`: Validación de acceso por token o cédula.
+- `POST /api/permisos/solicitar` & `PUT /api/permisos/editar`: Reutiliza el controlador previo agregando el almacenamiento de campos dinámicos `JSONB`.
+- `POST /api/permisos/evaluar`: Respuesta del Rector + disparo asíncrono de correo vía Zoho Mail.
+- Low-Bandwidth / Optimización: Guardar únicamente URLs en PostgreSQL (archivos en AWS S3/Cloudinary) y aplicar compresión en Express para proteger las conexiones rurales.

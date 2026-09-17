@@ -4615,7 +4615,14 @@ async function _syncAll(force){
   // puntual, no un proceso de fondo. IMPORTANTE: esto NUNCA afecta el
   // GUARDADO de las notas/asistencia/etc. del propio docente (saveDB/
   // _pushDB) — eso jamás depende de este interruptor, ver más abajo.
-  if(!force&&!_sincronizacionAutoHabilitadaAhora()){
+  //
+  // Ronda 25 — misma filosofía: además del interruptor institucional, se
+  // revisa aquí mismo (el único punto de entrada de toda sincronización de
+  // fondo) si el modo de guardado actual de esta sesión es manual — ver
+  // _debeSincronizarEnSegundoPlano(). Igual que con el interruptor del
+  // Súper Admin, se centraliza en _syncAll() para que ningún punto de
+  // llamada (presente o futuro) pueda "olvidarse" de revisarlo.
+  if(!force&&(!_sincronizacionAutoHabilitadaAhora()||!_debeSincronizarEnSegundoPlano())){
     return;
   }
   _syncInProgress=true;
@@ -4867,6 +4874,33 @@ function _autoGuardarHabilitadoPlat(){
   const plat=_obtenerPlatActual();
   if(!plat) return true; // por defecto habilitado si aún no se sabe a qué institución pertenece
   return plat.autoGuardarHabilitado!==false;
+}
+
+// Ronda 25 — PUNTO 1: el comportamiento de la sincronización de fondo debe
+// depender del MODO DE GUARDADO con el que el docente/directivo esté
+// trabajando en Planilla o Notas de Actividades ahora mismo (_autoGuardar),
+// no solo del interruptor institucional de Sincronización Automática del
+// Súper Admin (_sincronizacionAutoHabilitadaAhora, que sigue existiendo tal
+// cual y no se toca):
+//   · Guardado MANUAL (Auto-guardar en OFF): se pidió desactivar POR
+//     COMPLETO el polling/comparación de fondo con el servidor mientras
+//     dure ese modo — ni siquiera la petición GET condicional debe salir,
+//     para que no exista ninguna posibilidad de comparar celdas locales
+//     contra el servidor ni de disparar un aviso de "cambios de otra
+//     persona" mientras se califica a mano.
+//   · Guardado AUTOMÁTICO (Auto-guardar en ON): la sincronización de fondo
+//     sigue funcionando con normalidad (y ya es silenciosa salvo un
+//     conflicto real de concurrencia — ver _resolverConflictoDB más abajo).
+// _autoGuardarCargado distingue "todavía no sabemos el modo de guardado de
+// esta sesión" (antes de que el docente abra por primera vez Planilla/NAC:
+// _autoGuardar sigue en su valor inicial `false`, que NO debe interpretarse
+// como "modo manual activo") de "ya sabemos que está en modo manual" — así
+// una sesión de Admin/Rector que nunca visita Planilla (ej. solo revisa el
+// Tablero) sigue sincronizando en segundo plano exactamente igual que
+// antes de esta ronda.
+function _debeSincronizarEnSegundoPlano(){
+  if(typeof _autoGuardarCargado!=='undefined'&&_autoGuardarCargado&&!_autoGuardar) return false;
+  return true;
 }
 
 // Muestra u oculta el aviso fijo en la parte superior de la pantalla que
@@ -11370,12 +11404,20 @@ function cerrarPopupNota(){
 let _notasPendientes = {};
 // Auto-guardar: cuando está activo, las notas se guardan de inmediato sin pasar por pendientes.
 let _autoGuardar = false;
+// Ronda 25: distingue "todavía no se sabe el modo de guardado de esta
+// sesión" (arranque de la app, antes de abrir Planilla/NAC por primera
+// vez) de "ya se sabe y es modo manual" — ver _debeSincronizarEnSegundoPlano().
+// Sin esto, el valor inicial de _autoGuardar (false) sería indistinguible
+// de un "Auto-guardar: OFF" explícito, y apagaría de más la sincronización
+// de fondo para sesiones (ej. Admin en el Tablero) que nunca llegan a abrir
+// Planilla en absoluto.
+let _autoGuardarCargado = false;
 // Ronda 23: aunque la institución tenga guardada la preferencia de Auto-
 // guardar en "ON" (db.config.autoGuardar), si el Súper Admin desactivó la
 // CAPACIDAD de usarlo para esta institución (_autoGuardarHabilitadoPlat),
 // el resultado siempre es "OFF" — sin excepción y sin depender de qué
 // pantalla se abra primero.
-function _cargarAutoGuardar(){ _autoGuardar=_autoGuardarHabilitadoPlat()&&!!(db.config&&db.config.autoGuardar); }
+function _cargarAutoGuardar(){ _autoGuardar=_autoGuardarHabilitadoPlat()&&!!(db.config&&db.config.autoGuardar); _autoGuardarCargado=true; }
 function _toggleAutoGuardar(){
   if(!_autoGuardarHabilitadoPlat()){
     // Defensa en profundidad: con el interruptor apagado por el Súper
@@ -11417,9 +11459,21 @@ function _toggleAutoGuardar(){
 function guardarNotasActividades(){
   const n=Object.keys(_notasActPendientes).length;
   if(!n){_toastPlan('No hay notas de actividad pendientes por guardar.','#7f8c8d');return;}
+  // Ronda 25 — PUNTO 2: esta pantalla seguía llamando a renderApp() al
+  // confirmar el lote con "GUARDAR CAMBIOS", reconstruyendo el menú, el
+  // encabezado y la tabla completa (mismo parpadeo/salto de pantalla que ya
+  // se había corregido en guardarPlanilla() — ver _refrescarFilaPlanilla —
+  // y en el guardado de UNA sola nota de este mismo módulo — ver
+  // _guardarNotaAct/_refrescarCeldaNotaAct más abajo). Al capturar qué
+  // celdas (estudiante+columna) se van a confirmar ANTES de aplicarlas
+  // (_aplicarNotasActPendientesEnDB() vacía _notasActPendientes de
+  // inmediato), se puede refrescar EXACTAMENTE lo que cambió — el mismo
+  // principio que ya usa el resto de este módulo — sin tocar el resto del
+  // DOM.
+  const celdasAfectadas=Object.values(_notasActPendientes).map(function(p){return {estId:p.estId,colId:p.colId};});
   _aplicarNotasActPendientesEnDB();
   _actualizarIndicadorPendientesNAC();
-  renderApp();
+  celdasAfectadas.forEach(function(c){ _refrescarCeldaNotaAct(c.estId,c.colId); });
   _toastPlan('✅ '+n+' nota(s) de actividad guardada(s).','#27ae60');
 }
 
