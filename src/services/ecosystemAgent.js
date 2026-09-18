@@ -58,6 +58,7 @@ import { eq, and, gt, ne, desc, sql as sqlOp } from 'drizzle-orm';
 import { db, kvStore, agentAuditLogs, notifications } from '../db/index.js';
 import { broadcastChange, contarClientesSse } from '../lib/sync-bus.js';
 import { invalidarDbCache } from '../lib/db-cache.js';
+import { checkAiAuditorEnabled, checkAiNeonEnabled } from '../lib/feature-flags.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // 1) CONFIGURACIÓN Y CONEXIÓN A GEMINI (con degradación elegante)
@@ -573,7 +574,18 @@ export async function runFullAudit({ trigger } = {}) {
     const accionesInstitucion = [];
     let usoGenAI = false;
 
-    if (genAI) {
+    // Ronda 34 — Switch "Agente IA - Consultas Base de Datos Neon"
+    // (ENABLE_AI_NEON_QUERIES): si está apagado, se bloquea ESPECÍFICAMENTE
+    // la vía de Function Calling de Gemini (la IA decidiendo/ejecutando
+    // acciones sobre Neon), no la auditoría entera — el motor determinista
+    // de abajo (reglas fijas, sin razonamiento generativo) sigue
+    // reparando exactamente igual, porque esas reparaciones no las decide
+    // ninguna IA. Se consulta el flag EN CADA institución procesada (no
+    // una vez al iniciar runFullAudit), consistente con el resto de flags
+    // de esta ronda.
+    const neonViaIaHabilitado = await checkAiNeonEnabled();
+
+    if (genAI && neonViaIaHabilitado) {
       // ── CAMINO CON GEMINI (Function Calling real) ────────────────────
       try {
         const idsValidosTecnicos = new Set(hallazgosTecnicos.map((h) => h.targetId));
@@ -812,6 +824,17 @@ function _esMomentoDeAuditoriaSemanal() {
 
 export function iniciarAuditoriaProgramada() {
   setInterval(async () => {
+    // Ronda 34 — Switch "Agente IA - Auditoría Automática del Ecosistema"
+    // (ENABLE_AI_ECOSYSTEM_AUDITOR): se consulta EN CADA tick del
+    // temporizador (no solo al arrancar el servidor), así que apagarlo
+    // desde el panel del Súper Admin detiene la auditoría semanal
+    // programada de inmediato (máximo el retraso de la caché de 8s de
+    // gestorDB) sin reiniciar el proceso en Render. El disparo MANUAL
+    // (POST /api/agent/run-full-audit, botón "Disparar Auditoría Ahora"
+    // del panel) NO se ve afectado por este flag a propósito: el pedido
+    // es desactivar específicamente "cron jobs, tareas programadas o
+    // eventos en segundo plano", no una acción explícita del Súper Admin.
+    if (!(await checkAiAuditorEnabled())) return;
     if (!_esMomentoDeAuditoriaSemanal()) return;
     const hoy = new Date().toDateString();
     if (_ultimaEjecucionCronDia === hoy) return;

@@ -912,6 +912,31 @@ export const etcOtpCodigos = pgTable('etc_otp_codigos', {
   index('etc_otp_cedula_idx').on(t.cedula),
 ]);
 
+// Ronda 33 — LOTE 5: rastro de auditoría del módulo ETC. La convención que
+// YA usaba este módulo (creadoPor/actualizadoPor + createdAt/updatedAt en
+// cada tabla) queda intacta y sin tocar — esta tabla nueva es un rastro
+// ADICIONAL, centralizado y cronológico de acciones sensibles (login del
+// Flujo A, evaluación de expedientes/permisos, revisión de documentos,
+// inactivación de entidades/instituciones), tal como pide el punto 5 de la
+// especificación ("CRUD... dejando rastro en logs de auditoría") para los
+// 4 roles del módulo (Docente/Aspirante, Rector/Directivo, Admin ETC,
+// Superadmin). Nunca se borra ni se edita una fila ya escrita — es un log
+// de solo-inserción (append-only).
+export const etcAuditLog = pgTable('etc_audit_log', {
+  id:            serial('id').primaryKey(),
+  entidadId:     integer('entidad_id'),
+  actor:         text('actor').notNull().default(''), // cédula/usuario de quien ejecuta la acción
+  rol:           text('rol').notNull().default(''), // 'Docente' | 'Aspirante' | 'Rector' | 'Directivo' | 'Admin_ETC' | 'Superadmin'
+  accion:        text('accion').notNull(), // ej. 'login_flujo_a', 'evaluar_contrato', 'subir_documento', ...
+  objetivoTipo:  text('objetivo_tipo').notNull().default(''), // 'contrato' | 'permiso' | 'entidad' | 'institucion' | 'documento' | 'acceso'
+  objetivoId:    integer('objetivo_id'),
+  detalle:       jsonb('detalle').default({}),
+  createdAt:     timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('etc_audit_log_entidad_idx').on(t.entidadId),
+  index('etc_audit_log_actor_idx').on(t.actor),
+]);
+
 // ── B. MÓDULO EDUCACIÓN SUPERIOR / UNIVERSIDADES (catálogo independiente) ──────
 
 export const universidadEntidades = pgTable('universidad_entidades', {

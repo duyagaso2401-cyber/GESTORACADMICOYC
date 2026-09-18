@@ -178,3 +178,63 @@ export async function establecerFlagSimpleEnGestorDB(clave: string, valor: boole
     .onConflictDoUpdate({ target: kvStore.key, set: { value: gestorDB, updatedAt: nowTs } });
   invalidarCacheGestorDB();
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 34 — Control granular de activación/procesos de fondo del Agente IA
+// (Adán + Auditor del Ecosistema) y del Keep-Alive de Render. Mismo mecanismo
+// EXACTO de "flags simples" ya usado para ENABLE_SMS_NOTIFICATIONS (kill-
+// switch de entorno + gestorDB.featureFlags), solo que estos 3 flags nacen
+// EN "true" (habilitados) en vez de "false" — son procesos que YA venían
+// funcionando desde antes de existir un interruptor, así que un despliegue
+// que actualiza a esta ronda no debe perder ninguna funcionalidad hasta que
+// el Súper Admin decida apagar algo explícitamente.
+// ════════════════════════════════════════════════════════════════════════════
+export const FLAG_AI_NEON_QUERIES = 'ENABLE_AI_NEON_QUERIES';
+export const FLAG_AI_ECOSYSTEM_AUDITOR = 'ENABLE_AI_ECOSYSTEM_AUDITOR';
+export const FLAG_RENDER_KEEPALIVE_PING = 'ENABLE_RENDER_KEEPALIVE_PING';
+
+// Variante de flagSimpleHabilitado() con el DEFAULT invertido: si la clave
+// nunca se guardó en gestorDB.featureFlags (instalación que aún no pasó por
+// el panel, o primer arranque tras esta ronda), se considera HABILITADA —
+// a diferencia de flagSimpleHabilitado()/moduloHabilitado() (que fallan
+// CERRADO porque gatean módulos con tablas que podrían no existir todavía),
+// aquí fallar cerrado por defecto apagaría de golpe el Agente IA y el
+// Keep-Alive de todas las instalaciones ya en producción el día que se
+// despliegue esta ronda — exactamente lo contrario de lo pedido ("por
+// defecto: true"). El kill-switch de variable de entorno sigue funcionando
+// igual (solo puede forzar a `false`, nunca a `true`).
+export async function flagSimpleHabilitadoPorDefecto(clave: string): Promise<boolean> {
+  const val = process.env[clave];
+  if (val === 'false' || val === '0') return false;
+  try {
+    const gestorDB = await obtenerGestorDBCacheado();
+    const flags = (gestorDB && gestorDB.featureFlags) || {};
+    if (Object.prototype.hasOwnProperty.call(flags, clave)) return flags[clave] === true;
+    return true; // nunca se guardó explícitamente -> default ON
+  } catch {
+    // A diferencia de flagSimpleHabilitado(): si no se puede confirmar el
+    // estado (ej. Neon momentáneamente inalcanzable), estos 3 procesos
+    // deben seguir funcionando con normalidad (default ON) en vez de
+    // detenerse por un problema transitorio de lectura de un flag —
+    // apagar el Keep-Alive o el Agente IA por un timeout de caché sería un
+    // efecto secundario peor que el problema que se quiere resolver.
+    return true;
+  }
+}
+
+// Los 3 middlewares/verificadores ligeros pedidos — nombre EXACTO tal como
+// se solicitó. Se consultan EN CADA request/tick (nunca solo una vez al
+// arrancar el servidor): como el estado real vive en gestorDB (con caché
+// compartida de 8s vía obtenerGestorDBCacheado(), no una lectura nueva a
+// Neon en cada llamada), apagar/encender desde el panel del Súper Admin
+// tarda como máximo esos 8 segundos en reflejarse — nunca requiere
+// reiniciar el proceso en Render.
+export async function checkAiNeonEnabled(): Promise<boolean> {
+  return flagSimpleHabilitadoPorDefecto(FLAG_AI_NEON_QUERIES);
+}
+export async function checkAiAuditorEnabled(): Promise<boolean> {
+  return flagSimpleHabilitadoPorDefecto(FLAG_AI_ECOSYSTEM_AUDITOR);
+}
+export async function checkKeepAliveEnabled(): Promise<boolean> {
+  return flagSimpleHabilitadoPorDefecto(FLAG_RENDER_KEEPALIVE_PING);
+}

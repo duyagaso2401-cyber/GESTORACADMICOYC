@@ -179,3 +179,33 @@ export function hashPasswordServidor(password: string): string {
   const hash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
   return 'pbkdf2$' + salt.toString('hex') + '$' + hash.toString('hex');
 }
+
+/**
+ * Ronda 33 (Lote 5, Flujo A) — contraparte de verificación de
+ * hashPasswordServidor(), extraída del mismo esquema PBKDF2 ya usado por
+ * _verificarPasswordSuperAdminServidor() en src/index.ts (que se deja
+ * intacta ahí, sin refactorizar, para no arriesgar el flujo del Súper
+ * Admin) y por _verificarPassword() en el navegador (03-app-core.js).
+ * Formato esperado: "pbkdf2$<saltHex>$<hashHex>" (100.000 iteraciones,
+ * SHA-256, salida de 256 bits). Si el valor guardado no tiene ese formato,
+ * es una contraseña heredada sin cifrar — se compara tal cual, igual que
+ * en el resto del sistema. Comparación en tiempo constante para evitar
+ * ataques de temporización. Nunca lanza: ante cualquier entrada inválida
+ * devuelve simplemente `false`.
+ */
+export function verificarPasswordServidor(passwordIngresada: string, valorGuardado: string | null | undefined): boolean {
+  try {
+    if (!valorGuardado) return false;
+    const esHash = typeof valorGuardado === 'string' && valorGuardado.indexOf('pbkdf2$') === 0 && valorGuardado.split('$').length === 3;
+    if (!esHash) return passwordIngresada === valorGuardado;
+    const partes = valorGuardado.split('$');
+    const salt = Buffer.from(partes[1], 'hex');
+    const derivado = crypto.pbkdf2Sync(passwordIngresada, salt, 100000, 32, 'sha256');
+    const bufDerivado = derivado;
+    const bufGuardado = Buffer.from(partes[2], 'hex');
+    if (bufDerivado.length !== bufGuardado.length || !bufDerivado.length) return false;
+    return crypto.timingSafeEqual(bufDerivado, bufGuardado);
+  } catch {
+    return false;
+  }
+}

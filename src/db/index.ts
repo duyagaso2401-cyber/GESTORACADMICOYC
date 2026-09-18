@@ -708,5 +708,37 @@ export async function ensureSchemaEducacionSuperior(): Promise<void> {
   console.log('✅ [Lote 1] Esquema del Módulo Universidades/Educación Superior creado/verificado en Neon.');
 }
 
+// Ronda 33 (Lote 5) — rastro de auditoría centralizado del módulo ETC.
+// Se deja en su PROPIA función de migración perezosa, DESPUÉS de
+// ensureSchemaEducacionSuperior() (no dentro de ensureSchemaETC()) a
+// propósito: test_ronda29_lote1_etc_universidades.mjs (frozen, no se toca
+// — ver checklist de esta ronda) verifica por inspección de código que el
+// bloque entre "ensureSchemaETC" y "ensureSchemaEducacionSuperior" contiene
+// EXACTAMENTE 6 "CREATE TABLE IF NOT EXISTS" (las tablas de los Lotes
+// 1/2) — agregar una 7ma tabla en ese rango habría roto esa aserción ya
+// congelada sin necesidad. Colocarla aquí, después de ambas funciones,
+// logra el mismo resultado funcional (la tabla igual se crea de forma
+// perezosa e idempotente, nunca en initDb()) sin tocar ningún test
+// existente. Se invoca junto a ensureSchemaETC() en el mismo endpoint de
+// activación del módulo (ver src/index.ts).
+export async function ensureSchemaEtcAuditoria(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS etc_audit_log (
+      id SERIAL PRIMARY KEY,
+      entidad_id INTEGER,
+      actor TEXT NOT NULL DEFAULT '',
+      rol TEXT NOT NULL DEFAULT '',
+      accion TEXT NOT NULL,
+      objetivo_tipo TEXT NOT NULL DEFAULT '',
+      objetivo_id INTEGER,
+      detalle JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS etc_audit_log_entidad_idx ON etc_audit_log(entidad_id);
+    CREATE INDEX IF NOT EXISTS etc_audit_log_actor_idx ON etc_audit_log(actor);
+  `);
+  console.log('✅ [Lote 5] Esquema de auditoría del Módulo ETC creado/verificado en Neon.');
+}
+
 // Exportar las tablas declaradas en el esquema
 export * from './schema.js';

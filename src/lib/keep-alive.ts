@@ -42,6 +42,14 @@
 // en src/index.ts.
 // ════════════════════════════════════════════════════════════════════════════
 
+// Ronda 34 — control granular: checkKeepAliveEnabled() consulta el flag
+// ENABLE_RENDER_KEEPALIVE_PING (default true) EN CADA tick, no solo al
+// arrancar — así el Súper Admin puede apagar el auto-ping desde su panel
+// (ej. en receso escolar prolongado) y el temporizador deja de hacer
+// peticiones salientes de inmediato (máximo el retraso de la caché de 8s
+// de gestorDB), sin reiniciar el proceso en Render.
+import { checkKeepAliveEnabled } from './feature-flags.js';
+
 const VENTANA_ACTIVA_INICIO_HORA = parseInt(process.env.KEEP_ALIVE_ACTIVA_INICIO_HORA || '14', 10); // 2:00 p.m.
 const VENTANA_ACTIVA_FIN_HORA    = parseInt(process.env.KEEP_ALIVE_ACTIVA_FIN_HORA    || '18', 10); // 6:00 p.m.
 const INTERVALO_ACTIVO_MS = (parseInt(process.env.KEEP_ALIVE_INTERVALO_ACTIVO_MIN || '14', 10)) * 60 * 1000; // cada 14 min dentro de la ventana activa
@@ -109,6 +117,11 @@ function _urlAutoPing(): string | null {
 }
 
 async function _tick(): Promise<void> {
+  // Ronda 34 — primer chequeo del tick: si el Súper Admin apagó el
+  // interruptor "Mantener Vivo Servidor Render", CERO pings sin excepción,
+  // sin importar la ventana horaria — consultado en CADA tick (no solo al
+  // arrancar), para que apagar/encender surta efecto sin reiniciar Render.
+  if (!(await checkKeepAliveEnabled())) return;
   // Ronda 24 — regla central pedida: fuera de la ventana activa, CERO pings,
   // sin excepción y sin ninguna otra condición (ni actividad reciente, ni
   // nada) que pueda reactivarlo — es una "ventana de reposo profundo" real.

@@ -16,15 +16,91 @@
 // ════════════════════════════════════════════════════════════════════════════
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { etcEntidades, etcInstituciones, etcContratos, etcOtpCodigos, docentePermisos, kvStore } from '../db/schema.js';
+import { etcEntidades, etcInstituciones, etcContratos, etcOtpCodigos, etcDocumentos, etcAuditLog, docentePermisos, kvStore } from '../db/schema.js';
 import { eq, desc, and } from 'drizzle-orm';
 import { checkModuleEnabled } from '../lib/feature-flags.js';
 import { verificarPertenenciaDocente, generarTokenAcceso, generarCodigoOtp } from '../lib/etc-verificacion.js';
-import { enviarCorreoGeneral, correoGeneralConfigurado } from '../lib/email-general.js';
-import { hashPasswordServidor } from '../lib/reset-tokens.js';
+import { hashPasswordServidor, verificarPasswordServidor } from '../lib/reset-tokens.js';
 import { enviarNotificacionMulticanal, smsNotificacionesHabilitadasGlobalmente } from '../lib/sms-provider.js';
+import { enviarPushADocente } from '../lib/push-provider.js';
+import { broadcastChange } from '../lib/sync-bus.js';
+import { uploadMemoria, subirBufferACloudinary } from '../lib/upload.js';
+import type { Request, Response, NextFunction } from 'express';
 
 const router = Router();
+
+// ════════════════════════════════════════════════════════════════════════════
+// LOTE 5 (Ronda 33) — RBAC ligero + rastro de auditoría centralizado.
+// ------------------------------------------------------------------------------
+// El sistema K-12 no tiene (todavía) sesión/autenticación de backend real
+// (ver notas de rondas anteriores) — el rol de quien llama se identifica
+// hoy con el mismo criterio que ya usan `creadoPor`/`actualizadoPor` en
+// TODO este router desde el Lote 1: el propio cliente declara quién es y
+// con qué rol actúa. `requiereRol()` formaliza ese criterio en un gate real
+// y explícito (en vez de dejarlo solo como una convención de nombres de
+// campo) para los endpoints más sensibles del módulo, leyendo el rol de
+// `body.rolActor` (o, en peticiones sin cuerpo como DELETE por querystring,
+// `query.rolActor`/el encabezado `x-rol-actor`) y respondiendo 403 si no es
+// uno de los roles permitidos. Migrar esto a sesión/JWT real de backend
+// queda fuera de alcance de esta ronda (requeriría un mecanismo de sesión
+// que hoy no existe en ningún endpoint de este proyecto), pero el gate ya
+// es real: una petición que declare un rol no autorizado es rechazada.
+// ════════════════════════════════════════════════════════════════════════════
+type RolEtc = 'Docente' | 'Aspirante' | 'Rector' | 'Directivo' | 'Admin_ETC' | 'Superadmin';
+
+function _rolDeLaPeticion(req: Request): string {
+  const b = (req.body && (req.body.rolActor || req.body.rol)) || '';
+  const q = (req.query && (req.query.rolActor as string)) || '';
+  const h = (req.headers && (req.headers['x-rol-actor'] as string)) || '';
+  return String(b || q || h || '').trim();
+}
+
+function _actorDeLaPeticion(req: Request): string {
+  const b = (req.body && (req.body.actorCedula || req.body.actorUsuario || req.body.creadoPor || req.body.actualizadoPor)) || '';
+  const h = (req.headers && (req.headers['x-actor'] as string)) || '';
+  return String(b || h || '').trim();
+}
+
+function requiereRol(rolesPermitidos: RolEtc[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const rol = _rolDeLaPeticion(req);
+    if (!rol || !rolesPermitidos.includes(rol as RolEtc)) {
+      return res.status(403).json({
+        ok: false,
+        error: `Esta acción requiere uno de estos roles: ${rolesPermitidos.join(', ')}.`,
+      });
+    }
+    return next();
+  };
+}
+
+// Log de auditoría append-only (etc_audit_log) — nunca lanza: un fallo al
+// registrar la auditoría (ej. la tabla aún no existe porque el módulo se
+// activó apenas en esta misma petición, o Neon está temporalmente fuera)
+// jamás debe tumbar ni revertir la acción real que se está auditando.
+async function registrarAuditoriaEtc(opts: {
+  entidadId?: number | null;
+  actor?: string;
+  rol?: string;
+  accion: string;
+  objetivoTipo?: string;
+  objetivoId?: number | null;
+  detalle?: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    await db.insert(etcAuditLog).values({
+      entidadId: opts.entidadId ?? null,
+      actor: String(opts.actor || ''),
+      rol: String(opts.rol || ''),
+      accion: opts.accion,
+      objetivoTipo: String(opts.objetivoTipo || ''),
+      objetivoId: opts.objetivoId ?? null,
+      detalle: opts.detalle && typeof opts.detalle === 'object' ? opts.detalle : {},
+    });
+  } catch (e) {
+    console.error('registrarAuditoriaEtc', e);
+  }
+}
 
 // Protección aplicada aquí mismo, como el PRIMER middleware de este router
 // — así ninguna ruta definida abajo (presente o futura) puede quedar sin
@@ -121,7 +197,9 @@ router.put('/entidades/:id', async (req, res) => {
 // auditoría". Se conserva el registro (createdAt/actualizadoPor) como
 // rastro; un DELETE físico real, si algún día hace falta, debería vivir en
 // un endpoint aparte solo para Superadmin, no aquí.
-router.delete('/entidades/:id', async (req, res) => {
+// Lote 5 — control total CRUD reservado a Admin ETC/Superadmin (punto 5),
+// con rastro de auditoría de quién inactivó qué entidad y cuándo.
+router.delete('/entidades/:id', requiereRol(['Admin_ETC', 'Superadmin']), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: 'id inválido' });
@@ -130,6 +208,10 @@ router.delete('/entidades/:id', async (req, res) => {
       .set({ activo: false, actualizadoPor, updatedAt: new Date() })
       .where(eq(etcEntidades.id, id)).returning();
     if (!actualizada) return res.status(404).json({ ok: false, error: 'Entidad no encontrada' });
+    await registrarAuditoriaEtc({
+      entidadId: id, actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req),
+      accion: 'inactivar_entidad', objetivoTipo: 'entidad', objetivoId: id,
+    });
     return res.json({ ok: true, entidad: actualizada });
   } catch (e) {
     console.error('DELETE /api/etc/entidades/:id', e);
@@ -205,12 +287,16 @@ router.put('/instituciones/:id', async (req, res) => {
   }
 });
 
-router.delete('/instituciones/:id', async (req, res) => {
+router.delete('/instituciones/:id', requiereRol(['Admin_ETC', 'Superadmin']), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: 'id inválido' });
     const [actualizada] = await db.update(etcInstituciones).set({ activa: false }).where(eq(etcInstituciones.id, id)).returning();
     if (!actualizada) return res.status(404).json({ ok: false, error: 'Institución no encontrada' });
+    await registrarAuditoriaEtc({
+      entidadId: actualizada.entidadId, actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req),
+      accion: 'inactivar_institucion', objetivoTipo: 'institucion', objetivoId: id,
+    });
     return res.json({ ok: true, institucion: actualizada });
   } catch (e) {
     console.error('DELETE /api/etc/instituciones/:id', e);
@@ -425,8 +511,12 @@ router.put('/contratos/:id', async (req, res) => {
 // (enviarCorreoGeneral/POST /api/inetis/send-email — nunca se crea un
 // canal nuevo). El envío de correo es best-effort: si el proveedor no está
 // configurado o falla, la aprobación NO se revierte (mismo criterio ya
-// usado en /api/inetis/auth/restablecer/solicitar).
-router.post('/contratos/:id/evaluar', async (req, res) => {
+// usado en /api/inetis/auth/restablecer/solicitar). Lote 5: reservado a
+// Rector/Directivo/Admin ETC/Superadmin, y — en PARALELO con el correo/SMS
+// multicanal — se dispara además una notificación PUSH flotante al
+// docente si tiene el navegador suscrito (enviarPushADocente(), nunca
+// bloqueante ni puede fallar la respuesta de este endpoint).
+router.post('/contratos/:id/evaluar', requiereRol(['Rector', 'Directivo', 'Admin_ETC', 'Superadmin']), async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: 'id inválido' });
@@ -444,6 +534,23 @@ router.post('/contratos/:id/evaluar', async (req, res) => {
       actualizadoPor: String(b.evaluadoPor || ''),
       updatedAt: new Date(),
     }).where(eq(etcContratos.id, id)).returning();
+
+    // Notificación push flotante (Ronda 33) — se dispara en PARALELO con el
+    // correo/SMS de abajo (nunca se espera secuencialmente antes), y queda
+    // envuelta en su propio .catch() como defensa adicional a las garantías
+    // ya internas de enviarPushADocente() (nunca lanza, jamás bloquea ni
+    // puede convertirse en un 500/501 de este endpoint). El mensaje TERMINA
+    // siempre con el texto exacto acordado, para que el docente sepa que el
+    // detalle formal está en su correo/la plataforma, nunca en el push
+        // mismo (los push tienen espacio limitado y no llevan adjuntos).
+    const mensajeEstadoPush = b.estadoContrato === 'Aprobado'
+      ? 'Su vinculación/solicitud fue aprobada.'
+      : (b.estadoContrato === 'Rechazado' ? 'Su solicitud fue rechazada.' : 'Su solicitud fue marcada con observaciones.');
+    enviarPushADocente(
+      contrato.docenteCedula,
+      'Gestor Académico YC',
+      `${mensajeEstadoPush} Por favor, revise su correo electrónico o ingrese a la plataforma para ver el documento formal.`,
+    ).catch(() => {});
 
     let credencialesAprovisionadas = false;
     let avisoNotificacion = 'No se envió ninguna notificación (proveedor de correo no configurado y SMS no disponible).';
@@ -481,6 +588,14 @@ router.post('/contratos/:id/evaluar', async (req, res) => {
             await db.insert(kvStore)
               .values({ key: institucion.skPlataformaYc, value: blob, updatedAt: new Date() })
               .onConflictDoUpdate({ target: kvStore.key, set: { value: blob, updatedAt: new Date() } });
+            // Lote 5 — sincronización en tiempo real (SSE/broadcastChange):
+            // avisa de inmediato a cualquier dispositivo con sesión abierta
+            // en ESA institución que su base de datos cambió, en vez de
+            // esperar a la próxima sincronización periódica normal (la
+            // limitación documentada desde el Lote 2 — ver checklist de
+            // esta ronda). Mismo mecanismo que ya usa el resto de
+            // src/index.ts, importado aquí desde src/lib/sync-bus.ts.
+            broadcastChange(institucion.skPlataformaYc);
             credencialesAprovisionadas = true;
             // Ajuste multicanal: antes esto solo enviaba correo; ahora pasa
             // por enviarNotificacionMulticanal(), que intenta SMS con las
@@ -518,10 +633,73 @@ router.post('/contratos/:id/evaluar', async (req, res) => {
       avisoNotificacion = notif.detalle;
     }
 
+    await registrarAuditoriaEtc({
+      entidadId: contrato.entidadId, actor: _actorDeLaPeticion(req) || String(b.evaluadoPor || ''), rol: _rolDeLaPeticion(req),
+      accion: 'evaluar_contrato', objetivoTipo: 'contrato', objetivoId: id,
+      detalle: { estadoContrato: b.estadoContrato, credencialesAprovisionadas, canalNotificacion },
+    });
+
     return res.json({ ok: true, contrato: actualizado, credencialesAprovisionadas, canalNotificacion, avisoNotificacion });
   } catch (e) {
     console.error('POST /api/etc/contratos/:id/evaluar', e);
     return res.status(500).json({ ok: false, error: 'Error interno al evaluar el expediente.' });
+  }
+});
+
+// ── Flujo A (Lote 5): docente activo CON plataforma YC — acceso con su
+// usuario y contraseña institucional de siempre ──────────────────────────────
+// Punto 5, Flujo A: "docente activo con plataforma YC → entra con su
+// usuario y contraseña institucional de siempre". Las rondas anteriores
+// (Lote 2) dejaban esto limitado a que la verificación automática
+// reconociera al docente por cédula; este endpoint completa el flujo
+// real: valida las credenciales reales del docente CONTRA el mismo blob
+// `kv_store.value.users` que usa el sistema K-12 (mismo hash PBKDF2,
+// verificado aquí con `verificarPasswordServidor()`, la contraparte de
+// `hashPasswordServidor()` ya usada por el aprovisionamiento del Lote 2)
+// y, si son válidas, deja abierto el acceso al portal ETC para ese
+// docente — sin inventar un sistema de sesión nuevo, ni tocar el login
+// del sistema K-12 (que sigue siendo 100% client-side vía POST
+// /api/inetis/db), solo verificando aquí lo mismo que el navegador ya
+// verifica allá. Nunca expone el hash de la contraseña en la respuesta.
+router.post('/contratos/acceso/login-institucional', async (req, res) => {
+  try {
+    const { sk, usuario, password } = req.body || {};
+    const skLimpio = String(sk || '').trim();
+    const usuarioLimpio = String(usuario || '').trim();
+    if (!skLimpio || !usuarioLimpio || !password) {
+      return res.status(400).json({ ok: false, error: 'sk, usuario y password son obligatorios.' });
+    }
+    const blobFilas = await db.select().from(kvStore).where(eq(kvStore.key, skLimpio));
+    const blob: any = blobFilas[0]?.value;
+    if (!blob || !Array.isArray(blob.users)) {
+      return res.status(404).json({ ok: false, error: 'No fue posible leer la institución indicada.' });
+    }
+    const usuarioEncontrado = blob.users.find((u: any) => u && String(u.u || '') === usuarioLimpio);
+    if (!usuarioEncontrado || !verificarPasswordServidor(String(password), usuarioEncontrado.p)) {
+      return res.status(401).json({ ok: false, error: 'Usuario o contraseña incorrectos.' });
+    }
+    // Solo docentes (y roles administrativos del propio colegio) pueden
+    // entrar al portal ETC por este flujo — un estudiante/acudiente con
+    // cuenta válida en el Gestor YC no tiene expediente de contratación.
+    const rolesPermitidosFlujoA = ['docente', 'rector', 'directivo', 'admin', 'gestor'];
+    if (!rolesPermitidosFlujoA.includes(String(usuarioEncontrado.r || '').toLowerCase())) {
+      return res.status(403).json({ ok: false, error: 'Este acceso es exclusivo para personal docente/directivo de la institución.' });
+    }
+    const perfil = {
+      u: String(usuarioEncontrado.u || ''),
+      n: String(usuarioEncontrado.n || ''),
+      r: String(usuarioEncontrado.r || ''),
+      cedula: String(usuarioEncontrado.cedula || ''),
+      correo: String(usuarioEncontrado.correo || usuarioEncontrado.email || ''),
+    };
+    await registrarAuditoriaEtc({
+      actor: perfil.u, rol: perfil.r, accion: 'login_flujo_a', objetivoTipo: 'acceso',
+      detalle: { sk: skLimpio },
+    });
+    return res.json({ ok: true, docente: perfil });
+  } catch (e) {
+    console.error('POST /api/etc/contratos/acceso/login-institucional', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al validar el acceso institucional.' });
   }
 });
 
@@ -541,15 +719,17 @@ router.get('/contratos/acceso/token/:token', async (req, res) => {
 });
 
 // ── Flujo B: acceso por Cédula + Código OTP ──────────────────────────────────
-// Ajuste post-Lote 2: el código siempre se envía por correo (el único canal
-// de comunicación que existe en toda la plataforma — no hay ningún proveedor
-// de SMS integrado en este proyecto). En vez de aceptar un parámetro "canal"
-// que solo podría fallar con teléfono, este endpoint queda 100% cerrado y
-// terminado tal como es: correo únicamente, sin anunciar una opción que no
-// existe. Si en el futuro se contrata un proveedor de SMS, agregar el canal
-// telefónico será una extensión aislada de este mismo endpoint (columna
-// "canal" de etc_otp_codigos ya queda lista para ese valor).
-
+// Ronda 33 (autorización EXPLÍCITA del usuario) — este endpoint estaba
+// "cerrado" como correo-only desde el ajuste post-Lote 2 (rondas 30/31/32),
+// precisamente porque en ese momento no existía ningún proveedor de SMS en
+// el proyecto. Eso cambió en la Ronda 32 con el motor multicanal
+// enviarNotificacionMulticanal() (sms-provider.ts) — así que este endpoint
+// se rediseña para usarlo igual que ya hace /contratos/:id/evaluar: intenta
+// SMS con las credenciales de la ETC (si el flag global está activo y la
+// entidad las configuró) y cae de inmediato y en silencio al correo si no
+// hay SMS disponible — MISMO invariante de siempre: nunca responde 501, ni
+// exige que el cliente elija/anuncie un canal. El canal REALMENTE usado
+// (no un valor fijo) es el que queda guardado en `etc_otp_codigos.canal`.
 router.post('/contratos/acceso/otp/solicitar', async (req, res) => {
   try {
     const { cedula } = req.body || {};
@@ -558,28 +738,28 @@ router.post('/contratos/acceso/otp/solicitar', async (req, res) => {
     const filas = await db.select().from(etcContratos).where(eq(etcContratos.docenteCedula, cedulaLimpia)).orderBy(desc(etcContratos.id));
     if (!filas.length) return res.status(404).json({ ok: false, error: 'No hay ningún expediente registrado con esa cédula.' });
     const contrato = filas[0];
-    if (!contrato.correo) return res.status(400).json({ ok: false, error: 'El expediente no tiene un correo registrado para enviar el código.' });
+    if (!contrato.correo && !contrato.telefono) {
+      return res.status(400).json({ ok: false, error: 'El expediente no tiene correo ni teléfono registrados para enviar el código.' });
+    }
     const codigo = generarCodigoOtp();
     const expiraEn = new Date(Date.now() + 10 * 60 * 1000);
+    const resultadoOtp = await enviarNotificacionMulticanal({
+      telefono: contrato.telefono,
+      correo: contrato.correo,
+      entidadId: contrato.entidadId,
+      asuntoCorreo: 'Código de acceso — Gestor Académico YC',
+      mensaje: `Hola ${contrato.nombreCompleto}, su código de acceso es: ${codigo}. Es válido por 10 minutos y solo puede usarse una vez.`,
+      htmlCorreo: `<p>Hola ${contrato.nombreCompleto},</p><p>Su código de acceso es: <b style="font-size:20px;letter-spacing:2px;">${codigo}</b></p><p>Es válido por 10 minutos y solo puede usarse una vez.</p>`,
+    });
     await db.insert(etcOtpCodigos).values({
       cedula: cedulaLimpia,
       codigo,
-      canal: 'correo',
-      destino: contrato.correo,
+      canal: resultadoOtp.canal,
+      destino: resultadoOtp.canal === 'sms' ? contrato.telefono : contrato.correo,
       contratoId: contrato.id,
       expiraEn,
     });
-    let avisoCorreo = 'No se envió correo (proveedor de correo no configurado) — revise el registro en la base de datos si es un entorno de pruebas.';
-    if (correoGeneralConfigurado) {
-      await enviarCorreoGeneral({
-        to: contrato.correo,
-        subject: 'Código de acceso — Gestor Académico YC',
-        text: `Hola ${contrato.nombreCompleto},\n\nSu código de acceso es: ${codigo}\n\nEs válido por 10 minutos y solo puede usarse una vez.`,
-        html: `<p>Hola ${contrato.nombreCompleto},</p><p>Su código de acceso es: <b style="font-size:20px;letter-spacing:2px;">${codigo}</b></p><p>Es válido por 10 minutos y solo puede usarse una vez.</p>`,
-      });
-      avisoCorreo = 'Código enviado por correo.';
-    }
-    return res.json({ ok: true, aviso: avisoCorreo, expiraEn });
+    return res.json({ ok: true, aviso: resultadoOtp.detalle, canal: resultadoOtp.canal, expiraEn });
   } catch (e) {
     console.error('POST /api/etc/contratos/acceso/otp/solicitar', e);
     return res.status(500).json({ ok: false, error: 'Error interno al generar el código de acceso.' });
@@ -700,10 +880,102 @@ router.post('/permisos', async (req, res) => {
       fechaReporteEntidad: new Date(),
     }).returning();
 
+    await registrarAuditoriaEtc({
+      entidadId: institucion.entidadId, actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req),
+      accion: 'escalar_permiso', objetivoTipo: 'permiso', objetivoId: creado.id,
+      detalle: { institucionId, tipoPermiso: creado.tipoPermiso, estado },
+    });
+
     return res.json({ ok: true, permiso: creado });
   } catch (e) {
     console.error('POST /api/etc/permisos', e);
     return res.status(500).json({ ok: false, error: 'Error interno al escalar el permiso a la entidad territorial.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// LOTE 5 (Ronda 33) — Documentos/soportes del expediente (etc_documentos):
+// carga REAL de archivos a Cloudinary, reutilizando exactamente el mismo
+// mecanismo (Multer en memoria + subirBufferACloudinary(), resourceType
+// 'raw' para PDFs) que ya usa el resto de la plataforma en
+// POST /api/inetis/upload — nunca se guarda el archivo en la base de datos,
+// solo la URL segura que devuelve Cloudinary (etc_documentos.urlDocumentoCloud).
+// ════════════════════════════════════════════════════════════════════════════
+
+router.get('/contratos/:id/documentos', async (req, res) => {
+  try {
+    const contratoId = Number(req.params.id);
+    if (!contratoId) return res.status(400).json({ ok: false, error: 'id inválido' });
+    const filas = await db.select().from(etcDocumentos).where(eq(etcDocumentos.contratoId, contratoId)).orderBy(desc(etcDocumentos.id));
+    return res.json({ ok: true, documentos: filas });
+  } catch (e) {
+    console.error('GET /api/etc/contratos/:id/documentos', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al listar los documentos del expediente.' });
+  }
+});
+
+// Subida real de un PDF/soporte — el propio Docente/Aspirante puede subir
+// sus documentos (cédula, hoja de vida, RUT, títulos, aptitud médica), sin
+// necesitar rol administrativo; solo la REVISIÓN (endpoint de abajo) queda
+// reservada al Rector/Admin ETC/Superadmin.
+router.post('/contratos/:id/documentos', uploadMemoria.single('archivo'), async (req, res) => {
+  try {
+    const contratoId = Number(req.params.id);
+    if (!contratoId) return res.status(400).json({ ok: false, error: 'id inválido' });
+    const contratoFilas = await db.select().from(etcContratos).where(eq(etcContratos.id, contratoId));
+    if (!contratoFilas.length) return res.status(404).json({ ok: false, error: 'Expediente no encontrado' });
+    const tiposValidos = ['Cedula', 'HojaDeVida', 'Rut', 'Titulos', 'AptitudMedica'];
+    const tipoDocumento = tiposValidos.includes(req.body?.tipoDocumento) ? req.body.tipoDocumento : '';
+    if (!tipoDocumento) return res.status(400).json({ ok: false, error: `tipoDocumento debe ser uno de: ${tiposValidos.join(', ')}.` });
+    const archivo = (req as unknown as { file?: { buffer: Buffer; mimetype: string } }).file;
+    if (!archivo) return res.status(400).json({ ok: false, error: 'No se recibió ningún archivo (campo "archivo" requerido).' });
+    const resultado = await subirBufferACloudinary(archivo.buffer, {
+      folder: `gestor-yc/etc-documentos/${contratoId}`,
+      resourceType: 'raw',
+    });
+    const [creado] = await db.insert(etcDocumentos).values({
+      contratoId,
+      tipoDocumento,
+      urlDocumentoCloud: resultado.url,
+      estadoRevision: 'Pendiente',
+    }).returning();
+    await registrarAuditoriaEtc({
+      entidadId: contratoFilas[0].entidadId, actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req),
+      accion: 'subir_documento', objetivoTipo: 'documento', objetivoId: creado.id,
+      detalle: { contratoId, tipoDocumento },
+    });
+    return res.json({ ok: true, documento: creado });
+  } catch (e) {
+    console.error('POST /api/etc/contratos/:id/documentos', e);
+    return res.status(500).json({ ok: false, error: 'No se pudo subir el documento. Verifique que Cloudinary esté configurado e intente de nuevo.' });
+  }
+});
+
+// Revisión del documento (Aprobado/Rechazado) — reservada al Rector/Admin
+// ETC/Superadmin, con rastro de auditoría de quién aprobó/rechazó qué.
+router.put('/documentos/:id/revisar', requiereRol(['Rector', 'Directivo', 'Admin_ETC', 'Superadmin']), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ ok: false, error: 'id inválido' });
+    const b = req.body || {};
+    const estadosValidos = ['Aprobado', 'Rechazado', 'Pendiente'];
+    if (!estadosValidos.includes(b.estadoRevision)) {
+      return res.status(400).json({ ok: false, error: 'estadoRevision debe ser Aprobado, Rechazado o Pendiente.' });
+    }
+    const [actualizado] = await db.update(etcDocumentos).set({
+      estadoRevision: b.estadoRevision,
+      observacionesAdmin: String(b.observacionesAdmin || ''),
+    }).where(eq(etcDocumentos.id, id)).returning();
+    if (!actualizado) return res.status(404).json({ ok: false, error: 'Documento no encontrado' });
+    await registrarAuditoriaEtc({
+      actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req),
+      accion: 'revisar_documento', objetivoTipo: 'documento', objetivoId: id,
+      detalle: { estadoRevision: b.estadoRevision },
+    });
+    return res.json({ ok: true, documento: actualizado });
+  } catch (e) {
+    console.error('PUT /api/etc/documentos/:id/revisar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al revisar el documento.' });
   }
 });
 

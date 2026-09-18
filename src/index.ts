@@ -13,14 +13,14 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEducacionSuperior } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs } from './db/index.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
 import etcRouter from './routes/etc.js';
 import educacionSuperiorRouter from './routes/educacion-superior.js';
 import contratacionRouter from './routes/contratacion.js';
-import { moduloHabilitado, activarFlagEnGestorDB, establecerFlagSimpleEnGestorDB } from './lib/feature-flags.js';
+import { moduloHabilitado, activarFlagEnGestorDB, establecerFlagSimpleEnGestorDB, FLAG_AI_NEON_QUERIES, FLAG_AI_ECOSYSTEM_AUDITOR, FLAG_RENDER_KEEPALIVE_PING, checkAiNeonEnabled, checkAiAuditorEnabled, checkKeepAliveEnabled } from './lib/feature-flags.js';
 import { FLAG_SMS_NOTIFICATIONS, smsNotificacionesHabilitadasGlobalmente } from './lib/sms-provider.js';
 import repositorioRouter from './routes/repositorio.js';
 import lmsRouter from './routes/lms.js';
@@ -32,7 +32,7 @@ import universityRouter, { exigirSesion as exigirSesionUniv, verificarInstitucio
 import universityLmsRouter from './university-lms/routes/university.routes.js';
 import { eq, desc, and, isNull, or } from 'drizzle-orm';
 import { GoogleGenAI } from '@google/genai';
-import webpush from 'web-push';
+import { enviarPushParaNotificacion, VAPID_PUBLIC_KEY, PUSH_HABILITADO } from './lib/push-provider.js';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
 import { leerDbCacheado, guardarDbCache, invalidarDbCache, leerBlobInstitucion } from './lib/db-cache.js';
@@ -206,54 +206,15 @@ function _tieneRescateValido(req: any): boolean {
 // VAPID_PRIVATE_KEY en el .env. Si no están configuradas, el envío
 // de push simplemente se omite (no rompe el resto de la app).
 // Generar un par nuevo con: npx web-push generate-vapid-keys
+//
+// Ronda 33: esta configuración VAPID y enviarPushParaNotificacion() se
+// EXTRAJERON a src/lib/push-provider.ts (mismo patrón ya usado con
+// sseClients/broadcastChange en src/lib/sync-bus.ts) para que
+// src/routes/etc.ts también pueda enviar push a un docente específico
+// (enviarPushADocente()) sin crear una dependencia circular con este
+// archivo. El comportamiento observable no cambió: misma librería
+// 'web-push', mismas variables de entorno, mismo "nunca lanza".
 // ============================================================
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:soporte@gestoracademicoyc.com';
-const PUSH_HABILITADO = !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
-if (PUSH_HABILITADO) {
-  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-} else {
-  console.warn('⚠️ VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY no configuradas: las notificaciones push están desactivadas.');
-}
-
-// Envía una notificación push a los dispositivos suscritos que correspondan
-// a la institución (y, si aplica, al grado) del evento que la origina.
-// Nunca lanza: un fallo aquí no debe afectar la respuesta HTTP normal.
-async function enviarPushParaNotificacion(sk: string, kind: string, message: string, meta: any) {
-  if (!PUSH_HABILITADO || !sk) return;
-  try {
-    let subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.sk, sk));
-    if (!subs.length) return;
-    if (meta && meta.estId) {
-      const estId = String(meta.estId);
-      subs = subs.filter(s => s.estId === estId);
-    } else if (meta && meta.grado) {
-      const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
-      const data: any = rows[0]?.value || {};
-      const estIdsDelGrado = new Set((data.ests || []).filter((e: any) => e.g === meta.grado).map((e: any) => String(e.id)));
-      subs = subs.filter(s => s.estId && estIdsDelGrado.has(s.estId));
-    }
-    if (!subs.length) return;
-    const payload = JSON.stringify({
-      title: 'Gestor Académico YC',
-      body: String(message || '').slice(0, 180),
-      kind,
-    });
-    await Promise.all(subs.map(async (s) => {
-      try {
-        await webpush.sendNotification(s.subscription as any, payload);
-      } catch (err: any) {
-        // Suscripción vencida o inválida (el navegador la revocó): se limpia.
-        if (err && (err.statusCode === 404 || err.statusCode === 410)) {
-          await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, s.id));
-        }
-      }
-    }));
-  } catch (e) {
-    console.error('enviarPushParaNotificacion', e);
-  }
-}
 
 // ============================================================
 // A01 · CONFIGURACIÓN EXPRESS, CORS Y MIDDLEWARE
@@ -464,6 +425,45 @@ function getGenAI(apiKeyParam?: string) {
     console.error('Error al inicializar GoogleGenAI:', err);
     return null;
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 34 — Switch "Agente IA - Consultas Base de Datos Neon"
+// (ENABLE_AI_NEON_QUERIES). Investigación previa a esta ronda (documentada
+// en el checklist): el Asistente Adán (endpoints de abajo) NO hace hoy
+// ninguna consulta SQL propia ni Function Calling en vivo contra Neon
+// dentro de la conversación — el "contexto" (numEstudiantes, grados,
+// asignaturas, escalas, etc.) llega YA CALCULADO desde el frontend (que a
+// su vez lo tomó de la base local ya sincronizada), no de una consulta que
+// el propio backend dispare al recibir la pregunta (ver el comentario ya
+// existente de la Ronda 12 en buildSystemPrompt(), un poco más abajo, que
+// lo confirma explícitamente). El único componente de este proyecto con
+// Function Calling real contra Neon es el Auditor del Ecosistema — ver
+// Switch B (ENABLE_AI_ECOSYSTEM_AUDITOR) en src/services/ecosystemAgent.js.
+//
+// Interpretación de ingeniería adoptada aquí (documentada con
+// transparencia): la vía práctica por la que Adán "consulta datos
+// institucionales" es precisamente ese "context" enriquecido con
+// información real de la institución — así que, con el flag apagado, se
+// bloquea la respuesta cuando la pregunta llega acompañada de ese contexto
+// institucional (numEstudiantes/numDocentes/grados/asignaturas con datos
+// reales, o el informe psicopedagógico, que por diseño SIEMPRE es un
+// reporte de datos), devolviendo el mensaje estático exacto pedido — pero
+// SIN apagar el agente por completo: una pregunta general que llegue sin
+// ese contexto de datos (ej. "modo Gestor" o sin institución activa) sigue
+// respondiendo con Gemini con total normalidad, tal como se autorizó
+// explícitamente ("usa tu criterio de ingeniería").
+const MENSAJE_PAUSA_CONSULTA_DB_IA = 'El servicio de consulta asistida a la base de datos se encuentra temporalmente pausado por mantenimiento.';
+
+function _requiereConsultaDeDatosInstitucionales(context: Record<string, unknown> | undefined | null): boolean {
+  const ctx = context || {};
+  if (ctx.gestorMode) return false; // modo Gestor Multi-Plataforma: no trae datos de UNA institución puntual
+  const numEstudiantes = Number(ctx.numEstudiantes) || 0;
+  const numDocentes = Number(ctx.numDocentes) || 0;
+  const grados = Array.isArray(ctx.grados) ? ctx.grados : [];
+  const asignaturas = Array.isArray(ctx.asignaturas) ? ctx.asignaturas : [];
+  const misAsignaturas = Array.isArray(ctx.misAsignaturas) ? ctx.misAsignaturas : [];
+  return numEstudiantes > 0 || numDocentes > 0 || grados.length > 0 || asignaturas.length > 0 || misAsignaturas.length > 0;
 }
 
 /**
@@ -896,6 +896,7 @@ app.post('/api/superadmin/activar-modulo-etc', async (req, res) => {
     const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
     if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
     await ensureSchemaETC();
+    await ensureSchemaEtcAuditoria(); // Ronda 33 (Lote 5) — rastro de auditoría, migración perezosa propia (ver src/db/index.ts)
     await activarFlagEnGestorDB('ETC_CONTRACTING');
     return res.json({ ok: true, modulo: 'ENABLE_ETC_CONTRACTING_MODULE' });
   } catch (e) {
@@ -926,20 +927,112 @@ app.post('/api/superadmin/activar-modulo-universidades', async (req, res) => {
 // gestorDB completo solo para leer 2 banderas.
 app.get('/api/superadmin/modulos-estado', async (_req, res) => {
   try {
-    const [etcHabilitado, universidadesHabilitado, smsHabilitado] = await Promise.all([
+    const [etcHabilitado, universidadesHabilitado, smsHabilitado, aiNeonHabilitado, aiAuditorHabilitado, keepAliveHabilitado] = await Promise.all([
       moduloHabilitado('ETC_CONTRACTING'),
       moduloHabilitado('UNIVERSITIES'),
       smsNotificacionesHabilitadasGlobalmente(),
+      checkAiNeonEnabled(),
+      checkAiAuditorEnabled(),
+      checkKeepAliveEnabled(),
     ]);
     return res.json({
       ok: true,
       ENABLE_ETC_CONTRACTING_MODULE: etcHabilitado,
       ENABLE_UNIVERSITIES_MODULE: universidadesHabilitado,
       ENABLE_SMS_NOTIFICATIONS: smsHabilitado,
+      ENABLE_AI_NEON_QUERIES: aiNeonHabilitado,
+      ENABLE_AI_ECOSYSTEM_AUDITOR: aiAuditorHabilitado,
+      ENABLE_RENDER_KEEPALIVE_PING: keepAliveHabilitado,
     });
   } catch (e) {
     console.error('GET /api/superadmin/modulos-estado', e);
     return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 34 — Control granular de activación/procesos de fondo del Agente IA
+// (Adán + Auditor del Ecosistema) y del Keep-Alive de Render. Los 3
+// interruptores nuevos (ENABLE_AI_NEON_QUERIES, ENABLE_AI_ECOSYSTEM_AUDITOR,
+// ENABLE_RENDER_KEEPALIVE_PING) siguen el MISMO estándar de seguridad que
+// activar-sms-notificaciones (credenciales reales de Súper Admin) y el
+// mismo mecanismo de persistencia (establecerFlagSimpleEnGestorDB) — la
+// única diferencia es que estos 3 nacen en "true" (ver
+// flagSimpleHabilitadoPorDefecto() en feature-flags.ts).
+//
+// Auditoría: cada cambio de estado de estos 3 switches se registra en
+// `agent_audit_logs` — la MISMA tabla que ya usa el Auditor del Ecosistema
+// para su propia bitácora (visible en GET /api/agent/logs, categoría
+// 'Tecnico') — no se creó ninguna tabla de auditoría nueva y exclusiva de
+// Superadmin: esta ya es genérica (category/issueDetected/actionTaken/
+// status/details en JSONB), y reutilizarla evita tener dos bitácoras
+// distintas que revisar en el mismo panel.
+// ════════════════════════════════════════════════════════════════════════════
+async function registrarAuditoriaSuperadmin(actor: string, flag: string, valor: boolean, detalleExtra?: Record<string, unknown>): Promise<void> {
+  try {
+    await db.insert(agentAuditLogs).values({
+      category: 'Tecnico',
+      issueDetected: `El Súper Admin cambió el interruptor "${flag}".`,
+      actionTaken: `Establecido a ${valor ? 'ACTIVADO' : 'DESACTIVADO'} por "${actor || '(sin identificar)'}".`,
+      status: 'Informativo',
+      details: { flag, valor, actor: actor || '', ...(detalleExtra || {}) },
+    });
+  } catch (e) {
+    // Nunca debe impedir que el cambio de flag surta efecto — un fallo al
+    // escribir la bitácora es, en el peor caso, una auditoría incompleta,
+    // nunca una razón para que el interruptor no se pueda cambiar.
+    console.error('registrarAuditoriaSuperadmin', e);
+  }
+}
+
+app.post('/api/superadmin/activar-ai-neon-queries', async (req, res) => {
+  try {
+    const { u, p, activar } = (req.body || {}) as { u?: string; p?: string; activar?: boolean };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await establecerFlagSimpleEnGestorDB(FLAG_AI_NEON_QUERIES, !!activar);
+    await registrarAuditoriaSuperadmin(String(u), FLAG_AI_NEON_QUERIES, !!activar);
+    return res.json({ ok: true, modulo: FLAG_AI_NEON_QUERIES, activo: !!activar });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-ai-neon-queries', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor de consultas del Agente IA a Neon.' });
+  }
+});
+
+app.post('/api/superadmin/activar-ai-ecosystem-auditor', async (req, res) => {
+  try {
+    const { u, p, activar } = (req.body || {}) as { u?: string; p?: string; activar?: boolean };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await establecerFlagSimpleEnGestorDB(FLAG_AI_ECOSYSTEM_AUDITOR, !!activar);
+    await registrarAuditoriaSuperadmin(String(u), FLAG_AI_ECOSYSTEM_AUDITOR, !!activar);
+    return res.json({ ok: true, modulo: FLAG_AI_ECOSYSTEM_AUDITOR, activo: !!activar });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-ai-ecosystem-auditor', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor del Auditor del Ecosistema.' });
+  }
+});
+
+app.post('/api/superadmin/activar-keepalive-ping', async (req, res) => {
+  try {
+    const { u, p, activar } = (req.body || {}) as { u?: string; p?: string; activar?: boolean };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await establecerFlagSimpleEnGestorDB(FLAG_RENDER_KEEPALIVE_PING, !!activar);
+    await registrarAuditoriaSuperadmin(String(u), FLAG_RENDER_KEEPALIVE_PING, !!activar);
+    return res.json({ ok: true, modulo: FLAG_RENDER_KEEPALIVE_PING, activo: !!activar });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-keepalive-ping', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor de Keep-Alive de Render.' });
   }
 });
 
@@ -2330,6 +2423,23 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       imagePart?: { mimeType: string; data: string };
     };
 
+    // Ronda 34 — checkAiNeonEnabled(): si el Súper Admin apagó "Agente IA -
+    // Consultas Base de Datos Neon" Y esta pregunta llega con contexto de
+    // datos institucionales reales, se responde el mensaje estático exacto
+    // pedido (200, conversacional — nunca un 403/501) SIN llamar a Gemini.
+    // Una pregunta sin ese contexto de datos sigue funcionando con
+    // normalidad aunque el flag esté apagado (ver criterio documentado
+    // arriba de _requiereConsultaDeDatosInstitucionales()).
+    if (_requiereConsultaDeDatosInstitucionales(context) && !(await checkAiNeonEnabled())) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.write(`data: ${JSON.stringify({ content: MENSAJE_PAUSA_CONSULTA_DB_IA })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -2474,6 +2584,12 @@ app.post('/api/inetis/ai/general', async (req, res) => {
       prompt?: string;
     };
 
+    // Ronda 34 — mismo criterio que POST /api/inetis/ai/chat (ver comentario
+    // extenso ahí): 200 con el mensaje estático exacto, no un error.
+    if (_requiereConsultaDeDatosInstitucionales(context) && !(await checkAiNeonEnabled())) {
+      return res.json({ ok: true, content: MENSAJE_PAUSA_CONSULTA_DB_IA });
+    }
+
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
       return res.json({
@@ -2548,6 +2664,15 @@ app.post('/api/inetis/ai/psicopedagogico', async (req, res) => {
       datosObservador?: any[];
       context?: Record<string, unknown>;
     };
+
+    // Ronda 34 — este informe SIEMPRE es una consulta de datos por diseño
+    // (inasistencias/observador de una institución real), así que con el
+    // flag apagado se responde el mensaje estático exacto sin condición
+    // adicional (a diferencia de /ai/chat y /ai/general, que solo lo
+    // bloquean cuando el contexto trae datos institucionales).
+    if (!(await checkAiNeonEnabled())) {
+      return res.json({ ok: true, report: MENSAJE_PAUSA_CONSULTA_DB_IA });
+    }
 
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
