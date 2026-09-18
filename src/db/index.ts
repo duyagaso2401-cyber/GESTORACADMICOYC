@@ -537,5 +537,176 @@ async function initDb() {
 
 initDb();
 
+// ════════════════════════════════════════════════════════════════════════════
+// LOTE 1 — MIGRACIONES BAJO DEMANDA (Feature Flags): a diferencia de
+// initDb() de arriba (que crea TODAS las tablas del resto del sistema en
+// CADA arranque del servidor), estas dos funciones NO se llaman aquí ni en
+// ningún otro punto de arranque — se ejecutan ÚNICAMENTE cuando el Súper
+// Admin presiona por primera vez el botón de activación correspondiente
+// (ver POST /api/superadmin/activar-modulo-etc / activar-modulo-
+// universidades en src/index.ts, y src/lib/feature-flags.ts). Mientras el
+// módulo permanezca desactivado, estas funciones nunca se invocan y, por
+// lo tanto, nunca se ejecuta ni una sola sentencia SQL sobre Neon para él
+// — tal como se pidió explícitamente ("no se ejecutará ninguna consulta o
+// script SQL sobre Neon" mientras el flag esté en false).
+//
+// Ambas son 100% idempotentes (CREATE TABLE IF NOT EXISTS) — se pueden
+// volver a llamar sin riesgo si el Súper Admin desactiva y reactiva el
+// módulo más adelante; nunca se pierde ni se borra nada.
+// ════════════════════════════════════════════════════════════════════════════
+export async function ensureSchemaETC(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS etc_entidades (
+      id SERIAL PRIMARY KEY,
+      nombre_entidad TEXT NOT NULL,
+      tipo_entidad TEXT NOT NULL DEFAULT 'Municipio_Certificado',
+      nit TEXT NOT NULL DEFAULT '',
+      direccion TEXT NOT NULL DEFAULT '',
+      telefono TEXT NOT NULL DEFAULT '',
+      email_contacto TEXT NOT NULL DEFAULT '',
+      logo_url TEXT NOT NULL DEFAULT '',
+      firma_representante_url TEXT NOT NULL DEFAULT '',
+      custom_form_schema JSONB DEFAULT '{}',
+      sms_provider_config JSONB DEFAULT '{}',
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      creado_por TEXT DEFAULT '',
+      actualizado_por TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Arquitectura de notificaciones multicanal: instalaciones que ya
+    -- activaron el Módulo ETC antes de este ajuste no tienen esta columna
+    -- — se agrega de forma aditiva/idempotente, en '{}' (= sin SMS
+    -- configurado = siempre correo) para todas las entidades existentes.
+    ALTER TABLE etc_entidades ADD COLUMN IF NOT EXISTS sms_provider_config JSONB DEFAULT '{}';
+    CREATE INDEX IF NOT EXISTS etc_entidades_activo_idx ON etc_entidades(activo);
+
+    CREATE TABLE IF NOT EXISTS etc_instituciones (
+      id SERIAL PRIMARY KEY,
+      entidad_id INTEGER NOT NULL REFERENCES etc_entidades(id) ON DELETE CASCADE,
+      codigo_dane TEXT NOT NULL,
+      nombre_institucion TEXT NOT NULL,
+      usa_plataforma_yc BOOLEAN NOT NULL DEFAULT FALSE,
+      sk_plataforma_yc TEXT DEFAULT '',
+      auto_report_entidad BOOLEAN NOT NULL DEFAULT FALSE,
+      activa BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Lote 3: instalaciones que ya activaron el Módulo ETC en el Lote 1
+    -- tienen esta tabla creada SIN la columna nueva — ALTER...ADD COLUMN
+    -- IF NOT EXISTS la agrega de forma aditiva/idempotente, sin tocar filas
+    -- existentes (quedan en su valor por defecto, FALSE = manual).
+    ALTER TABLE etc_instituciones ADD COLUMN IF NOT EXISTS auto_report_entidad BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE INDEX IF NOT EXISTS etc_instituciones_entidad_idx ON etc_instituciones(entidad_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS etc_instituciones_dane_idx ON etc_instituciones(entidad_id, codigo_dane);
+
+    CREATE TABLE IF NOT EXISTS etc_contratos (
+      id SERIAL PRIMARY KEY,
+      entidad_id INTEGER NOT NULL REFERENCES etc_entidades(id) ON DELETE CASCADE,
+      docente_cedula TEXT NOT NULL,
+      nombre_completo TEXT NOT NULL,
+      correo TEXT NOT NULL DEFAULT '',
+      telefono TEXT NOT NULL DEFAULT '',
+      municipio TEXT NOT NULL DEFAULT '',
+      institucion_destino_dane TEXT NOT NULL DEFAULT '',
+      usa_plataforma_yc BOOLEAN NOT NULL DEFAULT FALSE,
+      estado_contrato TEXT NOT NULL DEFAULT 'Pendiente',
+      token_acceso_unico TEXT DEFAULT '',
+      creado_por TEXT DEFAULT '',
+      actualizado_por TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS etc_contratos_entidad_idx ON etc_contratos(entidad_id);
+    CREATE INDEX IF NOT EXISTS etc_contratos_cedula_idx ON etc_contratos(docente_cedula);
+    CREATE INDEX IF NOT EXISTS etc_contratos_estado_idx ON etc_contratos(estado_contrato);
+    CREATE UNIQUE INDEX IF NOT EXISTS etc_contratos_token_idx ON etc_contratos(token_acceso_unico);
+
+    CREATE TABLE IF NOT EXISTS etc_documentos (
+      id SERIAL PRIMARY KEY,
+      contrato_id INTEGER NOT NULL REFERENCES etc_contratos(id) ON DELETE CASCADE,
+      tipo_documento TEXT NOT NULL,
+      url_documento_cloud TEXT NOT NULL DEFAULT '',
+      estado_revision TEXT NOT NULL DEFAULT 'Pendiente',
+      observaciones_admin TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS etc_documentos_contrato_idx ON etc_documentos(contrato_id);
+
+    CREATE TABLE IF NOT EXISTS docente_permisos (
+      id SERIAL PRIMARY KEY,
+      docente_id TEXT NOT NULL,
+      institucion_id INTEGER NOT NULL REFERENCES etc_instituciones(id) ON DELETE CASCADE,
+      entidad_id INTEGER NOT NULL REFERENCES etc_entidades(id) ON DELETE CASCADE,
+      tipo_permiso TEXT NOT NULL,
+      fecha_inicio TEXT NOT NULL DEFAULT '',
+      fecha_fin TEXT NOT NULL DEFAULT '',
+      motivo TEXT DEFAULT '',
+      datos_adicionales JSONB DEFAULT '{}',
+      url_soporte_cloud TEXT DEFAULT '',
+      estado TEXT NOT NULL DEFAULT 'Pendiente',
+      respuesta_rector TEXT DEFAULT '',
+      reportado_entidad BOOLEAN NOT NULL DEFAULT FALSE,
+      fecha_reporte_entidad TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS docente_permisos_institucion_idx ON docente_permisos(institucion_id);
+    CREATE INDEX IF NOT EXISTS docente_permisos_entidad_idx ON docente_permisos(entidad_id);
+    CREATE INDEX IF NOT EXISTS docente_permisos_docente_idx ON docente_permisos(docente_id);
+    CREATE INDEX IF NOT EXISTS docente_permisos_estado_idx ON docente_permisos(estado);
+
+    CREATE TABLE IF NOT EXISTS etc_otp_codigos (
+      id SERIAL PRIMARY KEY,
+      cedula TEXT NOT NULL,
+      codigo TEXT NOT NULL,
+      canal TEXT NOT NULL DEFAULT 'correo',
+      destino TEXT NOT NULL DEFAULT '',
+      contrato_id INTEGER REFERENCES etc_contratos(id) ON DELETE CASCADE,
+      expira_en TIMESTAMPTZ NOT NULL,
+      usado BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS etc_otp_cedula_idx ON etc_otp_codigos(cedula);
+  `);
+  console.log('✅ [Lote 1/2] Esquema del Módulo ETC creado/verificado en Neon.');
+}
+
+export async function ensureSchemaEducacionSuperior(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS universidad_entidades (
+      id SERIAL PRIMARY KEY,
+      nombre_universidad TEXT NOT NULL,
+      codigo_snies TEXT NOT NULL DEFAULT '',
+      nit TEXT NOT NULL DEFAULT '',
+      logo_url TEXT NOT NULL DEFAULT '',
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS universidad_programas (
+      id SERIAL PRIMARY KEY,
+      universidad_id INTEGER NOT NULL REFERENCES universidad_entidades(id) ON DELETE CASCADE,
+      nombre_programa TEXT NOT NULL,
+      nivel TEXT NOT NULL DEFAULT 'Pregrado',
+      facultad TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS universidad_programas_universidad_idx ON universidad_programas(universidad_id);
+
+    CREATE TABLE IF NOT EXISTS universidad_docentes_estudiantes (
+      id SERIAL PRIMARY KEY,
+      persona_cedula TEXT NOT NULL,
+      tipo_rol TEXT NOT NULL DEFAULT 'Estudiante',
+      programa_id INTEGER NOT NULL REFERENCES universidad_programas(id) ON DELETE CASCADE,
+      datos_adicionales JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS universidad_docestud_persona_idx ON universidad_docentes_estudiantes(persona_cedula);
+    CREATE INDEX IF NOT EXISTS universidad_docestud_programa_idx ON universidad_docentes_estudiantes(programa_id);
+  `);
+  console.log('✅ [Lote 1] Esquema del Módulo Universidades/Educación Superior creado/verificado en Neon.');
+}
+
 // Exportar las tablas declaradas en el esquema
 export * from './schema.js';

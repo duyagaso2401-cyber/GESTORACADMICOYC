@@ -1306,6 +1306,213 @@ Pediste resolver de forma definitiva y permanente el parpadeo/interrupción visu
 - **Modificado:** `gestor-academico/dist/modules/03-app-core.js` — nuevas funciones `_enPantallaDeCalificacion()`, `_debeSuprimirPollingPorAutoGuardarSilencioso()`, `_refrescarTodoPlanillaGranular()` y `_refrescarTodoNotasActGranular()`; gate central de `_syncAll()` extendido con la nueva condición; `_resolverConflictoDB()` con la rama silenciosa/granular. Ningún otro módulo ni archivo fue tocado.
 - **Nuevo (pruebas):** `test_ronda28_autoguardado_silencioso.mjs` — 22 aserciones sobre el nuevo comportamiento.
 
+## Ronda 29 — LOTE 1 de 7: Módulo Integral de Entidades Territoriales Certificadas (ETC) + Módulo Universidades/Educación Superior — Feature Flags, migraciones bajo demanda y panel del Súper Admin
+
+Pediste un módulo enorme y nuevo (gestión documental, contratación y permisos para Entidades Territoriales Certificadas, más un módulo de Educación Superior/Universidades), especificado en 7 puntos, con la instrucción explícita de implementarlo por completo, en lotes si hacía falta para no agotar el contexto de la conversación. Este es el **Lote 1**: la base sobre la que se construyen los siguientes — feature flags de activación dinámica, migraciones SQL bajo demanda, y el panel del Súper Admin para activarlos y empezar a cargar el catálogo base de cada módulo.
+
+**Por qué en lotes:** la especificación completa incluye autenticación por token/OTP, formularios dinámicos JSONB por entidad, escalado automático de permisos, generación de documentos con membrete dinámico, y 3 flujos de acceso híbrido — cada uno es, por sí solo, del tamaño de una ronda completa de las anteriores. Construir todo de una sola vez sin una base sólida de feature flags + esquema de datos habría sido más frágil que construir por capas, verificando cada una. Los puntos 2, 3 (parcial), 5 y 7 (parcial) de tu especificación quedan para los lotes siguientes — ver el roadmap al final de esta sección.
+
+### Punto 1 — Activación dinámica por Superadmin (Feature Flags & migraciones lazy)
+
+**Diseño del interruptor (documentado con transparencia):** pediste los flags con nombre de variable de entorno (`ENABLE_ETC_CONTRACTING_MODULE`/`ENABLE_UNIVERSITIES_MODULE`) pero también que el Súper Admin los active con un botón, en caliente, sin redeploy. Ambos requisitos combinados solo son posibles con un diseño híbrido: el interruptor **real y dinámico** vive en `gestorDB.featureFlags` (el mismo blob JSON donde ya viven `sincronizacionAutomatica`/`autoGuardarHabilitado`/`pantallaBlanca`), y una variable de entorno real en Render solo puede usarse como un **kill-switch de emergencia** — si se define explícitamente en `'false'`, fuerza el módulo a apagado sin importar lo que diga `gestorDB`, pero nunca puede encenderlo por sí sola. Esto se documentó explícitamente en `src/lib/feature-flags.ts` para que quede claro por qué no es una variable de entorno pura.
+
+**Migraciones SQL bajo demanda:** se agregaron `ensureSchemaETC()`/`ensureSchemaEducacionSuperior()` en `src/db/index.ts` — a diferencia de TODAS las demás tablas del sistema (creadas siempre por `initDb()` en cada arranque del servidor), estas dos funciones **nunca se llaman al arrancar**: solo se ejecutan dentro de los endpoints de activación, y solo una vez, la primera vez que el Súper Admin presiona el botón correspondiente. Son 100% idempotentes (`CREATE TABLE IF NOT EXISTS`), así que reintentar la activación (por ejemplo tras un error de red) nunca duplica ni rompe nada.
+
+**Panel del Súper Admin:** dos botones nuevos en la barra superior ("🏛️ Entidades Territoriales" y "🎓 Universidades"), que abren una pantalla propia (`htmlGestorETC()`/`htmlGestorUniversidades()`). Mientras el módulo esté apagado, la pantalla solo muestra una explicación y el botón "🚀 Activar" — no se hace ninguna petición a `/api/etc/*` ni `/api/educacion-superior/*` hasta que el flag esté en verdadero.
+
+**Endpoints de activación:** `POST /api/superadmin/activar-modulo-etc` y `POST /api/superadmin/activar-modulo-universidades` — ambos exigen las **credenciales reales** del Súper Admin en el cuerpo (`{u,p}`, verificadas con la misma función que ya usa `POST /api/inetis/rescate/verificar`), un estándar de seguridad más alto que el resto del sistema en este punto puntual, porque esta acción ejecuta una migración SQL real. El frontend pide la contraseña con un `customPrompt()` en el momento, sin guardarla en memoria más de lo que dura esa única petición. La migración corre **antes** de activar el flag — si la migración falla, el flag nunca queda "encendido" con tablas que no llegaron a crearse. `GET /api/superadmin/modulos-estado` deja consultar el estado de ambos sin descargar el `gestorDB` completo.
+
+**Middleware `checkModuleEnabled(nombreModulo)`** (`src/lib/feature-flags.ts`): se aplica como el **primer middleware** de cada router nuevo (`router.use(checkModuleEnabled(...))`, antes de cualquier ruta) — así ninguna ruta presente o futura de esos routers puede quedar sin protección por descuido. Mientras el módulo esté apagado, responde exactamente `403 / "Módulo no activado"` sin ejecutar ninguna consulta SQL.
+
+### Punto 4 — Parametrización legal (perfil de la Entidad Territorial)
+
+Se implementó la tabla `etc_entidades` con el perfil legal completo pedido (Nombre Oficial, Tipo, NIT, Dirección, Teléfono, Correo Oficial, Logo/Escudo URL, Firma Digital Autorizada) más el campo `custom_form_schema` (JSONB) para el motor de formulario dinámico del punto 3 — su CRUD completo (crear/editar/inactivar) ya está disponible desde el panel del Súper Admin. La aplicación automática de este perfil como membrete de documentos/correos (la segunda mitad del punto 4) se implementa en el lote de generación de documentos (Lote 4), una vez exista contenido real que membretear.
+
+### Punto 2 (parcial) — Cobertura institucional y código DANE
+
+Se implementó la tabla `etc_instituciones` con la bandera clave `usa_plataforma_yc` (booleana) y el campo `sk_plataforma_yc` (para, en el lote de verificación de pertenencia, consultar directamente el `db` real del colegio cuando corresponda). CRUD completo desde el panel: vincular instituciones a una entidad por código DANE, marcar si usa la plataforma YC, e inactivar. Se agregó también `GET /api/etc/instituciones/buscar-por-dane/:codigoDane`, el endpoint de consulta rápida que el flujo de registro/contratación (Lote 2) usará para decidir automáticamente si provisiona credenciales o solo guarda el expediente en la ETC. La verificación automática de pertenencia de un docente por cédula (la segunda mitad del punto 2) queda para el Lote 2.
+
+### Punto 6 — Estructura de base de datos en Neon (tablas creadas)
+
+**Módulo ETC** (`ensureSchemaETC()`): `etc_entidades`, `etc_instituciones`, `etc_contratos`, `etc_documentos`, `docente_permisos` — las 5 tablas exactas pedidas, con los campos exactos de tu especificación (incluidos `token_acceso_unico` en `etc_contratos` para el Flujo B del punto 5, y `datos_adicionales`/`reportado_entidad`/`fecha_reporte_entidad` en `docente_permisos` para el motor de formulario dinámico y el escalado del punto 3 — aunque su lógica de negocio todavía no está conectada a ningún endpoint, las tablas ya existen y están listas). Se documentó explícitamente en `schema.ts` que `docente_permisos` es una tabla NUEVA y DISTINTA del arreglo `db.ausentismos` que ya vive en el blob JSON de cada institución — ese arreglo sigue siendo la fuente de verdad del flujo interno colegio↔docente↔rector, y no se tocó; la tabla nueva es el espejo que la ETC recibirá cuando un permiso se reporte (Lote 3).
+
+**Módulo Universidades** (`ensureSchemaEducacionSuperior()`): `universidad_entidades`, `universidad_programas`, `universidad_docentes_estudiantes` — las 3 tablas exactas pedidas, con CRUD completo ya disponible desde el panel del Súper Admin (crear universidad → agregar programas → vincular personas con su cédula y rol). Se documentó explícitamente por qué este módulo es independiente y no colisiona con el módulo universitario Enterprise (LMS/SIS) ya existente en el sistema (prefijos de tabla completamente distintos: `universidad_*` aquí vs. `univ_*`/`lms_*` del LMS completo).
+
+### Punto 7 (parcial) — Endpoints y optimización
+
+Se crearon `src/routes/etc.ts` y `src/routes/educacion-superior.ts` (montados en `/api/etc` y `/api/educacion-superior`), ambos protegidos por `checkModuleEnabled()`. La "optimización de bajo ancho de banda" pedida (guardar solo URLs, no archivos, en Postgres) ya está incorporada por diseño: `etc_documentos.url_documento_cloud` solo guarda texto — la subida real a la nube reutilizará `subirBufferACloudinary()` (ya existente en `src/lib/upload.ts`) en el Lote 2/4, cuando exista el flujo de carga de PDFs. La compresión Express (`compression()`) ya es global en todo el servidor desde antes de este lote, así que estos endpoints nuevos ya se benefician de ella sin cambios adicionales. Los endpoints de activación/contratación con token/OTP (`/api/contratacion/acceso-link`, `/api/permisos/*`) quedan para los Lotes 2, 3 y 5.
+
+### Verificación de este lote
+
+No fue posible instalar `node_modules` en este entorno de verificación (el registro de npm está bloqueado por política de red del entorno de trabajo), así que no se pudo correr `tsc --noEmit` real contra las dependencias (Express, Drizzle, etc.). Como verificación equivalente, se corrió `node --experimental-strip-types --check` sobre los 6 archivos TypeScript nuevos/modificados (`src/db/index.ts`, `src/db/schema.ts`, `src/index.ts`, `src/lib/feature-flags.ts`, `src/routes/etc.ts`, `src/routes/educacion-superior.ts`) — sin errores de sintaxis en ninguno. Se recomienda correr `npm run dev` (o `tsc --noEmit`) una vez en el entorno real de despliegue (que sí tiene `node_modules` instalado) antes de dar por buena esta ronda en producción, como primera verificación de rutina tras el despliegue. Se creó `test_ronda29_lote1_etc_universidades.mjs` (34 aserciones) que verifica, por inspección de código y réplica de lógica: el comportamiento del kill-switch de entorno, que la migración SQL siempre corre antes que la activación del flag, que las migraciones nunca se llaman al arrancar el servidor, que ambos routers se autoprotegen con `checkModuleEnabled()` antes de su primera ruta, y que el frontend trae ambos flags en `false` por defecto sin regresión en las Rondas 25/27/28. Regresión completa del proyecto: **31 de 31 pruebas en verde**. `node --check` sin errores en `03-app-core.js`.
+
+### Archivos nuevos/modificados en esta ronda
+
+- **Nuevo:** `src/lib/feature-flags.ts` — diseño completo del interruptor dinámico + kill-switch de entorno + `checkModuleEnabled()`.
+- **Nuevo:** `src/routes/etc.ts` — CRUD de `etc_entidades`/`etc_instituciones`, protegido por `checkModuleEnabled('ETC_CONTRACTING')`.
+- **Nuevo:** `src/routes/educacion-superior.ts` — CRUD de `universidad_entidades`/`universidad_programas`/`universidad_docentes_estudiantes`, protegido por `checkModuleEnabled('UNIVERSITIES')`.
+- **Modificado:** `src/db/index.ts` — nuevas `ensureSchemaETC()`/`ensureSchemaEducacionSuperior()` (migraciones bajo demanda, NO llamadas al arrancar).
+- **Modificado:** `src/db/schema.ts` — 8 tablas nuevas declaradas con Drizzle (5 del módulo ETC + 3 del módulo Universidades).
+- **Modificado:** `src/index.ts` — endpoints `POST /api/superadmin/activar-modulo-etc`, `POST /api/superadmin/activar-modulo-universidades`, `GET /api/superadmin/modulos-estado`, y el montaje de los 2 routers nuevos.
+- **Modificado:** `gestor-academico/dist/modules/03-app-core.js` — `gestorDB.featureFlags` (default + migración), 2 botones nuevos en el panel del Súper Admin, `htmlGestorETC()`/`htmlGestorUniversidades()` y todo su CRUD de pantalla.
+- **Nuevo (pruebas):** `test_ronda29_lote1_etc_universidades.mjs` — 34 aserciones.
+
+### Roadmap de los lotes siguientes (pendiente, no implementado todavía)
+
+- **Lote 2:** Verificación automática de vinculación docente por cédula (estado "Pendiente de Validación Institucional" cuando el Rector debe confirmar), y el Flujo B/C de acceso híbrido (link único/token seguro, cédula + OTP, registro público de aspirantes).
+- **Lote 3:** Extensión real del formulario de permisos/ausentismos ya existente (reutilizando `htmlAusentismo`/`enviarAusentismo`/`responderAusentismo` de `06-documentos-y-resto.js`) con el motor de campos dinámicos `custom_form_schema`, notificaciones asíncronas por correo al evaluar, y el escalado manual/automático a la entidad (`auto_report_entidad`, botón "Reportar Novedad").
+- **Lote 4:** Membretes dinámicos reales — aplicar el perfil legal de `etc_entidades` (logo, firma, datos) a los documentos/constancias/correos generados por el módulo.
+- **Lote 5:** Flujo A completo (login institucional YC), CRUD por rol con rastro de auditoría (Docente/Aspirante, Rector/Directivo, Admin ETC/Superadmin), y el resto de endpoints de contratación (`etc_contratos`/`etc_documentos` con subida real de PDFs a Cloudinary).
+- Los puntos 6 (tablas) y parte del 7 (endpoints base) ya quedaron resueltos en este Lote 1.
+
+## Ronda 30 — LOTE 2 de 7: Módulo ETC — verificación automática de pertenencia docente + Flujos B/C de acceso híbrido (link único/token, cédula+OTP, registro público de aspirantes)
+
+Confirmaste explícitamente seguir con el **Lote 2** del roadmap dejado en la Ronda 29: "verificación de pertenencia docente + los flujos de acceso híbrido". Este lote resuelve la segunda mitad del punto 2 de tu especificación y la parte central del punto 5 (Flujos B y C; el Flujo A completo con sesión institucional real queda para el Lote 5, junto con el resto de roles/auditoría — ver roadmap actualizado abajo).
+
+### Punto 2 (cierre) — Verificación automática de pertenencia docente por cédula
+
+Se creó `src/lib/etc-verificacion.ts` con `verificarPertenenciaDocente(institucionEtcId, cedula)`, el único punto donde vive esta lógica (igual filosofía de centralización que `checkModuleEnabled()`). Un detalle importante que investigué antes de programar esto: en el sistema K-12 existente, el campo `cedula` de un docente (`db.users`, filtrado por `r==='docente'`) **no es obligatorio ni único** — a diferencia de la cédula de un estudiante, que sí lo es. `guardarDocente()` en el frontend nunca lo valida. Por eso la verificación:
+
+- Solo compara contra docentes con cédula **no vacía** (nunca compara dos docentes sin cédula entre sí, lo que habría producido falsos positivos).
+- Si la institución no usa la plataforma YC (`usa_plataforma_yc=false`), no intenta verificar nada — el expediente queda directamente en el archivo digital de la ETC, tal como pide el punto 2.
+- Si hay **más de un** docente con la misma cédula (algo que el sistema no impide hoy), no elige uno al azar: lo marca `ambiguo=true` y lo trata igual que "no encontrado" — en ambos casos, el expediente pasa al nuevo estado `Pendiente_Validacion_Institucional` para que el Rector lo confirme manualmente, tal como pediste.
+
+Este nuevo estado se agregó como valor de texto libre en `etc_contratos.estado_contrato` (la columna ya era `TEXT` sin restricción `CHECK`, así que no hizo falta ninguna migración de esquema para el valor en sí — solo se documentó en el comentario de la columna en `schema.ts`).
+
+### Punto 5 — Flujos B y C de acceso híbrido
+
+**Flujo C (registro público de aspirante/docente nuevo):** `POST /api/etc/contratos` — crea el expediente (`etc_contratos`), genera automáticamente un `token_acceso_unico` (24 bytes aleatorios criptográficos, vía `crypto.randomBytes`) y, si se indicó una institución destino que sí usa la plataforma YC, corre la verificación del punto 2 en el momento: si el docente no se encuentra (o es ambiguo), el expediente nace directamente en `Pendiente_Validacion_Institucional`; si se encuentra, o si la institución no usa YC, nace en `Pendiente` normal. `GET/PUT /api/etc/contratos(/:id)` completan el CRUD del expediente.
+
+**Evaluación (Rector/Admin ETC):** `POST /api/etc/contratos/:id/evaluar` — recibe `Aprobado`/`Rechazado`/`Con_Observaciones`. Si se aprueba, la institución destino usa YC, **y** la verificación confirma que la persona todavía no tenía cuenta, se **aprovisiona automáticamente** una cuenta de docente nueva directamente en el blob JSON de esa institución (`kv_store`, mismo mecanismo que usa hoy `POST /api/inetis/auth/invitacion/registrar` para altas de usuario): usuario derivado de la cédula (con sufijo numérico si ya existiera), contraseña temporal aleatoria **hasheada con `hashPasswordServidor`** (nunca en texto plano), y aviso por correo con las credenciales — reutilizando el único canal de correo del sistema (`enviarCorreoGeneral`/`POST /api/inetis/send-email`; no se creó ningún canal nuevo). El envío de correo es *best-effort*: si el proveedor no está configurado o falla, la aprobación no se revierte (mismo criterio ya usado en `/api/inetis/auth/restablecer/solicitar`). Si la institución **no** usa YC, no hay aprovisionamiento — el expediente sencillamente queda aprobado en el archivo digital de la ETC, tal como pide el punto 2/5.
+
+**Flujo B (docente activo/asignado sin cuenta propia):**
+- *Link único/token seguro*: `GET /api/etc/contratos/acceso/token/:token` y, con el nombre **exacto** pedido en el punto 7, `POST /api/contratacion/acceso-link` (nuevo archivo `src/routes/contratacion.ts`, delgado a propósito, montado en `/api/contratacion`, protegido por el mismo `checkModuleEnabled('ETC_CONTRACTING')`) — acepta `{token}` o `{cedula}` en el cuerpo, tal como especifica el punto 7 ("validación por token o cédula").
+- *Cédula + Código OTP*: `POST /api/etc/contratos/acceso/otp/solicitar` (genera un código de 6 dígitos con `crypto.randomInt`, válido 10 minutos, guardado en la nueva tabla `etc_otp_codigos`) y `POST /api/etc/contratos/acceso/otp/verificar` (consume el código una sola vez). **Adaptación documentada con transparencia:** tu especificación pedía el código "por correo o teléfono", pero este proyecto no tiene ningún proveedor de SMS integrado — por ahora solo el canal `correo` está implementado (reutilizando `enviarCorreoGeneral`, sin inventar un canal nuevo); pedir el canal `telefono` responde `501` explícitamente en vez de fingir que se envió un SMS que en realidad no existe. Si más adelante se contrata un proveedor de SMS (Twilio u otro), añadirlo es una extensión aislada de este mismo endpoint.
+
+Ninguno de estos endpoints públicos (token/OTP) devuelve nunca el `token_acceso_unico` en sus respuestas (helper `_contratoPublico()`), para mantener mínima la superficie expuesta a quien no tiene sesión.
+
+### Base de datos
+
+Se agregó una 6ta tabla al mismo esquema perezoso del módulo ETC (`ensureSchemaETC()`, sin tocar `initDb()`): `etc_otp_codigos` (cédula, código, canal, destino, `contrato_id`, `expira_en`, `usado`). **Nota operativa:** si tu instalación ya activó el Módulo ETC en el Lote 1, la tabla nueva no aparecerá sola — como `ensureSchemaETC()` es 100% idempotente (`CREATE TABLE IF NOT EXISTS`), basta con que el Súper Admin presione una vez más el botón "🚀 Activar" del Módulo ETC (no rompe ni duplica nada de lo ya creado, solo agrega la tabla que falta).
+
+### Limitaciones conocidas de este lote (documentadas con transparencia)
+
+- El sistema K-12 completo no tiene autenticación de backend por rol (ver Ronda 29 y análisis previo) — la restricción de "quién puede editar/evaluar un expediente según su rol" (Docente/Aspirante solo en 'Pendiente'; Rector/Admin con más margen) todavía no se aplica del lado del servidor en estos endpoints nuevos; por ahora solo quedan los campos `actualizadoPor`/`updatedAt` como rastro mínimo de auditoría. Implementar sesión/autenticación real de este módulo (y con ella, el Flujo A completo de login institucional) es exactamente el alcance que ya tenía reservado el **Lote 5**.
+- El aprovisionamiento automático de credenciales actualiza el blob de la institución directamente en `kv_store`, pero no dispara el mecanismo de sincronización en tiempo real (`broadcastChange`/SSE) que sí usan los endpoints dentro de `src/index.ts` — un usuario con sesión abierta en esa institución verá la cuenta nueva en su próxima sincronización periódica normal, no de forma instantánea. No afecta la corrección del dato, solo la latencia de un caso de uso poco frecuente (crear cuentas nuevas no es una operación de alta frecuencia).
+- La subida real de documentos/PDFs del expediente (`etc_documentos`, con `subirBufferACloudinary`) sigue reservada para el Lote 5, tal como ya se había planeado.
+
+### Verificación de este lote
+
+Se corrió `node --experimental-strip-types --check` sobre los 6 archivos TypeScript nuevos/modificados de este lote (`src/lib/etc-verificacion.ts`, `src/routes/etc.ts`, `src/routes/contratacion.ts`, `src/db/schema.ts`, `src/db/index.ts`, `src/index.ts`) — sin errores de sintaxis en ninguno (misma limitación de entorno ya documentada en la Ronda 29: no fue posible instalar `node_modules` para correr `tsc --noEmit` real; se recomienda correrlo una vez en el entorno real de despliegue). Se creó `test_ronda30_lote2_etc_acceso_hibrido.mjs` (36 aserciones) que reimplementa en aislado la lógica de `verificarPertenenciaDocente()` (incluido el caso de cédulas ambiguas/vacías) y verifica por inspección de código: la existencia y protección de todos los endpoints nuevos, que el aprovisionamiento de credenciales hashea la contraseña y reutiliza el único canal de correo existente, que el canal OTP por teléfono responde `501` en vez de simular un envío inexistente, que la nueva tabla se crea dentro de la misma migración perezosa del módulo (nunca en `initDb()`), y que los endpoints públicos nunca exponen el token de acceso. Se actualizó también `test_ronda29_lote1_etc_universidades.mjs` (aserción `c6`, ahora 34 pruebas) para reflejar la 6ta tabla agregada. **Regresión completa del proyecto: 33 de 33 archivos de prueba en verde** (todas las rondas anteriores sin cambios de comportamiento).
+
+### Archivos nuevos/modificados en esta ronda
+
+- **Nuevo:** `src/lib/etc-verificacion.ts` — `verificarPertenenciaDocente()`, `generarTokenAcceso()`, `generarCodigoOtp()`.
+- **Nuevo:** `src/routes/contratacion.ts` — `POST /api/contratacion/acceso-link` (nombre exacto del punto 7).
+- **Modificado:** `src/routes/etc.ts` — CRUD de `etc_contratos`, evaluación con aprovisionamiento automático, endpoints de acceso por token y por OTP.
+- **Modificado:** `src/db/schema.ts` — nueva tabla `etcOtpCodigos`; comentario del nuevo estado `Pendiente_Validacion_Institucional` en `etcContratos.estadoContrato`.
+- **Modificado:** `src/db/index.ts` — `CREATE TABLE IF NOT EXISTS etc_otp_codigos` dentro de `ensureSchemaETC()`.
+- **Modificado:** `src/index.ts` — importa y monta `contratacionRouter` en `/api/contratacion`.
+- **Nuevo (pruebas):** `test_ronda30_lote2_etc_acceso_hibrido.mjs` — 36 aserciones.
+- **Modificado (pruebas):** `test_ronda29_lote1_etc_universidades.mjs` — aserción `c6` actualizada a 6 tablas.
+
+### Roadmap de los lotes siguientes (actualizado)
+
+- **Lote 3:** Extensión real del formulario de permisos/ausentismos ya existente con el motor de campos dinámicos `custom_form_schema`, notificaciones asíncronas por correo al evaluar, y el escalado manual/automático a la entidad (`auto_report_entidad`, botón "Reportar Novedad").
+- **Lote 4:** Membretes dinámicos reales — aplicar el perfil legal de `etc_entidades` (logo, firma, datos) a los documentos/constancias/correos generados por el módulo.
+- **Lote 5:** Flujo A completo (login institucional YC integrado a este módulo), autenticación/sesión real por rol con rastro de auditoría (Docente/Aspirante, Rector/Directivo, Admin ETC/Superadmin), sincronización en tiempo real (`broadcastChange`) del aprovisionamiento automático, y subida real de PDFs a Cloudinary en `etc_documentos`.
+- El punto 2 y el núcleo del punto 5 (Flujos B/C) quedan resueltos en este Lote 2.
+
+## Ronda 31 — Cierre 100% del ajuste sobre el Lote 2 + LOTE 3 de 7: formulario dinámico de permisos y escalado a la Entidad Territorial
+
+Pediste dos cosas: (1) cerrar del todo el canal telefónico del OTP (Lote 2), que había quedado como un `501 "no implementado"` en vez de simplemente no existir; y (2) seguir con el **Lote 3**: extensión del formulario de permisos/ausentismos con el motor de campos dinámicos (`custom_form_schema`), notificación al evaluar, y el escalado manual/automático a la entidad territorial.
+
+### Ajuste de cierre del Lote 2 — canal telefónico del OTP
+
+`POST /api/etc/contratos/acceso/otp/solicitar` ya **no acepta ni menciona** un parámetro `canal`: siempre envía el código por correo, sin ninguna rama que responda `501`. No es un "pendiente documentado" — es la superficie final y cerrada del endpoint. Si algún día se contrata un proveedor de SMS, la columna `canal` de `etc_otp_codigos` ya queda lista para ese valor, pero hoy el endpoint ni la ofrece ni la insinúa. Se actualizó `test_ronda30_lote2_etc_acceso_hibrido.mjs` (aserciones `c10`/`c10b`, ahora 37 pruebas) para verificar justamente que no quede ningún rastro de esa rama.
+
+### Punto 3 — Motor de campos dinámicos (`custom_form_schema`)
+
+El formulario H03.03.F01 de permiso laboral (`htmlAusentismo()`, el mismo de siempre, sin tocar su lógica original de tipos/fechas/validaciones) ahora detecta automáticamente si la institución está cubierta por una Entidad Territorial: nuevo endpoint `GET /api/etc/instituciones/buscar-por-sk/:sk`, consultado una sola vez por sesión desde `_refrescarCoberturaEtcAusentismo()`. Si la institución **no** está vinculada a ninguna ETC, el formulario queda exactamente igual que siempre — cero cambios de comportamiento. Si **sí** lo está, se renderiza debajo del formulario una sección "🏛️ Requisitos adicionales de la Entidad Territorial" con los campos que la propia entidad definió en su `custom_form_schema` (texto, número, fecha u observación larga, con marca de obligatorio), validados antes de enviar (`_leerCamposDinamicosEtc()`) y guardados en `datosAdicionalesEtc` dentro de la solicitud — sin tocar ningún campo del formulario clásico.
+
+### Punto 3 — Notificación al docente cuando el Rector evalúa (vacío que se cerró de una vez)
+
+Al revisar `responderAusentismo()` para conectar el escalado, encontré que el sistema **nunca** avisaba al docente cuando el Rector aprobaba/rechazaba su permiso — solo se actualizaba el estado en la base de datos, y el docente se enteraba si volvía a entrar a mirar su lista. Se agregó, reutilizando el único canal de correo existente (`POST /api/inetis/send-email`) y el mismo mecanismo de alertas web ya usado en el resto del sistema (`POST /api/inetis/notify`): un correo y una notificación al docente en el momento exacto en que el Rector responde, con el estado y la respuesta. También se agregó un tercer botón "✎ Con observaciones" en el panel del Rector (antes solo existían Aprobar/Rechazar, dejando sin usar el estado `Con_Observaciones` que sí contempla la tabla `docente_permisos`).
+
+### Punto 3 — Escalado manual/automático a la Entidad Territorial
+
+Nueva columna `auto_report_entidad` en `etc_instituciones` (aditiva: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, no rompe instalaciones que ya activaron el módulo en el Lote 1). Desde el panel del Súper Admin (pantalla de instituciones de una entidad), un botón alterna cada institución entre **✋ Manual** (por defecto) y **⚡ Automático**.
+
+- **Manual:** cuando el Rector resuelve un permiso, en su propio panel de ausentismos aparece un botón "📨 Reportar Novedad a la Entidad Territorial" (solo si la institución está cubierta por una ETC, el permiso ya está resuelto, y todavía no se reportó) — al presionarlo, llama `POST /api/etc/permisos`.
+- **Automático:** el mismo `POST /api/etc/permisos` se dispara solo, inmediatamente después de que el Rector responde.
+
+En ambos casos, `POST /api/etc/permisos` inserta una fila en `docente_permisos` — la tabla espejo del Lote 1 — **ya resuelta y ya marcada como reportada** (`reportado_entidad=true`), porque lo que se está escalando es una novedad que el Rector ya decidió internamente; el `db.ausentismos` de la institución sigue siendo, sin ningún cambio, la única fuente de verdad de la decisión. Deliberadamente **no existe** un endpoint de "evaluar" del lado de la ETC — la evaluación real sigue ocurriendo donde siempre ha ocurrido. El `entidadId` de cada permiso escalado se deriva siempre en el servidor a partir de la institución consultada, nunca de un valor que mande el cliente, para que un registro no pueda "colarse" reportado bajo una entidad equivocada.
+
+### Verificación de este lote
+
+`node --experimental-strip-types --check` sin errores en los 3 archivos TypeScript modificados (`src/routes/etc.ts`, `src/db/schema.ts`, `src/db/index.ts`) y `node --check` sin errores en los 2 archivos JavaScript del frontend modificados (`03-app-core.js`, `06-documentos-y-resto.js`). Se creó `test_ronda31_lote3_permisos_escalado.mjs` (37 aserciones) que verifica, por inspección de código: que la migración de la nueva columna es aditiva/idempotente, que el descubrimiento de cobertura nunca expone el perfil legal completo de la entidad, que `docente_permisos` sigue siendo un espejo (sin endpoint de evaluación propio) con `entidadId` siempre derivado en servidor, que el formulario clásico de permiso no sufrió ninguna regresión, que la notificación al docente reutiliza el único canal de correo del sistema, que el botón manual y el disparo automático de escalado son mutuamente excluyentes según `autoReportEntidad`, y que el cierre del canal telefónico del OTP (Lote 2) quedó completo. **Regresión completa del proyecto: 33 de 33 archivos de prueba en verde.**
+
+### Archivos nuevos/modificados en esta ronda
+
+- **Modificado:** `src/routes/etc.ts` — ajuste de cierre del OTP (Lote 2); nuevos endpoints `GET /instituciones/buscar-por-sk/:sk`, `POST/GET /permisos`, `GET /permisos/:id`; `PUT /instituciones/:id` acepta `autoReportEntidad`.
+- **Modificado:** `src/db/schema.ts` — columna `autoReportEntidad` en `etcInstituciones`; comentario de `etcOtpCodigos.canal` actualizado.
+- **Modificado:** `src/db/index.ts` — `auto_report_entidad` en la migración de `etc_instituciones` (`CREATE` + `ALTER...ADD COLUMN IF NOT EXISTS`).
+- **Modificado:** `gestor-academico/dist/modules/06-documentos-y-resto.js` — motor de campos dinámicos en `htmlAusentismo()`/`enviarAusentismo()`, notificación al docente y escalado (manual/automático) en `responderAusentismo()`, botón "Reportar Novedad" y corrección de los nombres de campo desalineados en `htmlGestorAusentismos()` (mostraba `motivo1`/`fInicio`/`fFin`/`dias`, campos que `enviarAusentismo()` nunca guarda con esos nombres).
+- **Modificado:** `gestor-academico/dist/modules/03-app-core.js` — toggle Manual/Automático y campo "sk" en la pantalla de instituciones del panel del Súper Admin.
+- **Nuevo (pruebas):** `test_ronda31_lote3_permisos_escalado.mjs` — 37 aserciones.
+- **Modificado (pruebas):** `test_ronda30_lote2_etc_acceso_hibrido.mjs` — aserciones `c10`/`c10b` actualizadas al cierre 100% del canal OTP.
+
+### Roadmap de los lotes siguientes (actualizado)
+
+- **Lote 4:** Membretes dinámicos reales — aplicar el perfil legal de `etc_entidades` (logo, firma, datos) a los documentos/constancias/correos generados por el módulo (incluida la notificación al docente agregada en este lote).
+- **Lote 5:** Flujo A completo (login institucional YC), CRUD por rol con rastro de auditoría (Docente/Aspirante, Rector/Directivo, Admin ETC/Superadmin), sincronización en tiempo real del aprovisionamiento automático, y subida real de PDFs a Cloudinary en `etc_documentos`.
+- El punto 3 (formulario dinámico + escalado) queda resuelto en este Lote 3.
+
+## Ronda 32 — Arquitectura de notificaciones MULTICANAL (SMS + Correo) + LOTE 4 de 7: membretes dinámicos reales
+
+Aclaraste que el ajuste que pedí sobre el Lote 2 no era "cerrar y no volver a mencionar el SMS", sino diseñar una arquitectura MULTICANAL real: SMS con control dinámico del Súper Admin, credenciales propias por Entidad Territorial, y un fallback a correo que nunca interrumpa el flujo. Además pediste seguir con el **Lote 4** (membretes dinámicos). Se hicieron ambas cosas en la misma ronda porque el motor multicanal terminó siendo también el lugar natural para aplicar el membrete a todo correo que salga del módulo — un solo archivo nuevo (`src/lib/sms-provider.ts`) resuelve el canal Y el membrete de una vez.
+
+**Importante — no se modificó ningún test suite existente**, tal como pediste: los 33 archivos de prueba de las Rondas 29-31 se re-corrieron sin ningún cambio y siguen en verde. Por esa razón, `POST /api/etc/contratos/acceso/otp/solicitar` (el endpoint específico que se cerró en la Ronda 31) sigue exactamente igual, correo-only — tocarlo para sumarle SMS habría exigido modificar las aserciones que ya quedaron congeladas ahí. El motor multicanal nuevo se aplicó en su lugar a las notificaciones de aprobación/rechazo de expedientes (`POST /api/etc/contratos/:id/evaluar`) y a la notificación al docente cuando el Rector resuelve un permiso (agregada en el Lote 3) — que es, en la práctica, donde vive el grueso de las "alertas" del módulo. Si más adelante quieres que ese endpoint específico de OTP también reciba SMS, es una extensión aislada de una ronda futura (implicaría actualizar sus propias pruebas, con tu autorización explícita).
+
+### Punto 1 — Feature flag + control dinámico desde el Superadmin
+
+Nuevo flag global `ENABLE_SMS_NOTIFICATIONS` (default `false`), con el mismo mecanismo de `gestorDB.featureFlags` + kill-switch de variable de entorno que ya usan `ENABLE_ETC_CONTRACTING_MODULE`/`ENABLE_UNIVERSITIES_MODULE` — pero SIN ninguna migración SQL propia (no es un módulo con tablas nuevas, es un canal de entrega), así que se generalizó el mecanismo en `src/lib/feature-flags.ts` con dos funciones nuevas y genéricas: `flagSimpleHabilitado(clave)` / `establecerFlagSimpleEnGestorDB(clave, valor)`. Nuevo endpoint `POST /api/superadmin/activar-sms-notificaciones` (exige credenciales reales de Súper Admin, igual estándar que los otros interruptores sensibles) y `GET /api/superadmin/modulos-estado` ahora también informa `ENABLE_SMS_NOTIFICATIONS`. En el panel del Súper Admin (pantalla de Entidades Territoriales), un botón con el texto exacto pedido: **"✋ Activar Notificaciones SMS (Requiere Proveedor)"** (que cambia a "⚡ SMS Activado" una vez encendido).
+
+La lógica y la estructura de envío de SMS **no se eliminaron ni se simplificaron**: `src/lib/sms-provider.ts` mantiene un despachador agnóstico completo, listo para Hablame.co, Twilio o AWS SNS, estén o no activados los flags — apagar el interruptor solo bloquea que se INTENTE usar, nunca borra el código.
+
+### Punto 2 — Fallback elegante (correo por defecto, nunca 501/500)
+
+`enviarNotificacionMulticanal()` es el único punto de entrada para cualquier notificación que idealmente iría por SMS. Si el flag global está apagado, si la entidad no configuró credenciales, o si el proveedor configurado falla al enviar, **nunca** se responde con error ni se interrumpe el flujo — se cae de inmediato y en silencio al correo institucional vía `enviarCorreoGeneral()` (Zoho Mail / Nodemailer, el único canal de correo de todo el sistema, reutilizado sin crear uno nuevo).
+
+### Punto 3 — Modelo multi-tenant por Entidad Territorial
+
+Nueva columna `sms_provider_config` (JSONB, migración aditiva) en `etc_entidades` — cada ETC guarda ahí sus propias credenciales (`{proveedor, apiKey, remitente, ...}`, forma agnóstica al proveedor). Sin esas credenciales, esa entidad específica **nunca** genera intento ni costo de SMS: todas sus notificaciones van solo por correo. Desde el panel, cada fila de la tabla de entidades tiene un botón "📶 SMS" para configurar (o borrar) sus credenciales, de forma completamente independiente entre entidades — activar el interruptor global no enciende el SMS de nadie que no haya configurado las suyas.
+
+### Lote 4 — Membretes dinámicos reales (punto 4, cierre)
+
+El perfil legal completo de la entidad (Nombre Oficial, Logo, NIT, Dirección, Teléfono, Correo) ya existía desde el Lote 1; lo que faltaba era aplicarlo. Nuevo `src/lib/etc-membrete.ts` (`obtenerMembreteEntidad()` + `aplicarMembreteHtml()`) centraliza esa aplicación, y quedó conectado directamente dentro de `enviarNotificacionMulticanal()`: **todo correo que pase por el motor multicanal adopta automáticamente** el logo y el nombre de la entidad — sin que cada llamador tenga que acordarse de aplicarlo. Sin entidad asociada (o entidad inactiva), el correo sale exactamente igual que siempre. También se llevó el membrete al PDF de permiso laboral (`imprimirPermisoH03`, H03.03.F01): si la institución está cubierta por una ETC, el encabezado del PDF usa el nombre oficial de esa entidad; si no, conserva el membrete histórico de Gobernación de Bolívar, sin ningún cambio.
+
+### Verificación de esta ronda
+
+`node --experimental-strip-types --check` sin errores en los 7 archivos TypeScript nuevos/modificados y `node --check` sin errores en los 2 archivos JavaScript del frontend. Se creó `test_ronda32_multicanal_lote4_membretes.mjs` (41 aserciones) que verifica, por inspección de código y réplica de la lógica de decisión de canal: que el flag global bloquea todo intento de SMS cuando está apagado, que una entidad sin credenciales siempre cae a correo aunque el flag esté encendido, que un fallo del proveedor jamás se traduce en un error visible, que los tres proveedores siguen estructurados en el código, que la columna nueva es aditiva, que el endpoint de OTP de la Ronda 31 sigue exactamente intacto, y que el membrete se aplica automáticamente sin intervención de cada llamador. **Ningún archivo de prueba existente fue modificado. Regresión completa del proyecto: 34 de 34 archivos de prueba en verde** (los 33 anteriores, sin cambios, más este nuevo).
+
+### Archivos nuevos/modificados en esta ronda
+
+- **Nuevo:** `src/lib/sms-provider.ts` — motor multicanal (`enviarNotificacionMulticanal`), despachador agnóstico (Hablame/Twilio/AWS SNS), flag `ENABLE_SMS_NOTIFICATIONS`.
+- **Nuevo:** `src/lib/etc-membrete.ts` — `obtenerMembreteEntidad()`/`aplicarMembreteHtml()` (Lote 4).
+- **Modificado:** `src/lib/feature-flags.ts` — `flagSimpleHabilitado()`/`establecerFlagSimpleEnGestorDB()` (flags sin migración propia).
+- **Modificado:** `src/db/schema.ts` — columna `smsProviderConfig` en `etcEntidades`.
+- **Modificado:** `src/db/index.ts` — `sms_provider_config` en la migración de `etc_entidades` (`CREATE` + `ALTER...ADD COLUMN IF NOT EXISTS`).
+- **Modificado:** `src/routes/etc.ts` — `/evaluar` ahora usa el motor multicanal; `PUT /entidades/:id` acepta `smsProviderConfig`; nuevos `GET /notificaciones/estado` y `POST /notificaciones/enviar`.
+- **Modificado:** `src/index.ts` — `POST /api/superadmin/activar-sms-notificaciones`; `modulos-estado` incluye el flag de SMS.
+- **Modificado:** `gestor-academico/dist/modules/03-app-core.js` — interruptor global y configuración de credenciales por entidad en el panel del Súper Admin.
+- **Modificado:** `gestor-academico/dist/modules/06-documentos-y-resto.js` — notificación al docente ahora pasa por el motor multicanal cuando hay cobertura ETC; membrete dinámico en el PDF de permiso laboral.
+- **Nuevo (pruebas):** `test_ronda32_multicanal_lote4_membretes.mjs` — 41 aserciones.
+
+### Roadmap del lote siguiente
+
+- **Lote 5 (último):** Flujo A completo (login institucional YC), CRUD por rol con rastro de auditoría, sincronización en tiempo real del aprovisionamiento automático, y subida real de PDFs a Cloudinary en `etc_documentos`. Con esto se completarían los 7 puntos originales de la especificación.
+
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 
 `.git/`, `node_modules/`, todos los archivos/carpetas `*_RESPALDO*`, y los 3 ZIPs viejos que tenías dentro del proyecto (`GESTOR_ACADEMICO_YC_PRODUCCION.zip`, `gestor-academico-backup.zip`, `zipFile.zip`). Copia el contenido de este ZIP **sobre** tu carpeta actual en vez de borrarla, así conservas tu historial de Git y no tienes que reinstalar `node_modules` de cero salvo por los 2 paquetes nuevos.

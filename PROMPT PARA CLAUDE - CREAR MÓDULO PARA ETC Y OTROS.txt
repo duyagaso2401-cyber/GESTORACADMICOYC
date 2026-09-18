@@ -76,3 +76,21 @@ B. TABLAS MÓDULO UNIVERSIDADES (Al presionar "Activar Módulo Universidades"):
 - `POST /api/permisos/solicitar` & `PUT /api/permisos/editar`: Reutiliza el controlador previo agregando el almacenamiento de campos dinámicos `JSONB`.
 - `POST /api/permisos/evaluar`: Respuesta del Rector + disparo asíncrono de correo vía Zoho Mail.
 - Low-Bandwidth / Optimización: Guardar únicamente URLs en PostgreSQL (archivos en AWS S3/Cloudinary) y aplicar compresión en Express para proteger las conexiones rurales.
+
+7. 
+Hola Claude, necesito integrar el soporte para NOTIFICACIONES PUSH FLOTANTES (Web Push / Service Workers) para los eventos de permisos y contratación:
+
+1. CONFIGURACIÓN VAPID / SERVICE WORKERS:
+   - Configurar la API de Web Push en Node.js/Express mediante llaves VAPID (web-push).
+   - Registrar un Service Worker ligero en el frontend para solicitar permiso de notificaciones y recibir alertas en segundo plano en teléfonos y navegadores.
+
+2. SUSCRIPCIÓN Y NOTIFICACIÓN AL DOCENTE:
+   - Guardar el endpoint de suscripción del dispositivo en la tabla de usuarios/docentes.
+   - Al momento de ser evaluado un permiso (Aprobado|Rechazado|Con Observaciones), disparar una notificación flotante al teléfono/navegador del docente con el estado y el mensaje obligatorio al final: "Por favor, revise su correo electrónico o ingrese a la plataforma para ver el documento formal.", en paralelo al correo de Zoho Mail.
+
+3. MANEJO RESILIENTE:
+   - Si el navegador o teléfono del docente no soporta Web Push o el usuario rechazó el permiso, el sistema debe omitir la alerta flotante de forma silenciosa sin interrumpir el guardado en la base de datos ni el envío por correo. Además realiza esto(AUTORIZACIÓN DE PRUEBAS PARA OTP MULTICANAL: Se autoriza explícitamente actualizar la prueba unitaria puntual del endpoint de código OTP para que valide la arquitectura multicanal (correo por defecto + SMS opcional vía Feature Flag ENABLE_SMS_NOTIFICATIONS), manteniendo el 100% de la suite de pruebas en verde)
+
+8. Hola Claude, por favor asegúrate de actualizar el archivo .env (y .env.example) en la raíz del proyecto con TODAS las nuevas variables de entorno requeridas por los módulos ETC, Universidades, Notificaciones Web Push (llaves VAPID) y Feature Flags. 
+
+Por favor deja cada variable claramente comentada con su propósito, sus valores por defecto (ej. ENABLE_SMS_NOTIFICATIONS=false) y marcadas con valores de ejemplo cuando requieran llaves privadas, para saber exactamente qué configurar en el servidor de producción.

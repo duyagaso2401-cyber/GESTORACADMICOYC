@@ -963,6 +963,16 @@ const GESTOR_DEFAULT={
   superAdmin:{u:'gestor',p:'Gestor2026*',nombre:'Adán Yesid Jiménez Cabrales'},
   wsp1:'3205292337',wsp2:'3227483837',
   sugerencias:[],
+  // Lote 1 — feature flags de activación dinámica de los módulos ETC
+  // (Entidades Territoriales Certificadas) y Universidades/Educación
+  // Superior. Ambos en false por defecto ("por defecto false", tal como se
+  // pidió) — ver src/lib/feature-flags.ts en el backend para el diseño
+  // completo del interruptor (gestorDB.featureFlags es la fuente de verdad
+  // dinámica; una variable de entorno real en Render solo puede forzar un
+  // módulo a apagado, nunca encenderlo). El backend es quien realmente
+  // activa esto (solo tras crear las tablas SQL correspondientes) — ver
+  // activarModuloETC()/activarModuloUniversidades() más abajo.
+  featureFlags:{ENABLE_ETC_CONTRACTING_MODULE:false,ENABLE_UNIVERSITIES_MODULE:false},
   platforms:[{
     id:'inetis-sincelejito',
     nombre:'INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO',
@@ -997,6 +1007,12 @@ function _migrateGestorDB(data){
   // wsp1/wsp2
   if(!migrated.wsp1) migrated.wsp1=GESTOR_DEFAULT.wsp1;
   if(!migrated.wsp2) migrated.wsp2=GESTOR_DEFAULT.wsp2;
+  // Lote 1 — featureFlags: garantizar el objeto y ambas claves, sin pisar
+  // un valor ya activado por el backend (mismo principio que el resto de
+  // esta función: agregar lo que falte, nunca sobrescribir lo que ya está).
+  if(!migrated.featureFlags||typeof migrated.featureFlags!=='object') migrated.featureFlags={};
+  if(typeof migrated.featureFlags.ENABLE_ETC_CONTRACTING_MODULE==='undefined') migrated.featureFlags.ENABLE_ETC_CONTRACTING_MODULE=false;
+  if(typeof migrated.featureFlags.ENABLE_UNIVERSITIES_MODULE==='undefined') migrated.featureFlags.ENABLE_UNIVERSITIES_MODULE=false;
   // Garantizar campos de cada plataforma y módulos nuevos
   const todosIds=TODOS_MODULOS.map(function(m){return m.id;});
   migrated.platforms.forEach(function(plat){
@@ -2350,6 +2366,8 @@ function renderGestorAdmin(){
   else if(_gestorPag==='planes') contenido=htmlGestorPlanes();
   else if(_gestorPag==='salud') contenido=htmlGestorSalud();
   else if(_gestorPag==='agenteia') contenido=htmlGestorAgenteIA();
+  else if(_gestorPag==='etc') contenido=htmlGestorETC();
+  else if(_gestorPag==='universidades') contenido=htmlGestorUniversidades();
   document.getElementById('app').innerHTML=`
   <div class="gestor-admin-wrap">
     <div class="gestor-topbar">
@@ -2372,6 +2390,8 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#186a3b" onclick="_gestorPag='planes';renderGestorAdmin()" title="Gestionar el plan y el estado de facturación de cada institución">💰 Planes y Facturación</button>
         <button class="tbtn" style="background:#922b21" onclick="_gestorPag='salud';renderGestorAdmin()" title="Detectar instituciones con problemas de guardado o papelera creciendo sin control">🏥 Salud del Sistema</button>
         <button class="tbtn" style="background:#16a085" onclick="_gestorPag='agenteia';renderGestorAdmin()" title="Historial del Agente Administrador y Auditor Supremo del ecosistema: rendimiento académico, inasistencias, integridad técnica y sincronización">🤖 Auditoría IA / Agente</button>
+        <button class="tbtn" style="background:${gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE?'#6c3483':'#5d4037'}" onclick="_gestorPag='etc';renderGestorAdmin()" title="Gestión Documental, Contratación y Permisos para Entidades Territoriales Certificadas (ETC)">🏛️ Entidades Territoriales</button>
+        <button class="tbtn" style="background:${gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE?'#1a5276':'#5d4037'}" onclick="_gestorPag='universidades';renderGestorAdmin()" title="Catálogo de Universidades / Educación Superior">🎓 Universidades</button>
         <button class="tbtn" style="background:#2980b9;position:relative" onclick="_gestorPag='notificaciones';renderGestorAdmin()">🔔 <span id="notifBadgeTxt">Notif</span><span id="notifBadge" style="display:none;background:#e74c3c;color:#fff;border-radius:10px;font-size:0.65rem;padding:1px 5px;margin-left:2px;font-weight:bold">0</span></button>
         <button class="tbtn" style="background:#27ae60;font-size:0.74rem" onclick="descargarRespaldoGestor()" title="Descargar respaldo JSON del sistema gestor">💾 Respaldo</button>
         <button class="tbtn" style="background:#e67e22;font-size:0.74rem" onclick="document.getElementById('fileRespaldoGestor').click()" title="Cargar respaldo JSON del sistema gestor">📂 Cargar</button>
@@ -2392,6 +2412,501 @@ function renderGestorAdmin(){
   if(_gestorPag==='plataformas') setTimeout(function(){ if(!_entrandoAPlataforma) _refrescarStatsPlataformasReal(); },1200);
   if(_gestorPag==='salud') setTimeout(_refrescarSaludSistema,150);
   if(_gestorPag==='agenteia') setTimeout(_refrescarAgenteIA,150);
+  if(_gestorPag==='etc'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE){ setTimeout(_refrescarEtcEntidades,120); if(_smsGlobalHabilitado===null) setTimeout(_refrescarEstadoSms,120); }
+  if(_gestorPag==='universidades'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE) setTimeout(_refrescarUniversidades,120);
+}
+
+// ============================================================
+// LOTE 1 — PANEL DEL SÚPER ADMIN: ACTIVACIÓN Y GESTIÓN DE LOS MÓDULOS
+// "ENTIDADES TERRITORIALES CERTIFICADAS (ETC)" Y "UNIVERSIDADES/EDUCACIÓN
+// SUPERIOR". Ambos empiezan APAGADOS (gestorDB.featureFlags, ver
+// GESTOR_DEFAULT/_migrateGestorDB más arriba) — mientras estén apagados,
+// esta pantalla solo muestra el botón de activación; ninguna petición a
+// /api/etc/* ni /api/educacion-superior/* se hace hasta que el flag esté
+// en true (y aunque se hiciera, el backend las rechaza con 403 — ver
+// checkModuleEnabled() en el servidor).
+//
+// La activación ejecuta una migración SQL real en Neon (crea las tablas
+// del módulo), así que el backend exige las credenciales REALES del Súper
+// Admin (no solo estar "gestorSesion" abierta) — se piden con
+// customPrompt() en el momento, nunca se guardan en memoria más de lo que
+// dura esa única petición.
+// ============================================================
+async function _pedirCredencialesSuperAdminParaActivar(){
+  const p=await customPrompt('Por seguridad, esta acción crea tablas nuevas en la base de datos. Confirme su contraseña de Súper Admin para continuar:','','🔑 Confirmar identidad');
+  if(p===null||!p) return null;
+  return {u:gestorDB.superAdmin.u,p};
+}
+async function activarModuloETC(){
+  if(!await customConfirm('¿Activar el Módulo de Entidades Territoriales (ETC)?\n\nEsto creará las tablas necesarias en la base de datos (Neon) y hará visible este módulo para todo el sistema. Es una acción segura de repetir, pero no se puede "desactivar" fácilmente el esquema una vez creado (los datos que se registren después sí quedarán guardados de forma permanente).',{icono:'🏛️',textoAceptar:'Sí, activar'})) return;
+  const cred=await _pedirCredencialesSuperAdminParaActivar();
+  if(!cred) return;
+  try{
+    _showToast('🏛️ Activando Módulo ETC — creando tablas en la nube...','info',6000);
+    const r=await fetch(API_BASE+'/api/superadmin/activar-modulo-etc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cred)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo activar el módulo.'),'error',6000); return; }
+    updGestorDB(function(d){ d.featureFlags=d.featureFlags||{}; d.featureFlags.ENABLE_ETC_CONTRACTING_MODULE=true; return d; });
+    _showToast('✅ Módulo ETC activado correctamente.','success',5000);
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red al activar el módulo.','error',5000); }
+}
+async function activarModuloUniversidades(){
+  if(!await customConfirm('¿Activar el Módulo de Universidades / Educación Superior?\n\nEsto creará las tablas necesarias en la base de datos (Neon) y hará visible este módulo para todo el sistema.',{icono:'🎓',textoAceptar:'Sí, activar'})) return;
+  const cred=await _pedirCredencialesSuperAdminParaActivar();
+  if(!cred) return;
+  try{
+    _showToast('🎓 Activando Módulo Universidades — creando tablas en la nube...','info',6000);
+    const r=await fetch(API_BASE+'/api/superadmin/activar-modulo-universidades',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cred)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo activar el módulo.'),'error',6000); return; }
+    updGestorDB(function(d){ d.featureFlags=d.featureFlags||{}; d.featureFlags.ENABLE_UNIVERSITIES_MODULE=true; return d; });
+    _showToast('✅ Módulo Universidades activado correctamente.','success',5000);
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red al activar el módulo.','error',5000); }
+}
+
+// ── A. Módulo ETC — pantalla y CRUD (Lote 1: entidades + instituciones) ──────
+let _etcEntidades=[];
+let _etcCargando=false;
+let _etcEntidadSel=null; // id de la entidad cuyas instituciones se están viendo
+let _etcInstituciones=[];
+// Ajuste multicanal — interruptor GLOBAL de notificaciones SMS. null = aún
+// no se consultó; true/false = respuesta real de
+// GET /api/superadmin/modulos-estado. Encenderlo NO envía nada por sí
+// solo — cada entidad sigue necesitando sus propias credenciales (ver
+// _etcConfigurarSms()) para que algo salga de verdad por SMS.
+let _smsGlobalHabilitado=null;
+async function _refrescarEstadoSms(){
+  try{
+    const r=await fetch(API_BASE+'/api/superadmin/modulos-estado');
+    const j=await r.json().catch(()=>({}));
+    _smsGlobalHabilitado=!!(j&&j.ENABLE_SMS_NOTIFICATIONS);
+  }catch(e){ _smsGlobalHabilitado=false; }
+  if(_gestorPag==='etc') renderGestorAdmin();
+}
+async function _toggleSmsGlobal(){
+  const activar=!_smsGlobalHabilitado;
+  if(!await customConfirm(activar
+    ?'¿Activar Notificaciones SMS a nivel global?\n\nEsto NO envía ningún SMS por sí solo: cada Entidad Territorial debe configurar además sus propias credenciales de proveedor (botón "📶 SMS" en su fila). Sin esas credenciales, sus notificaciones seguirán yendo por correo, sin ningún costo.'
+    :'¿Desactivar Notificaciones SMS a nivel global?\n\nA partir de ahora, TODAS las notificaciones del módulo (de todas las entidades) volverán a ir únicamente por correo, sin importar las credenciales que cada una tenga configuradas.'
+  )) return;
+  const p=await customPrompt('Confirme su contraseña de Súper Admin:','','🔑 Confirmar identidad');
+  if(p===null||!p) return;
+  try{
+    const r=await fetch(API_BASE+'/api/superadmin/activar-sms-notificaciones',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({u:gestorDB.superAdmin.u,p,activar})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo cambiar el interruptor.'),'error',5000); return; }
+    _smsGlobalHabilitado=activar;
+    _showToast(activar?'✅ Notificaciones SMS activadas globalmente.':'✅ Notificaciones SMS desactivadas globalmente.','success',4500);
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+// Configura (o borra) las credenciales del proveedor de SMS de UNA
+// entidad — modelo multi-tenant (punto 3 del ajuste): cada ETC paga y
+// administra su propio proveedor. Se usa una secuencia simple de
+// customPrompt() (igual estilo que el resto del panel) en vez de un
+// formulario nuevo, para no sumar otro tipo de modal al proyecto.
+async function _etcConfigurarSms(id){
+  const en=_etcEntidades.find(function(e){return e.id===id;});
+  if(!en) return;
+  const actual=en.smsProviderConfig&&en.smsProviderConfig.proveedor?en.smsProviderConfig:{};
+  const proveedor=await customPrompt('Proveedor de SMS de esta entidad (hablame / twilio / vacío para quitar):',actual.proveedor||'','📶 Configurar SMS — '+en.nombreEntidad);
+  if(proveedor===null) return;
+  let body={smsProviderConfig:{}};
+  if(proveedor.trim()){
+    const apiKey=await customPrompt('API Key / Token del proveedor:',actual.apiKey||'','📶 Configurar SMS');
+    if(apiKey===null) return;
+    const remitente=await customPrompt('Remitente / número (opcional):',actual.remitente||'','📶 Configurar SMS');
+    if(remitente===null) return;
+    body.smsProviderConfig={proveedor:proveedor.trim().toLowerCase(),apiKey:apiKey.trim(),remitente:(remitente||'').trim()};
+  }
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({actualizadoPor:gestorDB.superAdmin.u},body))});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo guardar la configuración de SMS.'),'error',5000); return; }
+    _showToast(proveedor.trim()?'✅ Proveedor de SMS configurado para esta entidad.':'✅ Configuración de SMS eliminada — esta entidad usará solo correo.','success',4500);
+    _refrescarEtcEntidades();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+function htmlGestorETC(){
+  const activo=!!(gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE);
+  if(!activo){
+    return `<div class="card" style="text-align:center;padding:40px 24px">
+      <div style="font-size:3rem;margin-bottom:10px">🏛️</div>
+      <h3 style="color:#003366;margin-bottom:10px">Módulo de Entidades Territoriales Certificadas (ETC)</h3>
+      <p style="color:#666;max-width:560px;margin:0 auto 18px;font-size:0.9rem">Gestión documental, contratación y permisos para Secretarías de Educación departamentales, distritales o de municipios certificados. Este módulo está desactivado — actívelo para empezar a registrar entidades territoriales, sus instituciones vinculadas y, en próximos lotes, los expedientes de contratación y permisos escalados.</p>
+      <button class="btn btn-green" style="font-size:0.95rem;padding:12px 24px" onclick="activarModuloETC()">🚀 Activar Módulo de Entidades Territoriales (ETC)</button>
+    </div>`;
+  }
+  const filasEntidades=_etcEntidades.map(function(en){
+    return `<tr>
+      <td style="padding:6px 10px;border:1px solid #ddd">${_escaparHtmlModal(en.nombreEntidad)}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${en.tipoEntidad.replace('_',' ')}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${en.nit||'—'}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${en.emailContacto||'—'}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">${en.activo?'✅':'🚫'}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;white-space:nowrap">
+        <button class="btn-sm" style="background:#1a5276" onclick="_etcVerInstituciones(${en.id})" title="Ver/agregar instituciones vinculadas">🏫 Instituciones</button>
+        <button class="btn-sm" style="background:#7f8c8d" onclick="_etcEditarEntidad(${en.id})" title="Editar perfil legal">✏️ Editar</button>
+        <button class="btn-sm" style="background:${en.smsProviderConfig&&en.smsProviderConfig.proveedor?'#1e6b3a':'#7f8c8d'}" onclick="_etcConfigurarSms(${en.id})" title="Credenciales propias de esta entidad para enviar SMS (multi-tenant — cada una paga su proveedor)">📶 SMS${en.smsProviderConfig&&en.smsProviderConfig.proveedor?' ✓':''}</button>
+        <button class="btn-sm" style="background:#c0392b" onclick="_etcInactivarEntidad(${en.id})" title="Inactivar (no elimina el historial)">🚫 Inactivar</button>
+      </td>
+    </tr>`;
+  }).join('');
+  const panelInstituciones=_etcEntidadSel?(function(){
+    const entidad=_etcEntidades.find(function(e){return e.id===_etcEntidadSel;});
+    const filas=_etcInstituciones.map(function(inst){
+      return `<tr>
+        <td style="padding:6px 10px;border:1px solid #ddd">${inst.codigoDane}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd">${_escaparHtmlModal(inst.nombreInstitucion)}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">${inst.usaPlataformaYc?'✅ Sí usa YC':'☁️ Solo ETC'}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">
+          <button class="btn-sm" style="background:${inst.autoReportEntidad?'#1e6b3a':'#7f8c8d'}" onclick="_etcCambiarAutoReporte(${inst.id},${!inst.autoReportEntidad})" title="Manual: alguien presiona 'Reportar Novedad'. Automático: se reporta solo al aprobar/rechazar el permiso.">${inst.autoReportEntidad?'⚡ Automático':'✋ Manual'}</button>
+        </td>
+        <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">${inst.activa?'✅':'🚫'}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd"><button class="btn-sm" style="background:#c0392b" onclick="_etcQuitarInstitucion(${inst.id})">🚫 Inactivar</button></td>
+      </tr>`;
+    }).join('');
+    return `<div class="card" style="margin-top:16px">
+      <h4 style="color:#003366">🏫 Instituciones vinculadas a: ${entidad?_escaparHtmlModal(entidad.nombreEntidad):''}</h4>
+      <div class="grid3" style="margin:10px 0">
+        <div><label class="lbl">Código DANE</label><input id="etcNuevoDane" placeholder="1112345678"></div>
+        <div><label class="lbl">Nombre de la institución</label><input id="etcNuevoNombreInst" placeholder="Nombre completo"></div>
+        <div style="display:flex;align-items:flex-end;gap:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.82rem"><input type="checkbox" id="etcNuevoUsaYc"> Usa la plataforma YC</label>
+        </div>
+      </div>
+      <div class="grid3" style="margin:0 0 10px">
+        <div><label class="lbl">"sk" de la institución en YC (solo si "Usa la plataforma YC")</label><input id="etcNuevoSk" placeholder="Ej: colegio-san-jose-2024"></div>
+      </div>
+      <button class="btn btn-blue" onclick="_etcAgregarInstitucion()">➕ Vincular institución</button>
+      <div style="overflow-x:auto;margin-top:12px">
+        ${filas.length?`<table style="width:100%;border-collapse:collapse;font-size:0.84rem"><thead><tr style="background:#003366;color:#fff">
+          <th style="padding:6px 10px">DANE</th><th style="padding:6px 10px">Institución</th><th style="padding:6px 10px">Usa YC</th><th style="padding:6px 10px">Escalado de permisos</th><th style="padding:6px 10px">Activa</th><th style="padding:6px 10px">Acción</th>
+        </tr></thead><tbody>${filas}</tbody></table>`:'<p style="color:#888;font-size:0.85rem">Aún no hay instituciones vinculadas a esta entidad.</p>'}
+      </div>
+      <button class="btn btn-gray" style="margin-top:10px" onclick="_etcEntidadSel=null;renderGestorAdmin()">✕ Cerrar</button>
+    </div>`;
+  })():'';
+  const smsCard=`<div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+    <div>
+      <b style="color:#003366">📶 Notificaciones SMS</b>
+      <p style="font-size:0.78rem;color:#666;margin:4px 0 0;max-width:520px">Interruptor global. Requiere que, además, cada entidad configure su propio proveedor (botón "📶 SMS" en su fila) — sin eso, sus notificaciones siguen yendo solo por correo, sin costo.</p>
+    </div>
+    <button class="btn-sm" style="background:${_smsGlobalHabilitado?'#1e6b3a':'#7f8c8d'};font-size:0.85rem;padding:8px 16px" onclick="_toggleSmsGlobal()">${_smsGlobalHabilitado?'⚡ SMS Activado — clic para apagar':'✋ Activar Notificaciones SMS (Requiere Proveedor)'}</button>
+  </div>`;
+  return `<h3 class="sec-title">🏛️ Entidades Territoriales Certificadas (ETC)</h3>
+  ${smsCard}
+  <div class="card">
+    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">Perfil legal completo de cada Entidad Territorial — estos datos alimentan automáticamente el membrete de los correos y documentos que emita el módulo (Lote 4).</p>
+    <div class="grid3" style="margin-bottom:10px">
+      <div><label class="lbl">Nombre oficial</label><input id="etcNuevoNombre" placeholder="Secretaría de Educación de..."></div>
+      <div><label class="lbl">Tipo</label><select id="etcNuevoTipo"><option value="Municipio_Certificado">Municipio Certificado</option><option value="Distrito">Distrito</option><option value="Departamento">Departamento</option></select></div>
+      <div><label class="lbl">NIT</label><input id="etcNuevoNit" placeholder="900.000.000-0"></div>
+    </div>
+    <div class="grid3" style="margin-bottom:10px">
+      <div><label class="lbl">Dirección</label><input id="etcNuevoDireccion"></div>
+      <div><label class="lbl">Teléfono</label><input id="etcNuevoTelefono"></div>
+      <div><label class="lbl">Correo oficial</label><input id="etcNuevoEmail" type="email"></div>
+    </div>
+    <button class="btn btn-green" onclick="_etcCrearEntidad()">➕ Registrar Entidad Territorial</button>
+    <div style="overflow-x:auto;margin-top:16px">
+      ${_etcCargando?'<p style="color:#888">Cargando...</p>':(filasEntidades.length?`<table style="width:100%;border-collapse:collapse;font-size:0.84rem"><thead><tr style="background:#003366;color:#fff">
+        <th style="padding:6px 10px">Nombre</th><th style="padding:6px 10px">Tipo</th><th style="padding:6px 10px">NIT</th><th style="padding:6px 10px">Correo</th><th style="padding:6px 10px">Activa</th><th style="padding:6px 10px">Acciones</th>
+      </tr></thead><tbody>${filasEntidades}</tbody></table>`:'<p style="color:#888;font-size:0.85rem">Aún no hay entidades territoriales registradas.</p>')}
+    </div>
+    ${panelInstituciones}
+  </div>`;
+}
+async function _refrescarEtcEntidades(){
+  _etcCargando=true;
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades');
+    const j=await r.json().catch(()=>({}));
+    _etcEntidades=(j&&j.entidades)||[];
+  }catch(e){ _etcEntidades=[]; }
+  _etcCargando=false;
+  if(_gestorPag==='etc') renderGestorAdmin();
+}
+async function _etcCrearEntidad(){
+  const nombreEntidad=(document.getElementById('etcNuevoNombre')||{}).value||'';
+  if(!nombreEntidad.trim()){ _showToast('El nombre oficial es obligatorio.','warning',4000); return; }
+  const body={
+    nombreEntidad,
+    tipoEntidad:(document.getElementById('etcNuevoTipo')||{}).value||'Municipio_Certificado',
+    nit:(document.getElementById('etcNuevoNit')||{}).value||'',
+    direccion:(document.getElementById('etcNuevoDireccion')||{}).value||'',
+    telefono:(document.getElementById('etcNuevoTelefono')||{}).value||'',
+    emailContacto:(document.getElementById('etcNuevoEmail')||{}).value||'',
+    creadoPor:gestorDB.superAdmin.u,
+  };
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo crear la entidad.'),'error',5000); return; }
+    _showToast('✅ Entidad territorial registrada.','success',4000);
+    _refrescarEtcEntidades();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _etcEditarEntidad(id){
+  const en=_etcEntidades.find(function(e){return e.id===id;});
+  if(!en) return;
+  const nuevoNombre=await customPrompt('Nombre oficial de la entidad:',en.nombreEntidad,'✏️ Editar entidad');
+  if(nuevoNombre===null) return;
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nombreEntidad:nuevoNombre,actualizadoPor:gestorDB.superAdmin.u})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo actualizar.'),'error',4000); return; }
+    _showToast('✅ Entidad actualizada.','success',3500);
+    _refrescarEtcEntidades();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _etcInactivarEntidad(id){
+  if(!await customConfirm('¿Inactivar esta entidad territorial? No se borra ningún dato — solo deja de estar disponible para nuevos trámites.')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades/'+id,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({actualizadoPor:gestorDB.superAdmin.u})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo inactivar.'),'error',4000); return; }
+    _showToast('✅ Entidad inactivada.','success',3500);
+    _refrescarEtcEntidades();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _etcVerInstituciones(entidadId){
+  _etcEntidadSel=entidadId;
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades/'+entidadId+'/instituciones');
+    const j=await r.json().catch(()=>({}));
+    _etcInstituciones=(j&&j.instituciones)||[];
+  }catch(e){ _etcInstituciones=[]; }
+  renderGestorAdmin();
+}
+async function _etcAgregarInstitucion(){
+  if(!_etcEntidadSel) return;
+  const codigoDane=(document.getElementById('etcNuevoDane')||{}).value||'';
+  const nombreInstitucion=(document.getElementById('etcNuevoNombreInst')||{}).value||'';
+  const usaPlataformaYc=!!(document.getElementById('etcNuevoUsaYc')||{}).checked;
+  const skPlataformaYc=(document.getElementById('etcNuevoSk')||{}).value||'';
+  if(!codigoDane.trim()||!nombreInstitucion.trim()){ _showToast('Código DANE y nombre son obligatorios.','warning',4000); return; }
+  try{
+    const r=await fetch(API_BASE+'/api/etc/entidades/'+_etcEntidadSel+'/instituciones',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codigoDane,nombreInstitucion,usaPlataformaYc,skPlataformaYc})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo vincular la institución.'),'error',5000); return; }
+    _showToast('✅ Institución vinculada.','success',3500);
+    _etcVerInstituciones(_etcEntidadSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+// Lote 3 — alterna el escalado de permisos de una institución entre Manual
+// (false, por defecto) y Automático (true) — ver GET
+// /api/etc/instituciones/buscar-por-sk/:sk y responderAusentismo() en
+// 06-documentos-y-resto.js.
+async function _etcCambiarAutoReporte(id,valor){
+  try{
+    const r=await fetch(API_BASE+'/api/etc/instituciones/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoReportEntidad:!!valor})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo cambiar el escalado de permisos.'),'error',4500); return; }
+    _showToast(valor?'✅ Escalado automático activado.':'✅ Escalado manual activado.','success',3500);
+    _etcVerInstituciones(_etcEntidadSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _etcQuitarInstitucion(id){
+  if(!await customConfirm('¿Inactivar esta institución? No se borra ningún dato histórico.')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/etc/instituciones/'+id,{method:'DELETE'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo inactivar.'),'error',4000); return; }
+    _showToast('✅ Institución inactivada.','success',3500);
+    _etcVerInstituciones(_etcEntidadSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+
+// ── B. Módulo Universidades — pantalla y CRUD (Lote 1: catálogo básico) ──────
+let _universidades=[];
+let _universidadesCargando=false;
+let _uniSel=null; // id de la universidad cuyos programas se están viendo
+let _uniProgramas=[];
+let _uniProgramaSel=null; // id del programa cuyas personas se están viendo
+let _uniPersonas=[];
+function htmlGestorUniversidades(){
+  const activo=!!(gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE);
+  if(!activo){
+    return `<div class="card" style="text-align:center;padding:40px 24px">
+      <div style="font-size:3rem;margin-bottom:10px">🎓</div>
+      <h3 style="color:#003366;margin-bottom:10px">Módulo de Universidades / Educación Superior</h3>
+      <p style="color:#666;max-width:560px;margin:0 auto 18px;font-size:0.9rem">Catálogo de universidades, sus programas académicos y las personas (catedráticos, planta, estudiantes) vinculadas. Este módulo está desactivado — actívelo para empezar a registrar universidades y programas.</p>
+      <button class="btn btn-green" style="font-size:0.95rem;padding:12px 24px" onclick="activarModuloUniversidades()">🚀 Activar Módulo de Universidades / Educación Superior</button>
+    </div>`;
+  }
+  const filasUni=_universidades.map(function(u){
+    return `<tr>
+      <td style="padding:6px 10px;border:1px solid #ddd">${_escaparHtmlModal(u.nombreUniversidad)}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${u.codigoSnies||'—'}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${u.nit||'—'}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;text-align:center">${u.activo?'✅':'🚫'}</td>
+      <td style="padding:6px 10px;border:1px solid #ddd;white-space:nowrap">
+        <button class="btn-sm" style="background:#1a5276" onclick="_uniVerProgramas(${u.id})">📚 Programas</button>
+        <button class="btn-sm" style="background:#c0392b" onclick="_uniInactivar(${u.id})">🚫 Inactivar</button>
+      </td>
+    </tr>`;
+  }).join('');
+  const panelProgramas=_uniSel?(function(){
+    const uni=_universidades.find(function(x){return x.id===_uniSel;});
+    const filasP=_uniProgramas.map(function(p){
+      return `<tr>
+        <td style="padding:6px 10px;border:1px solid #ddd">${_escaparHtmlModal(p.nombrePrograma)}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${p.nivel}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${p.facultad||'—'}</td>
+        <td style="padding:6px 10px;border:1px solid #ddd;white-space:nowrap">
+          <button class="btn-sm" style="background:#1a5276" onclick="_uniVerPersonas(${p.id})">👤 Personas</button>
+          <button class="btn-sm" style="background:#c0392b" onclick="_uniEliminarPrograma(${p.id})">🗑️ Eliminar</button>
+        </td>
+      </tr>`;
+    }).join('');
+    const panelPersonas=_uniProgramaSel?(function(){
+      const prog=_uniProgramas.find(function(x){return x.id===_uniProgramaSel;});
+      const filasPer=_uniPersonas.map(function(per){
+        return `<tr>
+          <td style="padding:6px 10px;border:1px solid #ddd">${per.personaCedula}</td>
+          <td style="padding:6px 10px;border:1px solid #ddd;font-size:0.8rem">${per.tipoRol}</td>
+          <td style="padding:6px 10px;border:1px solid #ddd"><button class="btn-sm" style="background:#c0392b" onclick="_uniEliminarPersona(${per.id})">🗑️ Quitar</button></td>
+        </tr>`;
+      }).join('');
+      return `<div class="card" style="margin-top:14px;background:#f8f9fa">
+        <h5 style="color:#003366">👤 Personas de: ${prog?_escaparHtmlModal(prog.nombrePrograma):''}</h5>
+        <div class="grid3" style="margin:10px 0">
+          <div><label class="lbl">Cédula</label><input id="uniNuevaCedula"></div>
+          <div><label class="lbl">Rol</label><select id="uniNuevoRol"><option value="Estudiante">Estudiante</option><option value="Catedratico">Catedrático</option><option value="Planta">Planta</option></select></div>
+          <div style="display:flex;align-items:flex-end"><button class="btn btn-blue" onclick="_uniAgregarPersona()">➕ Vincular</button></div>
+        </div>
+        ${filasPer.length?`<table style="width:100%;border-collapse:collapse;font-size:0.82rem"><thead><tr style="background:#1a5276;color:#fff"><th style="padding:5px 8px">Cédula</th><th style="padding:5px 8px">Rol</th><th style="padding:5px 8px">Acción</th></tr></thead><tbody>${filasPer}</tbody></table>`:'<p style="color:#888;font-size:0.82rem">Aún no hay personas vinculadas a este programa.</p>'}
+        <button class="btn btn-gray" style="margin-top:8px" onclick="_uniProgramaSel=null;renderGestorAdmin()">✕ Cerrar</button>
+      </div>`;
+    })():'';
+    return `<div class="card" style="margin-top:16px">
+      <h4 style="color:#003366">📚 Programas de: ${uni?_escaparHtmlModal(uni.nombreUniversidad):''}</h4>
+      <div class="grid3" style="margin:10px 0">
+        <div><label class="lbl">Nombre del programa</label><input id="uniNuevoPrograma"></div>
+        <div><label class="lbl">Nivel</label><select id="uniNuevoNivel"><option value="Pregrado">Pregrado</option><option value="Posgrado">Posgrado</option><option value="Maestria">Maestría</option></select></div>
+        <div><label class="lbl">Facultad</label><input id="uniNuevaFacultad"></div>
+      </div>
+      <button class="btn btn-blue" onclick="_uniAgregarPrograma()">➕ Agregar programa</button>
+      <div style="overflow-x:auto;margin-top:12px">
+        ${filasP.length?`<table style="width:100%;border-collapse:collapse;font-size:0.84rem"><thead><tr style="background:#003366;color:#fff"><th style="padding:6px 10px">Programa</th><th style="padding:6px 10px">Nivel</th><th style="padding:6px 10px">Facultad</th><th style="padding:6px 10px">Acciones</th></tr></thead><tbody>${filasP}</tbody></table>`:'<p style="color:#888;font-size:0.85rem">Aún no hay programas registrados.</p>'}
+      </div>
+      ${panelPersonas}
+      <button class="btn btn-gray" style="margin-top:10px" onclick="_uniSel=null;_uniProgramaSel=null;renderGestorAdmin()">✕ Cerrar</button>
+    </div>`;
+  })():'';
+  return `<h3 class="sec-title">🎓 Universidades / Educación Superior</h3>
+  <div class="card">
+    <p style="font-size:0.82rem;color:#666;margin-bottom:12px">Catálogo de universidades, sus programas y las personas vinculadas (catedrático, planta, estudiante).</p>
+    <div class="grid3" style="margin-bottom:10px">
+      <div><label class="lbl">Nombre de la universidad</label><input id="uniNuevoNombre"></div>
+      <div><label class="lbl">Código SNIES</label><input id="uniNuevoSnies"></div>
+      <div><label class="lbl">NIT</label><input id="uniNuevoNit"></div>
+    </div>
+    <button class="btn btn-green" onclick="_uniCrear()">➕ Registrar Universidad</button>
+    <div style="overflow-x:auto;margin-top:16px">
+      ${_universidadesCargando?'<p style="color:#888">Cargando...</p>':(filasUni.length?`<table style="width:100%;border-collapse:collapse;font-size:0.84rem"><thead><tr style="background:#003366;color:#fff"><th style="padding:6px 10px">Nombre</th><th style="padding:6px 10px">SNIES</th><th style="padding:6px 10px">NIT</th><th style="padding:6px 10px">Activa</th><th style="padding:6px 10px">Acciones</th></tr></thead><tbody>${filasUni}</tbody></table>`:'<p style="color:#888;font-size:0.85rem">Aún no hay universidades registradas.</p>')}
+    </div>
+    ${panelProgramas}
+  </div>`;
+}
+async function _refrescarUniversidades(){
+  _universidadesCargando=true;
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/universidades');
+    const j=await r.json().catch(()=>({}));
+    _universidades=(j&&j.universidades)||[];
+  }catch(e){ _universidades=[]; }
+  _universidadesCargando=false;
+  if(_gestorPag==='universidades') renderGestorAdmin();
+}
+async function _uniCrear(){
+  const nombreUniversidad=(document.getElementById('uniNuevoNombre')||{}).value||'';
+  if(!nombreUniversidad.trim()){ _showToast('El nombre es obligatorio.','warning',4000); return; }
+  const body={nombreUniversidad,codigoSnies:(document.getElementById('uniNuevoSnies')||{}).value||'',nit:(document.getElementById('uniNuevoNit')||{}).value||''};
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/universidades',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo crear.'),'error',5000); return; }
+    _showToast('✅ Universidad registrada.','success',4000);
+    _refrescarUniversidades();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _uniInactivar(id){
+  if(!await customConfirm('¿Inactivar esta universidad?')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/universidades/'+id,{method:'DELETE'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo inactivar.'),'error',4000); return; }
+    _showToast('✅ Universidad inactivada.','success',3500);
+    _refrescarUniversidades();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _uniVerProgramas(universidadId){
+  _uniSel=universidadId; _uniProgramaSel=null;
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/universidades/'+universidadId+'/programas');
+    const j=await r.json().catch(()=>({}));
+    _uniProgramas=(j&&j.programas)||[];
+  }catch(e){ _uniProgramas=[]; }
+  renderGestorAdmin();
+}
+async function _uniAgregarPrograma(){
+  if(!_uniSel) return;
+  const nombrePrograma=(document.getElementById('uniNuevoPrograma')||{}).value||'';
+  if(!nombrePrograma.trim()){ _showToast('El nombre del programa es obligatorio.','warning',4000); return; }
+  const body={nombrePrograma,nivel:(document.getElementById('uniNuevoNivel')||{}).value||'Pregrado',facultad:(document.getElementById('uniNuevaFacultad')||{}).value||''};
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/universidades/'+_uniSel+'/programas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo crear el programa.'),'error',5000); return; }
+    _showToast('✅ Programa agregado.','success',3500);
+    _uniVerProgramas(_uniSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _uniEliminarPrograma(id){
+  if(!await customConfirm('¿Eliminar este programa? También se desvincularán las personas asociadas.')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/programas/'+id,{method:'DELETE'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo eliminar.'),'error',4000); return; }
+    _showToast('✅ Programa eliminado.','success',3500);
+    _uniVerProgramas(_uniSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _uniVerPersonas(programaId){
+  _uniProgramaSel=programaId;
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/programas/'+programaId+'/personas');
+    const j=await r.json().catch(()=>({}));
+    _uniPersonas=(j&&j.personas)||[];
+  }catch(e){ _uniPersonas=[]; }
+  renderGestorAdmin();
+}
+async function _uniAgregarPersona(){
+  if(!_uniProgramaSel) return;
+  const personaCedula=(document.getElementById('uniNuevaCedula')||{}).value||'';
+  if(!personaCedula.trim()){ _showToast('La cédula es obligatoria.','warning',4000); return; }
+  const body={personaCedula,tipoRol:(document.getElementById('uniNuevoRol')||{}).value||'Estudiante'};
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/programas/'+_uniProgramaSel+'/personas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo vincular.'),'error',5000); return; }
+    _showToast('✅ Persona vinculada.','success',3500);
+    _uniVerPersonas(_uniProgramaSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _uniEliminarPersona(id){
+  if(!await customConfirm('¿Quitar esta persona del programa?')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/educacion-superior/personas/'+id,{method:'DELETE'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo quitar.'),'error',4000); return; }
+    _showToast('✅ Persona desvinculada.','success',3500);
+    _uniVerPersonas(_uniProgramaSel);
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
 }
 
 

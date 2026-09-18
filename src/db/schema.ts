@@ -698,3 +698,251 @@ export const univGradebookCategorias = pgTable('univ_gradebook_categorias', {
   index('univ_gb_cat_sk_idx').on(t.sk),
   index('univ_gb_cat_seccion_idx').on(t.seccionId),
 ]);
+
+// ════════════════════════════════════════════════════════════════════════════
+// LOTE 1 — MÓDULO DE GESTIÓN DOCUMENTAL/CONTRATACIÓN PARA ENTIDADES
+// TERRITORIALES CERTIFICADAS (ETC) + MÓDULO DE EDUCACIÓN SUPERIOR/UNIVERSIDADES
+// ------------------------------------------------------------------------------
+// A diferencia de TODAS las tablas anteriores de este archivo (que
+// `initDb()` crea siempre, en cada arranque del servidor), las tablas de
+// estos dos módulos se crean BAJO DEMANDA — nunca al arrancar el servidor —
+// mediante `ensureSchemaETC()`/`ensureSchemaEducacionSuperior()` (ver
+// src/db/index.ts), que solo se ejecutan la primera vez que el Súper Admin
+// presiona el botón de activación correspondiente en su panel (ver
+// src/lib/feature-flags.ts y los endpoints POST /api/superadmin/activar-
+// modulo-etc / activar-modulo-universidades en src/index.ts). Mientras el
+// módulo esté desactivado, estas tablas simplemente no existen en Neon —
+// tal como pediste, "no se ejecutará ninguna consulta o script SQL sobre
+// Neon" hasta la primera activación. Se declaran aquí, en el mismo
+// schema.ts de siempre, para poder usar `db.select().from(...)` con
+// tipado de Drizzle una vez que el módulo YA está activo — Drizzle no
+// exige que la tabla exista físicamente para poder importar su definición,
+// solo al ejecutar una consulta real contra ella.
+//
+// Ambos módulos son INDEPENDIENTES entre sí (activar uno no activa ni
+// depende del otro) y también independientes del módulo "Educación
+// Superior/LMS" YA EXISTENTE en este archivo (tablas `lms_*`/`univ_*`,
+// arriba) — ese módulo es el Aula Virtual/LMS-SIS de universidades que YA
+// usan la plataforma con matrícula/notas/quizzes completos; el módulo
+// "Universidades" de este bloque es un catálogo más simple (universidad,
+// programas, personas) pensado para instituciones de educación superior
+// que la ETC gestiona a nivel de convocatoria/contratación, no
+// necesariamente usuarias del LMS completo — pueden coexistir sin
+// conflicto porque usan prefijos de tabla completamente distintos
+// (`universidad_*` aquí vs. `univ_*`/`lms_*` arriba).
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── A. MÓDULO ETC (Entidades Territoriales Certificadas) ──────────────────────
+
+// Perfil legal completo de la Entidad Territorial — ver punto 4 de la
+// especificación ("Parametrización legal y membretes dinámicos"): estos
+// datos alimentan automáticamente el membrete de todos los documentos,
+// constancias, reportes y correos que emita el módulo.
+export const etcEntidades = pgTable('etc_entidades', {
+  id:                     serial('id').primaryKey(),
+  nombreEntidad:          text('nombre_entidad').notNull(),
+  tipoEntidad:            text('tipo_entidad').notNull().default('Municipio_Certificado'), // 'Departamento' | 'Distrito' | 'Municipio_Certificado'
+  nit:                    text('nit').notNull().default(''),
+  direccion:              text('direccion').notNull().default(''),
+  telefono:               text('telefono').notNull().default(''),
+  emailContacto:          text('email_contacto').notNull().default(''),
+  logoUrl:                text('logo_url').notNull().default(''),
+  firmaRepresentanteUrl:  text('firma_representante_url').notNull().default(''),
+  // Motor de formulario dinámico por entidad (punto 3): cada ETC puede
+  // definir sus propios tipos de permiso, campos adicionales y requisitos
+  // de soporte PDF sin necesitar una migración de esquema nueva por cada
+  // entidad — todo vive en este JSONB, interpretado por el frontend/
+  // backend del módulo de permisos (Lote 3).
+  customFormSchema:       jsonb('custom_form_schema').default({}),
+  // Multi-tenant de SMS: cada ETC puede ingresar sus PROPIAS credenciales
+  // del proveedor de SMS que ella misma contrató y paga (Hablame.co,
+  // Twilio, AWS SNS, ...) — forma agnóstica {proveedor, apiKey, apiSecret?,
+  // accountSid?, remitente, ...}, interpretada por src/lib/sms-provider.ts.
+  // Si queda vacío ({}), esta entidad simplemente nunca tiene SMS
+  // disponible — todas sus notificaciones caen siempre al correo
+  // (fallback transparente, sin costo transaccional), sin que eso sea un
+  // error ni interrumpa ningún flujo.
+  smsProviderConfig:      jsonb('sms_provider_config').default({}),
+  activo:                 boolean('activo').notNull().default(true),
+  creadoPor:              text('creado_por').default(''),
+  actualizadoPor:         text('actualizado_por').default(''),
+  createdAt:              timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt:              timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('etc_entidades_activo_idx').on(t.activo),
+]);
+
+// Colegios/instituciones vinculados a una ETC — "usaPlataformaYc" es la
+// bandera clave del punto 2: determina si el backend provisiona
+// credenciales automáticas en el Gestor YC o si el expediente del docente
+// se queda únicamente en la nube de la ETC.
+export const etcInstituciones = pgTable('etc_instituciones', {
+  id:                 serial('id').primaryKey(),
+  entidadId:          integer('entidad_id').notNull().references(() => etcEntidades.id, { onDelete: 'cascade' }),
+  codigoDane:         text('codigo_dane').notNull(),
+  nombreInstitucion:  text('nombre_institucion').notNull(),
+  usaPlataformaYc:    boolean('usa_plataforma_yc').notNull().default(false),
+  // "sk" de la institución dentro de kv_store — solo tiene sentido cuando
+  // usaPlataformaYc=true; permite, en lotes futuros, verificar pertenencia
+  // de un docente consultando directamente el "db" real del colegio (ver
+  // punto 2, "Verificación automática de vinculación docente").
+  skPlataformaYc:     text('sk_plataforma_yc').default(''),
+  // Lote 3, punto 3: "escalado manual/automático a la entidad". false
+  // (default) = manual, la institución solo escala una novedad de permiso
+  // ya resuelta cuando alguien presiona "Reportar Novedad a la Entidad
+  // Territorial"; true = automático, se reporta a la entidad de inmediato
+  // en cuanto el Rector aprueba/rechaza/observa el permiso internamente.
+  autoReportEntidad:  boolean('auto_report_entidad').notNull().default(false),
+  activa:             boolean('activa').notNull().default(true),
+  createdAt:          timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('etc_instituciones_entidad_idx').on(t.entidadId),
+  uniqueIndex('etc_instituciones_dane_idx').on(t.entidadId, t.codigoDane),
+]);
+
+// Expediente de contratación/convocatoria de un docente/aspirante frente a
+// la ETC (punto 5, Flujos A/B/C de acceso híbrido) — el propio expediente,
+// sin los documentos anexos (esos van en etc_documentos, abajo, para poder
+// tener varios PDFs por contrato sin repetir todas estas columnas).
+export const etcContratos = pgTable('etc_contratos', {
+  id:                     serial('id').primaryKey(),
+  entidadId:              integer('entidad_id').notNull().references(() => etcEntidades.id, { onDelete: 'cascade' }),
+  docenteCedula:          text('docente_cedula').notNull(),
+  nombreCompleto:         text('nombre_completo').notNull(),
+  correo:                 text('correo').notNull().default(''),
+  telefono:               text('telefono').notNull().default(''),
+  municipio:              text('municipio').notNull().default(''),
+  institucionDestinoDane: text('institucion_destino_dane').notNull().default(''),
+  usaPlataformaYc:        boolean('usa_plataforma_yc').notNull().default(false),
+  // 'Pendiente' | 'Pendiente_Validacion_Institucional' (Lote 2: la cédula no
+  // se encontró como docente activo en la institución — el Rector debe
+  // confirmar) | 'Aprobado' | 'Rechazado' | 'Con_Observaciones'
+  estadoContrato:         text('estado_contrato').notNull().default('Pendiente'),
+  // Flujo B del punto 5: acceso por Link Único/Token Seguro para un
+  // docente activo/asignado que todavía no tiene usuario propio.
+  tokenAccesoUnico:       text('token_acceso_unico').default(''),
+  creadoPor:              text('creado_por').default(''),
+  actualizadoPor:         text('actualizado_por').default(''),
+  createdAt:              timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt:              timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('etc_contratos_entidad_idx').on(t.entidadId),
+  index('etc_contratos_cedula_idx').on(t.docenteCedula),
+  index('etc_contratos_estado_idx').on(t.estadoContrato),
+  uniqueIndex('etc_contratos_token_idx').on(t.tokenAccesoUnico),
+]);
+
+// Documentos/soportes PDF de un contrato/expediente — solo la URL en la
+// nube se guarda aquí (Cloudinary, vía src/lib/upload.ts con
+// resourceType:'raw'), nunca el archivo en sí, para mantener la fila
+// liviana y proteger conexiones rurales de baja velocidad (punto 7).
+export const etcDocumentos = pgTable('etc_documentos', {
+  id:                 serial('id').primaryKey(),
+  contratoId:         integer('contrato_id').notNull().references(() => etcContratos.id, { onDelete: 'cascade' }),
+  tipoDocumento:      text('tipo_documento').notNull(), // 'Cedula' | 'HojaDeVida' | 'Rut' | 'Titulos' | 'AptitudMedica'
+  urlDocumentoCloud:  text('url_documento_cloud').notNull().default(''),
+  estadoRevision:     text('estado_revision').notNull().default('Pendiente'), // 'Pendiente' | 'Aprobado' | 'Rechazado'
+  observacionesAdmin: text('observaciones_admin').default(''),
+  createdAt:          timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('etc_documentos_contrato_idx').on(t.contratoId),
+]);
+
+// Permisos/ausentismos ESCALADOS A LA ETC (punto 3, "Escalado a la
+// entidad"). Esta tabla es DISTINTA del arreglo "db.ausentismos" que ya
+// vive dentro del blob JSON de cada institución (ver
+// gestor-academico/dist/modules/06-documentos-y-resto.js) — ese arreglo
+// sigue siendo la fuente de verdad del flujo interno colegio↔docente↔
+// rector, y no se toca. Esta tabla nueva es el ESPEJO que recibe la ETC
+// cuando un permiso ya aprobado se reporta (manual o automáticamente,
+// según "auto_report_entidad" en etc_instituciones/config institucional) —
+// permite a la ETC ver el consolidado de permisos de TODAS sus
+// instituciones en un solo lugar, sin tener que consultar el "db" JSON de
+// cada colegio uno por uno. "institucionId"/"entidadId" son enteros que
+// referencian etc_instituciones/etc_entidades; "docenteId" es texto libre
+// (usuario o cédula) porque el docente puede o no tener cuenta en el
+// Gestor YC (Flujo B/C del punto 5).
+export const docentePermisos = pgTable('docente_permisos', {
+  id:                   serial('id').primaryKey(),
+  docenteId:            text('docente_id').notNull(),
+  institucionId:        integer('institucion_id').notNull().references(() => etcInstituciones.id, { onDelete: 'cascade' }),
+  entidadId:            integer('entidad_id').notNull().references(() => etcEntidades.id, { onDelete: 'cascade' }),
+  tipoPermiso:          text('tipo_permiso').notNull(),
+  fechaInicio:          text('fecha_inicio').notNull().default(''),
+  fechaFin:             text('fecha_fin').notNull().default(''),
+  motivo:               text('motivo').default(''),
+  // Campos adicionales definidos dinámicamente por el "custom_form_schema"
+  // de la entidad (punto 3) — cada ETC puede pedir requisitos distintos
+  // sin necesitar una columna física nueva por cada una.
+  datosAdicionales:     jsonb('datos_adicionales').default({}),
+  urlSoporteCloud:      text('url_soporte_cloud').default(''),
+  estado:               text('estado').notNull().default('Pendiente'), // 'Pendiente' | 'Aprobado' | 'Rechazado' | 'Con_Observaciones'
+  respuestaRector:      text('respuesta_rector').default(''),
+  reportadoEntidad:     boolean('reportado_entidad').notNull().default(false),
+  fechaReporteEntidad:  timestamp('fecha_reporte_entidad', { withTimezone: true }),
+  createdAt:            timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt:            timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('docente_permisos_institucion_idx').on(t.institucionId),
+  index('docente_permisos_entidad_idx').on(t.entidadId),
+  index('docente_permisos_docente_idx').on(t.docenteId),
+  index('docente_permisos_estado_idx').on(t.estado),
+]);
+
+// Códigos de un solo uso para el Flujo B de acceso híbrido (punto 5):
+// "Cédula + Código OTP". Diseño 100% cerrado (ajuste post-Lote 2): el único
+// canal real de este proyecto es el correo (se reutiliza
+// enviarCorreoGeneral()/POST /api/inetis/send-email, sin inventar un canal
+// nuevo) — no existe ningún proveedor de SMS integrado, así que el endpoint
+// (src/routes/etc.ts, /contratos/acceso/otp/solicitar) ni siquiera acepta un
+// parámetro de canal: siempre envía por correo. La columna "canal" queda
+// como un campo de extensión a futuro (si algún día se contrata un
+// proveedor de SMS), no como una opción ofrecida hoy al usuario.
+export const etcOtpCodigos = pgTable('etc_otp_codigos', {
+  id:          serial('id').primaryKey(),
+  cedula:      text('cedula').notNull(),
+  codigo:      text('codigo').notNull(),
+  canal:       text('canal').notNull().default('correo'), // hoy siempre 'correo' — columna reservada para un futuro proveedor de SMS
+  destino:     text('destino').notNull().default(''),
+  contratoId:  integer('contrato_id').references(() => etcContratos.id, { onDelete: 'cascade' }),
+  expiraEn:    timestamp('expira_en', { withTimezone: true }).notNull(),
+  usado:       boolean('usado').notNull().default(false),
+  createdAt:   timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('etc_otp_cedula_idx').on(t.cedula),
+]);
+
+// ── B. MÓDULO EDUCACIÓN SUPERIOR / UNIVERSIDADES (catálogo independiente) ──────
+
+export const universidadEntidades = pgTable('universidad_entidades', {
+  id:            serial('id').primaryKey(),
+  nombreUniversidad: text('nombre_universidad').notNull(),
+  codigoSnies:   text('codigo_snies').notNull().default(''),
+  nit:           text('nit').notNull().default(''),
+  logoUrl:       text('logo_url').notNull().default(''),
+  activo:        boolean('activo').notNull().default(true),
+  createdAt:     timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const universidadProgramas = pgTable('universidad_programas', {
+  id:              serial('id').primaryKey(),
+  universidadId:   integer('universidad_id').notNull().references(() => universidadEntidades.id, { onDelete: 'cascade' }),
+  nombrePrograma:  text('nombre_programa').notNull(),
+  nivel:           text('nivel').notNull().default('Pregrado'), // 'Pregrado' | 'Posgrado' | 'Maestria'
+  facultad:        text('facultad').default(''),
+  createdAt:       timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('universidad_programas_universidad_idx').on(t.universidadId),
+]);
+
+export const universidadDocentesEstudiantes = pgTable('universidad_docentes_estudiantes', {
+  id:               serial('id').primaryKey(),
+  personaCedula:    text('persona_cedula').notNull(),
+  tipoRol:          text('tipo_rol').notNull().default('Estudiante'), // 'Catedratico' | 'Planta' | 'Estudiante'
+  programaId:       integer('programa_id').notNull().references(() => universidadProgramas.id, { onDelete: 'cascade' }),
+  datosAdicionales: jsonb('datos_adicionales').default({}),
+  createdAt:        timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('universidad_docestud_persona_idx').on(t.personaCedula),
+  index('universidad_docestud_programa_idx').on(t.programaId),
+]);

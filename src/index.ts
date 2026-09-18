@@ -13,7 +13,15 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEducacionSuperior } from './db/index.js';
+// Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
+// flags, activación bajo demanda, ver comentario junto a los endpoints
+// POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
+import etcRouter from './routes/etc.js';
+import educacionSuperiorRouter from './routes/educacion-superior.js';
+import contratacionRouter from './routes/contratacion.js';
+import { moduloHabilitado, activarFlagEnGestorDB, establecerFlagSimpleEnGestorDB } from './lib/feature-flags.js';
+import { FLAG_SMS_NOTIFICATIONS, smsNotificacionesHabilitadasGlobalmente } from './lib/sms-provider.js';
 import repositorioRouter from './routes/repositorio.js';
 import lmsRouter from './routes/lms.js';
 import universityRouter, { exigirSesion as exigirSesionUniv, verificarInstitucionActiva as verificarInstitucionActivaUniv } from './routes/university.js';
@@ -862,6 +870,104 @@ app.post('/api/inetis/gestordb', async (req, res) => {
   } catch (e) {
     console.error('POST /api/inetis/gestordb', e);
     return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ============================================================
+// LOTE 1 — ACTIVACIÓN DINÁMICA DE MÓDULOS OPCIONALES (ver src/lib/feature-
+// flags.ts para el diseño completo del interruptor). Ambos endpoints:
+//   1) Exigen las credenciales REALES del Súper Admin en el cuerpo ({u,p})
+//      — igual verificación que ya usa POST /api/inetis/rescate/verificar
+//      más arriba — porque esta acción ejecuta una migración SQL real
+//      sobre Neon (crea tablas nuevas) y no debe quedar tan abierta como
+//      POST /api/inetis/gestordb (que hoy no exige ninguna credencial:
+//      ver el comentario de esa ruta). Es, a propósito, un estándar más
+//      alto que el resto del sistema en este punto puntual.
+//   2) Solo activan el flag en gestorDB DESPUÉS de que la migración
+//      termine sin lanzar ninguna excepción — así nunca queda un flag
+//      "encendido" con tablas que no llegaron a crearse.
+// ============================================================
+app.post('/api/superadmin/activar-modulo-etc', async (req, res) => {
+  try {
+    const { u, p } = (req.body || {}) as { u?: string; p?: string };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await ensureSchemaETC();
+    await activarFlagEnGestorDB('ETC_CONTRACTING');
+    return res.json({ ok: true, modulo: 'ENABLE_ETC_CONTRACTING_MODULE' });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-modulo-etc', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al activar el Módulo ETC. Revise los logs del servidor e intente de nuevo — la operación es segura de reintentar (las tablas se crean con CREATE TABLE IF NOT EXISTS).' });
+  }
+});
+
+app.post('/api/superadmin/activar-modulo-universidades', async (req, res) => {
+  try {
+    const { u, p } = (req.body || {}) as { u?: string; p?: string };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await ensureSchemaEducacionSuperior();
+    await activarFlagEnGestorDB('UNIVERSITIES');
+    return res.json({ ok: true, modulo: 'ENABLE_UNIVERSITIES_MODULE' });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-modulo-universidades', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al activar el Módulo Universidades. Revise los logs del servidor e intente de nuevo — la operación es segura de reintentar (las tablas se crean con CREATE TABLE IF NOT EXISTS).' });
+  }
+});
+
+// Estado actual de ambos módulos — el frontend lo usa para decidir si
+// muestra los menús/pantallas correspondientes sin tener que descargar el
+// gestorDB completo solo para leer 2 banderas.
+app.get('/api/superadmin/modulos-estado', async (_req, res) => {
+  try {
+    const [etcHabilitado, universidadesHabilitado, smsHabilitado] = await Promise.all([
+      moduloHabilitado('ETC_CONTRACTING'),
+      moduloHabilitado('UNIVERSITIES'),
+      smsNotificacionesHabilitadasGlobalmente(),
+    ]);
+    return res.json({
+      ok: true,
+      ENABLE_ETC_CONTRACTING_MODULE: etcHabilitado,
+      ENABLE_UNIVERSITIES_MODULE: universidadesHabilitado,
+      ENABLE_SMS_NOTIFICATIONS: smsHabilitado,
+    });
+  } catch (e) {
+    console.error('GET /api/superadmin/modulos-estado', e);
+    return res.status(500).json({ ok: false, error: 'Error interno' });
+  }
+});
+
+// ============================================================
+// Ajuste multicanal — interruptor global "Activar Notificaciones SMS
+// (Requiere Proveedor)". A diferencia de activar-modulo-etc/universidades,
+// este interruptor NO ejecuta ninguna migración SQL (no es un módulo con
+// tablas propias, es un canal de entrega) — solo prende/apaga
+// ENABLE_SMS_NOTIFICATIONS en gestorDB.featureFlags, con el mismo estándar
+// de seguridad (credenciales reales de Súper Admin) que el resto de
+// interruptores sensibles de este archivo. Encenderlo NO envía ningún SMS
+// por sí solo: cada Entidad Territorial sigue necesitando configurar sus
+// propias credenciales de proveedor (ver PUT /api/etc/entidades/:id) para
+// que algo salga de verdad por ese canal — ver src/lib/sms-provider.ts.
+// ============================================================
+app.post('/api/superadmin/activar-sms-notificaciones', async (req, res) => {
+  try {
+    const { u, p, activar } = (req.body || {}) as { u?: string; p?: string; activar?: boolean };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await establecerFlagSimpleEnGestorDB(FLAG_SMS_NOTIFICATIONS, !!activar);
+    return res.json({ ok: true, modulo: FLAG_SMS_NOTIFICATIONS, activo: !!activar });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-sms-notificaciones', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor de notificaciones SMS.' });
   }
 });
 
@@ -2515,6 +2621,18 @@ app.use('/api/sync-log', syncLogRouter);
 // del backend K-12; solo lee/escribe el mismo kv_store para no duplicar
 // la base de usuarios/estudiantes.
 app.use('/api/university', universityRouter);
+
+// ============================================================
+// LOTE 1 — MÓDULO ETC (Entidades Territoriales Certificadas) + MÓDULO
+// UNIVERSIDADES/EDUCACIÓN SUPERIOR (catálogo) — ambos apagados por
+// defecto; cada router se autoprotege con checkModuleEnabled() como su
+// PRIMER middleware (ver src/routes/etc.ts / educacion-superior.ts), así
+// que mientras el Súper Admin no los active, cualquier ruta bajo estos dos
+// prefijos responde 403 "Módulo no activado" sin tocar Neon.
+// ============================================================
+app.use('/api/etc', etcRouter);
+app.use('/api/educacion-superior', educacionSuperiorRouter);
+app.use('/api/contratacion', contratacionRouter);
 
 // ============================================================
 // MÓDULO UNIVERSITARIO ENTERPRISE (LMS/SIS completo) — INTEGRACIÓN DIRECTA

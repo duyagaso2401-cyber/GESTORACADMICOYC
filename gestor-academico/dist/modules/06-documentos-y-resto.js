@@ -5247,7 +5247,69 @@ const TIPOS_PERMISO=[
   'Evento Deportivo','Huelga Autorizada','Huelga No Autorizada','Lactancia',
   'Matrimonio','No Justificada','Otros','Permisos Sindicales','Secuestro','Tratamiento Médico'
 ];
+
+// ── LOTE 3 del Módulo ETC — cobertura de la Entidad Territorial sobre esta
+// institución (motor de campos dinámicos + escalado manual/automático) ──
+// null = todavía no se consultó; false = esta institución NO está
+// vinculada a ninguna ETC (comportamiento 100% igual al de siempre, sin
+// ningún cambio); objeto = SÍ está cubierta, con el "custom_form_schema"
+// de la entidad y su config de escalado. Se consulta una sola vez por
+// sesión (barato: un solo GET, con caché de 8s del lado del servidor) y se
+// re-renderiza la pantalla de Ausentismo cuando llega la respuesta — igual
+// patrón que _refrescarEtcEntidades()/_refrescarUniversidades() del panel
+// del Súper Admin.
+let _etcAusentismoCobertura=null;
+async function _refrescarCoberturaEtcAusentismo(){
+  try{
+    const sk=_skActual();
+    if(!sk){_etcAusentismoCobertura=false;return;}
+    const r=await fetch('/api/etc/instituciones/buscar-por-sk/'+encodeURIComponent(sk));
+    if(r.status===404||r.status===403){_etcAusentismoCobertura=false;}
+    else if(r.ok){_etcAusentismoCobertura=await r.json();}
+    else{_etcAusentismoCobertura=false;}
+  }catch(e){_etcAusentismoCobertura=false;}
+  if(pag==='ausentismo')renderApp();
+}
+// Campos dinámicos definidos por la ETC en su `custom_form_schema` (punto
+// 3): un arreglo de {key,label,type,required} — type admite 'text'|
+// 'textarea'|'number'|'date' (si la entidad manda un tipo desconocido, se
+// trata como texto simple, nunca se rompe el formulario).
+function _camposDinamicosEtc(){
+  const cob=_etcAusentismoCobertura;
+  if(!cob||!cob.entidad||!Array.isArray(cob.entidad.customFormSchema))return[];
+  return cob.entidad.customFormSchema.filter(c=>c&&c.key);
+}
+function _htmlCamposDinamicosEtc(){
+  const campos=_camposDinamicosEtc();
+  if(!campos.length)return'';
+  const inputs=campos.map(c=>{
+    const id='aus_dyn_'+String(c.key).replace(/[^a-zA-Z0-9_]/g,'_');
+    const req=c.required?' *':'';
+    const tag=c.type==='textarea'
+      ?`<textarea id="${id}" style="height:50px"></textarea>`
+      :`<input id="${id}" type="${c.type==='number'?'number':c.type==='date'?'date':'text'}">`;
+    return`<div><label class="lbl">${_escaparHtmlModal(c.label||c.key)}${req}</label>${tag}</div>`;
+  }).join('');
+  return`<div style="background:#eef7f0;border-radius:6px;padding:10px 12px;margin-bottom:12px;color:#1a1a2e">
+    <b style="color:#1e6b3a;font-size:0.82rem">🏛️ REQUISITOS ADICIONALES DE LA ENTIDAD TERRITORIAL</b>
+    <div class="grid2" style="margin-top:8px">${inputs}</div>
+  </div>`;
+}
+function _leerCamposDinamicosEtc(){
+  const campos=_camposDinamicosEtc();
+  const datos={};
+  let faltante=null;
+  campos.forEach(c=>{
+    const id='aus_dyn_'+String(c.key).replace(/[^a-zA-Z0-9_]/g,'_');
+    const el=document.getElementById(id);
+    const val=el?String(el.value||'').trim():'';
+    if(c.required&&!val&&!faltante)faltante=c.label||c.key;
+    datos[c.key]=val;
+  });
+  return{datos,faltante};
+}
 function htmlAusentismo(){
+  if(_etcAusentismoCobertura===null)setTimeout(_refrescarCoberturaEtcAusentismo,120);
   const solicitudes=db.ausentismos||[];
   const misSols=solicitudes.filter(s=>s.doc===sesion.u);
   const hoy=new Date().toISOString().slice(0,10);
@@ -5304,6 +5366,7 @@ function htmlAusentismo(){
         </div>
       </div>
     </div>
+    ${_htmlCamposDinamicosEtc()}
     <button class="btn btn-green" onclick="enviarAusentismo()">📤 Enviar al Rector(a) — Jefe Inmediato</button>
   </div>
   ${misSols.length?`<div class="card" style="margin-top:14px">
@@ -5324,6 +5387,13 @@ function enviarAusentismo(){
     diasPorTipo[t]=nd?parseFloat(nd.value)||0:0;
   });
   if(!tipos.length){customAlert('Seleccione al menos un tipo de permiso.');return;}
+  // Lote 3 — campos adicionales exigidos por la Entidad Territorial (si
+  // esta institución está cubierta por una ETC y definió requisitos
+  // propios en su "custom_form_schema"). Si falta un campo obligatorio,
+  // se detiene el envío igual que cualquier otra validación de este
+  // formulario.
+  const{datos:datosAdicionalesEtc,faltante:faltanteEtc}=_leerCamposDinamicosEtc();
+  if(faltanteEtc){customAlert('Complete el campo requerido por la Entidad Territorial: '+faltanteEtc);return;}
   const solicitud={
     id:Date.now(),doc:sesion.u,docNombre:sesion.n,
     municipio:document.getElementById('aus_municipio')?.value||'',
@@ -5340,7 +5410,12 @@ function enviarAusentismo(){
     diasTotal:document.getElementById('aus_diasTotal')?.value||'',
     obs:document.getElementById('aus_obs')?.value||'',
     soporte:document.getElementById('aus_soporte')?.value||'',
-    estado:'Pendiente',respuesta:'',fechaAprobacion:''
+    estado:'Pendiente',respuesta:'',fechaAprobacion:'',
+    // Lote 3: solo se guarda un objeto no vacío cuando la institución
+    // está cubierta por una ETC — para instituciones sin ETC, este campo
+    // ni siquiera aparece, sin cambiar en nada el registro de siempre.
+    datosAdicionalesEtc:Object.keys(datosAdicionalesEtc).length?datosAdicionalesEtc:undefined,
+    reportadoEntidad:false
   };
   updDB(d=>{if(!d.ausentismos)d.ausentismos=[];d.ausentismos.push(solicitud);return d;});
   // Notificación sistema
@@ -5385,11 +5460,18 @@ function imprimirPermisoH03(id){
   const{jsPDF}=window.jspdf;const doc=new jsPDF('p','mm','a4');
   const W=210,CX=W/2;
   let y=14;
-  // Encabezado institucional
+  // Encabezado institucional — Lote 4: si esta institución está cubierta
+  // por una Entidad Territorial registrada en el módulo ETC, el membrete
+  // adopta automáticamente su nombre oficial; si no, se conserva el
+  // membrete histórico de Gobernación de Bolívar (el formato original de
+  // este documento, sin ningún cambio para instituciones sin ETC).
+  const entidadCobertura=_etcAusentismoCobertura&&_etcAusentismoCobertura.entidad?_etcAusentismoCobertura.entidad:null;
+  const lineaMembrete1=entidadCobertura?entidadCobertura.nombreEntidad:'Gobernación de Bolívar';
+  const lineaMembrete2=entidadCobertura?'':'Secretaria de Educación del Departamento de Bolívar';
   doc.setFillColor(0,51,102);doc.rect(0,0,W,18,'F');
   doc.setFontSize(7);doc.setFont('helvetica','bold');doc.setTextColor(255,255,255);
-  doc.text('Gobernación de Bolívar',CX,6,{align:'center'});
-  doc.text('Secretaria de Educación del Departamento de Bolívar',CX,10,{align:'center'});
+  doc.text(lineaMembrete1,CX,6,{align:'center'});
+  if(lineaMembrete2)doc.text(lineaMembrete2,CX,10,{align:'center'});
   doc.text('"H03.03.F01 PERMISO LABORAL"',CX,14,{align:'center'});
   doc.setFontSize(6);doc.text('Código: H03.03.F01  |  Versión: 7  |  Fecha: 1/07/2021',W-14,8,{align:'right'});
   y=24;
@@ -5450,27 +5532,127 @@ function imprimirPermisoH03(id){
 function htmlGestorAusentismos(){
   const sols=db.ausentismos||[];
   if(!sols.length) return '<div class="card">'+_htmlEstadoVacio('📋','No hay solicitudes de ausentismo.')+'</div>';
-  const rows=sols.map(s=>`<tr>
-    <td style="text-align:left">${s.docNombre}</td>
-    <td style="text-align:left">${s.motivo1||''}</td>
-    <td>${s.fInicio}</td><td>${s.fFin}</td><td>${s.dias}</td>
-    <td><span style="font-weight:bold;color:${s.estado==='Aprobado'?'#27ae60':s.estado==='Rechazado'?'#c0392b':'#e67e22'}">${s.estado}</span></td>
+  // Lote 3: si esta institución está cubierta por una ETC y su config es
+  // MANUAL (autoReportEntidad=false), se ofrece el botón "Reportar Novedad"
+  // por cada solicitud ya resuelta y todavía no reportada. Si la config es
+  // AUTOMÁTICA, no hace falta el botón (ya se reportó sola al responder) —
+  // se muestra solo la insignia "✅ Reportado". Si la institución NO está
+  // cubierta por ninguna ETC, esta columna queda exactamente igual que
+  // siempre (sin ningún cambio de comportamiento).
+  const cobertura=_etcAusentismoCobertura&&_etcAusentismoCobertura.institucion?_etcAusentismoCobertura:null;
+  const rows=sols.slice().reverse().map(s=>{
+    const resuelto=s.estado&&s.estado!=='Pendiente';
+    let accionEtc='';
+    if(cobertura&&resuelto){
+      if(s.reportadoEntidad){accionEtc='<div style="margin-top:4px;font-size:0.72rem;color:#1e6b3a">✅ Reportado a la ETC</div>';}
+      else if(!cobertura.institucion.autoReportEntidad){accionEtc=`<div style="margin-top:4px"><button class="btn-sm" style="background:#1e6b3a" onclick="reportarNovedadEntidad(${s.id})">📨 Reportar Novedad a la Entidad Territorial</button></div>`;}
+    }
+    return`<tr>
+    <td style="text-align:left">${s.docNombre||''}</td>
+    <td style="text-align:left;font-size:0.78rem">${(s.tipos&&s.tipos.join(', '))||s.motivo1||''}</td>
+    <td>${s.desde||s.fInicio||''}</td><td>${s.hasta||s.fFin||''}</td><td>${s.diasTotal||s.dias||''}</td>
+    <td><span style="font-weight:bold;color:${s.estado==='Aprobado'?'#27ae60':s.estado==='Rechazado'?'#c0392b':'#e67e22'}">${s.estado||'Pendiente'}</span></td>
     <td><button class="btn-sm" style="background:#27ae60" onclick="responderAusentismo(${s.id},'Aprobado')">✓ Aprobar</button>
-        <button class="btn-sm" style="background:#c0392b" onclick="responderAusentismo(${s.id},'Rechazado')">✗ Rechazar</button></td>
-  </tr>`).join('');
+        <button class="btn-sm" style="background:#c0392b" onclick="responderAusentismo(${s.id},'Rechazado')">✗ Rechazar</button>
+        <button class="btn-sm" style="background:#e67e22" onclick="responderAusentismo(${s.id},'Con_Observaciones')">✎ Con observaciones</button>
+        ${accionEtc}</td>
+  </tr>`;}).join('');
   return `<div class="card"><h4 class="card-title">📋 Solicitudes de Ausentismo Docentes (${sols.length})</h4>
-    <div class="over"><table><thead><tr><th>Docente</th><th>Motivo</th><th>Desde</th><th>Hasta</th><th>Días</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="over"><table><thead><tr><th>Docente</th><th>Tipo(s)</th><th>Desde</th><th>Hasta</th><th>Días</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows}</tbody></table></div>
   </div>`;
 }
 async function responderAusentismo(id,estado){
   const resp=(await customPrompt(`Respuesta del Rector(a) para ${estado}:`))||estado;
+  let solActualizada=null;
   updDB(d=>{
     if(!d.ausentismos) return d;
     const idx=d.ausentismos.findIndex(s=>s.id===id);
-    if(idx>=0){d.ausentismos[idx].estado=estado;d.ausentismos[idx].respuesta=resp;}
+    if(idx>=0){d.ausentismos[idx].estado=estado;d.ausentismos[idx].respuesta=resp;d.ausentismos[idx].fechaAprobacion=new Date().toISOString().slice(0,10);solActualizada=d.ausentismos[idx];}
     return d;
   });
+  // Notificación (web + correo) al docente de que su permiso fue resuelto —
+  // hasta el Lote 3 solo el rector recibía correo al enviarse la solicitud;
+  // el docente no se enteraba de la respuesta salvo que volviera a entrar
+  // a ver el estado en su lista. Se reutiliza el mismo canal de siempre.
+  if(solActualizada){
+    try{fetch('/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_skActual(),kind:'permiso-laboral-respuesta',actor:sesion.n,message:`Su solicitud de permiso laboral fue marcada como "${estado}". Respuesta del Rector(a): ${resp}`,meta:{docente:solActualizada.doc,estado,respuesta:resp,solicitudId:id}})}).catch(()=>{});}catch(e){}
+    (async()=>{
+      try{
+        const docenteUser=(db.users||[]).find(u=>u.u===solActualizada.doc);
+        const correoDocente=solActualizada.email||docenteUser?.correo||docenteUser?.email||'';
+        const telefonoDocente=solActualizada.celular||docenteUser?.telefono||'';
+        const asunto=`Su permiso laboral fue ${estado} — ${db.nombre||'Institución'}`;
+        const mensajePlano=`Su solicitud de permiso laboral fue marcada como ${estado}. Respuesta: ${resp}`;
+        const htmlCorreo=`<p>Hola ${solActualizada.nombre||solActualizada.docNombre||''},</p><p>Su solicitud de permiso laboral (H03.03.F01) fue marcada como <b>${estado}</b> por ${db.rectora||'el/la Rector(a)'}.</p><p>Respuesta: ${resp}</p>`;
+        // Ajuste multicanal: si esta institución está cubierta por una ETC,
+        // la notificación pasa por el motor multicanal del módulo (intenta
+        // SMS con las credenciales propias de esa entidad y aplica su
+        // membrete al correo; cae solo a correo si no hay SMS disponible).
+        // Si NO está cubierta por ninguna ETC, se sigue usando exactamente
+        // el mismo envío de correo directo de siempre — cero cambio de
+        // comportamiento para instituciones sin ETC.
+        if(_etcAusentismoCobertura&&_etcAusentismoCobertura.institucion){
+          await fetch('/api/etc/notificaciones/enviar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            institucionId:_etcAusentismoCobertura.institucion.id,correo:correoDocente,telefono:telefonoDocente,asunto,mensaje:mensajePlano,html:htmlCorreo
+          })}).catch(()=>{});
+        }else if(correoDocente){
+          await fetch('/api/inetis/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:correoDocente,subject:asunto,html:htmlCorreo})});
+        }
+      }catch(e){}
+    })();
+    // Lote 3 — escalado AUTOMÁTICO a la Entidad Territorial: solo corre si
+    // esta institución está cubierta por una ETC y su config es
+    // auto_report_entidad=true; si es manual, el Rector/Admin usará el
+    // botón "Reportar Novedad" que aparece en htmlGestorAusentismos().
+    if(_etcAusentismoCobertura&&_etcAusentismoCobertura.institucion&&_etcAusentismoCobertura.institucion.autoReportEntidad){
+      _reportarPermisoAEntidad(solActualizada).catch(()=>{});
+    }
+  }
   renderApp();
+}
+// Lote 3 — escala (manual o automáticamente) un permiso YA RESUELTO
+// internamente hacia el espejo de la ETC (POST /api/etc/permisos). Nunca
+// cambia el estado del permiso interno (db.ausentismos sigue siendo la
+// fuente de verdad) — solo marca reportadoEntidad=true una vez que el
+// servidor confirma haber recibido la copia.
+async function _reportarPermisoAEntidad(sol){
+  if(!_etcAusentismoCobertura||!_etcAusentismoCobertura.institucion)return{ok:false,error:'Esta institución no está cubierta por ninguna Entidad Territorial.'};
+  try{
+    const r=await fetch('/api/etc/permisos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      institucionId:_etcAusentismoCobertura.institucion.id,
+      docenteId:sol.doc,
+      tipoPermiso:(sol.tipos&&sol.tipos.join(', '))||sol.motivo1||'',
+      fechaInicio:sol.desde||sol.fInicio||'',
+      fechaFin:sol.hasta||sol.fFin||'',
+      motivo:sol.obs||'',
+      datosAdicionales:sol.datosAdicionalesEtc||{},
+      urlSoporteCloud:'',
+      estado:sol.estado,
+      respuestaRector:sol.respuesta||''
+    })});
+    const j=await r.json().catch(()=>({ok:false}));
+    if(j&&j.ok){
+      updDB(d=>{
+        if(!d.ausentismos)return d;
+        const idx=d.ausentismos.findIndex(s=>s.id===sol.id);
+        if(idx>=0)d.ausentismos[idx].reportadoEntidad=true;
+        return d;
+      });
+    }
+    return j;
+  }catch(e){return{ok:false,error:'Error de red al reportar a la entidad territorial.'};}
+}
+// Botón manual "Reportar Novedad a la Entidad Territorial" — visible solo
+// cuando la config de la institución es autoReportEntidad=false (ver
+// htmlGestorAusentismos()).
+async function reportarNovedadEntidad(id){
+  const sol=(db.ausentismos||[]).find(s=>s.id===id);
+  if(!sol){customAlert('Solicitud no encontrada.');return;}
+  if(sol.estado==='Pendiente'){customAlert('Solo se pueden reportar permisos ya resueltos (Aprobado, Rechazado o Con Observaciones).');return;}
+  if(sol.reportadoEntidad){customAlert('Esta solicitud ya fue reportada a la Entidad Territorial.');return;}
+  const res=await _reportarPermisoAEntidad(sol);
+  if(res&&res.ok){customAlert('✅ Novedad reportada a la Entidad Territorial.');renderApp();}
+  else{customAlert('⚠️ '+(res&&res.error?res.error:'No se pudo reportar la novedad. Intente de nuevo.'));}
 }
 
 // ============================================================
