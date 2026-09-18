@@ -1615,7 +1615,22 @@ Pediste 3 interruptores independientes en el panel de Superadmin para controlar,
 - **Modificado:** `src/services/ecosystemAgent.js` — `checkAiAuditorEnabled()` en el cron semanal; `checkAiNeonEnabled()` antes del Function Calling de Gemini en `runFullAudit()`.
 - **Modificado:** `src/lib/keep-alive.ts` — `checkKeepAliveEnabled()` como primera condición de `_tick()`.
 - **Modificado:** `.env` / `.env.example` — 3 variables nuevas (Bloque 12), comentadas, mismo patrón kill-switch de las rondas 32-33 — ningún secreto real tocado.
-- **Nuevo (pruebas):** `test_ronda34_control_ai_keepalive.mjs` — 44 aserciones.
+- **Nuevo (pruebas):** `test_ronda34_control_ai_keepalive.mjs` — 44 aserciones (57 tras la corrección de abajo).
+
+### CORRECCIÓN post-entrega — faltaban los 3 botones/switches VISUALES en el panel
+
+La primera entrega de esta ronda implementó los 3 flags, sus 3 endpoints y los 3 verificadores en el **backend**, pero el pedido original decía explícitamente *"Implementar 3 switches/botones independientes en la sección de Configuración de Superadmin"* — eso, el frontend, **no se había hecho**: el usuario revisó el panel ya desplegado y confirmó que no aparecía ningún botón nuevo. Se verificó comparando contra el patrón ya usado por el switch de SMS de la Ronda 32 (`_toggleSmsGlobal()`/`_smsGlobalHabilitado`, en `htmlGestorETC()`) y, en efecto, no existía ningún equivalente para los 3 flags nuevos — el gap era real, no un problema de caché ni de despliegue del usuario.
+
+Se agregó en `gestor-academico/dist/modules/03-app-core.js`, dentro del panel **"🤖 Auditoría IA / Agente"** de la barra superior (el mismo botón que ya muestra el historial del Auditor y "Disparar Auditoría Ahora" — se eligió este panel, y no "⚙️ Config", porque los 3 interruptores controlan justamente los procesos de fondo de ese mismo agente y del Keep-Alive, no una configuración general de la institución):
+
+- `_controlProcesosCargado` (estado en memoria, `null` hasta la primera consulta) y `_refrescarControlProcesosIA()` — consulta `GET /api/superadmin/modulos-estado` (mismo patrón que `_refrescarEstadoSms()`).
+- `_toggleControlProceso(flag, endpoint, etiqueta)` — toggle genérico reutilizado por los 3 switches (confirmación + contraseña real de Súper Admin + `fetch` POST al endpoint correspondiente + toast), mismo patrón exacto que `_toggleSmsGlobal()`.
+- `_htmlControlProcesosIA()` — la tarjeta con los 3 switches, mismas clases/colores que el resto del panel (`btn-sm`, verde `#1e6b3a` activado / gris `#7f8c8d` desactivado — igual apariencia que el botón de SMS), con los 3 títulos EXACTOS pedidos por el usuario: **"Agente IA - Consultas Base de Datos Neon"**, **"Agente IA - Auditoría Automática del Ecosistema"**, **"Mantener Vivo Servidor Render (Ping / Keep-Alive)"**.
+- La tarjeta se inserta dentro de `htmlGestorAgenteIA()`, y su carga inicial se dispara una sola vez al entrar al panel (`_gestorPag==='agenteia'`), igual patrón que la carga de `_refrescarAgenteIA()`.
+
+**Dónde debe buscarlos el usuario:** en el panel de Superadmin, botón **"🤖 Auditoría IA / Agente"** de la barra superior (no en "⚙️ Config") — los 3 switches aparecen en una tarjeta nueva, arriba de la tabla de bitácora, con el título "🎛️ Control Granular de Activación y Procesos de Fondo".
+
+`node --check` sin errores en `03-app-core.js` tras el cambio. Se amplió `test_ronda34_control_ai_keepalive.mjs` con 13 aserciones nuevas (bloque "g") que verifican, por inspección de código: la existencia de `_refrescarControlProcesosIA()`/`_toggleControlProceso()`/`_htmlControlProcesosIA()`, que los 3 botones llaman a los 3 endpoints correctos, que usan el mismo estilo visual que el switch de SMS ya existente, que los 3 títulos exactos están presentes, que la tarjeta vive dentro de `htmlGestorAgenteIA()`, y que la carga inicial se dispara al entrar al panel. **Total del archivo: 57 aserciones. Regresión completa del proyecto: 36 de 36 archivos de prueba en verde** (sin cambios de comportamiento en ningún otro archivo).
 
 ### Carpetas/archivos EXCLUIDOS deliberadamente de este ZIP
 

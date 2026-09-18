@@ -2411,7 +2411,7 @@ function renderGestorAdmin(){
   // de que este refresco (más pesado) empiece a competir por la red.
   if(_gestorPag==='plataformas') setTimeout(function(){ if(!_entrandoAPlataforma) _refrescarStatsPlataformasReal(); },1200);
   if(_gestorPag==='salud') setTimeout(_refrescarSaludSistema,150);
-  if(_gestorPag==='agenteia') setTimeout(_refrescarAgenteIA,150);
+  if(_gestorPag==='agenteia'){ setTimeout(_refrescarAgenteIA,150); if(_controlProcesosCargado===null) setTimeout(_refrescarControlProcesosIA,150); }
   if(_gestorPag==='etc'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE){ setTimeout(_refrescarEtcEntidades,120); if(_smsGlobalHabilitado===null) setTimeout(_refrescarEstadoSms,120); }
   if(_gestorPag==='universidades'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE) setTimeout(_refrescarUniversidades,120);
 }
@@ -3627,12 +3627,76 @@ let _agenteLogsCache=[];
 let _agenteFiltroStatus='';
 let _agenteFiltroCategoria='';
 
+// ── Ronda 34 — Control granular de activación/procesos de fondo: 3
+// interruptores independientes (Agente IA - Consultas Neon, Auditoría
+// Automática del Ecosistema, Keep-Alive de Render). Mismo patrón visual y
+// de llamadas que _smsGlobalHabilitado/_toggleSmsGlobal() (Ronda 32): null
+// = aún no se consultó; objeto con 3 booleanos = respuesta real de
+// GET /api/superadmin/modulos-estado. Viven en el panel "🤖 Auditoría IA /
+// Agente" (mismo lugar donde ya está el botón "Disparar Auditoría Ahora"),
+// porque los 3 controlan justamente los procesos de fondo de ese agente y
+// del Keep-Alive del servidor — ningún interruptor nuevo se agregó en
+// ninguna otra pantalla para no duplicar controles.
+let _controlProcesosCargado=null;
+async function _refrescarControlProcesosIA(){
+  try{
+    const r=await fetch(API_BASE+'/api/superadmin/modulos-estado');
+    const j=await r.json().catch(()=>({}));
+    _controlProcesosCargado={
+      ENABLE_AI_NEON_QUERIES:!!(j&&j.ENABLE_AI_NEON_QUERIES),
+      ENABLE_AI_ECOSYSTEM_AUDITOR:!!(j&&j.ENABLE_AI_ECOSYSTEM_AUDITOR),
+      ENABLE_RENDER_KEEPALIVE_PING:!!(j&&j.ENABLE_RENDER_KEEPALIVE_PING)
+    };
+  }catch(e){ _controlProcesosCargado={ENABLE_AI_NEON_QUERIES:true,ENABLE_AI_ECOSYSTEM_AUDITOR:true,ENABLE_RENDER_KEEPALIVE_PING:true}; }
+  if(_gestorPag==='agenteia') renderGestorAdmin();
+}
+// Toggle genérico reutilizado por los 3 switches — evita triplicar la
+// misma secuencia de confirmación + contraseña + fetch + toast.
+async function _toggleControlProceso(flag,endpoint,etiqueta){
+  if(!_controlProcesosCargado) return;
+  const activar=!_controlProcesosCargado[flag];
+  if(!await customConfirm((activar?'¿Activar':'¿Desactivar')+' "'+etiqueta+'"?\n\n'+(activar
+    ?'Esto vuelve a habilitar ese proceso de inmediato, sin reiniciar el servidor.'
+    :'Esto detiene ese proceso de inmediato (sin reiniciar el servidor) hasta que lo vuelva a activar.'))) return;
+  const p=await customPrompt('Confirme su contraseña de Súper Admin:','','🔑 Confirmar identidad');
+  if(p===null||!p) return;
+  try{
+    const r=await fetch(API_BASE+endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({u:gestorDB.superAdmin.u,p,activar})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo cambiar el interruptor.'),'error',5000); return; }
+    _controlProcesosCargado[flag]=activar;
+    _showToast(activar?('✅ '+etiqueta+' — activado.'):('✅ '+etiqueta+' — desactivado.'),'success',4500);
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+function _htmlControlProcesosIA(){
+  if(!_controlProcesosCargado){
+    return `<div class="card" style="margin-bottom:16px"><p class="empty" style="padding:14px">⏳ Cargando estado de los procesos de fondo...</p></div>`;
+  }
+  const sw=function(flag,endpoint,icono,titulo,descripcion){
+    const on=!!_controlProcesosCargado[flag];
+    return `<div style="flex:1;min-width:230px;display:flex;flex-direction:column;gap:6px">
+      <div><b style="color:#003366">${icono} ${titulo}</b><p style="font-size:0.76rem;color:#666;margin:2px 0 0">${descripcion}</p></div>
+      <button class="btn-sm" style="background:${on?'#1e6b3a':'#7f8c8d'};font-size:0.85rem;padding:8px 14px;align-self:flex-start" onclick="_toggleControlProceso('${flag}','${endpoint}','${titulo}')">${on?'⚡ Activado — clic para apagar':'✋ Desactivado — clic para activar'}</button>
+    </div>`;
+  };
+  return `<div class="card" style="margin-bottom:16px">
+    <b style="color:#003366;display:block;margin-bottom:10px">🎛️ Control Granular de Activación y Procesos de Fondo</b>
+    <div style="display:flex;gap:18px;flex-wrap:wrap">
+      ${sw('ENABLE_AI_NEON_QUERIES','/api/superadmin/activar-ai-neon-queries','🗄️','Agente IA - Consultas Base de Datos Neon','Si se apaga, Adán responde un mensaje de mantenimiento a las preguntas que requieran datos institucionales, en vez de consultarlos.')}
+      ${sw('ENABLE_AI_ECOSYSTEM_AUDITOR','/api/superadmin/activar-ai-ecosystem-auditor','🕵️','Agente IA - Auditoría Automática del Ecosistema','Si se apaga, detiene la auditoría PROGRAMADA (domingos 2 a.m.). El botón "Disparar Auditoría Ahora" sigue funcionando igual.')}
+      ${sw('ENABLE_RENDER_KEEPALIVE_PING','/api/superadmin/activar-keepalive-ping','🌙','Mantener Vivo Servidor Render (Ping / Keep-Alive)','Si se apaga, detiene por completo el auto-ping a Render — útil en receso escolar o mantenimiento prolongado, para ahorrar consumo.')}
+    </div>
+  </div>`;
+}
+
 function htmlGestorAgenteIA(){
   return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px">
     <h3 style="color:#003366;margin:0">🤖 Auditoría IA / Agente</h3>
     <button class="btn" id="btnDispararAuditoriaAgente" style="background:#16a085" onclick="_dispararAuditoriaAgente()">▶️ Disparar Auditoría Ahora</button>
   </div>
   <p style="font-size:0.83rem;color:#666;margin-bottom:14px">Historial del Agente Administrador y Auditor Supremo del ecosistema: rendimiento académico, inasistencias, integridad técnica de la base de datos Neon y estado de la sincronización. Corre solo (todos los domingos, 2:00 a.m. hora Colombia) o bajo demanda con el botón de arriba — nunca modifica una nota real ingresada por un docente; ante un problema académico, solo genera una alerta.</p>
+  ${_htmlControlProcesosIA()}
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
     <select id="agenteFiltroStatus" style="padding:6px 8px;border-radius:6px;border:1px solid #ccc;font-size:0.8rem" onchange="_agenteFiltroStatus=this.value;_refrescarAgenteIA()">
       <option value="">Todos los estados</option>
