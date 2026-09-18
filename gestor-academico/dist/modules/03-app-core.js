@@ -3338,12 +3338,49 @@ function htmlGestorPlataformas(){
         <button class="btn" style="background:#16a085;font-size:0.82rem;padding:7px 13px" onclick="abrirModalExportarEstDoc('${plat.id}')" title="Copiar estudiantes/docentes de esta institución hacia otra">📋 Exportar Est./Doc.</button>
         <button class="btn btn-red" style="font-size:0.82rem;padding:7px 13px" onclick="eliminarPlataforma('${plat.id}')">🗑</button>
           <button class="btn btn-blue" style="font-size:0.82rem;padding:7px 13px" onclick="descargarHTMLInstitucion('${plat.id}')" title="Descargar portal HTML de esta institución">⬇ HTML</button>
+          <button class="btn" style="background:#117a65;font-size:0.82rem;padding:7px 13px" onclick="copiarEnlaceDirectoInstitucion('${plat.id}')" title="Copiar el enlace de acceso directo a esta institución (portal de login precargado con su nombre y logo, sin pasar por el portal general)">🔗 Copiar Enlace</button>
       </div>
     </div>`;
   }).join('');
   return `<h3 style="color:#003366;margin-bottom:16px">🏫 Plataformas Registradas (${gestorDB.platforms.length})</h3>
   <div style="margin-bottom:14px;text-align:right"><button class="btn btn-blue" style="font-size:0.85rem;padding:8px 18px" onclick="descargarGestorCompleto()" title="Descarga el sistema completo con todos los datos">⬇ Descargar Sistema Completo GESTOR ACADÉMICO YC</button></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px">${cards}</div>`;
+}
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 35 — Enlace de acceso directo por institución ("vanity URL").
+// Reutiliza el mecanismo de auto-enrutamiento por URL que YA existe en este
+// mismo archivo (ver el IIFE "URL ROUTING — ?id=slug auto-selects
+// institution on load", más abajo): esa lógica ya lee ?id= o ?inst= de la
+// URL, encuentra la plataforma por id/sk/nombre-convertido-a-slug, y llama
+// a renderPortalInstitucion(plat.id) — que YA precarga el login con el
+// nombre y el escudo de la institución. Este botón simplemente genera y
+// copia ese enlace (formato elegido: ?inst=<slug-del-nombre>, cayendo a
+// ?inst=<id> si el nombre no produce un slug utilizable), sin tocar esa
+// lógica de resolución que ya funciona ni el flujo del portal general.
+function _slugInstitucion(plat){
+  // OJO: debe coincidir EXACTAMENTE con la comparación que ya hace el
+  // resolutor de ?id=/?inst= (ver el IIFE "URL ROUTING" más abajo):
+  // (p.nombre||'').toLowerCase().replace(/[^a-z0-9]/g,'-') — sin normalizar
+  // tildes ni colapsar guiones repetidos, para que el enlace generado aquí
+  // siempre resuelva a la institución correcta.
+  const slug=(plat.nombre||'').toLowerCase().replace(/[^a-z0-9]/g,'-');
+  return slug||plat.id;
+}
+function copiarEnlaceDirectoInstitucion(platId){
+  const plat=gestorDB.platforms.find(x=>x.id===platId);
+  if(!plat){customAlert('Institución no encontrada.');return;}
+  const base=window.location.origin+window.location.pathname;
+  const enlace=base+'?inst='+encodeURIComponent(_slugInstitucion(plat));
+  const copiar=function(){
+    _showToast('🔗 Enlace directo de "'+plat.nombre+'" copiado al portapapeles.','#117a65',4000);
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(enlace).then(copiar).catch(function(){
+      customPrompt('No se pudo copiar automáticamente. Copie manualmente el enlace:',enlace);
+    });
+  } else {
+    customPrompt('Copie manualmente el enlace de acceso directo:',enlace);
+  }
 }
 // Las tarjetas de "Plataformas" muestran primero los datos guardados en este
 // navegador (pueden estar desactualizados si el súper admin no ha entrado
@@ -5012,6 +5049,40 @@ function gradosDelDocente(u){
 // de uso transversal en toda la aplicación.
 // ============================================================
 function iaRemoveWidget(){const w=document.getElementById('iaWidget');if(w)w.remove();}
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 35 — Persistencia de navegación ante F5: se guarda la sesión activa
+// (con la institución/sk a la que pertenece) y la vista actual (`pag`) en
+// sessionStorage cada vez que se renderiza con sesión iniciada, y se
+// rehidratan ANTES del primer render tras recargar la página — así F5 deja
+// a cualquier rol (Docente, Orientador, Directivo, Superadmin) exactamente
+// en el mismo módulo en el que estaba, en vez de devolverlo a la pantalla
+// principal. Es deliberadamente sessionStorage (no localStorage): expira al
+// cerrar la pestaña/navegador, igual que ya se comporta el resto del login.
+const RONDA35_SESION_STORAGE_KEY='_ycSesionActiva';
+function _guardarSesionEnStorage(){
+  try{
+    if(!sesion||window._adminPortalMode||gestorSesion) return;
+    sessionStorage.setItem(RONDA35_SESION_STORAGE_KEY,JSON.stringify({sk:_skActual(),sesion:sesion,pag:pag}));
+  }catch(e){/* almacenamiento no disponible (privado/bloqueado) — no es crítico */}
+}
+function _restaurarSesionDesdeStorage(){
+  try{
+    const crudo=sessionStorage.getItem(RONDA35_SESION_STORAGE_KEY);
+    if(!crudo) return false;
+    const guardado=JSON.parse(crudo);
+    if(!guardado||!guardado.sesion) return false;
+    // Solo se rehidrata si sigue siendo la MISMA institución (sk) que la
+    // sesión guardada — evita "arrastrar" una sesión de otra institución si
+    // el navegador cambia de subdominio/instancia.
+    if(guardado.sk&&_skActual()&&guardado.sk!==_skActual()) return false;
+    sesion=guardado.sesion;
+    if(guardado.pag) pag=guardado.pag;
+    return true;
+  }catch(e){ return false; }
+}
+function _borrarSesionDeStorage(){
+  try{ sessionStorage.removeItem(RONDA35_SESION_STORAGE_KEY); }catch(e){}
+}
 function render(){
   // Ronda 12, Sección 2: pantalla de restablecimiento de contraseña por
   // enlace seguro (?restablecerToken=...&sk=...). Se revisa ANTES que
@@ -5025,7 +5096,7 @@ function render(){
     iaRemoveWidget();renderGestorAdmin();return;
   }
   if(pag==='pre-matricula-publica'){iaRemoveWidget();renderPreMatriculaPublica();return;}
-  if(sesion){renderApp();return;}
+  if(sesion){_guardarSesionEnStorage();renderApp();return;}
   iaRemoveWidget();renderGestorLanding();
 }
 // Sincronizar con servidor al cargar la página
@@ -5034,7 +5105,13 @@ function render(){
 // debe ser reemplazada cuando esta sincronización en segundo plano
 // termine de cargar — de lo contrario, la persona vería el formulario un
 // instante y luego "saltaría" al portal normal antes de poder usarlo.
-(async()=>{try{const ok=await _pullDB();if(pag==='restablecer-password')return;if(ok){if(sesion)renderApp();else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
+(async()=>{try{const ok=await _pullDB();if(pag==='restablecer-password')return;
+  // Ronda 35 — rehidratar sesión/vista guardadas (ver _restaurarSesionDesdeStorage)
+  // justo después de que "db"/"SK" ya están cargados (para poder comparar el sk),
+  // y ANTES de decidir qué pantalla mostrar: si hay una sesión guardada válida,
+  // un F5 debe reabrir la misma vista en la que la persona estaba, no la landing.
+  if(!sesion&&!window._adminPortalMode) _restaurarSesionDesdeStorage();
+  if(ok){if(sesion)renderApp();else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
 
 // ============================================================
 // Ronda 12, Sección 2: PANTALLA DE RESTABLECIMIENTO DE CONTRASEÑA
@@ -6116,6 +6193,71 @@ async function doLogin(){
   render();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 35 — Catálogos ampliados de "Mi Perfil" / creación de docentes:
+// clasificación de rol/cargo (más allá de DOCENTE/RECTOR(A)/SECRETARIO(A))
+// y tipo de Decreto/Régimen Laboral bajo la normativa MEN. Se usan tanto en
+// el formulario de creación (htmlCarga) como en el modal de edición
+// (editarDocente) y en "Mi Perfil" (que reutiliza este mismo modal en modo
+// autoedición) — un único catálogo, sin duplicar HTML/listas.
+// ════════════════════════════════════════════════════════════════════════════
+const RONDA35_ROLES_ESPECIFICOS=[
+  {v:'',t:'Sin especificar'},
+  {v:'Directivo Docente - Rector',t:'Directivo Docente — Rector(a)'},
+  {v:'Directivo Docente - Coordinador',t:'Directivo Docente — Coordinador(a)'},
+  {v:'Directivo Docente - Director Rural',t:'Directivo Docente — Director(a) Rural'},
+  {v:'Docente Orientador',t:'Docente Orientador(a) / Psicoorientador(a)'},
+  {v:'Tutor PTA',t:'Tutor(a) / Formador(a) PTA (Programa Todos a Aprender)'},
+  {v:'Docente de Aula - Primaria',t:'Docente de Aula — Primaria'},
+  {v:'Docente de Aula - Secundaria',t:'Docente de Aula — Secundaria'},
+  {v:'Docente de Aula - Media',t:'Docente de Aula — Media'},
+  {v:'Administrativo - Secretaria',t:'Personal Administrativo — Secretaría'},
+  {v:'Administrativo - Auxiliar',t:'Personal Administrativo — Auxiliar'},
+  {v:'Administrativo - Contabilidad',t:'Personal Administrativo — Contabilidad'},
+  {v:'SUPERADMIN',t:'SUPERADMIN (gestión de credenciales maestras y seguridad de infraestructura)'},
+];
+const RONDA35_DECRETOS_NORMATIVOS=[
+  {v:'',t:'Sin especificar'},
+  {v:'Decreto 2277 de 1979',t:'Decreto 2277 de 1979 (Estatuto Docente tradicional)'},
+  {v:'Decreto 1278 de 2002',t:'Decreto 1278 de 2002 (Estatuto de Profesionalización Docente)'},
+  {v:'Decreto 804/1075 - Etnoeducadores',t:'Decreto 804 de 1995 / Decreto 1075 de 2015 (Grupos Étnicos/Etnoeducadores)'},
+  {v:'SEIP - Indigenas',t:'Marco Normativo Comunidades Indígenas (SEIP / Decreto 1345 / Normativa ANEI)'},
+  {v:'Afro-Palenquero-Raizal',t:'Marco Normativo Comunidades Afrocolombianas, Palenqueras y Raizales'},
+  {v:'Otro',t:'Opción Abierta / Otro Régimen Aplicable'},
+];
+function _rolesEspecificosOpts(sel){
+  return RONDA35_ROLES_ESPECIFICOS.map(function(o){return '<option value="'+o.v+'"'+(o.v===(sel||'')?' selected':'')+'>'+o.t+'</option>';}).join('');
+}
+function _decretosNormativosOpts(sel){
+  return RONDA35_DECRETOS_NORMATIVOS.map(function(o){return '<option value="'+o.v+'"'+(o.v===(sel||'')?' selected':'')+'>'+o.t+'</option>';}).join('');
+}
+// Bloque HTML reutilizable de "Rol específico + Decreto/Régimen normativo +
+// Hoja de vida (CV)" — se inserta IGUAL en el form de creación de docentes,
+// en el modal de edición y en "Mi Perfil", así que vive en una sola función
+// en vez de repetirse tres veces.
+function _htmlBloqueRolDecretoCv(prefijo,user){
+  user=user||{};
+  return `
+    <div><label class="lbl">🧭 Rol/Cargo Específico</label><select id="${prefijo}RolEsp" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px">${_rolesEspecificosOpts(user.rolEspecifico||'')}</select></div>
+    <div><label class="lbl">📜 Tipo de Decreto / Régimen Laboral (MEN)</label><select id="${prefijo}DecreNorm" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px">${_decretosNormativosOpts(user.tipoDecretoNormativo||'')}</select></div>
+    <div><label class="lbl">📎 Hoja de Vida (CV — .pdf/.doc/.docx)</label>
+      <input type="file" id="${prefijo}CvFile" accept=".pdf,.doc,.docx" style="display:none" onchange="_subirCvPerfil(this,'${prefijo}')">
+      <button type="button" onclick="document.getElementById('${prefijo}CvFile').click()" style="background:#7f8c8d;color:#fff;border:none;border-radius:5px;padding:8px 12px;cursor:pointer;font-size:0.82rem">📎 ${user.cvUrl?'Cambiar archivo':'Adjuntar CV'}</button>
+      <div id="${prefijo}CvEstado" style="font-size:0.78rem;margin-top:4px;color:#1a1a2e">${user.cvUrl?('✅ <a href="'+user.cvUrl+'" target="_blank" rel="noopener">'+(user.cvNombreArchivo||'Ver hoja de vida actual')+'</a>'):'<span style="color:#888">Ningún archivo cargado aún.</span>'}</div>
+    </div>`;
+}
+window._cvPerfilTemp={};
+function _subirCvPerfil(inp,prefijo){
+  const f=inp.files&&inp.files[0];if(!f) return;
+  const estado=document.getElementById(prefijo+'CvEstado');
+  if(estado) estado.innerHTML='⏳ Subiendo hoja de vida...';
+  fileToCloudinaryUrlTipo(f,function(url){
+    if(!url) return;
+    window._cvPerfilTemp[prefijo]={url:url,nombre:f.name};
+    if(estado) estado.innerHTML='✅ <a href="'+url+'" target="_blank" rel="noopener">'+f.name+'</a> (sin guardar aún — pulse "Guardar")';
+  },'hojas-de-vida','raw');
+}
+
 // Verifica si un docente califica para Eval. Desempeño (Decreto 1278 con modalidad válida)
 function _escalafonOpts(decreto,sel){
   if(!decreto) return '<option value="">Seleccione decreto primero</option>';
@@ -6914,6 +7056,7 @@ function renderApp(){
         <div class="sidebar-footer">
           <div class="sf-user">👤 ${sesion.n}</div>
           <div class="sf-rol">${_rolLabel}</div>
+          <button class="tbtn" style="background:#003366;width:100%;padding:7px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:6px;margin-bottom:6px" onclick="abrirMiPerfil()" title="Ver y editar mis propios datos (rol, decreto/régimen, hoja de vida, contacto)">👤 Mi Perfil</button>
           <button class="theme-toggle-btn" data-theme-toggle style="width:100%;justify-content:center;margin-bottom:6px" onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
           <button class="tbtn" style="background:#c0392b;width:100%;padding:7px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:6px;margin-top:2px" onclick="cerrarSesion()">🚪 Cerrar sesión</button>
           <div style="text-align:center;font-size:0.62rem;color:#888;margin-top:8px;opacity:0.7" title="Si esto no coincide con la última actualización que le entregaron, el navegador está mostrando una versión vieja en caché">v.${GESTOR_YC_BUILD}</div>
@@ -7290,6 +7433,7 @@ function toggleSidebar(open){
 }
 function _cerrarSesionReal(){
   sesion=null;
+  _borrarSesionDeStorage(); // Ronda 35 — cerrar sesión también borra la vista/sesión guardada para F5
   // Limpiar la búsqueda de módulos guardada — de lo contrario, lo último
   // que se buscó (incluso de una sesión/persona anterior en el mismo
   // navegador) seguía apareciendo escrito en esa caja para siempre.
@@ -8445,6 +8589,7 @@ function htmlCarga(){
         <option value="Doctorado">Doctorado</option>
       </select></div>
       <div id="dTitPosCon" style="display:none"><label class="lbl">📋 Título de Posgrado</label><input id="dTitPos" placeholder="Ej: Gestión Educativa, TIC en Educación..."></div>
+      ${_htmlBloqueRolDecretoCv('d',{})}
       <div><label class="lbl">Foto</label>
         <button class="btn btn-gray" onclick="document.getElementById('fileFotoDoc').click()" style="width:auto;padding:8px 12px">📷 Foto</button>
         <input type="file" id="fileFotoDoc" accept="image/*" style="display:none" onchange="cargarFotoDoc(this)">
@@ -8518,24 +8663,59 @@ async function guardarDocente(){
   const nivelPosgrado=document.getElementById('dNivPos')?.value||'';
   const tituloPosgrado=nivelPosgrado?(document.getElementById('dTitPos')?.value.trim()||''):'';
   const gradoEscalafon=document.getElementById('dEscala')?.value||'';
+  const rolEspecifico=document.getElementById('dRolEsp')?.value||'';
+  const tipoDecretoNormativo=document.getElementById('dDecreNorm')?.value||'';
+  const cvTemp=window._cvPerfilTemp&&window._cvPerfilTemp['d'];
+  const cvUrl=cvTemp?cvTemp.url:'';
+  const cvNombreArchivo=cvTemp?cvTemp.nombre:'';
+  const esDocenteOrientador=rolEspecifico==='Docente Orientador';
+  const esTutorPta=rolEspecifico==='Tutor PTA';
   const pHash=await _hashPassword(p);
   updDB(db=>{
     const nu={u,p:pHash,r:'docente',n:n.toUpperCase(),cedula:document.getElementById('dCed').value.trim(),
       telefono:document.getElementById('dTel').value.trim(),correo:document.getElementById('dCorreo').value.trim(),
       areaBase:document.getElementById('dArea').value.trim(),cargo:document.getElementById('dCargo').value,
-      decreto,modalidadDecre,tipoPregrado,nivelFormacion,nivelPosgrado,tituloPosgrado,gradoEscalafon,foto:cargaFotoTemp};
+      decreto,modalidadDecre,tipoPregrado,nivelFormacion,nivelPosgrado,tituloPosgrado,gradoEscalafon,foto:cargaFotoTemp,
+      rolEspecifico,tipoDecretoNormativo,esDocenteOrientador,esTutorPta,cvUrl,cvNombreArchivo};
     const idx=db.users.findIndex(x=>x.u===u);if(idx!==-1) db.users[idx]=nu; else db.users.push(nu);
     return db;
   });
+  // Ronda 35 — copia estructural en Neon (perfil_docente_extendido) para
+  // integración del módulo ETC, además del blob JSON que ya guardó updDB().
+  _guardarPerfilExtendidoEnNeon({
+    sk:_skActual(),userU:u,rol:'docente',rolEspecifico,esDocenteOrientador,esTutorPta,
+    tipoDecretoNormativo,escalafon:gradoEscalafon,cvUrl,cvNombreArchivo,
+    camposModificados:['creacion_docente'],esCambioSensible:false,
+  });
+  window._cvPerfilTemp['d']=null;
   cargaFotoTemp='';renderApp();
 }
-function editarDocente(u){
-  const user=db.users.find(x=>x.u===u);if(!user) return;
+// Ronda 35 — helper compartido: envía la copia estructural del perfil
+// extendido a Neon (nunca bloquea ni revierte el guardado local si falla).
+function _guardarPerfilExtendidoEnNeon(payload){
+  fetch(API_BASE+'/api/perfil/actualizar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .catch(function(err){ console.warn('No se pudo sincronizar el perfil extendido con Neon:',err); });
+}
+// Ronda 35 — "Mi Perfil / Mis Datos" REUTILIZA directamente este mismo
+// modal (editarDocente + _guardarEdicionDocente), parametrizado con
+// opts.modoPerfilPropio:true, en vez de duplicar el HTML/lógica de guardado
+// en un formulario aparte. abrirMiPerfil() es el único punto de entrada
+// nuevo — todo lo demás es el formulario de siempre.
+function abrirMiPerfil(){
+  if(!sesion||!sesion.u){customAlert('Debe iniciar sesión para ver su perfil.');return;}
+  editarDocente(sesion.u,{modoPerfilPropio:true});
+}
+function editarDocente(u,opts){
+  opts=opts||{};
+  const user=db.users.find(x=>x.u===u)||(opts.modoPerfilPropio&&sesion&&sesion.u===u?sesion:null);
+  if(!user) return;
+  const modoPerfil=!!opts.modoPerfilPropio;
   const ov=document.createElement('div');
   ov.id='_editDocOv';
   ov.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.35);max-height:90vh;overflow-y:auto;color:#1a1a2e">
-    <h3 style="color:#003366;margin-bottom:16px">✎ Editar Docente</h3>
+    <h3 style="color:#003366;margin-bottom:16px">${modoPerfil?'👤 Mi Perfil / Mis Datos':'✎ Editar Docente'}</h3>
+    ${modoPerfil?'<p style="font-size:0.8rem;color:#666;margin-top:-10px;margin-bottom:14px">Este es el mismo formulario que usa Rectoría/Administración para gestionar docentes — aquí puede autogestionar sus propios datos.</p>':''}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
       <div style="grid-column:1/-1"><label class="lbl">Nombre completo *</label><input id="_edNom" value="${user.n||''}" placeholder="Nombre completo" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div><label class="lbl">Usuario *</label><input id="_edUsr" value="${user.u||''}" placeholder="Usuario" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
@@ -8575,7 +8755,13 @@ function editarDocente(u){
       </select></div>
       <div id="_edTitPosCon" style="${user.nivelPosgrado?'':'display:none'}"><label class="lbl">📋 Título de Posgrado</label><input id="_edTitPos" value="${user.tituloPosgrado||''}" placeholder="Ej: Gestión Educativa, TIC en Educación..." style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div id="_edEscalaCon" style="${user.decreto?'':'display:none'}"><label class="lbl">🏛️ Grado Escalafón</label><select id="_edEscala" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px">${_escalafonOpts(user.decreto,user.gradoEscalafon||'')}</select></div>
+      ${_htmlBloqueRolDecretoCv('_ed',user)}
     </div>
+    ${modoPerfil?`<div style="margin-bottom:14px;background:#fef9e7;border:1px solid #f4d03f;border-radius:8px;padding:12px">
+      <label class="lbl">🔒 Confirme su contraseña ACTUAL para guardar cambios</label>
+      <p style="font-size:0.76rem;color:#7d6608;margin:2px 0 6px">Obligatorio únicamente si modificó correo, teléfono o contraseña.</p>
+      <input type="password" id="_edPasActualConfirm" placeholder="Su contraseña actual" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px">
+    </div>`:''}
     <div style="margin-bottom:14px">
       <label class="lbl">Foto (opcional)</label>
       <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
@@ -8589,14 +8775,14 @@ function editarDocente(u){
       </div>
     </div>
     <div style="display:flex;gap:8px">
-      <button onclick="_guardarEdicionDocente('${u}')" style="flex:1;background:#27ae60;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold">💾 Guardar Cambios</button>
+      <button onclick="_guardarEdicionDocente('${u}',${modoPerfil?'true':'false'})" style="flex:1;background:#27ae60;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold">💾 Guardar Cambios</button>
       <button onclick="window._editDocFoto=undefined;document.getElementById('_editDocOv').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer;color:#1a1a2e">Cancelar</button>
     </div>
   </div>`;
   window._editDocFoto=undefined;
   document.body.appendChild(ov);
 }
-async function _guardarEdicionDocente(u){
+async function _guardarEdicionDocente(u,modoPerfilPropio){
   const n=document.getElementById('_edNom').value.trim();
   const usr=document.getElementById('_edUsr').value.trim();
   if(!n||!usr){customAlert('Nombre y usuario son obligatorios');return;}
@@ -8605,8 +8791,37 @@ async function _guardarEdicionDocente(u){
     const _errPassEdicDoc=_validarPassword(passNueva,{minLen:6,rechazarDebiles:true});
     if(_errPassEdicDoc){customAlert('⚠️ '+_errPassEdicDoc);return;}
   }
+  // Ronda 35 — en modo "Mi Perfil", cualquier cambio a correo, teléfono o
+  // contraseña exige confirmar la contraseña ACTUAL antes de guardar
+  // (verificación real contra el servidor, no solo en el navegador).
+  const usuarioActual=db.users.find(x=>x.u===u)||(sesion&&sesion.u===u?sesion:null);
+  const correoNuevo=document.getElementById('_edCorreo').value.trim();
+  const telNuevo=document.getElementById('_edTel').value.trim();
+  const esCambioSensible=!!usuarioActual&&(
+    !!passNueva || correoNuevo!==(usuarioActual.correo||usuarioActual.email||'') || telNuevo!==(usuarioActual.telefono||'')
+  );
+  if(modoPerfilPropio&&esCambioSensible){
+    const passActualConfirm=(document.getElementById('_edPasActualConfirm')?.value||'').trim();
+    if(!passActualConfirm){customAlert('⚠️ Debe confirmar su contraseña ACTUAL para guardar cambios de correo, teléfono o contraseña.');return;}
+    try{
+      const rVer=await fetch(API_BASE+'/api/perfil/verificar-password',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({sk:_skActual(),userU:u,passwordActual:passActualConfirm})});
+      const jVer=await rVer.json();
+      if(!jVer.ok||!jVer.correcta){customAlert('❌ La contraseña actual ingresada no es correcta. No se guardaron los cambios.');return;}
+    }catch(errVer){
+      customAlert('❌ No se pudo verificar la contraseña actual (problema de conexión). Intente de nuevo.');return;
+    }
+  }
   const pHash=passNueva?await _hashPassword(passNueva):null;
   let fotoAnteriorDoc=null,fotoNuevaDoc=null;
+  const rolEspecifico=document.getElementById('_edRolEsp')?.value||'';
+  const tipoDecretoNormativo=document.getElementById('_edDecreNorm')?.value||'';
+  const cvTemp=window._cvPerfilTemp&&window._cvPerfilTemp['_ed'];
+  const cvUrl=cvTemp?cvTemp.url:(usuarioActual?usuarioActual.cvUrl||'':'');
+  const cvNombreArchivo=cvTemp?cvTemp.nombre:(usuarioActual?usuarioActual.cvNombreArchivo||'':'');
+  const esDocenteOrientador=rolEspecifico==='Docente Orientador';
+  const esTutorPta=rolEspecifico==='Tutor PTA';
+  let gradoEscalafonGuardado='';
   updDB(function(d){
     const idx=d.users.findIndex(x=>x.u===u);
     const _edDecreVal=document.getElementById('_edDecre')?.value||d.users[idx].decreto||'';
@@ -8614,14 +8829,15 @@ async function _guardarEdicionDocente(u){
     if(idx!==-1){
       fotoAnteriorDoc=d.users[idx].foto;
       fotoNuevaDoc=window._editDocFoto!==undefined?window._editDocFoto:d.users[idx].foto;
+      gradoEscalafonGuardado=document.getElementById('_edEscala')?.value||d.users[idx].gradoEscalafon||'';
       d.users[idx]={...d.users[idx],
       n:n.toUpperCase(),
       u:usr,
       p:pHash||d.users[idx].p,
       cedula:document.getElementById('_edCed').value.trim(),
-      telefono:document.getElementById('_edTel').value.trim(),
-      correo:document.getElementById('_edCorreo').value.trim(),
-      email:document.getElementById('_edCorreo').value.trim(),
+      telefono:telNuevo,
+      correo:correoNuevo,
+      email:correoNuevo,
       areaBase:document.getElementById('_edArea').value.trim(),
       cargo:document.getElementById('_edCargo').value,
       decreto:_edDecreVal,
@@ -8630,12 +8846,23 @@ async function _guardarEdicionDocente(u){
       nivelFormacion:document.getElementById('_edNivForm')?.value.trim()||d.users[idx].nivelFormacion||'',
       nivelPosgrado:document.getElementById('_edNivPos')?.value||d.users[idx].nivelPosgrado||'',
       tituloPosgrado:document.getElementById('_edNivPos')?.value?(document.getElementById('_edTitPos')?.value.trim()||d.users[idx].tituloPosgrado||''):'',
-      gradoEscalafon:document.getElementById('_edEscala')?.value||d.users[idx].gradoEscalafon||'',
-      foto:fotoNuevaDoc
+      gradoEscalafon:gradoEscalafonGuardado,
+      foto:fotoNuevaDoc,
+      rolEspecifico,tipoDecretoNormativo,esDocenteOrientador,esTutorPta,cvUrl,cvNombreArchivo
     };
     }
     return d;
   });
+  // Ronda 35 — copia estructural en Neon + auditoría (fecha/hora/rol/IP la
+  // pone el propio servidor); nunca bloquea el guardado local si falla.
+  _guardarPerfilExtendidoEnNeon({
+    sk:_skActual(),userU:usr,rol:(usuarioActual&&usuarioActual.r)||'docente',
+    rolEspecifico,esDocenteOrientador,esTutorPta,tipoDecretoNormativo,
+    escalafon:gradoEscalafonGuardado,cvUrl,cvNombreArchivo,
+    camposModificados:esCambioSensible?['correo/telefono/password','rolEspecifico','tipoDecretoNormativo']:['rolEspecifico','tipoDecretoNormativo'],
+    esCambioSensible,
+  });
+  if(window._cvPerfilTemp) window._cvPerfilTemp['_ed']=null;
   window._editDocFoto=undefined;
   document.getElementById('_editDocOv').remove();
   renderApp();

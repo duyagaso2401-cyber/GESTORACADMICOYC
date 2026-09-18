@@ -937,6 +937,49 @@ export const etcAuditLog = pgTable('etc_audit_log', {
   index('etc_audit_log_actor_idx').on(t.actor),
 ]);
 
+// ── RONDA 35 — Módulo "Mi Perfil" (clasificación extendida de rol/decreto +
+// hoja de vida) ─────────────────────────────────────────────────────────────
+// Estructura, en Neon PostgreSQL, los campos ampliados del perfil de cada
+// usuario (rol/cargo específico, si es Docente Orientador/Psicoorientador,
+// si es Tutor/Formador PTA, el tipo de Decreto/Régimen Laboral bajo la
+// normativa MEN, y la URL de la hoja de vida subida a Cloudinary) para que el
+// módulo ETC pueda leerlos directamente por (sk, userU) en vez de depender
+// únicamente del blob JSON de kv_store. "sk" identifica la institución
+// (multi-tenant) y "userU" es el nombre de usuario dentro de esa institución.
+export const perfilDocenteExtendido = pgTable('perfil_docente_extendido', {
+  id:                    serial('id').primaryKey(),
+  sk:                    text('sk').notNull(),
+  userU:                 text('user_u').notNull(),
+  rolEspecifico:         text('rol_especifico').notNull().default(''), // ver catálogo RONDA35_ROLES_ESPECIFICOS
+  esDocenteOrientador:   boolean('es_docente_orientador').notNull().default(false),
+  esTutorPta:            boolean('es_tutor_pta').notNull().default(false),
+  tipoDecretoNormativo:  text('tipo_decreto_normativo').notNull().default(''), // ver catálogo RONDA35_DECRETOS_NORMATIVOS
+  escalafon:             text('escalafon').notNull().default(''),
+  cvUrl:                 text('cv_url').notNull().default(''),
+  cvNombreArchivo:       text('cv_nombre_archivo').notNull().default(''),
+  updatedAt:             timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('perfil_docente_ext_sk_idx').on(t.sk),
+  index('perfil_docente_ext_sk_user_idx').on(t.sk, t.userU),
+]);
+
+// Auditoría append-only de cada actualización de "Mi Perfil" — fecha/hora,
+// usuario, rol e IP, tal como exige el punto 2 de la Ronda 35 ("trazabilidad
+// de auditoría para cada actualización... fecha, hora, rol e IP").
+export const perfilAuditLog = pgTable('perfil_audit_log', {
+  id:         serial('id').primaryKey(),
+  sk:         text('sk').notNull(),
+  userU:      text('user_u').notNull(),
+  rol:        text('rol').notNull().default(''),
+  camposModificados: jsonb('campos_modificados').default([]),
+  esCambioSensible:  boolean('es_cambio_sensible').notNull().default(false), // true si tocó email/teléfono/contraseña
+  ip:         text('ip').notNull().default(''),
+  createdAt:  timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('perfil_audit_log_sk_idx').on(t.sk),
+  index('perfil_audit_log_user_idx').on(t.userU),
+]);
+
 // ── B. MÓDULO EDUCACIÓN SUPERIOR / UNIVERSIDADES (catálogo independiente) ──────
 
 export const universidadEntidades = pgTable('universidad_entidades', {

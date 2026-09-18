@@ -740,5 +740,43 @@ export async function ensureSchemaEtcAuditoria(): Promise<void> {
   console.log('✅ [Lote 5] Esquema de auditoría del Módulo ETC creado/verificado en Neon.');
 }
 
+// RONDA 35 — Módulo "Mi Perfil": clasificación extendida de rol/decreto +
+// hoja de vida, estructurada en Neon para integración con el módulo ETC.
+// Migración perezosa e idempotente (igual patrón que ensureSchemaEtcAuditoria
+// arriba); se invoca desde los endpoints de perfil en src/index.ts la primera
+// vez que se usan, nunca desde initDb().
+export async function ensureSchemaPerfilExtendido(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS perfil_docente_extendido (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      user_u TEXT NOT NULL,
+      rol_especifico TEXT NOT NULL DEFAULT '',
+      es_docente_orientador BOOLEAN NOT NULL DEFAULT FALSE,
+      es_tutor_pta BOOLEAN NOT NULL DEFAULT FALSE,
+      tipo_decreto_normativo TEXT NOT NULL DEFAULT '',
+      escalafon TEXT NOT NULL DEFAULT '',
+      cv_url TEXT NOT NULL DEFAULT '',
+      cv_nombre_archivo TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS perfil_docente_ext_sk_idx ON perfil_docente_extendido(sk);
+    CREATE INDEX IF NOT EXISTS perfil_docente_ext_sk_user_idx ON perfil_docente_extendido(sk, user_u);
+    CREATE TABLE IF NOT EXISTS perfil_audit_log (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      user_u TEXT NOT NULL,
+      rol TEXT NOT NULL DEFAULT '',
+      campos_modificados JSONB DEFAULT '[]',
+      es_cambio_sensible BOOLEAN NOT NULL DEFAULT FALSE,
+      ip TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS perfil_audit_log_sk_idx ON perfil_audit_log(sk);
+    CREATE INDEX IF NOT EXISTS perfil_audit_log_user_idx ON perfil_audit_log(user_u);
+  `);
+  console.log('✅ [Ronda 35] Esquema de "Mi Perfil" (rol extendido + hoja de vida) creado/verificado en Neon.');
+}
+
 // Exportar las tablas declaradas en el esquema
 export * from './schema.js';

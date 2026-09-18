@@ -13,7 +13,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog } from './db/index.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
@@ -36,7 +36,7 @@ import { enviarPushParaNotificacion, VAPID_PUBLIC_KEY, PUSH_HABILITADO } from '.
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
 import { leerDbCacheado, guardarDbCache, invalidarDbCache, leerBlobInstitucion } from './lib/db-cache.js';
-import { emitirTokenRestablecimiento, verificarYConsumirTokenRestablecimiento, hashPasswordServidor, limpiarTokensRestablecimientoExpirados } from './lib/reset-tokens.js';
+import { emitirTokenRestablecimiento, verificarYConsumirTokenRestablecimiento, hashPasswordServidor, verificarPasswordServidor, limpiarTokensRestablecimientoExpirados } from './lib/reset-tokens.js';
 import { verificarFirmaWompi, verificarFirmaMercadoPago, verificarFirmaStripe, normalizarEstadoPago, parsearReferenciaPago, type ReferenciaPago } from './lib/pagos-webhooks.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
 import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado } from './lib/email-general.js';
@@ -428,42 +428,44 @@ function getGenAI(apiKeyParam?: string) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// RONDA 34 — Switch "Agente IA - Consultas Base de Datos Neon"
-// (ENABLE_AI_NEON_QUERIES). Investigación previa a esta ronda (documentada
-// en el checklist): el Asistente Adán (endpoints de abajo) NO hace hoy
-// ninguna consulta SQL propia ni Function Calling en vivo contra Neon
-// dentro de la conversación — el "contexto" (numEstudiantes, grados,
-// asignaturas, escalas, etc.) llega YA CALCULADO desde el frontend (que a
-// su vez lo tomó de la base local ya sincronizada), no de una consulta que
-// el propio backend dispare al recibir la pregunta (ver el comentario ya
-// existente de la Ronda 12 en buildSystemPrompt(), un poco más abajo, que
-// lo confirma explícitamente). El único componente de este proyecto con
-// Function Calling real contra Neon es el Auditor del Ecosistema — ver
-// Switch B (ENABLE_AI_ECOSYSTEM_AUDITOR) en src/services/ecosystemAgent.js.
+// RONDA 34/35 — Switch "Agente IA - Consultas Base de Datos Neon"
+// (ENABLE_AI_NEON_QUERIES). Investigación de la Ronda 34 (documentada en el
+// checklist): el Asistente Adán (endpoints de abajo) NO hace ninguna
+// consulta SQL propia ni Function Calling en vivo contra Neon dentro de la
+// conversación — el "contexto" (numEstudiantes, grados, asignaturas, etc.)
+// llega YA CALCULADO desde el frontend. El único componente con Function
+// Calling real contra Neon es el Auditor del Ecosistema — ver Switch B
+// (ENABLE_AI_ECOSYSTEM_AUDITOR) en src/services/ecosystemAgent.js, que ya
+// queda correctamente gateado por este MISMO flag dentro de runFullAudit()
+// (rama `if (genAI && neonViaIaHabilitado)`) sin ningún cambio en esta ronda.
 //
-// Interpretación de ingeniería adoptada aquí (documentada con
-// transparencia): la vía práctica por la que Adán "consulta datos
-// institucionales" es precisamente ese "context" enriquecido con
-// información real de la institución — así que, con el flag apagado, se
-// bloquea la respuesta cuando la pregunta llega acompañada de ese contexto
-// institucional (numEstudiantes/numDocentes/grados/asignaturas con datos
-// reales, o el informe psicopedagógico, que por diseño SIEMPRE es un
-// reporte de datos), devolviendo el mensaje estático exacto pedido — pero
-// SIN apagar el agente por completo: una pregunta general que llegue sin
-// ese contexto de datos (ej. "modo Gestor" o sin institución activa) sigue
-// respondiendo con Gemini con total normalidad, tal como se autorizó
-// explícitamente ("usa tu criterio de ingeniería").
+// AJUSTE DE LA RONDA 35 (pedido explícito del usuario, corrige el criterio
+// de la Ronda 34): el primer criterio ("¿el contexto trae datos numéricos
+// de la institución?") bloqueaba de más — una planeación de clase o una
+// actividad interactiva TAMBIÉN llegan con grados/asignaturas en su
+// contexto, así que con el switch apagado se estaba bloqueando por error
+// una utilidad pedagógica de aula que el usuario pidió EXPLÍCITAMENTE
+// mantener activa. El nuevo criterio, estructural y verificable, es
+// `context.gestorMode === true`: la ÚNICA vía por la que estos 3
+// endpoints conversan sobre algo que no es "un docente/rector pidiendo
+// ayuda para SU institución" es el chat del panel Superadmin en modo
+// "Gestor Multi-Plataforma" (`gestorIAenviar()` en 03-app-core.js, la
+// única llamada de todo el frontend que envía `gestorMode:true`) — el
+// único lugar donde alguien podría plausiblemente pedirle a Adán un
+// "análisis transversal" o algo parecido a una auditoría global del
+// ecosistema en lenguaje natural. Toda otra conversación (planeaciones,
+// actividades/dinámicas, dudas de un docente, extracción de descriptores
+// de un archivo, etc.) NUNCA pasa `gestorMode:true` y por lo tanto nunca
+// se ve afectada por este switch, sin importar cuántos datos institucionales
+// traiga su contexto. El informe psicopedagógico individual
+// (`/ai/psicopedagogico`) se excluyó por completo de este switch (ver más
+// abajo): por diseño es siempre un reporte de aula/orientación, nunca una
+// operación de infraestructura global.
 const MENSAJE_PAUSA_CONSULTA_DB_IA = 'El servicio de consulta asistida a la base de datos se encuentra temporalmente pausado por mantenimiento.';
 
-function _requiereConsultaDeDatosInstitucionales(context: Record<string, unknown> | undefined | null): boolean {
+function _esConsultaDeAuditoriaGlobal(context: Record<string, unknown> | undefined | null): boolean {
   const ctx = context || {};
-  if (ctx.gestorMode) return false; // modo Gestor Multi-Plataforma: no trae datos de UNA institución puntual
-  const numEstudiantes = Number(ctx.numEstudiantes) || 0;
-  const numDocentes = Number(ctx.numDocentes) || 0;
-  const grados = Array.isArray(ctx.grados) ? ctx.grados : [];
-  const asignaturas = Array.isArray(ctx.asignaturas) ? ctx.asignaturas : [];
-  const misAsignaturas = Array.isArray(ctx.misAsignaturas) ? ctx.misAsignaturas : [];
-  return numEstudiantes > 0 || numDocentes > 0 || grados.length > 0 || asignaturas.length > 0 || misAsignaturas.length > 0;
+  return ctx.gestorMode === true;
 }
 
 /**
@@ -1033,6 +1035,115 @@ app.post('/api/superadmin/activar-keepalive-ping', async (req, res) => {
   } catch (e) {
     console.error('POST /api/superadmin/activar-keepalive-ping', e);
     return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor de Keep-Alive de Render.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 35 — Módulo "Mi Perfil": clasificación extendida de rol/decreto +
+// hoja de vida, con persistencia estructural en Neon para integración con
+// el módulo ETC, confirmación de contraseña obligatoria antes de guardar
+// cambios sensibles (correo/teléfono/contraseña) y auditoría (fecha, hora,
+// rol, IP) de cada actualización. La institución (sk) y el usuario (userU)
+// llegan del propio body — el frontend ya conoce ambos porque reutiliza el
+// mismo formulario/lógica de guardado de docentes (editarDocente() /
+// _guardarEdicionDocente()) parametrizado en modo "perfil propio".
+// ════════════════════════════════════════════════════════════════════════════
+let _schemaPerfilExtendidoListo = false;
+async function _asegurarSchemaPerfilExtendido(): Promise<void> {
+  if (_schemaPerfilExtendidoListo) return;
+  await ensureSchemaPerfilExtendido();
+  _schemaPerfilExtendidoListo = true;
+}
+
+function _ipDelRequest(req: import('express').Request): string {
+  const xf = req.headers['x-forwarded-for'];
+  const primera = Array.isArray(xf) ? xf[0] : (typeof xf === 'string' ? xf.split(',')[0] : '');
+  return (primera && primera.trim()) || req.socket?.remoteAddress || req.ip || '';
+}
+
+// Verifica la contraseña ACTUAL antes de permitir un cambio sensible
+// (correo, teléfono o contraseña) — reutiliza verificarPasswordServidor(),
+// el mismo verificador PBKDF2 usado en todo el resto del sistema.
+app.post('/api/perfil/verificar-password', async (req, res) => {
+  try {
+    const { sk, userU, passwordActual } = (req.body || {}) as { sk?: string; userU?: string; passwordActual?: string };
+    if (!sk || !userU || !passwordActual) {
+      return res.status(400).json({ ok: false, error: 'Faltan datos (sk, userU o passwordActual).' });
+    }
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, String(sk)));
+    const inst: any = rows[0]?.value || null;
+    const usuario = inst?.users?.find((x: any) => String(x.u) === String(userU));
+    if (!usuario) return res.status(404).json({ ok: false, error: 'Usuario no encontrado.' });
+    const correcta = verificarPasswordServidor(String(passwordActual), String(usuario.p || ''));
+    return res.json({ ok: true, correcta });
+  } catch (e) {
+    console.error('POST /api/perfil/verificar-password', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al verificar la contraseña.' });
+  }
+});
+
+// Persiste estructuralmente en Neon (perfil_docente_extendido) los campos
+// ampliados del perfil (rol específico, orientador, tutor PTA, decreto
+// normativo, escalafón, hoja de vida) y deja rastro en perfil_audit_log.
+// NO reemplaza el guardado normal del blob JSON (que sigue haciendo
+// updDB()/el motor de sincronización, igual que para cualquier otro campo
+// de un docente) — este endpoint es la copia estructurada adicional que el
+// módulo ETC puede consultar por (sk, userU) sin tener que interpretar el
+// JSON completo de la institución.
+app.post('/api/perfil/actualizar', async (req, res) => {
+  try {
+    await _asegurarSchemaPerfilExtendido();
+    const {
+      sk, userU, rol, rolEspecifico, esDocenteOrientador, esTutorPta,
+      tipoDecretoNormativo, escalafon, cvUrl, cvNombreArchivo,
+      camposModificados, esCambioSensible,
+    } = (req.body || {}) as {
+      sk?: string; userU?: string; rol?: string; rolEspecifico?: string;
+      esDocenteOrientador?: boolean; esTutorPta?: boolean; tipoDecretoNormativo?: string;
+      escalafon?: string; cvUrl?: string; cvNombreArchivo?: string;
+      camposModificados?: string[]; esCambioSensible?: boolean;
+    };
+    if (!sk || !userU) return res.status(400).json({ ok: false, error: 'Faltan datos (sk o userU).' });
+
+    const existente = await db.select().from(perfilDocenteExtendido)
+      .where(and(eq(perfilDocenteExtendido.sk, String(sk)), eq(perfilDocenteExtendido.userU, String(userU))));
+    const valores = {
+      sk: String(sk),
+      userU: String(userU),
+      rolEspecifico: rolEspecifico || '',
+      esDocenteOrientador: !!esDocenteOrientador,
+      esTutorPta: !!esTutorPta,
+      tipoDecretoNormativo: tipoDecretoNormativo || '',
+      escalafon: escalafon || '',
+      cvUrl: cvUrl || '',
+      cvNombreArchivo: cvNombreArchivo || '',
+      updatedAt: new Date(),
+    };
+    if (existente[0]) {
+      await db.update(perfilDocenteExtendido).set(valores).where(eq(perfilDocenteExtendido.id, existente[0].id));
+    } else {
+      await db.insert(perfilDocenteExtendido).values(valores);
+    }
+
+    try {
+      await db.insert(perfilAuditLog).values({
+        sk: String(sk),
+        userU: String(userU),
+        rol: rol || '',
+        camposModificados: Array.isArray(camposModificados) ? camposModificados : [],
+        esCambioSensible: !!esCambioSensible,
+        ip: _ipDelRequest(req),
+      });
+    } catch (e) {
+      // Igual que registrarAuditoriaSuperadmin(): un fallo al auditar nunca
+      // debe impedir que el perfil se guarde.
+      console.error('perfil_audit_log insert', e);
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/perfil/actualizar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al guardar el perfil extendido.' });
   }
 });
 
@@ -2423,14 +2534,15 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       imagePart?: { mimeType: string; data: string };
     };
 
-    // Ronda 34 — checkAiNeonEnabled(): si el Súper Admin apagó "Agente IA -
-    // Consultas Base de Datos Neon" Y esta pregunta llega con contexto de
-    // datos institucionales reales, se responde el mensaje estático exacto
-    // pedido (200, conversacional — nunca un 403/501) SIN llamar a Gemini.
-    // Una pregunta sin ese contexto de datos sigue funcionando con
-    // normalidad aunque el flag esté apagado (ver criterio documentado
-    // arriba de _requiereConsultaDeDatosInstitucionales()).
-    if (_requiereConsultaDeDatosInstitucionales(context) && !(await checkAiNeonEnabled())) {
+    // Ronda 35 — checkAiNeonEnabled(): si el Súper Admin apagó "Agente IA -
+    // Consultas Base de Datos Neon" Y esta solicitud es una consulta de
+    // auditoría global del ecosistema (gestorMode:true, chat propio del
+    // Súper Admin), se responde el mensaje estático exacto pedido (200,
+    // conversacional — nunca un 403/501) SIN llamar a Gemini. Planeación de
+    // clase, actividades/dinámicas y cualquier otra consulta docente normal
+    // (sin gestorMode) siguen funcionando con normalidad aunque el flag esté
+    // apagado (ver criterio documentado arriba de _esConsultaDeAuditoriaGlobal()).
+    if (_esConsultaDeAuditoriaGlobal(context) && !(await checkAiNeonEnabled())) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -2584,9 +2696,9 @@ app.post('/api/inetis/ai/general', async (req, res) => {
       prompt?: string;
     };
 
-    // Ronda 34 — mismo criterio que POST /api/inetis/ai/chat (ver comentario
+    // Ronda 35 — mismo criterio que POST /api/inetis/ai/chat (ver comentario
     // extenso ahí): 200 con el mensaje estático exacto, no un error.
-    if (_requiereConsultaDeDatosInstitucionales(context) && !(await checkAiNeonEnabled())) {
+    if (_esConsultaDeAuditoriaGlobal(context) && !(await checkAiNeonEnabled())) {
       return res.json({ ok: true, content: MENSAJE_PAUSA_CONSULTA_DB_IA });
     }
 
@@ -2665,14 +2777,12 @@ app.post('/api/inetis/ai/psicopedagogico', async (req, res) => {
       context?: Record<string, unknown>;
     };
 
-    // Ronda 34 — este informe SIEMPRE es una consulta de datos por diseño
-    // (inasistencias/observador de una institución real), así que con el
-    // flag apagado se responde el mensaje estático exacto sin condición
-    // adicional (a diferencia de /ai/chat y /ai/general, que solo lo
-    // bloquean cuando el contexto trae datos institucionales).
-    if (!(await checkAiNeonEnabled())) {
-      return res.json({ ok: true, report: MENSAJE_PAUSA_CONSULTA_DB_IA });
-    }
+    // Ronda 35 — este endpoint genera reportes psicopedagógicos individuales
+    // de aula (inasistencias/observador de UN estudiante/grado), nunca una
+    // auditoría global de infraestructura, así que queda EXCLUIDO a propósito
+    // del switch ENABLE_AI_NEON_QUERIES: debe seguir funcionando siempre,
+    // esté el switch encendido o apagado (ver criterio documentado arriba de
+    // _esConsultaDeAuditoriaGlobal()).
 
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
