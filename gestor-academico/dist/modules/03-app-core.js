@@ -7311,6 +7311,33 @@ function renderApp(){
     render();return;
   }
   _renderAppReintentos=0;
+  // RONDA 41 — CAUSA RAÍZ REAL del bug de F5 reportado como "resuelto" en
+  // las Rondas 35/36: aquellas rondas conectaron el guardado en
+  // sessionStorage (_guardarSesionEnStorage()) EXCLUSIVAMENTE dentro de
+  // render() ("if(sesion){_guardarSesionEnStorage();renderApp();return;}"),
+  // pero TODA la navegación normal entre módulos (el sidebar completo, vía
+  // navTo() -> _mostrarSkeletonYNavegar() -> renderApp()) llama a
+  // renderApp() DIRECTAMENTE, sin pasar nunca por render(). En la práctica
+  // esto significaba que el estado guardado en sessionStorage solo se
+  // actualizaba en el render() inicial (justo después del login, con
+  // pag='panel-docente' — "Mi Panel" — para un docente) y NUNCA MÁS
+  // volvía a actualizarse mientras la persona navegaba dentro de la app.
+  // Por eso el síntoma reportado era tan específico y consistente: entrar
+  // a Planilla, presionar F5, y aterrizar siempre en Mi Panel — no porque
+  // la restauración fallara, sino porque lo único que había quedado
+  // guardado desde el login era "Mi Panel"; Planilla nunca llegó a
+  // guardarse. El "flash" de la pantalla principal que describía el
+  // usuario es el render() inicial síncrono de renderGestorLanding()
+  // (sesion todavía null, ver el IIFE de arranque más abajo) mientras
+  // _pullDB()/_restaurarSesionDesdeStorage() siguen en vuelo — ese flash
+  // en sí NO era el bug (es esperado mientras carga la red), el bug real
+  // era que el destino final después de restaurar no era el módulo
+  // correcto. FIX: se llama _guardarSesionEnStorage() aquí, dentro de
+  // renderApp() mismo (la función que de verdad se ejecuta en CADA
+  // navegación, venga de render() o de navTo()), así CUALQUIER cambio de
+  // pag/submódulo queda guardado de inmediato, sin depender de que
+  // render() vuelva a ejecutarse.
+  _guardarSesionEnStorage();
   // Guard: bloque 5 todavía no ha sido analizado por el navegador (carga inicial con sesión guardada)
   if(typeof htmlAvisoDocente==='undefined'){setTimeout(renderApp,30);return;}
   _iniciarControlTiempoSesion();
@@ -7406,6 +7433,10 @@ function renderApp(){
   // RONDA 39 — Vistas nuevas de Docente Orientador (a) Atenciones y Fichas
   // Psicopedagógicas, y (c) Comité de Convivencia y Ruta de Atención Integral.
   if((isAdmin||_esDocenteOrientador())&&_ma('atenciones-psico')) menu.push({id:'atenciones-psico',label:'🧑‍⚕️ Atenciones Psicopedagógicas'});
+  // RONDA 42 — Traslado Inter-Institucional: solo Rector/Admin de la
+  // institución (mismo control de acceso que exige el backend en
+  // _autorizarActorAdmin(), ver src/index.ts).
+  if(isAdmin) menu.push({id:'traslado-institucional',label:'🔄 Traslado Inter-Institucional'});
   if((isAdmin||_esDocenteOrientador())&&_ma('comite-convivencia')) menu.push({id:'comite-convivencia',label:'⚖️ Comité de Convivencia'});
   if(isAdmin&&_ma('seguimiento-eval-docente')) menu.push({id:'seguimiento-eval-docente',label:'📁 Eval. Desempeño Docente'});
   if(sesion.r==='docente'&&_ma('seguimiento-eval-docente')){
@@ -7486,6 +7517,8 @@ function renderApp(){
   // RONDA 39 — vistas nuevas de Docente Orientador
   else if(pag==='atenciones-psico'&&(isAdmin||_esDocenteOrientador())) contenido=htmlAtencionesPsico();
   else if(pag==='comite-convivencia'&&(isAdmin||_esDocenteOrientador())) contenido=htmlComiteConvivencia();
+  // RONDA 42 — Traslado Inter-Institucional (solo Rector/Admin)
+  else if(pag==='traslado-institucional'&&isAdmin) contenido=htmlTrasladoInterinstitucional();
   // repositorio: abre en nueva pestaña (ver href en menu.push), sin contenido iframe aquí
 
   const _platId2=gestorEnPlataforma||window._currentPlatId;

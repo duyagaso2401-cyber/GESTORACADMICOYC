@@ -1,0 +1,47 @@
+Hola Claude, necesito implementar una reestructuración de arquitectura para el Blindaje de Persistencia Académica, Movilidad de Activos y la Interoperabilidad Inter-Institucional de GESTOR ACADÉMICO YC.
+
+El objetivo es garantizar que la información académica, convivencial y administrativa NUNCA se pierda, ni por cambios de carga docente, ni por traslados internos de grupo, ni por traslados de estudiantes/docentes entre distintas instituciones que utilicen la plataforma.
+
+Por favor ejecuta los siguientes módulos conservando la arquitectura offline-first, Neon PostgreSQL/Express, autenticación JWT, firma QR y el 100% de la suite de pruebas en verde.
+
+----------------------------------------------------------------------
+PARTE 1: DESACOPLAMIENTO RIGUROSO Y PERSISTENCIA DOCENTE - ASIGNATURA
+----------------------------------------------------------------------
+1. PROPIEDAD DE LA INFORMACIÓN Y AUDITORÍA:
+   - Todas las Calificaciones (planillas generales y por actividad), Descriptores de desempeño, Asistencias, Anotaciones del Observador y Actas pertenecen a la combinación `(id_institucion, id_grado, id_asignatura, id_estudiante, periodo)`.
+   - El ID del docente que registró el dato solo debe quedar grabado como metadato de auditoría (`registrado_por_docente_id`), pero NUNCA como condicionante para que el dato exista o sea visible.
+2. CONTINUIDAD DE CARGA ACADÉMICA:
+   - Al cambiar o retirar a un docente de una asignatura, el docente entrante hereda inmediatamente TODA la información histórica (notas, descriptores, asistencias, anotaciones de aula y archivos).
+   - Eliminar o desvincular un docente NUNCA borrará las notas ni los registros de los estudiantes.
+
+----------------------------------------------------------------------
+PARTE 2: TRASLADO INTERNO Y MOVILIDAD INTEGRAL DE EXPEDIENTES (MISMA INSTITUCIÓN)
+----------------------------------------------------------------------
+1. EXPEDIENTE INTEGRAL DEL ESTUDIANTE:
+   - Cuando un estudiante cambie de grado o grupo dentro del mismo colegio, el sistema debe trasladar de forma automática e íntegra el 100% de su expediente digital:
+     a) Notas y Descriptores de desempeño (homologando asignaturas si es el mismo grado, o archivando en histórico si es cambio de nivel).
+     b) Observador del Estudiante completo (anotaciones pedagógicas, disciplinarias, convivenciales y académicas).
+     c) Ficha de Matrícula y Soportes/Adjuntos.
+     d) Registro de Asistencia y Alertas Tempranas.
+     e) Actas de Compromiso y Casos del Comité de Convivencia / Atención Psicopedagógica.
+2. TRASLADO Y MOVILIDAD DEL DOCENTE:
+   - Si un docente cambia de asignaturas o grados dentro de la institución, su Hoja de Vida, carga histórica, observador de aula y registros pedagógicos se mantienen vinculados a su perfil.
+
+----------------------------------------------------------------------
+PARTE 3: MÓDULO DE TRASLADO INTER-INSTITUCIONAL (ENTRE COLEGIOS DE LA PLATAFORMA)
+----------------------------------------------------------------------
+1. TRANSFERENCIA DE ESTUDIANTES ENTRE INSTITUCIONES:
+   - Crea el endpoint y la interfaz de "Traslado Inter-Institucional de Estudiante".
+   - Al marcar un estudiante como "Trasladado a otra institución de la plataforma", la institución de origen emite un Paquete de Transferencia Digital Seguro (JSON/Zip firmado criptográficamente o sincronización directa en Neon DB).
+   - La institución de destino, al recibir al estudiante (vía NUIP/Documento), importa automáticamente todo su expediente acumulado (historias de boletines, observador del estudiante completo, atenciones de orientación, actas y antecedentes) para continuar su hoja de vida académica sin reprocesos.
+2. TRANSFERENCIA DE PERFIL Y HOJA DE VIDA DOCENTE:
+   - Permite que un docente trasladado a otro colegio que use la plataforma conserve su usuario, Hoja de Vida, certificados de experiencia, carpetas del Repositorio Pedagógico y capacitaciones acumuladas en su perfil global.
+
+----------------------------------------------------------------------
+PRUEBAS AUTOMATIZADAS
+----------------------------------------------------------------------
+- Crear y actualizar las pruebas unitarias e integradas para validar:
+  a) Invariabilidad de datos ante eliminación/reasignación de docentes.
+  b) Integridad del traslado interno de estudiantes (notas, observador, actas y asistencia 100% migrados).
+  c) Generación e importación correcta del paquete de traslado inter-institucional de estudiante (expediente completo).
+  d) Mantener el 100% de la suite de pruebas en verde (0 fallos).

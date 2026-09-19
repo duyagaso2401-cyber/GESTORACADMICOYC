@@ -10355,6 +10355,46 @@ function abrirModalTrasladar1(estId){
 function _normalizarNombreMateria(s){
   return String(s||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 }
+// RONDA 41 — PARTE 2.1 (TRASLADO INTERNO): heurística de "nivel educativo"
+// a partir del nombre del grado. El modelo de datos actual (db.grados = [{n:
+// 'Grado 1'|'6°'|...}]) no tiene un campo explícito de nivel (Preescolar /
+// Primaria / Secundaria / Media), así que se infiere por el número inicial
+// del nombre del grado (estándar MEN colombiano). Si no se puede inferir
+// (nombres no numéricos, ej. plataformas tipo universidad), se asume el
+// mismo nivel — un falso "mismo nivel" solo implica que se intenta
+// homologar por nombre de materia (comportamiento previo), nunca pérdida
+// de datos.
+function _nivelDeGrado(nombreGrado){
+  const s=String(nombreGrado||'').toLowerCase();
+  if(/preescolar|jardin|transicion|prejardin|parvulos/.test(s.normalize('NFD').replace(/[^\x00-\x7F]/g,''))) return 'preescolar';
+  const m=s.match(/(\d{1,2})/);
+  if(!m) return null; // no se pudo inferir — se trata como "mismo nivel"
+  const n=parseInt(m[1],10);
+  if(n>=1&&n<=5) return 'primaria';
+  if(n>=6&&n<=9) return 'secundaria';
+  if(n>=10&&n<=13) return 'media';
+  return null;
+}
+// RONDA 41 — PARTE 2.1: cuando el traslado es un CAMBIO DE NIVEL (ej.
+// Primaria -> Secundaria) y la materia de origen NO tiene equivalente por
+// nombre en el grado destino, las notas de esa materia ya no se pueden
+// homologar razonablemente (currículo distinto) — en vez de dejarlas
+// "huérfanas" bajo el id de la carga anterior, se archivan explícitamente
+// en d.historicoAcademico, un registro de solo lectura, consultable desde
+// el expediente del estudiante. NINGÚN dato se borra en ningún escenario.
+function _archivarNotasHistorico(d,est,materia,grado,notasPorPeriodo){
+  if(!d.historicoAcademico) d.historicoAcademico=[];
+  d.historicoAcademico.push({
+    id:'hist_'+Date.now()+'_'+Math.random().toString(36).slice(2,8),
+    estId:est.id,
+    estNombre:fmtNombreEst(est),
+    grado,
+    materia,
+    notas:notasPorPeriodo,
+    motivo:'cambio_nivel_sin_equivalente',
+    fecha:new Date().toISOString()
+  });
+}
 function _migrarNotasTraslado(d,estId,gradOrigen,gradDest){
   const idx=d.ests.findIndex(function(x){return String(x.id)===String(estId);});
   if(idx<0) return [];
@@ -10364,15 +10404,24 @@ function _migrarNotasTraslado(d,estId,gradOrigen,gradDest){
   const ntsActual=e.nts||{};
   const ntsNuevo=JSON.parse(JSON.stringify(ntsActual));
   const materiasSinEquivalente=[];
+  const nivelOrigen=_nivelDeGrado(gradOrigen);
+  const nivelDest=_nivelDeGrado(gradDest);
+  const esCambioDeNivel=!!(nivelOrigen&&nivelDest&&nivelOrigen!==nivelDest);
   cargaOrigen.forEach(function(co){
     const notasOrigen=ntsActual[co.id]||ntsActual[String(co.id)];
     if(!notasOrigen||!Object.keys(notasOrigen).length) return; // sin notas en esa materia, nada que migrar
     const equivalente=cargaDest.find(function(cd){return _normalizarNombreMateria(cd.m)===_normalizarNombreMateria(co.m);});
     if(equivalente){
-      // No se sobrescribe si el destino ya tuviera notas en algún periodo
-      // (poco común, pero por seguridad se prioriza lo que ya esté ahí).
+      // HOMOLOGACIÓN: mismo grado/nivel — se traslada la nota a la materia
+      // equivalente del grado destino. No se sobrescribe si el destino ya
+      // tuviera notas en algún periodo (poco común, pero por seguridad se
+      // prioriza lo que ya esté ahí).
       const existenteDestino=ntsNuevo[equivalente.id]||ntsNuevo[String(equivalente.id)]||{};
       ntsNuevo[equivalente.id]=Object.assign({},notasOrigen,existenteDestino);
+    }else if(esCambioDeNivel){
+      // ARCHIVO HISTÓRICO: cambio de nivel + sin materia equivalente.
+      _archivarNotasHistorico(d,e,co.m,gradOrigen,notasOrigen);
+      materiasSinEquivalente.push(co.m+' (archivada en histórico académico)');
     }else{
       materiasSinEquivalente.push(co.m);
     }
@@ -10380,6 +10429,19 @@ function _migrarNotasTraslado(d,estId,gradOrigen,gradDest){
   d.ests[idx]={...e,g:gradDest,nts:ntsNuevo};
   return materiasSinEquivalente;
 }
+// RONDA 41 — CONFIRMACIÓN (no requirió cambios de código): Observador
+// (e.observaciones), Ficha de Matrícula/Adjuntos (e.ficha), y los registros
+// de Atención Psicopedagógica/Comité de Convivencia (db.atencionesPsicopedagogicas
+// / db.casosConvivencia, ambos guardados como arreglos a nivel de
+// institución e indexados por estId, NUNCA por grado) ya viajan
+// automáticamente con el estudiante en un traslado de grado: la línea
+// `d.ests[idx]={...e,g:gradDest,nts:ntsNuevo}` de arriba conserva TODAS las
+// demás propiedades de `e` sin tocarlas. Los registros de Asistencia
+// (db.asistencia, arreglo a nivel de institución con `grado` grabado por
+// registro histórico) tampoco se pierden: cada registro pasado sigue
+// asociado al grado en el que ocurrió realmente (lo cual es correcto para
+// fines de auditoría), y los registros futuros ya se crean bajo el grado
+// nuevo del estudiante sin ninguna acción adicional.
 async function _ejecutarTraslado1Real(estId){
   const gradDest=(document.getElementById('_trasladoGradoDest')?.value||'').trim();
   if(!gradDest){customAlert('Seleccione el grado destino.');return;}
@@ -10487,5 +10549,187 @@ async function _ejecutarTrasladoMasivoReal(){
 }
 function _ejecutarTrasladoMasivo(){
   _ejecutarTrasladoMasivoReal();
+}
+
+// ============================================================
+// RONDA 42 — UI DE TRASLADO INTER-INSTITUCIONAL (entre colegios de la
+// plataforma). Consume los 4 endpoints de la Ronda 41
+// (exportar/importar-estudiante, exportar/importar-docente), ya blindados
+// en el servidor con _autorizarActorAdmin() (Rector/Admin únicamente).
+// Flujo pensado para un traslado "fuera de banda": la institución de
+// origen genera un paquete JSON firmado (HMAC-SHA256) y se lo entrega al
+// destino por el canal que prefieran (correo, WhatsApp, USB) — la
+// plataforma no asume que ambos colegios estén "conectados" entre sí ni
+// exige elegir un destino de una lista, porque puede tratarse de otra
+// plataforma/instalación distinta de este mismo sistema.
+// ============================================================
+function _hdrsTraslado(){
+  const h={'Content-Type':'application/json'};
+  if(sesion&&sesion.jwt) h['Authorization']='Bearer '+sesion.jwt;
+  return h;
+}
+function _bodyActorTraslado(extra){
+  return Object.assign({actorRol:sesion?sesion.r:'',actorUsuario:sesion?sesion.u:'',actorNombre:sesion?sesion.n:''},extra||{});
+}
+function htmlTrasladoInterinstitucional(){
+  if(sesion.r!=='admin') return _htmlEstadoVacio('🔒','Solo el Rector/Administrador de la institución puede usar el Traslado Inter-Institucional.');
+  const tab=window._tiTabActivo||'estudiantes';
+  const estOpts=(db.ests||[]).slice().sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b))).map(e=>`<option value="${e.id}">${fmtNombreEst(e)} — ${e.g||''} (${e.numDoc||'sin doc.'})</option>`).join('');
+  const docOpts=(db.users||[]).filter(u=>u.r==='docente').map(u=>`<option value="${u.u}">${u.n||u.u}</option>`).join('');
+  const gradOpts=(db.grados||[]).map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
+  return `<div class="card">
+    <h3 class="card-title">🔄 Traslado Inter-Institucional de Estudiante/Docente</h3>
+    <p style="color:#666;font-size:0.85rem;margin-bottom:14px">Genera un <b>Paquete de Transferencia Digital Seguro</b> (JSON firmado criptográficamente) para enviarlo a otra institución de la plataforma, o importa uno que hayas recibido. Ningún dato se borra en el origen: exportar es una copia firmada, no un "mover".</p>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <button class="btn-sm" style="background:${tab==='estudiantes'?'#16a085':'#95a5a6'}" onclick="window._tiTabActivo='estudiantes';renderApp();">🎓 Estudiantes</button>
+      <button class="btn-sm" style="background:${tab==='docentes'?'#16a085':'#95a5a6'}" onclick="window._tiTabActivo='docentes';renderApp();">🧑‍🏫 Docentes</button>
+    </div>
+    ${tab==='estudiantes'?`
+    <div class="card" style="background:#f8f9fa;margin-bottom:16px">
+      <h4 class="card-title">📤 Exportar estudiante (paquete de transferencia)</h4>
+      <label class="lbl">Estudiante</label>
+      <select id="ti_est_exp" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${estOpts||'<option value="">No hay estudiantes</option>'}</select>
+      <button class="btn btn-green" style="margin-top:10px" onclick="_tiExportarEstudiante()">📦 Generar Paquete</button>
+      <div id="ti_est_exp_resultado" style="margin-top:12px"></div>
+    </div>
+    <div class="card" style="background:#f8f9fa">
+      <h4 class="card-title">📥 Importar estudiante (paquete recibido)</h4>
+      <label class="lbl">Pega aquí el JSON del paquete recibido</label>
+      <textarea id="ti_est_imp_json" style="width:100%;height:110px;font-family:monospace;font-size:0.78rem;padding:8px;border-radius:7px;border:1px solid #ccc" placeholder='{"datos":{...},"firma":"..."}'></textarea>
+      <label class="lbl" style="margin-top:8px">Grado destino en esta institución *</label>
+      <select id="ti_est_imp_grado" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${gradOpts||'<option value="">No hay grados</option>'}</select>
+      <button class="btn" style="margin-top:10px;background:#2980b9;color:#fff" onclick="_tiPrevisualizarImportEstudiante()">🔍 Vista previa</button>
+      <div id="ti_est_imp_preview" style="margin-top:12px"></div>
+    </div>
+    `:`
+    <div class="card" style="background:#f8f9fa;margin-bottom:16px">
+      <h4 class="card-title">📤 Exportar docente (perfil + repositorio + historial)</h4>
+      <label class="lbl">Docente</label>
+      <select id="ti_doc_exp" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${docOpts||'<option value="">No hay docentes</option>'}</select>
+      <button class="btn btn-green" style="margin-top:10px" onclick="_tiExportarDocente()">📦 Generar Paquete</button>
+      <div id="ti_doc_exp_resultado" style="margin-top:12px"></div>
+    </div>
+    <div class="card" style="background:#f8f9fa">
+      <h4 class="card-title">📥 Importar docente (paquete recibido)</h4>
+      <label class="lbl">Pega aquí el JSON del paquete recibido</label>
+      <textarea id="ti_doc_imp_json" style="width:100%;height:110px;font-family:monospace;font-size:0.78rem;padding:8px;border-radius:7px;border:1px solid #ccc" placeholder='{"datos":{...},"firma":"..."}'></textarea>
+      <button class="btn" style="margin-top:10px;background:#2980b9;color:#fff" onclick="_tiPrevisualizarImportDocente()">🔍 Vista previa</button>
+      <div id="ti_doc_imp_preview" style="margin-top:12px"></div>
+    </div>
+    `}
+  </div>`;
+}
+async function _tiExportarEstudiante(){
+  const estId=document.getElementById('ti_est_exp')?.value;
+  if(!estId){customAlert('Seleccione un estudiante.');return;}
+  const cont=document.getElementById('ti_est_exp_resultado');
+  cont.innerHTML='<p style="color:#888">Generando paquete…</p>';
+  try{
+    const r=await fetch(API_BASE+'/api/traslado/exportar-estudiante',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({sk:_skActual(),estId}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){cont.innerHTML=`<p style="color:#c0392b">❌ ${j.error||'Error al generar el paquete.'}</p>`;return;}
+    const jsonTxt=JSON.stringify(j.paquete);
+    cont.innerHTML=`<div style="background:#e8f8f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:0.85rem">✅ Paquete generado. Entrégalo a la institución destino (correo, WhatsApp, USB) para que lo pegue en su pantalla de Importar.</div>
+      <textarea readonly style="width:100%;height:100px;font-family:monospace;font-size:0.75rem;padding:8px;border-radius:7px;border:1px solid #ccc">${jsonTxt.replace(/</g,'&lt;')}</textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn-sm" onclick="_tiCopiarTexto(this)" data-json='${jsonTxt.replace(/'/g,"&apos;")}'>📋 Copiar</button>
+        <button class="btn-sm" style="background:#2980b9" onclick="_tiDescargarJSON('${jsonTxt.replace(/'/g,"&apos;")}','paquete_estudiante_${estId}.json')">💾 Descargar .json</button>
+      </div>`;
+  }catch(err){cont.innerHTML='<p style="color:#c0392b">❌ Error de red al generar el paquete.</p>';}
+}
+async function _tiExportarDocente(){
+  const usuario=document.getElementById('ti_doc_exp')?.value;
+  if(!usuario){customAlert('Seleccione un docente.');return;}
+  const cont=document.getElementById('ti_doc_exp_resultado');
+  cont.innerHTML='<p style="color:#888">Generando paquete…</p>';
+  try{
+    const r=await fetch(API_BASE+'/api/traslado/exportar-docente',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({sk:_skActual(),usuario}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){cont.innerHTML=`<p style="color:#c0392b">❌ ${j.error||'Error al generar el paquete.'}</p>`;return;}
+    const jsonTxt=JSON.stringify(j.paquete);
+    const nCarga=(j.paquete.datos.historialCargaAcademica||[]).length;
+    const nRepo=(j.paquete.datos.repositorioPedagogico||[]).length;
+    cont.innerHTML=`<div style="background:#e8f8f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:0.85rem">✅ Paquete generado (incluye ${nCarga} carga(s) histórica(s) y ${nRepo} recurso(s) de Repositorio Pedagógico). Las notas de los estudiantes NO se incluyen — pertenecen a la institución/estudiante de origen.</div>
+      <textarea readonly style="width:100%;height:100px;font-family:monospace;font-size:0.75rem;padding:8px;border-radius:7px;border:1px solid #ccc">${jsonTxt.replace(/</g,'&lt;')}</textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn-sm" onclick="_tiCopiarTexto(this)" data-json='${jsonTxt.replace(/'/g,"&apos;")}'>📋 Copiar</button>
+        <button class="btn-sm" style="background:#2980b9" onclick="_tiDescargarJSON('${jsonTxt.replace(/'/g,"&apos;")}','paquete_docente_${usuario}.json')">💾 Descargar .json</button>
+      </div>`;
+  }catch(err){cont.innerHTML='<p style="color:#c0392b">❌ Error de red al generar el paquete.</p>';}
+}
+function _tiCopiarTexto(btn){
+  const txt=btn.getAttribute('data-json')||'';
+  navigator.clipboard?.writeText(txt).then(()=>_showToast('✅ Copiado al portapapeles','#16a085')).catch(()=>customAlert('No se pudo copiar automáticamente. Selecciona y copia el texto manualmente.'));
+}
+function _tiDescargarJSON(txt,nombre){
+  const blob=new Blob([txt],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=nombre;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+function _tiPrevisualizarImportEstudiante(){
+  const txt=(document.getElementById('ti_est_imp_json')?.value||'').trim();
+  const cont=document.getElementById('ti_est_imp_preview');
+  let paquete;
+  try{paquete=JSON.parse(txt);}catch(e){cont.innerHTML='<p style="color:#c0392b">❌ El texto pegado no es un JSON válido.</p>';return;}
+  if(!paquete||!paquete.datos){cont.innerHTML='<p style="color:#c0392b">❌ El paquete no tiene el formato esperado (falta "datos").</p>';return;}
+  const d=paquete.datos;
+  const e=d.estudiante||{};
+  cont.innerHTML=`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 14px;font-size:0.85rem;color:#856404">
+    <b>Se importará:</b><br>
+    Estudiante: <b>${e.n||'—'}</b> · Doc: <b>${d.numDoc||'—'}</b><br>
+    Institución de origen (sk): <code>${d.origenSk||'—'}</code><br>
+    Se incluyen: notas históricas (${Object.keys(e.nts||{}).length} materia(s)), observador (${(e.observaciones||[]).length} anotación(es)), ficha de matrícula ${e.ficha?'sí':'no'}, atenciones psicopedagógicas (${(d.atencionesPsicopedagogicas||[]).length}), casos de convivencia (${(d.casosConvivencia||[]).length}), histórico académico (${(d.historicoAcademico||[]).length}).<br><br>
+    ⚠️ Esta operación es <b>irreversible</b> desde esta pantalla (crea/actualiza el registro del estudiante en esta institución). La firma del paquete se verificará en el servidor antes de aplicar nada.
+  </div>
+  <button class="btn btn-green" style="margin-top:10px" onclick='_tiConfirmarImportEstudiante(${JSON.stringify(txt)})'>✅ Confirmar Importación</button>`;
+}
+async function _tiConfirmarImportEstudiante(txt){
+  if(!await customConfirm('¿Confirmar la importación de este estudiante? Esta acción no se puede deshacer desde esta pantalla.')) return;
+  const gradoDestino=document.getElementById('ti_est_imp_grado')?.value;
+  if(!gradoDestino){customAlert('Seleccione el grado destino.');return;}
+  let paquete;
+  try{paquete=JSON.parse(txt);}catch(e){customAlert('JSON inválido.');return;}
+  const cont=document.getElementById('ti_est_imp_preview');
+  try{
+    const r=await fetch(API_BASE+'/api/traslado/importar-estudiante',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({skDestino:_skActual(),paquete,gradoDestino}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){cont.innerHTML+=`<p style="color:#c0392b;margin-top:8px">❌ ${j.error||'Error al importar.'}</p>`;return;}
+    _showToast('✅ Estudiante importado correctamente.','#16a085');
+    await _pullDB();
+    pag='traslado-institucional';renderApp();
+  }catch(err){cont.innerHTML+='<p style="color:#c0392b;margin-top:8px">❌ Error de red al importar.</p>';}
+}
+function _tiPrevisualizarImportDocente(){
+  const txt=(document.getElementById('ti_doc_imp_json')?.value||'').trim();
+  const cont=document.getElementById('ti_doc_imp_preview');
+  let paquete;
+  try{paquete=JSON.parse(txt);}catch(e){cont.innerHTML='<p style="color:#c0392b">❌ El texto pegado no es un JSON válido.</p>';return;}
+  if(!paquete||!paquete.datos){cont.innerHTML='<p style="color:#c0392b">❌ El paquete no tiene el formato esperado (falta "datos").</p>';return;}
+  const d=paquete.datos;
+  const ub=d.usuarioBasico||{};
+  cont.innerHTML=`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 14px;font-size:0.85rem;color:#856404">
+    <b>Se importará:</b><br>
+    Docente: <b>${ub.n||d.usuario||'—'}</b> (usuario: <code>${d.usuario||'—'}</code>)<br>
+    Institución de origen (sk): <code>${d.origenSk||'—'}</code><br>
+    Se incluyen: Hoja de Vida/perfil extendido ${d.perfilExtendido?'sí':'no'}, ${(d.repositorioPedagogico||[]).length} recurso(s) de Repositorio Pedagógico, ${(d.historialCargaAcademica||[]).length} carga(s) histórica(s) (solo como referencia informativa).<br>
+    <b>NO se incluyen</b> las notas de los estudiantes que este docente calificó en su institución anterior — esas notas pertenecen al estudiante/asignatura de esa institución, no al docente (ver Ronda 41, Parte 1).<br><br>
+    El docente deberá fijar una nueva contraseña en esta institución (no se importa contraseña). ⚠️ Esta operación es <b>irreversible</b> desde esta pantalla.
+  </div>
+  <button class="btn btn-green" style="margin-top:10px" onclick='_tiConfirmarImportDocente(${JSON.stringify(txt)})'>✅ Confirmar Importación</button>`;
+}
+async function _tiConfirmarImportDocente(txt){
+  if(!await customConfirm('¿Confirmar la importación de este docente? Esta acción no se puede deshacer desde esta pantalla.')) return;
+  let paquete;
+  try{paquete=JSON.parse(txt);}catch(e){customAlert('JSON inválido.');return;}
+  const cont=document.getElementById('ti_doc_imp_preview');
+  try{
+    const r=await fetch(API_BASE+'/api/traslado/importar-docente',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({skDestino:_skActual(),paquete}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){cont.innerHTML+=`<p style="color:#c0392b;margin-top:8px">❌ ${j.error||'Error al importar.'}</p>`;return;}
+    _showToast('✅ Docente importado correctamente ('+(j.recursosImportados||0)+' recurso(s) de repositorio).','#16a085');
+    await _pullDB();
+    pag='traslado-institucional';renderApp();
+  }catch(err){cont.innerHTML+='<p style="color:#c0392b;margin-top:8px">❌ Error de red al importar.</p>';}
 }
 

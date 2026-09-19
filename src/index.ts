@@ -13,7 +13,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources } from './db/index.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
@@ -1056,6 +1056,22 @@ app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
     const blob: any = rows[0].value;
 
+    // RONDA 41 — PARTE 1.1: PROPIEDAD DE LA INFORMACIÓN Y AUDITORÍA. El dato
+    // en sí (e.nts[cId][per], blob.notasAct[key]) sigue clave-ando EXACTAMENTE
+    // igual que antes: por (asignatura/curso, periodo, [columna], estudiante)
+    // — nunca por docente. El id del docente que hizo ESTE guardado se anota
+    // aparte, en blob.auditoriaNotas, como metadato de solo lectura para
+    // trazabilidad ("¿quién registró esto?"). Ningún endpoint de lectura ni
+    // de permisos consulta blob.auditoriaNotas para decidir si una nota
+    // existe o es visible — existir/verse depende solo de la clave real de
+    // arriba, jamás de quién la escribió.
+    const _docenteAuditoriaId = (() => {
+      if (_tokenJWT) {
+        const _p = verificarJWT(_tokenJWT);
+        if (_p) return _p.sub;
+      }
+      return (req.body && (req.body as any).actorUsuario) || null;
+    })();
     if (tipo === 'planilla') {
       if (cId === undefined || per === undefined || !notas) {
         return res.status(400).json({ ok: false, error: 'Faltan datos (cId, per o notas) para tipo=planilla.' });
@@ -1066,6 +1082,8 @@ app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
       e.nts = e.nts || {};
       e.nts[cId] = e.nts[cId] || {};
       e.nts[cId][per] = { ...(e.nts[cId][per] || {}), ...notas };
+      blob.auditoriaNotas = blob.auditoriaNotas || [];
+      blob.auditoriaNotas.push({ tipo: 'planilla', estId, cId, per, registradoPorDocenteId: _docenteAuditoriaId, ts: new Date().toISOString() });
     } else if (tipo === 'actividad') {
       if (!colId) return res.status(400).json({ ok: false, error: 'Falta colId para tipo=actividad.' });
       blob.notasAct = blob.notasAct || {};
@@ -1076,7 +1094,7 @@ app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
         // sin dejar un residuo con valor 0 confundible con "nota en cero".
         delete blob.notasAct[key];
       } else {
-        blob.notasAct[key] = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '' };
+        blob.notasAct[key] = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '', registradoPorDocenteId: _docenteAuditoriaId };
       }
     } else {
       return res.status(400).json({ ok: false, error: 'tipo debe ser "planilla" o "actividad".' });
@@ -1091,6 +1109,422 @@ app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
   } catch (e) {
     console.error('POST /api/inetis/notas/guardar-fila', e);
     return res.status(500).json({ ok: false, error: 'Error interno al guardar la fila.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 41 — PARTE 3: MÓDULO DE TRASLADO INTER-INSTITUCIONAL (ENTRE
+// COLEGIOS DE LA PLATAFORMA).
+//
+// DECISIÓN DE INGENIERÍA (documentada con transparencia, autorizada
+// explícitamente por el coordinador): se implementa el "Paquete de
+// Transferencia Digital Seguro" como un JSON firmado con HMAC-SHA256
+// (reutilizando _firmarBlob()/DOC_SIGN_SECRET, el MISMO mecanismo que ya
+// firma los boletines/certificados desde las Rondas 37-38), en vez de un
+// .zip firmado. Un JSON firmado cumple exactamente la misma garantía de
+// integridad (cualquier alteración del contenido invalida la firma) con
+// muchísima menos superficie nueva de código — no hay compresión,
+// descompresión ni manejo de archivos binarios que introducir en esta
+// ronda. Si en el futuro se requiere empaquetar también archivos binarios
+// grandes (fotos, PDFs adjuntos) dentro del paquete mismo, la migración a
+// .zip es un cambio de formato de transporte, no de la lógica de negocio
+// de abajo (que ya trabaja sobre un objeto de datos plano).
+//
+// CLAVE DE CORRELACIÓN: numDoc (número de documento del estudiante), el
+// mismo campo que ya usa el resto del sistema (login, importaciones
+// masivas, exportación SIMAT) para identificar de forma única a un
+// estudiante — ver e.numDoc en gestor-academico/dist/modules/03-app-core.js.
+// ════════════════════════════════════════════════════════════════════════
+
+// POST /api/traslado/exportar-estudiante — la institución de ORIGEN genera
+// el paquete firmado con el expediente acumulado del estudiante (notas de
+// todos los periodos, observador completo sin filtrar por tipo_anotacion,
+// ficha de matrícula + adjuntos, atenciones psicopedagógicas y casos de
+// convivencia asociados a su estId, y sus registros de asistencia). No
+// borra nada del lado de origen — la institución de origen conserva su
+// copia; el traslado inter-institucional es una EXPORTACIÓN, no un "mover".
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 42 — CONTROL DE ACCESO Y AUDITORÍA para los 4 endpoints de
+// traslado inter-institucional. Reutiliza el MISMO patrón ya establecido
+// (Rondas 39-40) de "actorRolEspecifico"/JWT opcional: si llega un JWT
+// (Authorization: Bearer), su rol se verifica criptográficamente y debe
+// ser 'admin'; si no llega JWT, se exige `actorRol==='admin'` en el body
+// (el mismo nivel de confianza retrocompatible que ya tiene guardar-fila).
+// Cualquier otro rol recibe 403. Esto NO es exigencia de JWT obligatoria
+// en toda la plataforma (limitación ya documentada desde la Ronda 40) —
+// es, como mínimo, el mismo estándar que el resto del núcleo K-12.
+// ════════════════════════════════════════════════════════════════════════
+function _autorizarActorAdmin(req: express.Request): { ok: true; actorUsuario: string; actorNombre: string } | { ok: false; status: number; error: string } {
+  const body: any = req.body || {};
+  const tokenJWT = extraerBearer(req.headers.authorization);
+  if (tokenJWT) {
+    const payload = verificarJWT(tokenJWT);
+    if (!payload) return { ok: false, status: 401, error: 'Token de sesión inválido o vencido.' };
+    if (payload.rol !== 'admin') return { ok: false, status: 403, error: 'Solo el Rector/Administrador de la institución puede realizar operaciones de traslado.' };
+    return { ok: true, actorUsuario: payload.sub, actorNombre: body.actorNombre || payload.sub };
+  }
+  if (body.actorRol !== 'admin') {
+    return { ok: false, status: 403, error: 'Solo el Rector/Administrador de la institución puede realizar operaciones de traslado.' };
+  }
+  return { ok: true, actorUsuario: body.actorUsuario || '—', actorNombre: body.actorNombre || body.actorUsuario || '—' };
+}
+
+app.post('/api/traslado/exportar-estudiante', async (req, res) => {
+  try {
+    const auth = _autorizarActorAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const { sk, estId } = (req.body || {}) as { sk?: string; estId?: string | number };
+    if (!sk || estId === undefined || estId === null) {
+      return res.status(400).json({ ok: false, error: 'Faltan datos (sk o estId).' });
+    }
+    if (!DOC_SIGN_SECRET) return res.status(503).json({ ok: false, error: 'La firma de paquetes de traslado no está configurada en el servidor (falta DOC_SIGN_SECRET).' });
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
+    const blob: any = rows[0].value;
+    const e = (blob.ests || []).find((x: any) => String(x.id) === String(estId));
+    if (!e) return res.status(404).json({ ok: false, error: 'Estudiante no encontrado.' });
+    const carga = (blob.carga || []).filter((c: any) => c.g === e.g);
+    const datos = {
+      version: 1,
+      origenSk: sk,
+      numDoc: e.numDoc || '',
+      estudiante: e, // incluye nts, observaciones, ficha, foto, etc. — el objeto completo del estudiante
+      materiasGradoOrigen: carga.map((c: any) => ({ id: c.id, m: c.m, a: c.a })),
+      atencionesPsicopedagogicas: (blob.atencionesPsicopedagogicas || []).filter((a: any) => String(a.estId) === String(estId)),
+      casosConvivencia: (blob.casosConvivencia || []).filter((c: any) => String(c.estId) === String(estId)),
+      asistencia: (blob.asistencia || []).filter((a: any) => Array.isArray(a.registros) ? a.registros.some((r: any) => String(r.estId) === String(estId)) : false)
+        .map((a: any) => ({ fecha: a.fecha, grado: a.grado, registro: (a.registros || []).find((r: any) => String(r.estId) === String(estId)) })),
+      historicoAcademico: (blob.historicoAcademico || []).filter((h: any) => String(h.estId) === String(estId)),
+      emitidoEn: new Date().toISOString(),
+    };
+    const firma = _firmarBlob(datos);
+    // RONDA 42 — AUDITORÍA: se registra en el mismo log de auditoría de
+    // matrícula ya existente (d.logMatricula, ver _registrarCambioMatricula
+    // en el frontend) para que quede trazado quién generó este paquete,
+    // cuándo, y de qué estudiante — resuelve reclamos futuros del tipo
+    // "¿quién exportó el expediente de mi hijo?".
+    blob.logMatricula = blob.logMatricula || [];
+    blob.logMatricula.push({
+      id: 'lm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      fecha: new Date().toISOString(),
+      usuario: auth.actorUsuario,
+      usuarioNombre: auth.actorNombre,
+      estId,
+      estNombre: e.n || '',
+      tipo: 'traslado_interinstitucional_export_estudiante',
+      detalle: `Paquete de transferencia generado (destino a definir fuera de banda).`,
+    });
+    const nowTs = new Date();
+    await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, sk));
+    guardarDbCache(sk, blob, nowTs, true);
+    return res.json({ ok: true, paquete: { datos, firma } });
+  } catch (e) {
+    console.error('POST /api/traslado/exportar-estudiante', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al exportar el paquete de traslado.' });
+  }
+});
+
+// POST /api/traslado/importar-estudiante — la institución de DESTINO recibe
+// el paquete, verifica su firma (rechaza cualquier alteración) y, si el
+// estudiante ya existe en destino (correlacionado por numDoc), FUSIONA el
+// expediente entrante con el ya existente sin borrar nada local; si no
+// existe, lo crea a partir del paquete. Requiere indicar el grado destino
+// (gradoDestino) porque el grado de origen probablemente no existe con ese
+// nombre en la nueva institución.
+app.post('/api/traslado/importar-estudiante', async (req, res) => {
+  try {
+    const auth = _autorizarActorAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const { skDestino, paquete, gradoDestino } = (req.body || {}) as { skDestino?: string; paquete?: { datos: any; firma: string }; gradoDestino?: string };
+    if (!skDestino || !paquete || !paquete.datos || !paquete.firma || !gradoDestino) {
+      return res.status(400).json({ ok: false, error: 'Faltan datos (skDestino, paquete o gradoDestino).' });
+    }
+    if (!DOC_SIGN_SECRET) return res.status(503).json({ ok: false, error: 'La verificación de paquetes de traslado no está configurada en el servidor (falta DOC_SIGN_SECRET).' });
+    const firmaEsperada = _firmarBlob(paquete.datos);
+    if (firmaEsperada !== paquete.firma) {
+      return res.status(400).json({ ok: false, error: 'El paquete de traslado no es válido: su firma no coincide (fue alterado o no proviene de esta plataforma).' });
+    }
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, skDestino));
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución destino no encontrada.' });
+    const blob: any = rows[0].value;
+    const numDoc = String(paquete.datos.numDoc || '');
+    const estudianteEntrante = paquete.datos.estudiante || {};
+    blob.ests = blob.ests || [];
+    let idx = numDoc ? blob.ests.findIndex((x: any) => String(x.numDoc || '') === numDoc) : -1;
+    let nuevoId: string | number;
+    if (idx === -1) {
+      // No existe todavía en destino: se crea con un id nuevo propio de esta
+      // institución (los ids son locales a cada blob/sk), conservando todo
+      // el resto del expediente entrante (nombre, ficha, notas históricas,
+      // observador, etc.) bajo un nuevo campo `historicoExterno` para no
+      // mezclarlo silenciosamente con la estructura `nts`/`observaciones`
+      // nativa de esta institución (evita colisiones de ids de "carga" entre
+      // colegios distintos).
+      nuevoId = 'trasl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      blob.ests.push({
+        ...estudianteEntrante,
+        id: nuevoId,
+        g: gradoDestino,
+        nts: {}, // las notas del colegio de origen no son comparables por id de carga — se archivan aparte, íntegras, ver historicoExterno
+        historicoExterno: {
+          origenSk: paquete.datos.origenSk,
+          notas: estudianteEntrante.nts || {},
+          materiasGradoOrigen: paquete.datos.materiasGradoOrigen || [],
+          observaciones: estudianteEntrante.observaciones || [],
+          ficha: estudianteEntrante.ficha || null,
+          importadoEn: new Date().toISOString(),
+        },
+      });
+    } else {
+      // Ya existe en destino (reingreso, o el traslado se registró dos
+      // veces): se fusiona sin pisar nada local — el expediente entrante
+      // queda anexado en historicoExterno para consulta, y nunca sobrescribe
+      // notas/observaciones que la institución destino ya tenga.
+      nuevoId = blob.ests[idx].id;
+      blob.ests[idx].historicoExterno = blob.ests[idx].historicoExterno || [];
+      (Array.isArray(blob.ests[idx].historicoExterno) ? blob.ests[idx].historicoExterno : [blob.ests[idx].historicoExterno]).push({
+        origenSk: paquete.datos.origenSk,
+        notas: estudianteEntrante.nts || {},
+        materiasGradoOrigen: paquete.datos.materiasGradoOrigen || [],
+        observaciones: estudianteEntrante.observaciones || [],
+        ficha: estudianteEntrante.ficha || null,
+        importadoEn: new Date().toISOString(),
+      });
+    }
+    blob.atencionesPsicopedagogicas = blob.atencionesPsicopedagogicas || [];
+    (paquete.datos.atencionesPsicopedagogicas || []).forEach((a: any) => blob.atencionesPsicopedagogicas.push({ ...a, estId: nuevoId, id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }));
+    blob.casosConvivencia = blob.casosConvivencia || [];
+    (paquete.datos.casosConvivencia || []).forEach((c: any) => blob.casosConvivencia.push({ ...c, estId: nuevoId, id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }));
+    blob.historicoAcademico = blob.historicoAcademico || [];
+    (paquete.datos.historicoAcademico || []).forEach((h: any) => blob.historicoAcademico.push({ ...h, estId: nuevoId }));
+
+    // RONDA 42 — AUDITORÍA en el blob DESTINO (mismo log que arriba).
+    blob.logMatricula = blob.logMatricula || [];
+    blob.logMatricula.push({
+      id: 'lm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      fecha: new Date().toISOString(),
+      usuario: auth.actorUsuario,
+      usuarioNombre: auth.actorNombre,
+      estId: nuevoId,
+      estNombre: estudianteEntrante.n || '',
+      tipo: 'traslado_interinstitucional_import_estudiante',
+      detalle: `Expediente importado desde institución origen (sk=${paquete.datos.origenSk || '—'}) al grado ${gradoDestino}.`,
+    });
+
+    const nowTs = new Date();
+    await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, skDestino));
+    guardarDbCache(skDestino, blob, nowTs, true);
+    broadcastChange(skDestino);
+    return res.json({ ok: true, estIdDestino: nuevoId });
+  } catch (e) {
+    console.error('POST /api/traslado/importar-estudiante', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al importar el paquete de traslado.' });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// PARTE 3.2 — PORTABILIDAD DE PERFIL Y HOJA DE VIDA DOCENTE ENTRE COLEGIOS
+// DE LA PLATAFORMA.
+//
+// HALLAZGO (contrario a la hipótesis inicial del coordinador, documentado
+// con transparencia): perfil_docente_extendido (tabla relacional de Neon,
+// Ronda 35) NO es independiente de la institución — su clave real es
+// (sk, user_u) (ver src/db/schema.ts, índice perfil_docente_ext_sk_user_idx),
+// y la cuenta de usuario del docente en sí (usuario/contraseña) tampoco es
+// global: vive dentro del blob JSON de cada institución (db.users), sin
+// ninguna tabla de "usuarios" central en Neon. Por lo tanto la portabilidad
+// del docente SÍ requiere una transferencia real de datos (igual que la del
+// estudiante), no un simple "re-enlace" de sk como se había planteado.
+// ────────────────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────────────────
+// RONDA 42 — PORTABILIDAD COMPLETA DEL DOCENTE (extiende la Ronda 41).
+//
+// QUÉ SE AGREGA: (a) un RESUMEN de su historial de carga académica —
+// grados/asignaturas/áreas que ha dictado en la institución de origen — y
+// (b) los recursos de su Repositorio Pedagógico Institucional que él mismo
+// subió (repositorio_resources, filtrado por institucionId=sk y
+// uploader=usuario).
+//
+// QUÉ NO SE MIGRA, Y POR QUÉ (decisión de ingeniería deliberada, no un
+// olvido): las NOTAS de los estudiantes que dictó en la institución de
+// origen. La Parte 1 de la Ronda 41 estableció como principio arquitectónico
+// que una nota pertenece a (institución, grado, asignatura, estudiante,
+// periodo) — NUNCA al docente que la registró, que solo queda anotado como
+// metadato de auditoría. Si "portar al docente" migrara también esas notas,
+// se estaría copiando (o peor, moviendo) información que es propiedad de
+// OTRA institución y de OTROS estudiantes que ni siquiera se están
+// trasladando — una contradicción directa con ese principio, y una fuga de
+// datos de estudiantes que nunca dieron ese consentimiento de traslado. Por
+// eso el historial de carga se exporta como un RESUMEN de solo lectura
+// (grado, asignatura, área — sin ninguna nota ni dato de estudiante), útil
+// como referencia de experiencia profesional, jamás como una migración de
+// calificaciones.
+app.post('/api/traslado/exportar-docente', async (req, res) => {
+  try {
+    const auth = _autorizarActorAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const { sk, usuario } = (req.body || {}) as { sk?: string; usuario?: string };
+    if (!sk || !usuario) return res.status(400).json({ ok: false, error: 'Faltan datos (sk o usuario).' });
+    if (!DOC_SIGN_SECRET) return res.status(503).json({ ok: false, error: 'La firma de paquetes de traslado no está configurada en el servidor (falta DOC_SIGN_SECRET).' });
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
+    const blob: any = rows[0].value;
+    const u = (blob.users || []).find((x: any) => x.u === usuario);
+    if (!u) return res.status(404).json({ ok: false, error: 'Docente no encontrado.' });
+    const perfilRows = await db.select().from(perfilDocenteExtendido).where(and(eq(perfilDocenteExtendido.sk, sk), eq(perfilDocenteExtendido.userU, usuario)));
+    // Resumen de carga académica — SOLO metadatos de la asignación
+    // (grado/materia/área/horas), JAMÁS notas ni datos de estudiantes.
+    const historialCargaAcademica = (blob.carga || [])
+      .filter((c: any) => c.d === usuario)
+      .map((c: any) => ({ grado: c.g, materia: c.m, area: c.a || '', horas: c.ih || null }));
+    const repoRows = await db.select().from(repositorioResources).where(and(eq(repositorioResources.institucionId, sk), eq(repositorioResources.uploader, usuario)));
+    const repositorioPedagogico = repoRows.map((r: any) => ({
+      title: r.title, author: r.author, level: r.level, skill: r.skill, type: r.type,
+      description: r.description, link: r.link, fileData: r.fileData, fileName: r.fileName,
+    }));
+    const datos = {
+      version: 2, // v2 = incluye historialCargaAcademica + repositorioPedagogico (Ronda 42)
+      origenSk: sk,
+      usuario: u.u,
+      usuarioBasico: { n: u.n, correo: u.correo, foto: u.foto, cedula: u.cedula },
+      perfilExtendido: perfilRows[0] || null,
+      historialCargaAcademica,
+      repositorioPedagogico,
+      emitidoEn: new Date().toISOString(),
+    };
+    const firma = _firmarBlob(datos);
+    blob.logMatricula = blob.logMatricula || [];
+    blob.logMatricula.push({
+      id: 'lm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      fecha: new Date().toISOString(),
+      usuario: auth.actorUsuario,
+      usuarioNombre: auth.actorNombre,
+      estId: null,
+      estNombre: `Docente: ${u.n || usuario}`,
+      tipo: 'traslado_interinstitucional_export_docente',
+      detalle: `Paquete de perfil docente generado (${historialCargaAcademica.length} carga(s) histórica(s), ${repositorioPedagogico.length} recurso(s) de repositorio).`,
+    });
+    const nowTs = new Date();
+    await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, sk));
+    guardarDbCache(sk, blob, nowTs, true);
+    return res.json({ ok: true, paquete: { datos, firma } });
+  } catch (e) {
+    console.error('POST /api/traslado/exportar-docente', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al exportar el perfil docente.' });
+  }
+});
+
+// POST /api/traslado/importar-docente — verifica la firma y, en la
+// institución destino, crea (si no existe ya un usuario con ese mismo
+// nombre de usuario) la cuenta básica del docente y su fila en
+// perfil_docente_extendido (Hoja de Vida, escalafón, decreto, CV), para que
+// conserve su historial profesional al llegar al nuevo colegio. No importa
+// contraseña (por seguridad, el docente debe fijar una nueva en destino vía
+// el flujo normal de restablecimiento) ni datos de carga académica (eso se
+// asigna de nuevo en destino, como cualquier docente nuevo).
+app.post('/api/traslado/importar-docente', async (req, res) => {
+  try {
+    const auth = _autorizarActorAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const { skDestino, paquete } = (req.body || {}) as { skDestino?: string; paquete?: { datos: any; firma: string } };
+    if (!skDestino || !paquete || !paquete.datos || !paquete.firma) return res.status(400).json({ ok: false, error: 'Faltan datos (skDestino o paquete).' });
+    if (!DOC_SIGN_SECRET) return res.status(503).json({ ok: false, error: 'La verificación de paquetes de traslado no está configurada en el servidor (falta DOC_SIGN_SECRET).' });
+    const firmaEsperada = _firmarBlob(paquete.datos);
+    if (firmaEsperada !== paquete.firma) {
+      return res.status(400).json({ ok: false, error: 'El paquete de traslado no es válido: su firma no coincide (fue alterado o no proviene de esta plataforma).' });
+    }
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, skDestino));
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución destino no encontrada.' });
+    const blob: any = rows[0].value;
+    blob.users = blob.users || [];
+    const yaExiste = blob.users.some((x: any) => x.u === paquete.datos.usuario);
+    if (!yaExiste) {
+      const ub = paquete.datos.usuarioBasico || {};
+      blob.users.push({ u: paquete.datos.usuario, r: 'docente', n: ub.n || '', correo: ub.correo || '', foto: ub.foto || '', cedula: ub.cedula || '', p: '' });
+      const nowTs = new Date();
+      await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, skDestino));
+      guardarDbCache(skDestino, blob, nowTs, true);
+      broadcastChange(skDestino);
+    }
+    if (paquete.datos.perfilExtendido) {
+      const pe = paquete.datos.perfilExtendido;
+      // Sin restricción UNIQUE sobre (sk, user_u) en este esquema (solo hay
+      // índices no-únicos), así que se evita duplicar filas comprobando
+      // primero si ya existe una para este (skDestino, usuario) — importar
+      // el mismo paquete dos veces no debe crear dos Hojas de Vida.
+      const yaTienePerfil = await db.select().from(perfilDocenteExtendido).where(and(eq(perfilDocenteExtendido.sk, skDestino), eq(perfilDocenteExtendido.userU, paquete.datos.usuario)));
+      if (!yaTienePerfil.length) {
+        await db.insert(perfilDocenteExtendido).values({
+          sk: skDestino,
+          userU: paquete.datos.usuario,
+          rolEspecifico: pe.rolEspecifico || '',
+          esDocenteOrientador: !!pe.esDocenteOrientador,
+          esTutorPta: !!pe.esTutorPta,
+          tipoDecretoNormativo: pe.tipoDecretoNormativo || '',
+          escalafon: pe.escalafon || '',
+          cvUrl: pe.cvUrl || '',
+          cvNombreArchivo: pe.cvNombreArchivo || '',
+        });
+      }
+    }
+    // RONDA 42 — importa el Repositorio Pedagógico propio del docente
+    // (recursos que él mismo subió) como filas NUEVAS en repositorio_resources
+    // bajo la institución DESTINO — es una copia, no un "mover": el recurso
+    // sigue existiendo también en la institución de origen, igual que la
+    // filosofía de "exportar, no borrar" del resto de este módulo.
+    let recursosImportados = 0;
+    for (const r of (paquete.datos.repositorioPedagogico || [])) {
+      await db.insert(repositorioResources).values({
+        institucionId: skDestino,
+        title: r.title || '',
+        author: r.author || '',
+        level: r.level || 'General',
+        skill: r.skill || '',
+        type: r.type || '',
+        description: r.description || '',
+        uploader: paquete.datos.usuario,
+        link: r.link || null,
+        fileData: r.fileData || null,
+        fileName: r.fileName || null,
+      });
+      recursosImportados++;
+    }
+    // RONDA 42 — el historial de carga académica (historialCargaAcademica)
+    // se guarda como referencia de solo lectura junto al usuario en el blob
+    // destino (`historialCargaAcademicaPrevia`) — es información de
+    // experiencia profesional, NO asignaciones activas de `db.carga`: el
+    // admin de la institución destino sigue siendo quien decide y crea las
+    // asignaciones reales de este docente en su nuevo colegio.
+    {
+      const historialCarga = Array.isArray(paquete.datos.historialCargaAcademica) ? paquete.datos.historialCargaAcademica : [];
+      const rowsD = await db.select().from(kvStore).where(eq(kvStore.key, skDestino));
+      const blobD: any = rowsD[0]?.value;
+      if (blobD) {
+        blobD.users = blobD.users || [];
+        const uD = blobD.users.find((x: any) => x.u === paquete.datos.usuario);
+        if (uD && historialCarga.length) uD.historialCargaAcademicaPrevia = { origenSk: paquete.datos.origenSk, carga: historialCarga };
+        blobD.logMatricula = blobD.logMatricula || [];
+        blobD.logMatricula.push({
+          id: 'lm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          fecha: new Date().toISOString(),
+          usuario: auth.actorUsuario,
+          usuarioNombre: auth.actorNombre,
+          estId: null,
+          estNombre: `Docente: ${paquete.datos.usuarioBasico?.n || paquete.datos.usuario}`,
+          tipo: 'traslado_interinstitucional_import_docente',
+          detalle: `Perfil docente importado desde sk=${paquete.datos.origenSk || '—'} (${recursosImportados} recurso(s) de repositorio, ${historialCarga.length} carga(s) histórica(s) como referencia). Las notas de estudiantes de la institución de origen NO se migran (pertenecen al estudiante/asignatura, no al docente).`,
+        });
+        const nowTsD = new Date();
+        await db.update(kvStore).set({ value: blobD, updatedAt: nowTsD }).where(eq(kvStore.key, skDestino));
+        guardarDbCache(skDestino, blobD, nowTsD, true);
+        broadcastChange(skDestino);
+      }
+    }
+    return res.json({ ok: true, usuarioImportado: paquete.datos.usuario, cuentaCreada: !yaExiste, recursosImportados });
+  } catch (e) {
+    console.error('POST /api/traslado/importar-docente', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al importar el perfil docente.' });
   }
 });
 
