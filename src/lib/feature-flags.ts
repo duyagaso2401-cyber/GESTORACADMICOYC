@@ -238,3 +238,27 @@ export async function checkAiAuditorEnabled(): Promise<boolean> {
 export async function checkKeepAliveEnabled(): Promise<boolean> {
   return flagSimpleHabilitadoPorDefecto(FLAG_RENDER_KEEPALIVE_PING);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 37 — AJUSTE DE ARQUITECTURA: SIMAT/ETC pasa a control MASTER.
+// ------------------------------------------------------------------------------
+// En la Ronda 36 el Módulo SIMAT (tabla `simat_estudiantes`, 3 endpoints en
+// src/routes/etc.ts) ejecutaba su migración de forma INCONDICIONAL la primera
+// vez que se llamaba cualquiera de esos 3 endpoints — sin ningún interruptor
+// propio (más allá del `checkModuleEnabled('ETC_CONTRACTING')` que ya gatea
+// TODO el router de la ETC). El usuario pidió que SIMAT/ETC tenga su PROPIO
+// flag maestro, independiente del módulo ETC general, en standby (false) por
+// defecto, para que una instalación que no usa interoperabilidad SIMAT nunca
+// toque Neon por este motivo — ni siquiera para crear la tabla base.
+//
+// Se usa `flagSimpleHabilitado()` (NO la variante "PorDefecto"): a diferencia
+// de los 3 flags de la Ronda 34 (que ya venían funcionando y debían seguir
+// activos tras el despliegue), SIMAT es un módulo que en la Ronda 36 todavía
+// no se había usado en producción — por eso aquí SÍ es correcto fallar
+// CERRADO (default false/standby), igual que ETC_CONTRACTING/UNIVERSITIES.
+// ════════════════════════════════════════════════════════════════════════════
+export const FLAG_SIMAT_ETC_MODULE = 'ENABLE_SIMAT_ETC_MODULE';
+
+export async function checkSimatEtcEnabled(): Promise<boolean> {
+  return flagSimpleHabilitado(FLAG_SIMAT_ETC_MODULE);
+}

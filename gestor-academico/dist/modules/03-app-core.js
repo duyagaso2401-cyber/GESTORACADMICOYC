@@ -655,6 +655,80 @@ function _registrarConflictoBitacora(_sk,conflictos,detalles,origen){
   }catch(_eb){}
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 36 — PARTE 1.2: AUTOGUARDADO AISLADO FILA POR FILA. Mientras se
+// califica una fila (una nota de Planilla o una celda de Notas de
+// Actividades) con Auto-guardar activo, se marca aquí CUÁL fila está en
+// edición (ver _marcarFilaEnEdicion()/_desmarcarFilaEnEdicion() más abajo,
+// usadas por saveNota() y _guardarNotaAct()). Mientras esa marca esté
+// puesta, saveDB() YA NO reprograma el envío del blob completo de la
+// institución (_pushDB) — en su lugar, delega en
+// _debounceGuardarFilaNotas(), que espera 1.5s de inactividad en ESA fila y
+// envía SOLO su paquete a POST /api/inetis/notas/guardar-fila. Ninguna otra
+// fila se retransmite, reconsulta ni revalida en el proceso. El respaldo en
+// localStorage (unas líneas más abajo) NUNCA se salta, así que el trabajo
+// del docente sigue protegido offline exactamente igual que antes.
+window._filaEnEdicion=null; // {tipo:'planilla'|'actividad', estId, cId, per, colId}
+function _marcarFilaEnEdicion(info){ window._filaEnEdicion=info; }
+function _desmarcarFilaEnEdicion(){ window._filaEnEdicion=null; }
+window._timersFilaNotas={};
+function _debounceGuardarFilaNotas(sk,info){
+  const clave=info.tipo+'_'+info.estId+'_'+info.cId+'_'+info.per+'_'+(info.colId||'');
+  if(window._timersFilaNotas[clave]) clearTimeout(window._timersFilaNotas[clave]);
+  window._timersFilaNotas[clave]=setTimeout(function(){
+    delete window._timersFilaNotas[clave];
+    _enviarFilaNotasAlServidor(sk,info);
+  },1800); // 1.8s — dentro del rango 1.5-2s pedido
+}
+function _enviarFilaNotasAlServidor(sk,info){
+  let payload=null;
+  if(info.tipo==='planilla'){
+    const est=(db.ests||[]).find(function(x){return String(x.id)===String(info.estId);});
+    const notas=est&&est.nts&&est.nts[info.cId]&&est.nts[info.cId][info.per]?est.nts[info.cId][info.per]:null;
+    if(!notas) return;
+    payload={sk,tipo:'planilla',estId:info.estId,cId:info.cId,per:info.per,notas};
+  }else if(info.tipo==='actividad'){
+    const key=info.cId+'_'+info.per+'_'+info.colId+'_'+info.estId;
+    const celda=(db.notasAct||{})[key];
+    // celda===undefined también es un envío válido: significa "eliminar esta
+    // celda" (ver eliminarNotaAct()) — el backend lo interpreta como borrado.
+    payload={sk,tipo:'actividad',estId:info.estId,cId:info.cId,per:info.per,colId:info.colId,
+      valor:celda?celda.valor:undefined,fecha:celda?celda.fecha:undefined,hora:celda?celda.hora:undefined,obs:celda?celda.obs:undefined};
+  }else return;
+  // RONDA 39 — defensa en profundidad: se envía el rolEspecifico de quien
+  // origina la petición para que el backend pueda rechazar con 403 a Docente
+  // Orientador/Tutor PTA aunque, por algún medio, hayan llegado a disparar
+  // este guardado (la restricción primaria sigue siendo el menú/UI, que ya
+  // no les muestra Planilla ni Notas de Actividades).
+  if(sesion&&sesion.rolEspecifico) payload.actorRolEspecifico=sesion.rolEspecifico;
+  // RONDA 40 — se adjunta el JWT firmado por el servidor (si el login logró
+  // obtenerlo) como "Authorization: Bearer" — el backend lo verifica
+  // criptográficamente y rechaza con 403 si el rol que ÉL MISMO firmó al
+  // autenticar corresponde a un rol sin permiso de notas, sin importar lo
+  // que diga el resto del payload.
+  const _hdrsGuardarFila={'Content-Type':'application/json'};
+  if(sesion&&sesion.jwt) _hdrsGuardarFila['Authorization']='Bearer '+sesion.jwt;
+  fetch(API_BASE+'/api/inetis/notas/guardar-fila',{method:'POST',headers:_hdrsGuardarFila,body:JSON.stringify(payload)})
+    .then(function(r){
+      if(r.ok){
+        _fallosConsecutivosGuardado=0;
+        _updateSyncChip('ok');
+        _lastSyncTs=Date.now();
+      }else{
+        // Si el guardado fila-por-fila falla (institución bloqueada, sesión
+        // vencida, etc.), se cae al camino de siempre (blob completo) como
+        // respaldo — nunca se pierde la nota, solo se retransmite más de lo
+        // ideal en ese caso puntual.
+        if(_saveTimer) clearTimeout(_saveTimer);
+        _saveTimer=setTimeout(_pushDB,350);
+      }
+    })
+    .catch(function(){
+      _updateSyncChip('offline');
+      if(_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer=setTimeout(_pushDB,350);
+    });
+}
 function saveDB(){
   const _sk=_skActual();
   window._hayCambiosSinSincronizar=true;
@@ -664,6 +738,10 @@ function saveDB(){
       localStorage.setItem(_sk,_lastDbJson);
     }catch(e){ _lastDbJson=null; }
   });
+  if(window._filaEnEdicion){
+    _debounceGuardarFilaNotas(_sk,window._filaEnEdicion);
+    return;
+  }
   if(_saveTimer) clearTimeout(_saveTimer);
   _saveTimer=setTimeout(_pushDB,350);
 }
@@ -674,8 +752,16 @@ async function _pushDB(){
   const _json=_lastDbJson || JSON.stringify(db);
   const baseVersion=(window._dbVersion!==undefined)?window._dbVersion:null;
   try{
+    // RONDA 40 — se agrega actorRolEspecifico (cuando la sesión lo tiene) a
+    // ESTE guardado central del blob completo, para que el servidor pueda
+    // aplicar la validación de "Tutor PTA no puede crear anotaciones
+    // DISCIPLINARIA/CONVIVENCIAL en el Observador" (ver POST /api/inetis/db
+    // en src/index.ts) sin tener que crear un endpoint nuevo solo para el
+    // Observador — este es el único punto de guardado por el que pasa TODO
+    // el blob, incluidas las observaciones.
+    const _actorRE=(sesion&&sesion.rolEspecifico)?',"actorRolEspecifico":'+JSON.stringify(sesion.rolEspecifico):'';
     const r=await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:'{"sk":'+JSON.stringify(_sk)+',"baseVersion":'+JSON.stringify(baseVersion)+',"data":'+_json+'}'});
+      body:'{"sk":'+JSON.stringify(_sk)+',"baseVersion":'+JSON.stringify(baseVersion)+_actorRE+',"data":'+_json+'}'});
     if(r.status===409){
       const conflicto=await r.json().catch(()=>null);
       if(conflicto) await _resolverConflictoDB(conflicto,_sk);
@@ -1817,6 +1903,12 @@ function moduloActivo(modId,platId){
     // Universidad — el propio menu.push ya exige nivelEducativo==='UNIVERSIDAD'
     // además de esto, así que un colegio nunca lo ve.
     if(modId==='planes-estudio') return true;
+    // RONDA 39 — Atenciones Psicopedagógicas y Comité de Convivencia: mismo
+    // motivo que los anteriores — módulos nuevos que quedarían ocultos en
+    // instituciones ya existentes cuya lista de módulos activos se guardó
+    // antes de que estos existieran. El rol ya lo controla en el menu.push
+    // (solo admin/Docente Orientador los ve).
+    if(modId==='atenciones-psico'||modId==='comite-convivencia') return true;
     // El Gestor admin dentro de una plataforma siempre ve todos los módulos
     if(gestorSesion&&gestorEnPlataforma) return true;
     const pid=platId||window._currentPlatId;if(!pid){
@@ -1840,6 +1932,23 @@ function moduloActivo(modId,platId){
     if(modDef&&modDef.core) return mods.includes(modId)||true;
     return mods.includes(modId);
   }
+// RONDA 39 — Helpers de rol específico para DOCENTE_ORIENTADOR y TUTOR_PTA.
+// Ambos son clasificaciones finas de sesion.rolEspecifico (catálogo agregado
+// en la Ronda 35, RONDA35_ROLES_ESPECIFICOS) dentro del rol genérico
+// sesion.r==='docente' — NO son roles nuevos de nivel superior. Se reutiliza
+// el mismo valor de texto que ya se guarda en el expediente/Mi Perfil del
+// docente, en vez de inventar un enum paralelo.
+function _esDocenteOrientador(){
+  return !!(sesion&&sesion.r==='docente'&&sesion.rolEspecifico==='Docente Orientador');
+}
+function _esTutorPTA(){
+  return !!(sesion&&sesion.r==='docente'&&sesion.rolEspecifico==='Tutor PTA');
+}
+// Bloqueo de notas/planillas: aplica a ambos roles especializados — ninguno
+// de los dos tiene entre sus vistas aprobadas la carga/edición de notas.
+function _bloqueadoNotasPlanillas(){
+  return _esDocenteOrientador()||_esTutorPTA();
+}
 let _entrandoAPlataforma=false;
 async function entrarPlataforma(platId,pagDestino,btnEl){
   const plat=gestorDB.platforms.find(x=>x.id===platId);
@@ -2087,12 +2196,48 @@ function _loginRegistrarFallo(rol,u){
   }catch(e){ return 0; }
 }
 function _loginLimpiarIntentos(rol,u){ try{ localStorage.removeItem(_loginIntentosKey(rol,u)); }catch(e){} }
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 39 — SMART AUTHENTICATION (Login Inteligente)
+// ------------------------------------------------------------------------------
+// Se eliminó el <select id="iRol"> del formulario (ver el HTML del login más
+// abajo): la persona ya NO elige su rol antes de entrar. `doLoginInstitucional()`
+// detecta el rol automáticamente, probando — para CADA institución activa,
+// en el MISMO orden en que siempre se buscó la institución correcta (todas
+// en paralelo, gana la primera coincidencia) — las 4 formas de credencial
+// que ya existían, en este orden de prioridad:
+//   1) Personal institucional (cualquier `.r` guardado en `platDB.users` —
+//      admin, docente, o cualquier rol futuro) por USUARIO EXACTO. Va
+//      primero porque un nombre de usuario de staff es una credencial
+//      explícita y deliberada — la forma más inequívoca de identificar a
+//      alguien.
+//   2) Módulo de Elecciones (usuario literal "elecciones").
+//   3) Estudiante (usuario y clave = su propio número de documento).
+//   4) Acudiente/Padre (usuario = documento del acudiente, clave = documento
+//      del estudiante).
+// Se detiene en el PRIMER match exitoso (misma regla de "gana el primero"
+// que ya regía la búsqueda de institución). El campo `rol` que antes leía
+// el <select> ahora es una variable interna (`rolDetectado`), fijada por
+// cuál de las 4 comprobaciones tuvo éxito — el resto del flujo (2FA,
+// bienvenida, notificación al rector cuando entra un docente, bloqueo por
+// intentos fallidos) queda IDÉNTICO, solo cambia de dónde sale `rol`.
+//
+// NOTA DE ARQUITECTURA (transparencia total): este sistema NO tiene un
+// selector de INSTITUCIÓN que eliminar — nunca lo tuvo. El login ya probaba
+// las credenciales contra TODAS las instituciones activas en paralelo
+// (ver el comentario original más abajo, sin cambios) — así que "Smart
+// Auth" aquí consistió en quitar el selector de ROL manteniendo intacto
+// ese mismo mecanismo de detección multi-institución que ya existía.
+// ════════════════════════════════════════════════════════════════════════════
 async function doLoginInstitucional(){
-  const rol=document.getElementById('iRol')?.value;
   const u=document.getElementById('iUser')?.value.trim();
   const p=document.getElementById('iPass')?.value.trim();
-  if(!rol||!u){customAlert('Complete los campos de usuario y contraseña.');return;}
-  const _estadoPrevio=_loginEstadoBloqueo(rol,u);
+  if(!u||!p){customAlert('Complete los campos de usuario y contraseña.');return;}
+  // El bloqueo por intentos fallidos ya no puede tener un "rol" propio (no
+  // se elige antes de intentar) — se usa la clave fija 'auto' para las 4
+  // funciones de bloqueo que ya existían (_loginEstadoBloqueo/Registrar/
+  // Limpiar), sin modificar su firma ni su lógica interna.
+  const _rolBloqueo='auto';
+  const _estadoPrevio=_loginEstadoBloqueo(_rolBloqueo,u);
   if(_estadoPrevio.bloqueado){
     const _min=Math.ceil(_estadoPrevio.segundosRestantes/60);
     customAlert('🔒 Demasiados intentos fallidos con este usuario. Por seguridad, espere '+(_min<=1?'1 minuto':_min+' minutos')+' antes de volver a intentar.');
@@ -2115,33 +2260,68 @@ async function doLoginInstitucional(){
   for(let _i=0;_i<platsActivas.length;_i++){
     const plat=platsActivas[_i];
     const platDB=platDBs[_i];
-    let sesionData=null;
-    if(rol==='elecciones'){
-      if(u==='elecciones'){
-        const eu=platDB.users&&platDB.users.find(x=>x.r==='elecciones');
-        if(eu&&await _verificarPassword(p,eu.p)){
-          sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};
-          if(!_esHashPassword(eu.p)){eu.p=await _hashPassword(p);_savePlatDBQuiet(plat.sk,platDB);}
-        } else if(!eu&&p==='inetis2026'){
-          sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};
-        }
-      }
-    } else if(rol==='padre'){
-      const est=platDB.ests&&platDB.ests.find(e=>(e.numDocAcud||'').toString().trim()===u&&(e.numDoc||e.numDocAcud||'').toString().trim()===p);
-      if(est) sesionData={u,p,r:'padre',n:est.acudiente||'ACUDIENTE',estId:est.id};
-    } else if(rol==='estudiante'){
-      const est=platDB.ests&&platDB.ests.find(e=>(e.numDoc||'').toString().trim()===u&&(e.numDoc||'').toString().trim()===p);
-      if(est) sesionData={u,p,r:'estudiante',n:est.n,estId:est.id};
-    } else {
-      const user=platDB.users&&platDB.users.find(x=>x.u===u&&x.r===rol);
-      if(user&&await _verificarPassword(p,user.p)){
-        sesionData=user;
-        if(!_esHashPassword(user.p)){user.p=await _hashPassword(p);_savePlatDBQuiet(plat.sk,platDB);}
+    let sesionData=null,rolDetectado=null;
+    // 1) Personal institucional — CUALQUIER rol de staff guardado (admin,
+    // docente, o cualquiera futuro), por coincidencia exacta de usuario.
+    const staffUser=platDB.users&&platDB.users.find(x=>x.u===u&&x.r!=='elecciones');
+    if(staffUser&&await _verificarPassword(p,staffUser.p)){
+      sesionData=staffUser;rolDetectado=staffUser.r;
+      if(!_esHashPassword(staffUser.p)){staffUser.p=await _hashPassword(p);_savePlatDBQuiet(plat.sk,platDB);}
+    }
+    // 2) Módulo de Elecciones (usuario literal "elecciones")
+    if(!sesionData&&u==='elecciones'){
+      const eu=platDB.users&&platDB.users.find(x=>x.r==='elecciones');
+      if(eu&&await _verificarPassword(p,eu.p)){
+        sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};rolDetectado='elecciones';
+        if(!_esHashPassword(eu.p)){eu.p=await _hashPassword(p);_savePlatDBQuiet(plat.sk,platDB);}
+      } else if(!eu&&p==='inetis2026'){
+        sesionData={u:'elecciones',p,r:'elecciones',n:'MÓDULO ELECCIONES'};rolDetectado='elecciones';
       }
     }
+    // 3) Estudiante (usuario y clave = su propio N° de documento)
+    if(!sesionData){
+      const est=platDB.ests&&platDB.ests.find(e=>(e.numDoc||'').toString().trim()===u&&(e.numDoc||'').toString().trim()===p);
+      if(est){ sesionData={u,p,r:'estudiante',n:est.n,estId:est.id};rolDetectado='estudiante'; }
+    }
+    // 4) Acudiente/Padre (usuario = doc. del acudiente, clave = doc. del estudiante)
+    if(!sesionData){
+      const est=platDB.ests&&platDB.ests.find(e=>(e.numDocAcud||'').toString().trim()===u&&(e.numDoc||e.numDocAcud||'').toString().trim()===p);
+      if(est){ sesionData={u,p,r:'padre',n:est.acudiente||'ACUDIENTE',estId:est.id};rolDetectado='padre'; }
+    }
     if(sesionData){
-      _loginLimpiarIntentos(rol,u);
-      const pagTarget=rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla';
+      _loginLimpiarIntentos(_rolBloqueo,u);
+      const pagTarget=rolDetectado==='padre'?'padre-home':rolDetectado==='estudiante'?'est-home':rolDetectado==='elecciones'?'elecciones':rolDetectado==='admin'?'tablero':rolDetectado==='docente'?'panel-docente':'planilla';
+      // RONDA 39 — Conmutación de rol sin cerrar sesión (ver "Mi Perfil"):
+      // se guardan aquí, en la propia sesión, TODAS las demás cuentas de
+      // staff (`platDB.users`) que comparten el MISMO nombre de usuario
+      // pero un `.r` distinto — es la convención que esta ronda introduce
+      // para representar "una persona con más de un rol" (ver el
+      // comentario extenso junto a `_otrosRolesDisponibles` más abajo).
+      if(rolDetectado==='admin'||rolDetectado==='docente'){
+        const _otrosRoles=(platDB.users||[]).filter(x=>x.u===u&&x.r!==rolDetectado&&(x.r==='admin'||x.r==='docente'));
+        if(_otrosRoles.length) sesionData._otrosRoles=_otrosRoles.map(x=>({u:x.u,r:x.r,n:x.n}));
+      }
+      // RONDA 40 — BLINDAJE JWT: además de la sesión de siempre (objeto en
+      // memoria, sin cambios), se le pide al servidor un JWT firmado
+      // (POST /api/auth/login) para esta MISMA institución/usuario/clave que
+      // ya se acaba de validar aquí. El servidor vuelve a validar la
+      // contraseña por su cuenta (nunca confía en que "ya se validó del lado
+      // del cliente") y firma el rol que ÉL MISMO detectó. Este paso es
+      // "mejor esfuerzo": si falla (servidor caído, JWT_SECRET no
+      // configurado, etc.) el login NO se bloquea — sesionData.jwt
+      // simplemente queda sin valor, y las peticiones que lo usan (ver
+      // _enviarFilaNotasAlServidor) siguen funcionando con el mecanismo
+      // heredado de esta misma ronda anterior (actorRolEspecifico en el
+      // body). Esto es intencional: no se quiso condicionar la posibilidad
+      // de iniciar sesión —el flujo más crítico de toda la plataforma— a la
+      // disponibilidad de una pieza de infraestructura nueva.
+      try{
+        const _rJwt=await fetch(API_BASE+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:plat.sk,u,p})});
+        if(_rJwt.ok){
+          const _jJwt=await _rJwt.json();
+          if(_jJwt&&_jJwt.token) sesionData.jwt=_jJwt.token;
+        }
+      }catch(_eJwt){ /* mejor-esfuerzo: sin JWT, el login continúa igual */ }
       // Si este usuario activó la verificación en dos pasos, la contraseña
       // sola no basta: se pide además el código de 6 dígitos de su
       // aplicación autenticadora antes de completar el ingreso.
@@ -2150,19 +2330,69 @@ async function doLoginInstitucional(){
         return;
       }
       window._pendingLogin={sesionData,platDB,plat,pag:pagTarget};
-      if(rol==='docente'){try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_skActual(),kind:'login',actor:sesionData.n,message:'El/La docente '+sesionData.n+' ingresó al sistema',meta:{u:sesionData.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}}
+      if(rolDetectado==='docente'){try{fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_skActual(),kind:'login',actor:sesionData.n,message:'El/La docente '+sesionData.n+' ingresó al sistema',meta:{u:sesionData.u,fecha:new Date().toISOString()}})}).catch(()=>{});}catch(e){}}
       renderBienvenidaInstitucion(plat.id);return;
     }
   }
-  const _segsBloqueo=_loginRegistrarFallo(rol,u);
+  const _segsBloqueo=_loginRegistrarFallo(_rolBloqueo,u);
   if(_segsBloqueo>0){
     customAlert('❌ No se encontraron credenciales válidas.\n\n🔒 Alcanzó el límite de intentos fallidos — por seguridad, espere '+Math.ceil(_segsBloqueo/60)+' minutos antes de volver a intentar.');
   }else{
-    customAlert('❌ No se encontraron credenciales válidas en ninguna plataforma.\n\nVerifique usuario, contraseña y rol.');
+    customAlert('❌ No se encontraron credenciales válidas en ninguna plataforma.\n\nVerifique su usuario y contraseña.');
   }
   }finally{
     if(_btnLogin){ _btnLogin.disabled=false; _btnLogin.innerHTML=_textoBtnOriginal; }
   }
+}
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 39 — Conmutación de rol sin cerrar sesión ("Mi Perfil" → 🔄 Cambiar
+// de rol). ANTES de esta ronda no existía ningún concepto de "una persona
+// con más de un rol": cada fila de `platDB.users` era una credencial
+// aislada, sin relación declarada con ninguna otra. Cambiar de esquema para
+// modelar "múltiples roles por persona" de forma relacional habría sido un
+// cambio de arquitectura mucho más grande y riesgoso para esta ronda — en
+// vez de eso, se adoptó la convención MÍNIMA y no destructiva ya usada en
+// `doLoginInstitucional()`: si dos filas de `platDB.users` comparten el
+// mismo campo `.u` (usuario) pero tienen un `.r` distinto (ej. la misma
+// persona registrada una vez como 'admin' y otra vez como 'docente'), se
+// tratan como "la misma persona, dos roles" — sin fusionar sus registros
+// (cada uno conserva su propia contraseña/permisos), solo permitiendo
+// saltar de uno a otro sin volver a pedir contraseña, ya que ambas cuentas
+// ya fueron autenticadas con éxito al momento del login (`_otrosRoles`,
+// guardado en `sesionData` al iniciar sesión, arriba).
+// ════════════════════════════════════════════════════════════════════════════
+function _otrosRolesDisponibles(){
+  return (sesion&&sesion._otrosRoles)||[];
+}
+function _htmlSelectorConmutacionRol(){
+  const otros=_otrosRolesDisponibles();
+  if(!otros.length) return '';
+  return `<div class="card" style="margin-bottom:16px;background:#fef9e7;border:1px solid #f9e79f">
+    <b style="color:#7d6608">🔄 Cambiar de rol (sin cerrar sesión)</b>
+    <p style="font-size:0.78rem;color:#7d6608;margin:4px 0 10px">Su usuario tiene más de un perfil registrado en esta institución. Puede conmutar sin volver a ingresar su contraseña.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${otros.map(o=>`<button class="btn-sm" style="background:#7d6608" onclick="_conmutarRol('${o.u.replace(/'/g,"\\'")}','${o.r}')">🔁 Entrar como ${o.r==='admin'?'Administrador/Rector(a)':'Docente'} (${_escaparHtmlModal?_escaparHtmlModal(o.n||''):(o.n||'')})</button>`).join('')}
+    </div>
+  </div>`;
+}
+async function _conmutarRol(usuario,rolNuevo){
+  const otros=_otrosRolesDisponibles();
+  const destino=otros.find(o=>o.u===usuario&&o.r===rolNuevo);
+  if(!destino){customAlert('Ese perfil ya no está disponible para conmutar.');return;}
+  const sk=_skActual();
+  if(!sk){customAlert('No se pudo determinar la institución activa.');return;}
+  try{
+    const platDB=await _fetchPlatDB(sk);
+    const userCompleto=(platDB.users||[]).find(x=>x.u===usuario&&x.r===rolNuevo);
+    if(!userCompleto){customAlert('No se encontró ese perfil en la institución.');return;}
+    // El nuevo rol activo también conserva la lista de "otros roles"
+    // (incluyendo, ahora, el rol que se acaba de dejar) para poder volver.
+    const otrosParaNuevo=(platDB.users||[]).filter(x=>x.u===usuario&&x.r!==rolNuevo&&(x.r==='admin'||x.r==='docente')).map(x=>({u:x.u,r:x.r,n:x.n}));
+    sesion={...userCompleto,_otrosRoles:otrosParaNuevo};
+    pag=rolNuevo==='admin'?'tablero':'panel-docente';
+    _showToast('✅ Ahora está viendo el sistema como '+(rolNuevo==='admin'?'Administrador/Rector(a)':'Docente')+'.','success',4000);
+    render();
+  }catch(e){ customAlert('Error de red al conmutar de rol.'); }
 }
 // Muestra el modal que pide el código de 6 dígitos durante el login, para
 // usuarios que activaron la verificación en dos pasos. Solo completa el
@@ -2617,8 +2847,124 @@ function htmlGestorETC(){
       </tr></thead><tbody>${filasEntidades}</tbody></table>`:'<p style="color:#888;font-size:0.85rem">Aún no hay entidades territoriales registradas.</p>')}
     </div>
     ${panelInstituciones}
+  </div>
+  ${_htmlPanelSimatEtc()}`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 37 — VISTAS VISUALES DEL MÓDULO SIMAT Y PORTAL ETC/GOBERNACIÓN. Vive
+// dentro de la pestaña "🏛️ Entidades Territoriales" (mismo lugar que el
+// resto del módulo ETC), pero es un interruptor APARTE
+// (ENABLE_SIMAT_ETC_MODULE, distinto de ENABLE_ETC_CONTRACTING_MODULE) —
+// mientras esté apagado, esta tarjeta solo muestra el mensaje de standby,
+// sin llamar a ningún endpoint /api/etc/simat/*.
+// ════════════════════════════════════════════════════════════════════════════
+let _simatFilasImportadas=[];
+let _simatArchivoNombre='';
+let _simatPrecheck=null;
+let _simatConsolidado=null;
+let _simatSkConsulta='';
+try{ _simatSkConsulta=_skActual&&_skActual()||''; }catch(e){}
+
+function _htmlPanelSimatEtc(){
+  const activo=!!(gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_SIMAT_ETC_MODULE);
+  if(!activo){
+    return `<div class="card" style="margin-top:16px;text-align:center;padding:30px 20px">
+      <div style="font-size:2.4rem;margin-bottom:6px">🛰️</div>
+      <h4 style="color:#003366;margin-bottom:8px">Módulo SIMAT / Portal ETC-Gobernación</h4>
+      <p style="color:#666;max-width:560px;margin:0 auto;font-size:0.86rem">En modo standby. Un Súper Admin puede activarlo desde "🤖 Auditoría IA / Agente → Control Granular" (interruptor "Módulo SIMAT / Portal ETC-Gobernación"). Mientras esté apagado, no se crea ni se consulta ninguna tabla SIMAT en Neon.</p>
+    </div>`;
+  }
+  const filasPreview=_simatFilasImportadas.slice(0,8).map(function(f){
+    return `<tr>${Object.keys(_simatFilasImportadas[0]||{}).map(function(k){return `<td style="padding:4px 8px;border:1px solid #ddd;font-size:0.76rem;white-space:nowrap">${_escaparHtmlModal(String(f[k]??''))}</td>`;}).join('')}</tr>`;
+  }).join('');
+  const encabezados=_simatFilasImportadas[0]?Object.keys(_simatFilasImportadas[0]):[];
+  const CAMPOS_MEN=['nuip','tipoDocumento','nombres','apellidos','fechaNacimiento','genero','codigoDaneInstitucion','codigoDaneSede','jornada','gradoSimat','grupo','tipoDiscapacidad','poblacionVulnerable','etnia','victimaConflicto','estrato','estadoSimat','fechaRegistroNovedad','novedad'];
+  const mapaColumnas=encabezados.map(function(h){
+    const norm=h.toLowerCase().replace(/[^a-z]/g,'');
+    const campoMen=CAMPOS_MEN.find(function(c){return c.toLowerCase()===norm;});
+    return `<span style="display:inline-block;margin:2px 6px 2px 0;padding:3px 8px;border-radius:6px;font-size:0.72rem;background:${campoMen?'#e8f6ef':'#fdf2e9'};color:${campoMen?'#1e6b3a':'#a04000'}">${_escaparHtmlModal(h)} → ${campoMen?campoMen:'(columna adicional, se agrega dinámicamente)'}</span>`;
+  }).join('');
+  const filasFaltantes=_simatPrecheck?_simatPrecheck.registros.filter(function(r){return !r.listo;}).length:0;
+  return `<div class="card" style="margin-top:16px">
+    <h4 style="color:#003366">🛰️ Importador SIMAT (Anexo 6A / Planilla de Novedades)</h4>
+    <p style="font-size:0.8rem;color:#666">Cargue el archivo CSV/Excel exportado del SIMAT. Se detecta el mapeo de columnas al esquema MEN automáticamente; cualquier columna que la plantilla de su ETC traiga de más se agrega como columna adicional (no se pierde ninguna información).</p>
+    <input type="file" id="simatArchivoInput" accept=".csv,.xlsx,.xls" onchange="_simatCargarArchivo(this)">
+    ${encabezados.length?`<div style="margin-top:10px"><b style="font-size:0.8rem;color:#003366">Mapeo de columnas detectado (${_escaparHtmlModal(_simatArchivoNombre)}):</b><div style="margin-top:6px">${mapaColumnas}</div></div>`:''}
+    ${_simatFilasImportadas.length?`<div style="overflow-x:auto;margin-top:10px"><table style="border-collapse:collapse"><thead><tr>${encabezados.map(function(h){return `<th style="padding:4px 8px;border:1px solid #ddd;background:#003366;color:#fff;font-size:0.72rem">${_escaparHtmlModal(h)}</th>`;}).join('')}</tr></thead><tbody>${filasPreview}</tbody></table><p style="font-size:0.74rem;color:#888;margin-top:4px">Vista previa: ${Math.min(8,_simatFilasImportadas.length)} de ${_simatFilasImportadas.length} fila(s).</p></div>
+    <button class="btn btn-green" style="margin-top:10px" onclick="_simatConfirmarImportacion()">✅ Confirmar e importar ${_simatFilasImportadas.length} fila(s)</button>`:''}
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h4 style="color:#003366">📊 Portal ETC/Gobernación — Consolidado (solo lectura)</h4>
+    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+      <div><label class="lbl">"sk" de la institución</label><input id="simatSkConsultaInput" value="${_escaparHtmlModal(_simatSkConsulta)}" placeholder="sk de la institución"></div>
+      <button class="btn btn-blue" onclick="_simatConsultarConsolidado()">🔍 Consultar</button>
+      <button class="btn btn-gray" onclick="_simatExportarPrecheck()">📤 Precheck de exportación</button>
+    </div>
+    ${_simatConsolidado?`<div style="display:flex;gap:14px;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px;background:#eaf2f8;border-radius:8px;padding:12px;text-align:center"><div style="font-size:1.6rem;font-weight:700;color:#1a5276">${_simatConsolidado.coberturaPct}%</div><div style="font-size:0.76rem;color:#555">Cobertura (matriculados / total SIMAT)</div></div>
+      <div style="flex:1;min-width:140px;background:#fdedec;border-radius:8px;padding:12px;text-align:center"><div style="font-size:1.6rem;font-weight:700;color:#c0392b">${_simatConsolidado.desercionPct}%</div><div style="font-size:0.76rem;color:#555">Deserción (retirados / total SIMAT)</div></div>
+      <div style="flex:1;min-width:140px;background:#fef9e7;border-radius:8px;padding:12px;text-align:center"><div style="font-size:1.6rem;font-weight:700;color:#a04000">${_simatConsolidado.ausentismoMuestraVacia?'—':_simatConsolidado.ausentismoPct+'%'}</div><div style="font-size:0.76rem;color:#555">Ausentismo${_simatConsolidado.ausentismoMuestraVacia?' (sin registros de asistencia aún)':' (asistencia registrada)'}</div></div>
+    </div>`:'<p style="color:#888;font-size:0.85rem">Consulte una institución para ver sus indicadores.</p>'}
+    ${_simatPrecheck?`<p style="margin-top:12px;font-size:0.85rem"><b>${_simatPrecheck.total}</b> registro(s) — <b style="color:${filasFaltantes?'#c0392b':'#1e6b3a'}">${filasFaltantes}</b> con campos obligatorios faltantes antes de exportar el Anexo 6A.</p>`:''}
   </div>`;
 }
+
+function _simatCargarArchivo(inp){
+  const file=inp.files&&inp.files[0];
+  if(!file) return;
+  _simatArchivoNombre=file.name;
+  const lector=new FileReader();
+  lector.onload=function(ev){
+    try{
+      const wb=XLSX.read(ev.target.result,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const filas=XLSX.utils.sheet_to_json(ws,{defval:''});
+      _simatFilasImportadas=filas;
+    }catch(e){ _showToast('❌ No se pudo leer el archivo. Verifique que sea un CSV/Excel válido.','error',5000); _simatFilasImportadas=[]; }
+    renderGestorAdmin();
+  };
+  lector.readAsArrayBuffer(file);
+}
+async function _simatConfirmarImportacion(){
+  const sk=(document.getElementById('simatSkConsultaInput')&&document.getElementById('simatSkConsultaInput').value.trim())||_simatSkConsulta;
+  if(!sk){ _showToast('❌ Indique el "sk" de la institución antes de importar.','error',4000); return; }
+  try{
+    const r=await fetch(API_BASE+'/api/etc/simat/importar',{method:'POST',headers:{'Content-Type':'application/json','x-rol-actor':'Superadmin'},body:JSON.stringify({sk,filas:_simatFilasImportadas})});
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.standby){ _showToast('⏸️ '+j.error,'error',6000); return; }
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo importar.'),'error',5000); return; }
+    _showToast('✅ Importado: '+(j.nuevos||[]).length+' nuevo(s), '+j.actualizados+' actualizado(s), '+(j.rechazados||[]).length+' rechazado(s).'+((j.columnasDinamicasAgregadas||[]).length?(' Columnas nuevas detectadas: '+j.columnasDinamicasAgregadas.join(', ')):''),'success',7000);
+    _simatFilasImportadas=[];
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red al importar SIMAT.','error',4000); }
+}
+async function _simatConsultarConsolidado(){
+  const sk=(document.getElementById('simatSkConsultaInput')&&document.getElementById('simatSkConsultaInput').value.trim())||'';
+  if(!sk){ _showToast('❌ Indique el "sk" de la institución.','error',4000); return; }
+  _simatSkConsulta=sk;
+  try{
+    const r=await fetch(API_BASE+'/api/etc/simat/consolidado?sk='+encodeURIComponent(sk),{headers:{'x-rol-actor':'GOBERNACION_ETC'}});
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.standby){ _showToast('⏸️ '+j.error,'error',6000); return; }
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo consultar.'),'error',5000); return; }
+    _simatConsolidado=j;
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+async function _simatExportarPrecheck(){
+  const sk=(document.getElementById('simatSkConsultaInput')&&document.getElementById('simatSkConsultaInput').value.trim())||_simatSkConsulta;
+  if(!sk){ _showToast('❌ Indique el "sk" de la institución.','error',4000); return; }
+  try{
+    const r=await fetch(API_BASE+'/api/etc/simat/exportar-precheck',{method:'POST',headers:{'Content-Type':'application/json','x-rol-actor':'Superadmin'},body:JSON.stringify({sk})});
+    const j=await r.json().catch(()=>({}));
+    if(j&&j.standby){ _showToast('⏸️ '+j.error,'error',6000); return; }
+    if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo preparar la exportación.'),'error',5000); return; }
+    _simatPrecheck=j;
+    renderGestorAdmin();
+  }catch(e){ _showToast('❌ Error de red.','error',4000); }
+}
+
 async function _refrescarEtcEntidades(){
   _etcCargando=true;
   try{
@@ -3682,9 +4028,10 @@ async function _refrescarControlProcesosIA(){
     _controlProcesosCargado={
       ENABLE_AI_NEON_QUERIES:!!(j&&j.ENABLE_AI_NEON_QUERIES),
       ENABLE_AI_ECOSYSTEM_AUDITOR:!!(j&&j.ENABLE_AI_ECOSYSTEM_AUDITOR),
-      ENABLE_RENDER_KEEPALIVE_PING:!!(j&&j.ENABLE_RENDER_KEEPALIVE_PING)
+      ENABLE_RENDER_KEEPALIVE_PING:!!(j&&j.ENABLE_RENDER_KEEPALIVE_PING),
+      ENABLE_SIMAT_ETC_MODULE:!!(j&&j.ENABLE_SIMAT_ETC_MODULE)
     };
-  }catch(e){ _controlProcesosCargado={ENABLE_AI_NEON_QUERIES:true,ENABLE_AI_ECOSYSTEM_AUDITOR:true,ENABLE_RENDER_KEEPALIVE_PING:true}; }
+  }catch(e){ _controlProcesosCargado={ENABLE_AI_NEON_QUERIES:true,ENABLE_AI_ECOSYSTEM_AUDITOR:true,ENABLE_RENDER_KEEPALIVE_PING:true,ENABLE_SIMAT_ETC_MODULE:false}; }
   if(_gestorPag==='agenteia') renderGestorAdmin();
 }
 // Toggle genérico reutilizado por los 3 switches — evita triplicar la
@@ -3723,6 +4070,7 @@ function _htmlControlProcesosIA(){
       ${sw('ENABLE_AI_NEON_QUERIES','/api/superadmin/activar-ai-neon-queries','🗄️','Agente IA - Consultas Base de Datos Neon','Si se apaga, Adán responde un mensaje de mantenimiento a las preguntas que requieran datos institucionales, en vez de consultarlos.')}
       ${sw('ENABLE_AI_ECOSYSTEM_AUDITOR','/api/superadmin/activar-ai-ecosystem-auditor','🕵️','Agente IA - Auditoría Automática del Ecosistema','Si se apaga, detiene la auditoría PROGRAMADA (domingos 2 a.m.). El botón "Disparar Auditoría Ahora" sigue funcionando igual.')}
       ${sw('ENABLE_RENDER_KEEPALIVE_PING','/api/superadmin/activar-keepalive-ping','🌙','Mantener Vivo Servidor Render (Ping / Keep-Alive)','Si se apaga, detiene por completo el auto-ping a Render — útil en receso escolar o mantenimiento prolongado, para ahorrar consumo.')}
+      ${sw('ENABLE_SIMAT_ETC_MODULE','/api/superadmin/activar-simat-etc','🏫','Módulo SIMAT / Portal ETC-Gobernación','Interruptor MAESTRO (Ronda 37): mientras esté apagado (standby), NO se crea ni consulta ninguna tabla SIMAT en Neon — ni la base ni las columnas dinámicas por ETC. Actívelo solo si esta institución/ETC va a usar interoperabilidad SIMAT.')}
     </div>
   </div>`;
 }
@@ -5059,10 +5407,33 @@ function iaRemoveWidget(){const w=document.getElementById('iaWidget');if(w)w.rem
 // principal. Es deliberadamente sessionStorage (no localStorage): expira al
 // cerrar la pestaña/navegador, igual que ya se comporta el resto del login.
 const RONDA35_SESION_STORAGE_KEY='_ycSesionActiva';
+// RONDA 36 — PARTE 2.2: en Ronda 35 solo se guardaba/restauraba `pag` (la
+// sección de PRIMER NIVEL: "planilla", "asistencia", "observador"...), pero
+// NO el submódulo/pestaña anidada dentro de esa sección (qué asignatura y
+// periodo estaban abiertos en Planilla, qué grado/pestaña en Asistencia,
+// qué grado/periodo se había cargado en Observador). Por eso un F5 sí
+// devolvía a la sección correcta, pero DENTRO de ella se veía "vacía"
+// (sin asignatura/grado seleccionados) — indistinguible, para quien lo
+// vive, de haber vuelto a la pantalla principal. Se amplía lo que se
+// guarda/restaura con exactamente esas variables (todas globales que las
+// pantallas ya leen directamente al construir su HTML, así que basta con
+// restaurarlas ANTES del primer render — sin tocar el HTML de esas
+// pantallas). Observador es la única excepción real: no usa variables
+// globales, sino un <select> del DOM leído en cargarListaObservador(), así
+// que su grado/periodo se restauran aparte, después de que el DOM exista
+// (ver el bootstrap más abajo).
 function _guardarSesionEnStorage(){
   try{
     if(!sesion||window._adminPortalMode||gestorSesion) return;
-    sessionStorage.setItem(RONDA35_SESION_STORAGE_KEY,JSON.stringify({sk:_skActual(),sesion:sesion,pag:pag}));
+    const sub={
+      planCId:(typeof planCId!=='undefined'?planCId:''), planPer:(typeof planPer!=='undefined'?planPer:'1'),
+      notaActCId:(typeof notaActCId!=='undefined'?notaActCId:''), notaActPer:(typeof notaActPer!=='undefined'?notaActPer:'1'),
+      asistGrado:(typeof asistGrado!=='undefined'?asistGrado:''), asistCId:(typeof asistCId!=='undefined'?asistCId:''),
+      asistTabActivo:(typeof asistTabActivo!=='undefined'?asistTabActivo:'reg'),
+      obsGrado:(document.getElementById('obsEstGrado')?.value)||'', obsPer:(document.getElementById('obsEstPer')?.value)||'',
+      scrollY:window.scrollY||0,
+    };
+    sessionStorage.setItem(RONDA35_SESION_STORAGE_KEY,JSON.stringify({sk:_skActual(),sesion:sesion,pag:pag,sub:sub}));
   }catch(e){/* almacenamiento no disponible (privado/bloqueado) — no es crítico */}
 }
 function _restaurarSesionDesdeStorage(){
@@ -5077,8 +5448,38 @@ function _restaurarSesionDesdeStorage(){
     if(guardado.sk&&_skActual()&&guardado.sk!==_skActual()) return false;
     sesion=guardado.sesion;
     if(guardado.pag) pag=guardado.pag;
+    const sub=guardado.sub||{};
+    if(sub.planCId) planCId=sub.planCId;
+    if(sub.planPer) planPer=sub.planPer;
+    if(sub.notaActCId) notaActCId=sub.notaActCId;
+    if(sub.notaActPer) notaActPer=sub.notaActPer;
+    if(sub.asistGrado) asistGrado=sub.asistGrado;
+    if(sub.asistCId) asistCId=sub.asistCId;
+    if(sub.asistTabActivo) asistTabActivo=sub.asistTabActivo;
+    // El grado/periodo de Observador y el scroll no son variables globales
+    // — se guardan aparte para que el bootstrap los aplique después de que
+    // exista el DOM (ver _rehidratarSubmoduloPostRender()).
+    window._ronda36ObsPendiente=(sub.obsGrado||sub.obsPer)?{grado:sub.obsGrado,per:sub.obsPer}:null;
+    window._ronda36ScrollPendiente=sub.scrollY||0;
     return true;
   }catch(e){ return false; }
+}
+// Se ejecuta una sola vez, justo después del primer render tras una
+// rehidratación exitosa: reaplica el grado/periodo de Observador (que vive
+// en <select> del DOM, no en variables globales) y el scroll — ambos
+// necesitan que la tabla/formulario ya esté pintado en pantalla.
+function _rehidratarSubmoduloPostRender(){
+  try{
+    if(pag==='observador'&&window._ronda36ObsPendiente){
+      const g=document.getElementById('obsEstGrado'),p=document.getElementById('obsEstPer');
+      if(g&&window._ronda36ObsPendiente.grado) g.value=window._ronda36ObsPendiente.grado;
+      if(p&&window._ronda36ObsPendiente.per) p.value=window._ronda36ObsPendiente.per;
+      if(typeof cargarListaObservador==='function') cargarListaObservador();
+    }
+    if(window._ronda36ScrollPendiente) window.scrollTo(0,window._ronda36ScrollPendiente);
+  }catch(e){/* mejor esfuerzo — nunca debe romper el arranque normal */}
+  window._ronda36ObsPendiente=null;
+  window._ronda36ScrollPendiente=0;
 }
 function _borrarSesionDeStorage(){
   try{ sessionStorage.removeItem(RONDA35_SESION_STORAGE_KEY); }catch(e){}
@@ -5110,8 +5511,8 @@ function render(){
   // justo después de que "db"/"SK" ya están cargados (para poder comparar el sk),
   // y ANTES de decidir qué pantalla mostrar: si hay una sesión guardada válida,
   // un F5 debe reabrir la misma vista en la que la persona estaba, no la landing.
-  if(!sesion&&!window._adminPortalMode) _restaurarSesionDesdeStorage();
-  if(ok){if(sesion)renderApp();else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
+  const _seRestauro=!sesion&&!window._adminPortalMode&&_restaurarSesionDesdeStorage();
+  if(ok){if(sesion){renderApp();if(_seRestauro) setTimeout(_rehidratarSubmoduloPostRender,60);}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
 
 // ============================================================
 // Ronda 12, Sección 2: PANTALLA DE RESTABLECIMIENTO DE CONTRASEÑA
@@ -5624,8 +6025,18 @@ function _debeSincronizarEnSegundoPlano(){
 function _enPantallaDeCalificacion(){
   return typeof pag!=='undefined'&&(pag==='planilla'||pag==='notas-actividades');
 }
+// RONDA 36 — PARTE 1.1: antes, esta función (y por lo tanto la supresión del
+// aviso "otra persona guardó"/"se combinaron cambios" y de toda lectura
+// cruzada de fondo) solo aplicaba con Auto-guardar en ON. Se pidió
+// eliminar POR COMPLETO ese aviso y ese re-chequeo de fondo en las
+// pantallas de calificación, sin condición — así que ahora la única
+// condición es estar en Planilla o Notas de Actividades, sin importar si
+// el modo de guardado es automático o manual. El nombre se conserva (no se
+// renombra) porque sigue siendo llamada desde los mismos 2 puntos exactos
+// que ya la usaban (ver _resolverConflictoDB() y _syncAll() más abajo) y
+// renombrarla no aporta nada — solo se amplió su condición.
 function _debeSuprimirPollingPorAutoGuardarSilencioso(){
-  return typeof _autoGuardarCargado!=='undefined'&&_autoGuardarCargado&&_autoGuardar&&_enPantallaDeCalificacion();
+  return _enPantallaDeCalificacion();
 }
 
 // Muestra u oculta el aviso fijo en la parte superior de la pantalla que
@@ -6035,15 +6446,8 @@ function renderGestorLanding(){
           <div style="text-align:center;margin-bottom:14px">
             <div style="font-size:2rem">🏫</div>
             <h3 style="margin:6px 0 2px">Acceso Institucional</h3>
-            <div style="font-size:0.72rem;color:#888;margin-top:2px">Ingrese sus credenciales para acceder a su institución</div>
+            <div style="font-size:0.72rem;color:#888;margin-top:2px">Ingrese sus credenciales — el sistema detecta automáticamente su rol (Administrador/Rector, Docente, Acudiente o Estudiante)</div>
           </div>
-          <label class="lbl">Rol</label>
-          <select id="iRol" style="margin-bottom:12px;width:100%;padding:9px 10px;border:1.5px solid #c0cfe0;border-radius:7px;font-size:0.9rem;background:#fff;color:#003366">
-            <option value="admin">🏫 Administrador / Rector(a)</option>
-            <option value="docente">👨‍🏫 Docente</option>
-            <option value="padre">👨‍👩‍👦 Padres / Acudientes</option>
-            <option value="estudiante">🎒 Estudiante</option>
-          </select>
           <form onsubmit="doLoginInstitucional();return false" autocomplete="on">
           <label class="lbl">Usuario</label>
           <input type="text" id="iUser" name="username" autocomplete="username" placeholder="Usuario o N° documento" style="margin-bottom:12px;color:var(--input-text);background:var(--input-bg)">
@@ -6235,27 +6639,89 @@ function _decretosNormativosOpts(sel){
 // Hoja de vida (CV)" — se inserta IGUAL en el form de creación de docentes,
 // en el modal de edición y en "Mi Perfil", así que vive en una sola función
 // en vez de repetirse tres veces.
+// RONDA 36 — PARTE 2.1: gestión COMPLETA de la Hoja de Vida, no solo la
+// carga inicial de Ronda 35. Cuando ya hay un CV (guardado o recién
+// adjuntado en esta misma sesión de edición), se muestran las 3 acciones
+// pedidas: (a) Previsualizar/Descargar — el enlace <a target="_blank"> que
+// ya existía; (b) Cambiar/Reemplazar — el mismo botón de siempre, ahora
+// rotulado explícitamente; (c) Quitar/Eliminar, con confirmación
+// (customConfirm), nueva en esta ronda.
 function _htmlBloqueRolDecretoCv(prefijo,user){
   user=user||{};
+  // Recuerda cuál era el CV GUARDADO originalmente (antes de cualquier
+  // cambio sin guardar en este formulario) — así, si se reemplaza o se
+  // quita, se sabe exactamente cuál archivo viejo borrar de Cloudinary
+  // después de que el guardado se confirme (ver _subirCvPerfil/_quitarCvPerfil).
+  window._cvPerfilUrlOriginal=window._cvPerfilUrlOriginal||{};
+  window._cvPerfilUrlOriginal[prefijo]=user.cvUrl||'';
+  const cvActual=_cvEfectivoPerfil(prefijo,user); // respeta cambios sin guardar todavía (adjuntar/quitar) hechos en este mismo formulario abierto
   return `
     <div><label class="lbl">🧭 Rol/Cargo Específico</label><select id="${prefijo}RolEsp" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px">${_rolesEspecificosOpts(user.rolEspecifico||'')}</select></div>
     <div><label class="lbl">📜 Tipo de Decreto / Régimen Laboral (MEN)</label><select id="${prefijo}DecreNorm" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px">${_decretosNormativosOpts(user.tipoDecretoNormativo||'')}</select></div>
     <div><label class="lbl">📎 Hoja de Vida (CV — .pdf/.doc/.docx)</label>
       <input type="file" id="${prefijo}CvFile" accept=".pdf,.doc,.docx" style="display:none" onchange="_subirCvPerfil(this,'${prefijo}')">
-      <button type="button" onclick="document.getElementById('${prefijo}CvFile').click()" style="background:#7f8c8d;color:#fff;border:none;border-radius:5px;padding:8px 12px;cursor:pointer;font-size:0.82rem">📎 ${user.cvUrl?'Cambiar archivo':'Adjuntar CV'}</button>
-      <div id="${prefijo}CvEstado" style="font-size:0.78rem;margin-top:4px;color:#1a1a2e">${user.cvUrl?('✅ <a href="'+user.cvUrl+'" target="_blank" rel="noopener">'+(user.cvNombreArchivo||'Ver hoja de vida actual')+'</a>'):'<span style="color:#888">Ningún archivo cargado aún.</span>'}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
+        <button type="button" onclick="document.getElementById('${prefijo}CvFile').click()" style="background:#7f8c8d;color:#fff;border:none;border-radius:5px;padding:8px 12px;cursor:pointer;font-size:0.82rem">📎 ${cvActual.url?'Cambiar/Reemplazar archivo':'Adjuntar CV'}</button>
+        ${cvActual.url?`<button type="button" onclick="_quitarCvPerfil('${prefijo}')" style="background:#c0392b;color:#fff;border:none;border-radius:5px;padding:8px 12px;cursor:pointer;font-size:0.82rem">🗑 Quitar CV</button>`:''}
+      </div>
+      <div id="${prefijo}CvEstado" style="font-size:0.78rem;margin-top:4px;color:#1a1a2e">${_htmlEstadoCvPerfil(cvActual)}</div>
     </div>`;
 }
+function _htmlEstadoCvPerfil(cv){
+  if(!cv||!cv.url) return '<span style="color:#888">Ningún archivo cargado aún.</span>';
+  return '✅ <a href="'+cv.url+'" target="_blank" rel="noopener">👁️ Previsualizar/Descargar: '+(cv.nombre||'hoja de vida actual')+'</a>';
+}
+// Devuelve el CV "efectivo" a mostrar: si el formulario abierto ya tiene un
+// cambio sin guardar (adjuntado o quitado en _cvPerfilTemp), ese cambio
+// manda sobre el valor guardado del usuario — así el botón "Quitar CV" y el
+// enlace de previsualización reflejan de inmediato lo que se va a guardar.
+function _cvEfectivoPerfil(prefijo,user){
+  const temp=window._cvPerfilTemp&&window._cvPerfilTemp[prefijo];
+  if(temp) return {url:temp.url||'',nombre:temp.nombre||''};
+  return {url:(user&&user.cvUrl)||'',nombre:(user&&user.cvNombreArchivo)||''};
+}
 window._cvPerfilTemp={};
+window._cvPerfilUrlAnterior={}; // guarda la URL que había ANTES de reemplazar/quitar, para borrarla de Cloudinary tras guardar exitosamente
 function _subirCvPerfil(inp,prefijo){
   const f=inp.files&&inp.files[0];if(!f) return;
   const estado=document.getElementById(prefijo+'CvEstado');
   if(estado) estado.innerHTML='⏳ Subiendo hoja de vida...';
   fileToCloudinaryUrlTipo(f,function(url){
     if(!url) return;
+    // Ronda 36 — si ya había un CV GUARDADO antes de este reemplazo, se
+    // recuerda para borrarlo de Cloudinary una vez el guardado se confirme.
+    const original=window._cvPerfilUrlOriginal&&window._cvPerfilUrlOriginal[prefijo];
+    if(original&&original!==url) window._cvPerfilUrlAnterior[prefijo]=original;
     window._cvPerfilTemp[prefijo]={url:url,nombre:f.name};
     if(estado) estado.innerHTML='✅ <a href="'+url+'" target="_blank" rel="noopener">'+f.name+'</a> (sin guardar aún — pulse "Guardar")';
+    // Refresca el botón "Quitar CV" (ahora sí hay un archivo, aunque sea nuevo)
+    const btnZona=document.getElementById(prefijo+'CvFile')?.nextElementSibling;
+    if(btnZona&&!document.getElementById(prefijo+'CvQuitarBtn')){
+      const btnQuitar=document.createElement('button');
+      btnQuitar.type='button';btnQuitar.id=prefijo+'CvQuitarBtn';
+      btnQuitar.textContent='🗑 Quitar CV';
+      btnQuitar.style.cssText='background:#c0392b;color:#fff;border:none;border-radius:5px;padding:8px 12px;cursor:pointer;font-size:0.82rem';
+      btnQuitar.onclick=function(){_quitarCvPerfil(prefijo);};
+      btnZona.appendChild(btnQuitar);
+    }
   },'hojas-de-vida','raw');
+}
+// RONDA 36 — Quitar/Eliminar la hoja de vida, con confirmación explícita
+// (nunca se borra sin que la persona lo confirme). No borra el archivo de
+// Cloudinary en este instante — eso solo ocurre DESPUÉS de que el guardado
+// se confirme con éxito (mismo criterio ya usado para la foto del docente:
+// ver fotoAnteriorDoc/_cloudinaryEliminar en _guardarEdicionDocente), para
+// no perder el archivo si la persona cancela el formulario sin guardar.
+async function _quitarCvPerfil(prefijo){
+  const ok=await customConfirm('¿Quitar la hoja de vida actual? Este cambio se aplicará al pulsar "Guardar".');
+  if(!ok) return;
+  const original=(window._cvPerfilUrlOriginal&&window._cvPerfilUrlOriginal[prefijo])||null;
+  if(original) window._cvPerfilUrlAnterior[prefijo]=original;
+  window._cvPerfilTemp[prefijo]={url:'',nombre:'',eliminado:true};
+  const estado=document.getElementById(prefijo+'CvEstado');
+  if(estado) estado.innerHTML='🗑 Hoja de vida marcada para eliminar (sin guardar aún — pulse "Guardar")';
+  const btnQuitar=document.getElementById(prefijo+'CvQuitarBtn');
+  if(btnQuitar) btnQuitar.remove();
 }
 
 // Verifica si un docente califica para Eval. Desempeño (Decreto 1278 con modalidad válida)
@@ -6875,8 +7341,12 @@ function renderApp(){
   //    Cuando el Gestor entra a una plataforma, _ma() retorna true para todo.
   if(isAdmin){
     if(_ma('tablero')) menu.push({id:'tablero',label:'📊 Tablero'});
-    if(_ma('alerta-temprana')) menu.push({id:'alerta-temprana',label:'🔔 Alertas Académicas'});
     if(_ma('comunicado-general')) menu.push({id:'comunicado-general',label:'📢 Enviar Comunicado'});
+    // (Los ítems administrativos de configuración general — Institución, Carga
+    // Académica, Estudiantes, Credenciales, etc. — quedan dentro de este bloque
+    // if(isAdmin){...}. RONDA 39: Docente Orientador nunca es isAdmin, así que
+    // ya queda excluido de "configuración administrativa general" sin cambios
+    // adicionales — se documenta aquí como verificación explícita.
     if(_ma('adm-base')) menu.push({id:'adm-base',label:'🏫 Institución'});
     if(db.nivelEducativo==='UNIVERSIDAD'&&_ma('planes-estudio')) menu.push({id:'planes-estudio',label:'🎓 Planes de Estudio'});
     if(_ma('adm-carga')) menu.push({id:'adm-carga',label:'📚 Carga Académica'});
@@ -6893,30 +7363,50 @@ function renderApp(){
     if(_ma('calendario-academico')) menu.push({id:'calendario-academico',label:'📅 Calendario Académico'});
     if(_ma('eval-docente-admin')) menu.push({id:'eval-docente-admin',label:'⭐ Evaluación Docentes'});
   }
+  // RONDA 39: Alertas Académicas — vista aprobada (d) de Docente Orientador
+  // ("Alertas Tempranas de Ausentismo y Deserción"). Se movió fuera del bloque
+  // if(isAdmin){...} para poder extenderla también a Orientador sin duplicar
+  // el resto de ítems exclusivos de administración.
+  if((isAdmin||_esDocenteOrientador())&&_ma('alerta-temprana')) menu.push({id:'alerta-temprana',label:'🔔 Alertas Académicas'});
   if(sesion.r==='docente'&&_ma('calendario-academico')) menu.push({id:'calendario-academico',label:'📅 Calendario Académico'});
   if(sesion.r==='docente'&&_ma('horarios')) menu.push({id:'horarios',label:'🕐 Mi Horario'});
   if(sesion.r==='docente'&&_ma('aviso-docente')) menu.push({id:'aviso-docente',label:'📢 Tablón de Anuncios'});
   if(sesion.r==='docente'&&_ma('obs-aula')) menu.push({id:'obs-aula',label:'📓 Obs. de Aula'});
   if(_ma('descriptores')) menu.push({id:'descriptores',label:'📝 Descriptores'});
   if(sesion.r==='docente') menu.unshift({id:'panel-docente',label:'🎯 Mi Panel'});
-  if(_ma('planilla')) menu.push({id:'planilla',label:'📊 Planilla'});
-  if((isAdmin||sesion.r==='docente')&&_ma('notas-actividades')) menu.push({id:'notas-actividades',label:'📝 Notas de Actividades'});
+  // RONDA 39: Docente Orientador y Tutor PTA quedan explícitamente sin acceso
+  // a Planilla / Notas de Actividades / Actividades / Quiz-Evaluaciones — sus
+  // vistas aprobadas no incluyen carga ni alteración de notas.
+  if(_ma('planilla')&&!_bloqueadoNotasPlanillas()) menu.push({id:'planilla',label:'📊 Planilla'});
+  if((isAdmin||sesion.r==='docente')&&_ma('notas-actividades')&&!_bloqueadoNotasPlanillas()) menu.push({id:'notas-actividades',label:'📝 Notas de Actividades'});
   if(_ma('buzon-sugerencias')) menu.push({id:'buzon-sugerencias',label:'📮 Buzón de Sugerencias'});
   if(isAdmin&&_ma('log-notas')) menu.push({id:'log-notas',label:'📜 Historial de Notas'});
-  if((sesion.r==='docente'||isAdmin)&&_ma('estado-notas')&&!isAdmin) menu.push({id:'estado-notas',label:'🔍 Estado Notas'});
+  if((sesion.r==='docente'||isAdmin)&&_ma('estado-notas')&&!isAdmin&&!_bloqueadoNotasPlanillas()) menu.push({id:'estado-notas',label:'🔍 Estado Notas'});
   if(sesion.r==='docente'&&_ma('ausentismo')) menu.push({id:'ausentismo',label:'📋 Permiso Ausencia'});
-  if((isAdmin||sesion.r==='docente')&&_ma('menciones-honor')) menu.push({id:'menciones-honor',label:'🏅 Menciones Honor'});
+  if((isAdmin||sesion.r==='docente')&&_ma('menciones-honor')&&!_bloqueadoNotasPlanillas()) menu.push({id:'menciones-honor',label:'🏅 Menciones Honor'});
   if(_ma('manual-usuario')) menu.push({id:'manual-usuario',label:'📖 Manual'});
   if(_ma('adm-rep')) menu.push({id:'adm-rep',label:isAdmin?'📄 Informes':'📊 Consolidados'});
   if(_ma('actas')) menu.push({id:'actas',label:'📋 Documentos/Actas'});
+  // RONDA 39: Tutor PTA quedó, en un primer momento, SIN acceso al
+  // Observador del Estudiante (el modelo de datos no distinguía anotación
+  // disciplinaria de otro tipo). RONDA 40 — CORREGIDO: se agregó
+  // `tipo_anotacion` a cada observación, así que ahora Tutor PTA SÍ ve este
+  // módulo, pero filtrado a solo 'PEDAGOGICA'/'ACADEMICA' (el filtrado
+  // ocurre dentro de cargarListaObservador()/agregarObservacion(), no aquí).
   if(_ma('observador')) menu.push({id:'observador',label:'👁️ Observador'});
   if(_ma('asistencia')) menu.push({id:'asistencia',label:'📅 Asistencia'});
   if(_ma('contacto')) menu.push({id:'contacto',label:isAdmin?'📬 Notificaciones / Contacto':'💬 Contacto Rector(a)'});
-  if(isAdmin&&_ma('centros-interes')) menu.push({id:'centros-interes',label:'🎯 Centros de Interés'});
+  // RONDA 39: Centros de Interés — vista aprobada (b) de Tutor PTA, se extiende
+  // el acceso además de isAdmin.
+  if((isAdmin||_esTutorPTA())&&_ma('centros-interes')) menu.push({id:'centros-interes',label:'🎯 Centros de Interés'});
   if(isAdmin&&db.nivelEducativo!=='UNIVERSIDAD'&&_ma('elecciones-admin')) menu.push({id:'elecciones-admin',label:'🗳️ Elecciones'});
   if(isAdmin&&_ma('pre-matricula')) menu.push({id:'pre-matricula-admin',label:'📝 Pre-Matrículas'});
-  if((isAdmin||sesion.r==='docente')&&_ma('actividades-docente')) menu.push({id:'actividades-docente',label:'📝 Actividades'});
-  if((isAdmin||sesion.r==='docente')&&_ma('quizzes-docente')) menu.push({id:'quizzes-docente',label:'🧩 Quiz/Evaluaciones'});
+  if((isAdmin||sesion.r==='docente')&&_ma('actividades-docente')&&!_bloqueadoNotasPlanillas()) menu.push({id:'actividades-docente',label:'📝 Actividades'});
+  if((isAdmin||sesion.r==='docente')&&_ma('quizzes-docente')&&!_bloqueadoNotasPlanillas()) menu.push({id:'quizzes-docente',label:'🧩 Quiz/Evaluaciones'});
+  // RONDA 39 — Vistas nuevas de Docente Orientador (a) Atenciones y Fichas
+  // Psicopedagógicas, y (c) Comité de Convivencia y Ruta de Atención Integral.
+  if((isAdmin||_esDocenteOrientador())&&_ma('atenciones-psico')) menu.push({id:'atenciones-psico',label:'🧑‍⚕️ Atenciones Psicopedagógicas'});
+  if((isAdmin||_esDocenteOrientador())&&_ma('comite-convivencia')) menu.push({id:'comite-convivencia',label:'⚖️ Comité de Convivencia'});
   if(isAdmin&&_ma('seguimiento-eval-docente')) menu.push({id:'seguimiento-eval-docente',label:'📁 Eval. Desempeño Docente'});
   if(sesion.r==='docente'&&_ma('seguimiento-eval-docente')){
     const _usrFullED=db.users.find(x=>x.u===sesion.u)||sesion;
@@ -6953,7 +7443,7 @@ function renderApp(){
   let contenido='';
   if(pag==='tablero'&&isAdmin) contenido=htmlTablero();
   else if(pag==='panel-docente'&&sesion.r==='docente') contenido=htmlPanelDocente();
-  else if(pag==='alerta-temprana'&&isAdmin) contenido=htmlAlertaTemprana();
+  else if(pag==='alerta-temprana'&&(isAdmin||_esDocenteOrientador())) contenido=htmlAlertaTemprana();
   else if(pag==='comunicado-general'&&isAdmin) contenido=htmlComunicadoGeneral();
   else if(pag==='adm-base'&&isAdmin) contenido=htmlConfigBase();
   else if(pag==='adm-carga'&&isAdmin) contenido=htmlCarga();
@@ -6969,10 +7459,10 @@ function renderApp(){
   else if(pag==='manual-usuario') contenido=htmlManualUsuario();
   else if(pag==='estado-notas'&&!isAdmin&&sesion.r!=='docente') contenido=htmlEstadoNotas();
   else if(pag==='descriptores') contenido=htmlDescriptores();
-  else if(pag==='planilla') contenido=htmlPlanilla();
+  else if(pag==='planilla'&&!_bloqueadoNotasPlanillas()) contenido=htmlPlanilla();
   else if(pag==='aula-virtual'&&sesion.r==='docente') contenido=htmlAulaVirtualDocente(planCId);
   else if(pag==='planes-estudio'&&isAdmin) contenido=htmlPlanesEstudio();
-  else if(pag==='notas-actividades'&&(isAdmin||sesion.r==='docente')) contenido=htmlNotasActividades();
+  else if(pag==='notas-actividades'&&(isAdmin||sesion.r==='docente')&&!_bloqueadoNotasPlanillas()) contenido=htmlNotasActividades();
   else if(pag==='buzon-sugerencias') contenido=htmlBuzonSugerencias();
   else if(pag==='log-notas'&&isAdmin) contenido=htmlLogNotas();
   else if(pag==='adm-rep') contenido=htmlInformes();
@@ -6980,7 +7470,7 @@ function renderApp(){
   else if(pag==='observador') contenido=htmlObservador();
   else if(pag==='asistencia') contenido=htmlAsistencia();
   else if(pag==='contacto') contenido=htmlContacto();
-  else if(pag==='centros-interes'&&isAdmin) contenido=htmlCentrosInteres();
+  else if(pag==='centros-interes'&&(isAdmin||_esTutorPTA())) contenido=htmlCentrosInteres();
   else if(pag==='elecciones-admin') contenido=htmlEleccionesAdmin();
   else if(pag==='pre-matricula-admin'&&isAdmin) contenido=htmlGestionPreMatriculas();
   else if(pag==='recepcion-permisos'&&isAdmin) contenido=htmlRecepcionPermisos();
@@ -6989,10 +7479,13 @@ function renderApp(){
   else if(pag==='historico-anios') contenido=htmlHistoricoAnios();
   else if(pag==='panel-tendencias') contenido=htmlPanelTendencias();
   else if(pag==='calendario-academico') contenido=htmlCalendarioAcademico();
-  else if(pag==='actividades-docente') contenido=htmlDocenteActividades();
-  else if(pag==='quizzes-docente') contenido=htmlDocenteQuizzes();
+  else if(pag==='actividades-docente'&&!_bloqueadoNotasPlanillas()) contenido=htmlDocenteActividades();
+  else if(pag==='quizzes-docente'&&!_bloqueadoNotasPlanillas()) contenido=htmlDocenteQuizzes();
   else if(pag==='eval-docente-admin'&&isAdmin) contenido=htmlEvalDocenteAdmin();
   else if(pag==='seguimiento-eval-docente') contenido=isAdmin?htmlSeguimientoEvalDocenteAdmin():htmlSeguimientoEvalDocenteDocente();
+  // RONDA 39 — vistas nuevas de Docente Orientador
+  else if(pag==='atenciones-psico'&&(isAdmin||_esDocenteOrientador())) contenido=htmlAtencionesPsico();
+  else if(pag==='comite-convivencia'&&(isAdmin||_esDocenteOrientador())) contenido=htmlComiteConvivencia();
   // repositorio: abre en nueva pestaña (ver href en menu.push), sin contenido iframe aquí
 
   const _platId2=gestorEnPlataforma||window._currentPlatId;
@@ -8688,6 +9181,7 @@ async function guardarDocente(){
     camposModificados:['creacion_docente'],esCambioSensible:false,
   });
   window._cvPerfilTemp['d']=null;
+  if(window._cvPerfilUrlAnterior) window._cvPerfilUrlAnterior['d']=null;
   cargaFotoTemp='';renderApp();
 }
 // Ronda 35 — helper compartido: envía la copia estructural del perfil
@@ -8716,6 +9210,7 @@ function editarDocente(u,opts){
   ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.35);max-height:90vh;overflow-y:auto;color:#1a1a2e">
     <h3 style="color:#003366;margin-bottom:16px">${modoPerfil?'👤 Mi Perfil / Mis Datos':'✎ Editar Docente'}</h3>
     ${modoPerfil?'<p style="font-size:0.8rem;color:#666;margin-top:-10px;margin-bottom:14px">Este es el mismo formulario que usa Rectoría/Administración para gestionar docentes — aquí puede autogestionar sus propios datos.</p>':''}
+    ${modoPerfil?_htmlSelectorConmutacionRol():''}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
       <div style="grid-column:1/-1"><label class="lbl">Nombre completo *</label><input id="_edNom" value="${user.n||''}" placeholder="Nombre completo" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
       <div><label class="lbl">Usuario *</label><input id="_edUsr" value="${user.u||''}" placeholder="Usuario" style="width:100%;padding:9px;border:1px solid #ccc;border-radius:5px"></div>
@@ -8862,11 +9357,18 @@ async function _guardarEdicionDocente(u,modoPerfilPropio){
     camposModificados:esCambioSensible?['correo/telefono/password','rolEspecifico','tipoDecretoNormativo']:['rolEspecifico','tipoDecretoNormativo'],
     esCambioSensible,
   });
+  // Ronda 36 — PARTE 2.1: si el CV se reemplazó o se quitó, el archivo
+  // VIEJO se borra de Cloudinary recién ahora que el guardado ya se
+  // confirmó localmente (mismo criterio que la foto, justo abajo) — nunca
+  // antes, para no perder el archivo si el guardado llegara a fallar.
+  const cvUrlAnteriorParaBorrar=window._cvPerfilUrlAnterior?window._cvPerfilUrlAnterior['_ed']:null;
   if(window._cvPerfilTemp) window._cvPerfilTemp['_ed']=null;
+  if(window._cvPerfilUrlAnterior) window._cvPerfilUrlAnterior['_ed']=null;
   window._editDocFoto=undefined;
   document.getElementById('_editDocOv').remove();
   renderApp();
   if(fotoAnteriorDoc&&fotoAnteriorDoc!==fotoNuevaDoc) _cloudinaryEliminar(fotoAnteriorDoc);
+  if(cvUrlAnteriorParaBorrar) _cloudinaryEliminar(cvUrlAnteriorParaBorrar);
 }
 async function eliminarDocente(u){
   if(!await customConfirm('¿Eliminar?')) return;
@@ -13320,10 +13822,15 @@ function guardarPlanilla(){
 function saveNota(estId,campo,valor){
   const numVal=Math.min(5,Math.max(0,parseFloat(valor)||0));
   let _baseAntes=0,_baseDespues=0;
+  const _cIdFila=Number(planCId),_perFila=Number(planPer);
+  // Ronda 36 — marca esta fila como la que está en edición ANTES de
+  // updDB()/saveDB(), para que saveDB() envíe solo su paquete al servidor
+  // (ver _debounceGuardarFilaNotas) en vez del blob completo.
+  _marcarFilaEnEdicion({tipo:'planilla',estId,cId:_cIdFila,per:_perFila});
   updDB(d=>{
     const idx=d.ests.findIndex(x=>x.id===estId);if(idx===-1) return d;
     const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
-    const cId=Number(planCId);const per=Number(planPer);
+    const cId=_cIdFila;const per=_perFila;
     if(!nts[cId]) nts[cId]={};if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
     _baseAntes=_baseNota(nts[cId][per],d.config||{});
     const valorAnterior=nts[cId][per][campo];
@@ -13332,6 +13839,7 @@ function saveNota(estId,campo,valor){
     _registrarCambioNota(d,{estId,estNombre:e.n,cId,per,campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
     return d;
   });
+  _desmarcarFilaEnEdicion();
   _dispararAlertaBajoDesempenoSiAplica(estId,Number(planCId),Number(planPer),_baseAntes,_baseDespues);
   // Refresco granular (SyncEngine): actualiza SOLO la fila de este
   // estudiante (nota, base, definitiva y "necesita para ganar" si aplica)
@@ -13823,7 +14331,9 @@ function abrirPopupNotaAct(estId,colId,btnEl){
   // guarda con _guardarNotaAct()/cerrarPopupNotaAct() en vez de las
   // funciones propias de la Planilla.
   html+='<div style="margin-top:10px;border-top:1px solid #eee;padding-top:10px;text-align:center"><button id="vozNotaActBtn" onpointerdown="event.preventDefault();iniciarVozNotaAct(\''+estId+'\',\''+colId+'\')" style="background:#8e44ad;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:0.82rem;cursor:pointer;min-height:36px;touch-action:manipulation">🎙️ Dictar por Voz</button><div id="vozNotaActStatus" style="font-size:0.7rem;color:#888;margin-top:3px"></div></div>';
-  html+='<div style="text-align:center;margin-top:8px"><button onpointerdown="event.preventDefault();cerrarPopupNotaAct()" style="font-size:0.82rem;padding:8px 22px;background:#7f8c8d;color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation">✕ Cerrar</button></div>';
+  html+='<div style="text-align:center;margin-top:8px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'
+    +(v&&v.valor!==undefined?'<button onpointerdown="event.preventDefault();eliminarNotaAct(\''+estId+'\',\''+colId+'\')" style="font-size:0.82rem;padding:8px 16px;background:#c0392b;color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation">🗑 Quitar nota</button>':'')
+    +'<button onpointerdown="event.preventDefault();cerrarPopupNotaAct()" style="font-size:0.82rem;padding:8px 22px;background:#7f8c8d;color:#fff;border:none;border-radius:6px;cursor:pointer;min-height:38px;touch-action:manipulation">✕ Cerrar</button></div>';
   popup.innerHTML=html;
   popup.addEventListener('pointerdown',ev=>ev.stopPropagation());
   document.body.appendChild(popup);
@@ -13943,11 +14453,15 @@ function _guardarNotaAct(estId,colId,valor){
   // Ronda 18 — BUG 1: respetar "Guardado Manual" (_autoGuardar), igual que
   // ya lo hace seleccionarNotaRapido()/seleccionarNota() en la Planilla.
   if(_autoGuardar){
+    // Ronda 36 — misma técnica que saveNota(): marca esta celda como la
+    // fila en edición para que el autoguardado envíe solo su paquete.
+    _marcarFilaEnEdicion({tipo:'actividad',estId,cId,per,colId});
     updDB(d=>{
       d.notasAct=d.notasAct||{};
       d.notasAct[key]={valor:valorNum,fecha,hora,obs};
       return d;
     });
+    _desmarcarFilaEnEdicion();
   }else{
     // Modo manual: se queda en memoria (borde amarillo) hasta que el
     // docente pulse "GUARDAR CAMBIOS" en esta pantalla — NINGÚN
@@ -13957,6 +14471,33 @@ function _guardarNotaAct(estId,colId,valor){
   }
   cerrarPopupNotaAct();
   _refrescarCeldaNotaAct(estId,colId);
+}
+
+// RONDA 36 — PARTE 1.3: eliminación limpia de una celda de Notas de
+// Actividades (antes no existía una función de borrado explícito; una nota
+// "vacía" quedaba guardada como {valor:0,...} en vez de desaparecer). Ahora
+// la clave se BORRA por completo tanto localmente (d.notasAct) como en el
+// servidor (POST guardar-fila con valor ausente = borrar, ver el backend),
+// así no queda ningún residuo con valor 0 que pudiera confundirse con "nota
+// en cero" ni en la tabla de Notas de Actividades ni si luego se usa
+// "🔄 Sincronizar Promedio con Planilla" (que solo promedia celdas
+// existentes). No hay ningún vínculo automático guardado en sentido
+// contrario (Planilla -> Actividades): esa sincronización es siempre una
+// acción explícita y unidireccional del docente (el botón de arriba), así
+// que no hay una segunda estructura que limpiar del lado de la Planilla.
+function eliminarNotaAct(estId,colId){
+  const cId=Number(notaActCId),per=Number(notaActPer);
+  const key=cId+'_'+per+'_'+colId+'_'+estId;
+  if(!(db.notasAct||{})[key]){ cerrarPopupNotaAct(); return; }
+  _marcarFilaEnEdicion({tipo:'actividad',estId,cId,per,colId});
+  updDB(d=>{
+    if(d.notasAct) delete d.notasAct[key];
+    return d;
+  });
+  _desmarcarFilaEnEdicion();
+  cerrarPopupNotaAct();
+  _refrescarCeldaNotaAct(estId,colId);
+  _toastPlan('🗑 Nota de actividad eliminada.','#c0392b');
 }
 
 // ===== REPLICAR LA MISMA NOTA A TODOS LOS ESTUDIANTES DE UNA COLUMNA =====
@@ -14364,6 +14905,7 @@ function mostrarTabInforme(tab,btn){
           <option value="estudios">Certificado de Estudios (General)</option>
           <option value="matriculado">Certificado de Estudios Actuales (Matriculado)</option>
           <option value="cursado">Certificado de Estudios Año Cursado</option>
+          <option value="comportamiento">🧭 Certificado de Comportamiento / Conducta</option>
         </select></div>
       </div>
       <button class="btn btn-navy" style="margin-bottom:10px" onclick="cargarEstsCert()">📋 Ver Estudiantes</button>
@@ -15484,6 +16026,17 @@ async function _generarBoletinesPDF(grado,per,incluirResumenFinal){
   // ── Firmar todos los boletines del grado en un solo lote (el servidor
   // firma con una clave que el navegador nunca conoce — ver _firmarBoletinesLote) ──
   const _codigosPorEst=await _firmarBoletinesLote(ests,mats,grado,per,incluirResumenFinal);
+  // RONDA 37 — Hash/QR de verificación PÚBLICA (ver /verificar-certificado
+  // en el backend). Aparte del código de firma HMAC de arriba (que exige
+  // reenviar los datos completos para verificar, pensado para que la
+  // propia app lo reverifique sin conexión), este segundo mecanismo
+  // registra en el servidor un resumen mínimo NO sensible (nombre,
+  // institución, tipo de documento, fecha) para que CUALQUIER persona,
+  // sin la app y sin iniciar sesión, pueda escanear el QR y ver si el
+  // boletín es auténtico. Si el servidor no responde (ej. sin conexión en
+  // una sede rural), simplemente no se agrega este segundo QR — el
+  // boletín se genera igual, con su firma HMAC de siempre.
+  const _hashesPublicosPorEst=await _emitirHashesPublicosLote(ests,incluirResumenFinal?'informe_final':'boletin',grado);
   for(let idx=0;idx<ests.length;idx++){
     const e=ests[idx];
     if(idx>0) doc.addPage();
@@ -15750,6 +16303,27 @@ async function _generarBoletinesPDF(grado,per,incluirResumenFinal){
       const _qrTexto='GESTORYC2|TIPO:boletin|SK:'+(_skActual()||'')+'|EST:'+e.id+'|GRA:'+grado+'|PER:'+per+'|ANIO:'+db.anio+'|RF:'+(incluirResumenFinal?'1':'0')+'|COD:'+_codVerif;
       const _qrImg=await _qrDataUrlBoletin(_qrTexto);
       _dibujarFirmaDigitalPDF(doc,_codVerif,_qrImg,_rm,pageH-2);
+      // RONDA 37 — segundo QR, más pequeño, de VERIFICACIÓN PÚBLICA (sin
+      // login, sin la app): apunta a /verificar-certificado?hash=... Solo
+      // se dibuja si el servidor alcanzó a emitir el hash (ver
+      // _emitirHashesPublicosLote arriba) — si no, el boletín queda igual
+      // de válido, solo sin este segundo código.
+      const _hashPublico=_hashesPublicosPorEst[String(e.id)];
+      if(_hashPublico){
+        try{
+          const _urlPublica=_urlVerificacionCertificado(_hashPublico);
+          const _qrPublicoImg=await _qrDataUrlBoletin(_urlPublica);
+          if(_qrPublicoImg){
+            const _anchoQrPub=10;
+            const _xQrPub=_lm;
+            const _yQrPub=pageH-2-_anchoQrPub;
+            doc.addImage(_qrPublicoImg,'PNG',_xQrPub,_yQrPub,_anchoQrPub,_anchoQrPub);
+            doc.setFontSize(5),doc.setFont('helvetica','normal'),doc.setTextColor(140);
+            doc.text('Verificación pública (sin app): '+_urlPublica,_xQrPub+_anchoQrPub+2,_yQrPub+_anchoQrPub-1,{maxWidth:70});
+            doc.setTextColor(0);
+          }
+        }catch(_qpe){}
+      }
     }
     addFooterPDF(doc);
   }
@@ -15800,7 +16374,12 @@ function pdfCertificadoPersonalizado(e,tipo){
   const hoy=new Date();
   const meses=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   const dia=hoy.getDate();const mes=meses[hoy.getMonth()];const anioActual=hoy.getFullYear();
-  const titulos={notas:'📋 Certificado de Calificaciones',estudios:'📄 Certificado de Estudios',matriculado:'📄 Certificado de Estudios Actuales (Matriculado)',cursado:'📄 Certificado de Estudios Año Cursado'};
+  // RONDA 39 — nuevo tipo 'comportamiento' (Certificado de Comportamiento /
+  // Conducta): reutiliza el mismo modal y el mismo generador de PDF que los
+  // otros 4 tipos, agregando solo su propio bloque de cuerpo (ver más abajo,
+  // en la rama `else if(tipo==='comportamiento')`), su título y su tipo de
+  // documento para el Hash/QR (ver _tipoDocEmitirHash).
+  const titulos={notas:'📋 Certificado de Calificaciones',estudios:'📄 Certificado de Estudios',matriculado:'📄 Certificado de Estudios Actuales (Matriculado)',cursado:'📄 Certificado de Estudios Año Cursado',comportamiento:'🧭 Certificado de Comportamiento / Conducta'};
   const esMatriculado=tipo==='matriculado';const esNotas=tipo==='notas';
   const dialogo=`<div id="certModalOverlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:10px;padding:22px;max-width:620px;width:96%;max-height:93vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.35);color:#1a1a2e">
@@ -15856,7 +16435,7 @@ function pdfCertificadoPersonalizado(e,tipo){
   </div></div>`;
   document.body.insertAdjacentHTML('beforeend',dialogo);
 }
-function generarPdfCertPersonalizado(tipo,estId){
+async function generarPdfCertPersonalizado(tipo,estId){
   const e=db.ests.find(x=>x.id===estId)||{nts:{}};
   const nombre=document.getElementById('cNombre')?.value||'';
   const tipoDoc=document.getElementById('cTipoDoc')?.value||'T.I.';
@@ -15881,7 +16460,7 @@ function generarPdfCertPersonalizado(tipo,estId){
   if(incluirSecretario&&secretario) updDB(d=>{d.secretario=secretario;return d;});
   const nivel=_getNivelEducativo(grado);
   const instNombre=(db.nombre||(db.corregimiento?'Institución Educativa de '+db.corregimiento:'Institución Educativa')).toUpperCase();
-  const titPDF={notas:'CERTIFICADO DE CALIFICACIONES',estudios:'CERTIFICADO DE ESTUDIOS',matriculado:'CERTIFICADO DE ESTUDIOS ACTUALES',cursado:'CERTIFICADO DE ESTUDIOS AÑO CURSADO'};
+  const titPDF={notas:'CERTIFICADO DE CALIFICACIONES',estudios:'CERTIFICADO DE ESTUDIOS',matriculado:'CERTIFICADO DE ESTUDIOS ACTUALES',cursado:'CERTIFICADO DE ESTUDIOS AÑO CURSADO',comportamiento:'CERTIFICADO DE COMPORTAMIENTO / CONDUCTA'};
   const doc=getPDF('p','oficio');
   const PW=doc.internal.pageSize.width;const PH=doc.internal.pageSize.height;
   // Márgenes: MX=margen lateral, MW=ancho útil de texto, FOOTER_SAFE=espacio reservado para pie de página y firmas
@@ -15956,6 +16535,32 @@ function generarPdfCertPersonalizado(tipo,estId){
     doc.text(`• Desempeño Alto: ${ea} a ${(es-0.1).toFixed(1)}`,MX+4,y,{maxWidth:MW-4});y+=5;
     doc.text(`• Desempeño Básico: ${eb} a ${(ea-0.1).toFixed(1)}  (mínimo para aprobar)`,MX+4,y,{maxWidth:MW-4});y+=5;
     doc.text(`• Desempeño Bajo: 1.0 a ${(eb-0.1).toFixed(1)}`,MX+4,y,{maxWidth:MW-4});y+=10;
+  } else if(tipo==='comportamiento'){
+    // RONDA 39 — Certificado de Comportamiento / Conducta: la valoración
+    // cualitativa se extrae del Observador del Estudiante (e.observaciones,
+    // el mismo arreglo que ya usa htmlObservador()/cargarListaObservador()
+    // — no se creó ningún dato nuevo, se reutiliza el que ya existía).
+    const introT=`Que el(la) estudiante ${nombre}, identificado(a) con ${tipoDoc} No. ${numDoc}${docExp}, cursó/cursa el grado ${grado} de la Educación ${nivel} en este establecimiento educativo durante el año lectivo ${anio}. Respecto de su comportamiento y convivencia escolar, de acuerdo con el Observador del Estudiante y el Manual de Convivencia institucional (Ley 1620 de 2013 / Decreto 1965 de 2013), se registra lo siguiente:`;
+    const introL=doc.splitTextToSize(introT,MW);_ckPage(introL.length*4.2+8);_justifyLines(doc,introL,MX,y,MW,4.2);y+=introL.length*4.2+6;
+    const obsDelAnio=(e.observaciones||[]).slice().sort((a,b)=>Number(a.per||0)-Number(b.per||0));
+    if(!obsDelAnio.length){
+      doc.setFont('helvetica','italic');doc.setFontSize(8.5);
+      _ckPage(8);doc.text('No se registran anotaciones en el Observador del Estudiante durante el periodo consultado — comportamiento sin observaciones reportadas.',MX,y,{maxWidth:MW});y+=8;
+      doc.setFont('helvetica','normal');
+    } else {
+      obsDelAnio.forEach(o=>{
+        const linea=`Periodo ${o.per||'—'} (${o.fecha||'s/f'}) — ${o.doc||'Docente'}: ${o.txt||''}`;
+        const lL=doc.splitTextToSize(linea,MW-4);
+        _ckPage(lL.length*4+4);
+        doc.setFontSize(8);doc.text(lL,MX+4,y,{maxWidth:MW-4});y+=lL.length*4+3;
+      });
+    }
+    y+=4;
+    _ckPage(14);
+    doc.setFont('helvetica','bold');doc.setFontSize(8.5);
+    const conclT='La presente valoración se expide con fines de constancia de comportamiento/conducta, con base exclusivamente en las anotaciones registradas en el Observador del Estudiante durante el periodo señalado, sin perjuicio de procesos disciplinarios en curso.';
+    const conclL=doc.splitTextToSize(conclT,MW);doc.text(conclL,MX,y,{maxWidth:MW});y+=conclL.length*4.2+8;
+    doc.setFont('helvetica','normal');
   } else {
     // Certificado de Estudios (estudios / matriculado / cursado)
     let txt='';
@@ -16006,6 +16611,28 @@ function generarPdfCertPersonalizado(tipo,estId){
     doc.text('Rector(a)',cx,firmaY+5+rNL.length*4+1,{align:'center'});
   }
   addFooterPDF(doc);
+  // RONDA 38 — Hash/QR de verificación pública (mismo mecanismo ya usado en
+  // boletines desde la Ronda 37: ver _emitirHashPublicoCertificado()).
+  // Mapeo de `tipo` (interno de este generador) al código de tipoDocumento
+  // que espera /api/inetis/certificado/emitir-hash y la vista pública.
+  try{
+    const _tipoDocEmitirHash={notas:'certificado_calificaciones',estudios:'certificado_estudio',matriculado:'constancia_matricula',cursado:'constancia_estudios_cursado',comportamiento:'certificado_comportamiento'}[tipo]||'certificado_estudio';
+    const _hashCert=await _emitirHashPublicoCertificado(_skActual()||'',_tipoDocEmitirHash,nombre.toUpperCase(),instNombre,(tipoDoc||'')+' '+(numDoc||''),String(anio||''));
+    if(_hashCert){
+      const _urlPublicaCert=_urlVerificacionCertificado(_hashCert);
+      const _qrCertImg=await _qrDataUrlBoletin(_urlPublicaCert);
+      if(_qrCertImg){
+        const _anchoQrCert=18;
+        const _xQrCert=PW-MX-_anchoQrCert;
+        const _yQrCert=PH-30-_anchoQrCert;
+        doc.addImage(_qrCertImg,'PNG',_xQrCert,_yQrCert,_anchoQrCert,_anchoQrCert);
+        doc.setFontSize(5.5);doc.setFont('helvetica','normal');doc.setTextColor(140);
+        doc.text('Verifique este documento en:',_xQrCert-2,_yQrCert+_anchoQrCert+3,{align:'right',maxWidth:70});
+        doc.text(_urlPublicaCert,_xQrCert-2,_yQrCert+_anchoQrCert+7,{align:'right',maxWidth:70});
+        doc.setTextColor(0);
+      }
+    }
+  }catch(_ecert){}
   doc.save(`Certificado_${tipo}_${nombre.replace(/ /g,'_')}_${anio}.pdf`);
 }
 
@@ -16135,6 +16762,44 @@ async function _qrDataUrlBoletin(texto){
     if(typeof QRCode==='undefined'||!QRCode.toDataURL) return null;
     return await QRCode.toDataURL(texto,{margin:1,width:130});
   }catch(e){ return null; }
+}
+
+// ============================================================
+// RONDA 37 — Emisión de hashes de verificación PÚBLICA (uno por
+// estudiante), en paralelo. Cada llamada registra en
+// `certificados_emitidos` (Neon) un resumen mínimo no sensible; el
+// resultado es un mapa {estId: hash}. Nunca lanza: si el servidor no
+// responde, esos estudiantes simplemente no llevan el segundo QR público
+// (el boletín se sigue generando con su firma HMAC de siempre).
+// ============================================================
+// RONDA 38 — se agregaron `documentoEstudiante` (opcional) y `anioLectivo`
+// (opcional) como 5º y 6º parámetro, para que la vista pública de
+// verificación pueda mostrarlos (ver ETIQUETAS_TIPO_DOCUMENTO_PUBLICAS en el
+// backend). Ambos son opcionales para no romper ninguna llamada existente
+// de la Ronda 37 que no los pasara.
+async function _emitirHashPublicoCertificado(sk,tipoDocumento,nombreEstudiante,institucion,documentoEstudiante,anioLectivo){
+  try{
+    const r=await fetch(API_BASE+'/api/inetis/certificado/emitir-hash',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk,tipoDocumento,nombreEstudiante,institucion,documentoEstudiante:documentoEstudiante||'',anioLectivo:anioLectivo||'',emitidoPor:(sesion&&sesion.u)||''})});
+    if(!r.ok) return null;
+    const j=await r.json();
+    return j&&j.ok?j.hash:null;
+  }catch(e){ return null; }
+}
+async function _emitirHashesPublicosLote(ests,tipoDocumento,grado){
+  const sk=_skActual()||'';
+  const institucion=(db.nombre||'').toUpperCase();
+  const anioLectivo=String(db.anio||'');
+  const mapa={};
+  await Promise.all(ests.map(async function(e){
+    const documentoEstudiante=(e.ti||e.cc||e.numDoc)?String(e.ti||e.cc||e.numDoc):'';
+    const hash=await _emitirHashPublicoCertificado(sk,tipoDocumento,(e.n||'').toUpperCase(),institucion,documentoEstudiante,anioLectivo);
+    if(hash) mapa[String(e.id)]=hash;
+  }));
+  return mapa;
+}
+function _urlVerificacionCertificado(hash){
+  const base=(typeof API_BASE!=='undefined'&&API_BASE)?API_BASE:'';
+  return base+'/verificar-certificado?hash='+encodeURIComponent(hash);
 }
 
 // ============================================================
@@ -16490,7 +17155,15 @@ async function _verificarCodigoActa(texto,res){
 
 // --- PANEL ACTAS ---
 function htmlActasPanel(){
-  const tiposActa=['Acta de Compromiso y Evaluación','Acta de Reunión con Padres de Familia','Acta de Inasistencias','Acta de Recuperación por Área','Acta de Nivelación por Área','Acta de Nivelación con Estudiantes','Citación a Padres / Cuidador(a)','Formato Personalizado'];
+  // RONDA 38 — se agregaron 'Acta de Grado' y 'Acta de Promoción/Graduación'
+  // a la lista (el usuario las pidió explícitamente como tipos a cubrir con
+  // Hash/QR). No se creó un generador de PDF separado para ellas: `pdfActa()`
+  // ya es la función CENTRAL que arma el PDF de CUALQUIER acta de esta
+  // lista (antes solo existía 'Formato Personalizado' como comodín para un
+  // acta de grado hecha con texto libre) — engancharlas aquí, en el mismo
+  // selector, hace que ambas hereden automáticamente el Hash/QR agregado en
+  // pdfActa() sin duplicar ningún código de generación de PDF.
+  const tiposActa=['Acta de Compromiso y Evaluación','Acta de Reunión con Padres de Familia','Acta de Inasistencias','Acta de Recuperación por Área','Acta de Nivelación por Área','Acta de Nivelación con Estudiantes','Acta de Grado','Acta de Promoción/Graduación','Citación a Padres / Cuidador(a)','Formato Personalizado'];
   const editActa=actaEditId!==null?db.actas[actaEditId]||null:null;
   const tiposOpts=tiposActa.map(t=>`<option${editActa&&editActa.tipo===t?' selected':''}>${t}</option>`).join('');
   const gradOpts=db.grados.map(g=>`<option value="${g.n}"${editActa&&editActa.grado===g.n?' selected':''}>${g.n}</option>`).join('');
@@ -16894,6 +17567,35 @@ async function pdfActa(idx){
       _dibujarFirmaDigitalPDF(doc,_codActa,_qrImgActa,pageWActa-14,pageHActa-2);
     }
   }catch(_efirma){}
+  // RONDA 38 — segundo Hash/QR, de verificación PÚBLICA (sin login, sin la
+  // app) — mismo mecanismo ya usado en boletines/certificados. Cubre TODOS
+  // los tipos de acta de la lista `tiposActa` (incluidas 'Acta de Grado' y
+  // 'Acta de Promoción/Graduación', agregadas en esta misma ronda) porque
+  // `pdfActa()` es la función CENTRAL que genera el PDF de cualquier acta —
+  // enganchar el hash aquí evita repetirlo por cada tipo.
+  try{
+    const _tipoActaEmitirHash=acta.tipo==='Acta de Grado'?'acta_grado':(acta.tipo==='Acta de Promoción/Graduación'?'acta_promocion':'acta');
+    // Una acta puede listar VARIOS estudiantes (ceremonias grupales) — se usa
+    // el primero de la lista como referencia de la vista pública (no hay un
+    // único "estudiante del acta" garantizado); si no hay ninguno, se usa el
+    // grado como referencia, para no dejar el campo vacío en la vista pública.
+    const _primerEstudianteActa=(acta.estudiantes||'').split('\n').map(function(l){return l.trim();}).filter(function(l){return l.length>0;})[0]||('Grado '+(acta.grado||''));
+    const _hashActaPublico=await _emitirHashPublicoCertificado(_skActual()||'',_tipoActaEmitirHash,_primerEstudianteActa.toUpperCase(),(db.nombre||'').toUpperCase(),'',String(acta.anio||db.anio||''));
+    if(_hashActaPublico){
+      const _urlPublicaActa=_urlVerificacionCertificado(_hashActaPublico);
+      const _qrActaPublicoImg=await _qrDataUrlBoletin(_urlPublicaActa);
+      if(_qrActaPublicoImg){
+        const pageHActa2=doc.internal.pageSize.height;
+        const _anchoQrActaPub=13;
+        const _xQrActaPub=14;
+        const _yQrActaPub=pageHActa2-2-_anchoQrActaPub;
+        doc.addImage(_qrActaPublicoImg,'PNG',_xQrActaPub,_yQrActaPub,_anchoQrActaPub,_anchoQrActaPub);
+        doc.setFontSize(5),doc.setFont('helvetica','normal'),doc.setTextColor(140);
+        doc.text('Verificación pública (sin app): '+_urlPublicaActa,_xQrActaPub+_anchoQrActaPub+2,_yQrActaPub+_anchoQrActaPub-1,{maxWidth:80});
+        doc.setTextColor(0);
+      }
+    }
+  }catch(_ehashActa){}
   doc.save(`Acta_${acta.tipo.replace(/ /g,'_')}_${acta.fecha}.pdf`);
 }
 
@@ -16988,17 +17690,46 @@ async function eliminarMaterial(idx){
 // ============================================================
 // OBSERVADOR — TODOS los docentes (solo sus asignaturas/grados) + admin
 // ============================================================
+// RONDA 40 — CLASIFICACIÓN GRANULAR DE ANOTACIONES DEL OBSERVADOR
+// ------------------------------------------------------------------------------
+// Se agrega `tipo_anotacion` a cada observación (e.observaciones[i]),
+// habilitando el Observador para TUTOR_PTA (antes, en la Ronda 39, quedaba
+// bloqueado del todo por no poder distinguir lo disciplinario de lo que no
+// lo era) pero filtrando su vista a SOLO 'PEDAGOGICA'/'ACADEMICA'.
+// DECISIÓN SOBRE DATOS HISTÓRICOS (transparencia total): las observaciones
+// creadas ANTES de esta ronda no tienen `tipo_anotacion` — en vez de
+// tratarlas como si fueran todas 'DISCIPLINARIA' (lo que ocultaría de golpe
+// TODO el historial a Tutor PTA, contradiciendo el propósito de darle
+// acceso) se les asigna el default 'ACADEMICA' SOLO al momento de mostrarlas
+// (no se reescribe el dato guardado — ver `_tipoAnotacionEfectivo` abajo),
+// razonando que el Observador, antes de esta ronda, se usaba para
+// anotaciones de todo tipo sin que "disciplinario" fuera la intención por
+// defecto de nadie. Cualquier observación etiquetada explícitamente como
+// DISCIPLINARIA/CONVIVENCIAL a partir de esta ronda sí queda oculta para
+// Tutor PTA, tal como pidió el coordinador.
+// ============================================================
+const _TIPOS_ANOTACION_OBSERVADOR=[
+  {v:'PEDAGOGICA',t:'📘 Pedagógica',color:'#1a5276'},
+  {v:'ACADEMICA',t:'📝 Académica',color:'#2980b9'},
+  {v:'CONVIVENCIAL',t:'🤝 Convivencial',color:'#b7770d'},
+  {v:'DISCIPLINARIA',t:'⚠️ Disciplinaria',color:'#c0392b'}
+];
+const _TIPOS_ANOTACION_VISIBLES_TUTOR_PTA=['PEDAGOGICA','ACADEMICA'];
+function _tipoAnotacionEfectivo(o){ return (o&&o.tipo_anotacion)||'ACADEMICA'; } // default para anotaciones históricas sin el campo — ver comentario arriba
+function _tipoAnotacionInfo(tipo){ return _TIPOS_ANOTACION_OBSERVADOR.find(t=>t.v===tipo)||_TIPOS_ANOTACION_OBSERVADOR[1]; }
 function htmlObservador(){
   const isAdmin=sesion.r==='admin';
   const esDir=esDirectorDeGrupo(sesion.u);
+  const esTutorPTA=_esTutorPTA();
   // Para admin: todos los grados; para docente: sus grados
   const gradosDoc=gradosDelDocente(sesion.u);
   const gradosPerm=isAdmin?db.grados:db.grados.filter(g=>gradosDoc.includes(g.n));
   if(!gradosPerm.length) return `<div class="card">${_htmlEstadoVacio('📭','No tiene grados asignados en la carga académica.')}</div>`;
   const gradOpts=gradosPerm.map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
   return `<h3 class="sec-title">Observador del Estudiante</h3>
-  ${!isAdmin&&!esDir?`<div class="info-box">Como docente puede registrar observaciones a los estudiantes de los grados donde tiene asignatura.</div>`:''}
+  ${!isAdmin&&!esDir&&!esTutorPTA?`<div class="info-box">Como docente puede registrar observaciones a los estudiantes de los grados donde tiene asignatura.</div>`:''}
   ${esDir?`<div class="info-box">Como Director de Grupo puede registrar observaciones generales y del boletín.</div>`:''}
+  ${esTutorPTA?`<div class="info-box">🎯 Como Tutor(a) PTA, esta vista muestra ÚNICAMENTE anotaciones de tipo Pedagógica y Académica — las anotaciones Disciplinarias y Convivenciales de este estudiante no son visibles desde este perfil.</div>`:''}
   <div class="card">
     <div class="grid2" style="margin-bottom:12px">
       <div><label class="lbl">Grado</label><select id="obsEstGrado" onchange="cargarListaObservador()">${gradOpts}</select></div>
@@ -17012,6 +17743,7 @@ function htmlObservador(){
 function cargarListaObservador(){
   const grado=document.getElementById('obsEstGrado')?.value||'';
   const per=document.getElementById('obsEstPer')?.value||'1';
+  const esTutorPTA=_esTutorPTA();
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const wrap=document.getElementById('listaObservador');if(!wrap) return;
   if(!ests.length){wrap.innerHTML=_htmlEstadoVacio('🎓','Sin estudiantes.');return;}
@@ -17020,8 +17752,16 @@ function cargarListaObservador(){
     <tbody>${ests.map((e,i)=>{
       const obsHtmlArr=(e.observaciones||[]).map((o,oi)=>{
         if(o.per!=per) return '';
+        const _tipoEf=_tipoAnotacionEfectivo(o);
+        // RONDA 40 — Tutor PTA solo ve anotaciones Pedagógica/Académica; las
+        // Disciplinaria/Convivencial ni siquiera se incluyen en el HTML (no
+        // se ocultan con CSS) — así no quedan expuestas en el DOM ni ante una
+        // inspección superficial del navegador.
+        if(esTutorPTA&&!_TIPOS_ANOTACION_VISIBLES_TUTOR_PTA.includes(_tipoEf)) return '';
+        const _ti=_tipoAnotacionInfo(_tipoEf);
         return `<div style="margin-bottom:4px;border-bottom:1px solid #eee;padding-bottom:3px">
-        <b style="font-size:0.78rem;color:#003366">${o.doc}:</b> ${o.txt} 
+        <span style="background:${_ti.color};color:#fff;border-radius:5px;padding:1px 6px;font-size:0.65rem;font-weight:700;margin-right:4px">${_ti.t}</span>
+        <b style="font-size:0.78rem;color:#003366">${o.doc}:</b> ${o.txt}
         <span style="color:#aaa;font-size:0.7rem">(${o.fecha})</span>
         <button class="btn-sm" style="background:#e67e22;padding:2px 5px" onclick="editarObservacion('${e.id}',${oi})">✎</button>
         <button class="btn-sm" style="background:#c0392b;padding:2px 5px" onclick="eliminarObservacion('${e.id}',${oi})">🗑</button></div>`;
@@ -17066,9 +17806,17 @@ async function agregarObservacion(estId,per){
   ov.style.cssText='position:fixed;inset:0;z-index:999997;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
   const optsFort=_OBS_FORTALEZAS_PRESET.map(f=>`<option value="${f}">${f}</option>`).join('');
   const optsAsp=_OBS_ASPECTOS_PRESET.map(a=>`<option value="${a}">${a}</option>`).join('');
+  // RONDA 40 — Tutor PTA solo puede REGISTRAR anotaciones Pedagógica/
+  // Académica (coherente con que tampoco puede VERLAS de otro tipo): su
+  // selector de tipo se restringe a esas 2 opciones; el resto de roles
+  // conserva el catálogo completo de 4 tipos.
+  const _tiposOpcionesObs=(_esTutorPTA()?_TIPOS_ANOTACION_OBSERVADOR.filter(t=>_TIPOS_ANOTACION_VISIBLES_TUTOR_PTA.includes(t.v)):_TIPOS_ANOTACION_OBSERVADOR)
+    .map(t=>`<option value="${t.v}">${t.t}</option>`).join('');
   ov.innerHTML=`<div style="background:var(--bg-card);border-radius:14px;padding:24px;max-width:480px;width:100%;box-shadow:0 12px 50px rgba(0,0,0,.4);max-height:90vh;overflow-y:auto;color:var(--text-main)">
     <h3 style="color:#003366;margin-bottom:4px">📝 Nueva Observación${e?' — '+e.n:''}</h3>
     <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:14px">Seleccione una fortaleza y un aspecto a mejorar, y la IA le propone una redacción formal — usted siempre puede editarla antes de guardar.</p>
+    <label class="lbl">Tipo de anotación</label>
+    <select id="_obsTipoAnotacion" style="margin-bottom:10px">${_tiposOpcionesObs}</select>
     <label class="lbl">Fortaleza destacada</label>
     <select id="_obsFortalezaSel" style="margin-bottom:4px">${optsFort}</select>
     <input id="_obsFortalezaOtro" placeholder="Escriba la fortaleza..." style="display:none;margin-bottom:10px">
@@ -17124,10 +17872,18 @@ async function _generarObsConIA(estId){
 function _guardarObservacionFinal(estId,per){
   const txt=(document.getElementById('_obsTextoFinal').value||'').trim();
   if(!txt){customAlert('Escriba o genere el texto de la observación antes de guardar.');return;}
+  // RONDA 40 — tipo_anotacion elegido en el selector nuevo; si por alguna
+  // razón no llega (ej. HTML viejo en caché), se usa el mismo default
+  // 'ACADEMICA' que ya se aplica a las anotaciones históricas sin este
+  // campo (_tipoAnotacionEfectivo), para mantener el mismo criterio en
+  // ambos lugares. Defensa adicional: si es Tutor PTA, se fuerza el tipo a
+  // uno de los 2 permitidos aunque el DOM haya sido manipulado.
+  let tipoSel=document.getElementById('_obsTipoAnotacion')?.value||'ACADEMICA';
+  if(_esTutorPTA()&&!_TIPOS_ANOTACION_VISIBLES_TUTOR_PTA.includes(tipoSel)) tipoSel='ACADEMICA';
   updDB(d=>{
     const idx=d.ests.findIndex(x=>x.id===estId);if(idx===-1) return d;
     if(!d.ests[idx].observaciones) d.ests[idx].observaciones=[];
-    d.ests[idx].observaciones.push({per,txt,doc:sesion.n,fecha:new Date().toLocaleDateString('es-CO'),anio:db.anio});
+    d.ests[idx].observaciones.push({per,txt,doc:sesion.n,fecha:new Date().toLocaleDateString('es-CO'),anio:db.anio,tipo_anotacion:tipoSel});
     return d;
   });
   document.getElementById('_ovGenObsIA').remove();
@@ -18949,6 +19705,27 @@ function _prefillPreMatricula(){
   _pmTipoChange();
 }
 
+// RONDA 40 — RESTAURACIÓN DE LA FICHA COMPLETA DE PREINSCRIPCIÓN/MATRÍCULA
+// ONLINE (Ficha Oficial MEN/SIMAT). Investigación previa: el sistema YA
+// tenía una "Ficha de Matrícula" exhaustiva y completa (los 8 bloques
+// pedidos, casi campo por campo) — ver `abrirFichaModal()`/
+// `guardarFichaMatricula()` en 04-ficha-matricula.js y el modal
+// `#fichaModal` en portal.html — pero esa es la ficha que llena el
+// ADMINISTRADOR/rector manualmente desde el panel de "Estudiantes", NO la
+// que ve el público en el formulario de auto-matrícula/preinscripción en
+// línea (`_htmlFormPreMatricula()`, esta función). ESTA última sí estaba
+// simplificada respecto a la ficha completa (le faltaban, entre otros:
+// género, estrato, condición especial con categorías específicas,
+// corregimiento/vereda, todo el bloque de etnia y vulnerabilidad, nombre
+// del padre y de la madre por separado, teléfono alternativo del
+// acudiente, nivel educativo del acudiente, y el bloque de firmas) — no
+// hay evidencia en CHECKLIST_DESPLIEGUE.md de que esta ronda de trabajo la
+// haya simplificado nunca; es una diferencia preexistente entre ambos
+// formularios del sistema base, documentada aquí con transparencia. Esta
+// ronda amplía `_htmlFormPreMatricula()` para que tenga los mismos 8
+// bloques/campos que la ficha completa, reutilizando exactamente el mismo
+// texto de opciones donde aplica (tipos de documento, niveles educativos,
+// etc.) para que ambos formularios queden consistentes entre sí.
 function _htmlFormPreMatricula(esModal){
   const grados=(db.grados||[]).map(g=>g.n);
   const optsGrado=grados.map(g=>`<option value="${g}">${g}</option>`).join('');
@@ -19004,27 +19781,52 @@ function _htmlFormPreMatricula(esModal){
 <div class="fm-g3">
   <div class="fm-f">
     <label class="lbl">Tipo documento *</label>
-    <select id="pm_tipoDoc"><option>T.I.</option><option>R.C.</option><option>C.C.</option><option>CE</option><option>PEP</option></select>
+    <select id="pm_tipoDoc"><option value="T.I.">T.I. (Tarjeta de Identidad)</option><option value="C.C.">C.C. (Cédula de Ciudadanía)</option><option value="R.C.">R.C. (Registro Civil)</option><option value="C.E.">C.E. (Cédula Extranjería)</option><option value="Pasaporte">Pasaporte</option><option value="PEP">PEP (Permiso Especial Permanencia)</option><option value="Sin documento">Sin documento</option></select>
   </div>
   <div class="fm-f"><label class="lbl">N° documento *</label><input id="pm_numDoc" placeholder="1098765432"></div>
   <div class="fm-f"><label class="lbl">Grado actual / último cursado</label><input id="pm_gradoActual" placeholder="ej: 6°1"></div>
 </div>
 <div class="fm-g3">
-  <div class="fm-f"><label class="lbl">Municipio de procedencia</label><input id="pm_municipio" placeholder="Municipio, Departamento"></div>
-  <div class="fm-f"><label class="lbl">Institución educativa anterior</label><input id="pm_instAnterior" placeholder="(solo para nuevos/reintegro)"></div>
-  <div class="fm-f"><label class="lbl">Grupo sanguíneo</label><select id="pm_sangre"><option value="">--</option><option>A+</option><option>A-</option><option>B+</option><option>B-</option><option>AB+</option><option>AB-</option><option>O+</option><option>O-</option></select></div>
+  <div class="fm-f"><label class="lbl">Género</label><select id="pm_genero"><option>Masculino</option><option>Femenino</option><option>No binario</option><option>Prefiero no decir</option></select></div>
+  <div class="fm-f"><label class="lbl">Lugar de nacimiento</label><input id="pm_lugarNac" placeholder="Municipio, Depto."></div>
+  <div class="fm-f"><label class="lbl">Grupo sanguíneo (RH)</label><select id="pm_sangre"><option value="">No sabe</option><option>A+</option><option>A-</option><option>B+</option><option>B-</option><option>AB+</option><option>AB-</option><option>O+</option><option>O-</option></select></div>
 </div>
-<div class="fm-g2">
-  <div class="fm-f"><label class="lbl">¿Tiene discapacidad o condición especial?</label><input id="pm_discap" placeholder="Ninguna / Describir si aplica"></div>
+<div class="fm-g3">
+  <div class="fm-f"><label class="lbl">Municipio de procedencia</label><input id="pm_municipio" placeholder="Municipio, Departamento"></div>
+  <div class="fm-f"><label class="lbl">Corregimiento / Vereda</label><input id="pm_vereda" placeholder="Corregimiento o vereda"></div>
+  <div class="fm-f"><label class="lbl">Institución educativa anterior</label><input id="pm_instAnterior" placeholder="(solo para nuevos/reintegro)"></div>
+</div>
+<div class="fm-g3">
+  <div class="fm-f"><label class="lbl">Estrato socioeconómico</label><select id="pm_estrato"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></div>
+  <div class="fm-f"><label class="lbl">Condición especial</label><select id="pm_condicion"><option>Ninguna</option><option>Discapacidad física</option><option>Discapacidad cognitiva</option><option>Discapacidad visual</option><option>Discapacidad auditiva</option><option>Talentos excepcionales</option><option>Otra</option></select></div>
   <div class="fm-f"><label class="lbl">EPS / Seguro médico</label><input id="pm_eps" placeholder="COOSALUD, NUEVA EPS, etc."></div>
 </div>
+<div class="fm-g3">
+  <div class="fm-f"><label class="lbl">Estado del estudiante *</label><select id="pm_estado"><option>Nuevo</option><option>Repitente</option><option>Trasladado</option><option>Reintegrado</option></select></div>
+  <div class="fm-f"><label class="lbl">Fecha de registro</label><input type="date" id="pm_fechaRegistro" value="${new Date().toISOString().slice(0,10)}" readonly style="background:#f0f0f0"></div>
+</div>
 
-<div class="pm-sec">👨‍👩‍👦 DATOS DEL ACUDIENTE / PADRE O MADRE</div>
+<div class="pm-sec" style="background:#fdf2e3;border-left-color:#b7770d;color:#b7770d">🏛️ ETNIA Y VULNERABILIDAD</div>
+<div class="fm-g2">
+  <div class="fm-f"><label class="lbl">Pertenencia étnica</label><select id="pm_etnia"><option>Ninguna</option><option>Afrocolombiano / Afrodescendiente</option><option>Negro(a) / Negritudes</option><option>Indígena (especifique pueblo)</option><option>ROM / Gitano</option><option>Raizal del Archipiélago</option><option>Palenquero</option><option>Otra</option></select></div>
+  <div class="fm-f"><label class="lbl">Pueblo indígena (si aplica)</label><input id="pm_pueblo" placeholder="Nombre del pueblo indígena"></div>
+</div>
+<div class="fm-g2">
+  <div class="fm-f"><label class="lbl">¿Víctima del conflicto armado?</label><select id="pm_victima"><option value="No">No</option><option value="Sí">Sí</option><option value="En verificación">En verificación</option></select></div>
+  <div class="fm-f"><label class="lbl">Situación de desplazamiento</label><select id="pm_desplazado"><option value="No">No está en situación de desplazamiento</option><option value="Desplazado receptor">Desplazado receptor (llegó al municipio)</option><option value="Desplazado expulsor">Desplazado expulsor (salió del municipio)</option><option value="En proceso de declaración">En proceso de declaración</option></select></div>
+</div>
+<div class="fm-g1 fm-f"><label class="lbl">No. declaración RUV / UARIV (si es víctima)</label><input id="pm_ruv" placeholder="Número de declaración RUV"></div>
+
+<div class="pm-sec">👨‍👩‍👦 ACUDIENTE Y PADRES</div>
+<div class="fm-g2">
+  <div class="fm-f"><label class="lbl">Nombre completo del padre</label><input id="pm_padre" placeholder="Nombre completo del padre"></div>
+  <div class="fm-f"><label class="lbl">Nombre completo de la madre</label><input id="pm_madre" placeholder="Nombre completo de la madre"></div>
+</div>
 <div class="fm-g3">
   <div class="fm-f"><label class="lbl">Nombre completo acudiente *</label><input id="pm_acudiente" placeholder="MARÍA MENDOZA DE PÉREZ"></div>
   <div class="fm-f">
     <label class="lbl">Tipo doc. acudiente *</label>
-    <select id="pm_tipoDocAcud"><option>C.C.</option><option>CE</option><option>PEP</option><option>Pasaporte</option></select>
+    <select id="pm_tipoDocAcud"><option value="C.C.">C.C.</option><option value="C.E.">C.E.</option><option value="PEP">PEP</option><option value="Pasaporte">Pasaporte</option></select>
   </div>
   <div class="fm-f"><label class="lbl">N° doc. acudiente *</label><input id="pm_numDocAcud" placeholder="45678912"></div>
 </div>
@@ -19032,12 +19834,16 @@ function _htmlFormPreMatricula(esModal){
   <div class="fm-f"><label class="lbl">Relación con el estudiante *</label>
     <select id="pm_parentesco"><option>Madre</option><option>Padre</option><option>Abuelo/a</option><option>Tío/a</option><option>Hermano/a mayor</option><option>Otro familiar</option><option>Acudiente legal</option></select>
   </div>
-  <div class="fm-f"><label class="lbl">Teléfono acudiente *</label><input id="pm_telAcud" placeholder="3001234567"></div>
-  <div class="fm-f"><label class="lbl">Correo electrónico</label><input type="email" id="pm_emailAcud" placeholder="acudiente@correo.com"></div>
+  <div class="fm-f"><label class="lbl">Teléfono principal *</label><input id="pm_telAcud" placeholder="3001234567"></div>
+  <div class="fm-f"><label class="lbl">Teléfono alternativo</label><input id="pm_telAlt" placeholder="Teléfono alternativo"></div>
 </div>
-<div class="fm-g2">
+<div class="fm-g3">
+  <div class="fm-f"><label class="lbl">Correo electrónico</label><input type="email" id="pm_emailAcud" placeholder="acudiente@correo.com"></div>
   <div class="fm-f"><label class="lbl">Dirección de residencia</label><input id="pm_direccion" placeholder="Calle 5 #12-34"></div>
   <div class="fm-f"><label class="lbl">Ocupación / Trabajo acudiente</label><input id="pm_ocupAcud" placeholder="Docente, Agricultor, etc."></div>
+</div>
+<div class="fm-g1 fm-f"><label class="lbl">Nivel educativo del acudiente</label>
+  <select id="pm_nivelEd"><option>Ninguno</option><option>Primaria incompleta</option><option>Primaria completa</option><option>Bachillerato incompleto</option><option>Bachillerato completo</option><option>Técnico / Tecnológico</option><option>Universitario</option><option>Posgrado</option></select>
 </div>
 
 <div class="pm-sec">📸 FOTO DEL ESTUDIANTE (fondo blanco, tipo 4×4)</div>
@@ -19054,6 +19860,14 @@ function _htmlFormPreMatricula(esModal){
 <div id="pm_docsContent">
   <p class="info-box">Seleccione el tipo de aspirante arriba para ver los documentos requeridos.</p>
 </div>
+
+<div class="pm-sec">✍️ REGISTRO DE FIRMAS</div>
+<div class="fm-g3">
+  <div class="fm-f"><label class="lbl">Nombre del estudiante (firma)</label><input id="pm_firmaEst" placeholder="Nombre completo estudiante"></div>
+  <div class="fm-f"><label class="lbl">Nombre del acudiente (firma)</label><input id="pm_firmaAcud" placeholder="Nombre completo acudiente"></div>
+  <div class="fm-f"><label class="lbl">Rector(a) de la institución</label><input id="pm_firmaRect" value="${(db.rectora||'').replace(/"/g,'&quot;')}" placeholder="Nombre rector(a)" readonly style="background:#f0f0f0"></div>
+</div>
+<p style="font-size:0.72rem;color:#888;margin:-4px 0 10px">La firma del/la rector(a) queda registrada automáticamente; la del estudiante y acudiente se confirman físicamente al momento de formalizar la matrícula en la institución.</p>
 
 <div class="pm-sec">💬 INFORMACIÓN ADICIONAL</div>
 <div class="fm-f" style="margin-bottom:10px">
@@ -19199,6 +20013,27 @@ async function guardarPreMatricula(){
     fechaNac:g('pm_fechaNac'),
     gradoActual:g('pm_gradoActual'),
     gradoAspira,
+    // RONDA 40 — campos restaurados de la Ficha Completa MEN/SIMAT (ver
+    // comentario extenso junto a _htmlFormPreMatricula()).
+    genero:g('pm_genero'),
+    lugarNac:g('pm_lugarNac'),
+    vereda:g('pm_vereda'),
+    estrato:g('pm_estrato'),
+    condicion:g('pm_condicion'),
+    estado:g('pm_estado')||'Nuevo',
+    fechaRegistro:g('pm_fechaRegistro')||new Date().toISOString().slice(0,10),
+    etnia:g('pm_etnia'),
+    pueblo:g('pm_pueblo'),
+    victima:g('pm_victima'),
+    desplazado:g('pm_desplazado'),
+    ruv:g('pm_ruv'),
+    padre:g('pm_padre'),
+    madre:g('pm_madre'),
+    telAlt:g('pm_telAlt'),
+    nivelEd:g('pm_nivelEd'),
+    firmaEst:g('pm_firmaEst'),
+    firmaAcud:g('pm_firmaAcud'),
+    firmaRect:g('pm_firmaRect')||db.rectora||'',
     municipio:g('pm_municipio'),
     instAnterior:g('pm_instAnterior'),
     sangre:g('pm_sangre'),
@@ -19429,6 +20264,30 @@ function verPreMatricula(id){
 // acceso del acudiente (rol 'padre') ya se valida en doLoginInstitucional()
 // directamente contra numDocAcud/numDoc de ESTE MISMO registro, así que
 // queda automáticamente enlazado en cuanto el estudiante se crea/actualiza.
+// RONDA 40 — construye el mismo objeto `ficha` que usa el módulo de
+// Ficha de Matrícula (04-ficha-matricula.js) a partir de una solicitud de
+// pre-matrícula online ya ampliada con los 8 bloques completos — así, un
+// estudiante que se auto-matriculó por el portal público queda con su
+// "Ficha de Matrícula" (la vista que usa el admin) ya completamente
+// diligenciada, sin perder ninguno de los campos capturados en línea.
+function _fichaDesdeSolicitudPM(solReg){
+  return {
+    nombres:solReg.nombres||'',apellidos:solReg.apellidos||'',tipoDoc:solReg.tipoDoc||'',numDoc:solReg.numDoc||'',
+    genero:solReg.genero||'',fechaNac:solReg.fechaNac||'',lugarNac:solReg.lugarNac||'',grupoSang:solReg.sangre||'',
+    eps:solReg.eps||'',estrato:solReg.estrato||'',condicion:solReg.condicion||solReg.discap||'',
+    municipio:solReg.municipio||'',vereda:solReg.vereda||'',direccion:solReg.direccion||'',
+    etnia:solReg.etnia||'',pueblo:solReg.pueblo||'',victima:solReg.victima||'',desplazado:solReg.desplazado||'',ruv:solReg.ruv||'',
+    estado:solReg.estado||'Nuevo',instAnterior:solReg.instAnterior||'',fechaMatricula:solReg.fechaRegistro||new Date().toISOString().slice(0,10),
+    padre:solReg.padre||'',madre:solReg.madre||'',acudiente:solReg.acudiente||'',parentesco:solReg.parentesco||'',
+    docAcud:solReg.tipoDocAcud||'',numDocAcud:solReg.numDocAcud||'',telAcud:solReg.telAcud||'',telAlt:solReg.telAlt||'',
+    email:solReg.emailAcud||'',ocupacion:solReg.ocupAcud||'',nivelEd:solReg.nivelEd||'',
+    firmaEst:solReg.firmaEst||'',firmaAcud:solReg.firmaAcud||'',firmaRect:solReg.firmaRect||'',obs:solReg.obs||'',
+    foto:solReg.foto?.datos||'',
+    docs:[solReg.docId,solReg.docNota,solReg.docSimat,solReg.docSalud,solReg.docAcud].filter(Boolean),
+    fechaGuardado:new Date().toISOString(),
+    origen:'pre-matricula-online' // trazabilidad: distingue una ficha diligenciada en el portal público de una capturada manualmente por el admin
+  };
+}
 function _procesarMatriculaDesdeSolicitud(solReg){
   const _aps=(solReg.apellidos||'').trim().toUpperCase().split(/\s+/);
   const _nms=(solReg.nombres||'').trim().toUpperCase().split(/\s+/);
@@ -19464,6 +20323,7 @@ function _procesarMatriculaDesdeSolicitud(solReg){
         jornada:solReg.jornada||ex.jornada,
         sede:solReg.sede||ex.sede,
         linkClase:solReg.linkClase||ex.linkClase,
+        ficha:_fichaDesdeSolicitudPM(solReg), // RONDA 40 — ver comentario de _fichaDesdeSolicitudPM
         deletedAt:null,
       };
     } else {
@@ -19498,7 +20358,8 @@ function _procesarMatriculaDesdeSolicitud(solReg){
         linkClase:solReg.linkClase||'',
         pensionAlDia:true,
         pagos:[],
-        descargos:[]
+        descargos:[],
+        ficha:_fichaDesdeSolicitudPM(solReg) // RONDA 40 — ver comentario de _fichaDesdeSolicitudPM
       });
     }
     return d;

@@ -1834,7 +1834,9 @@ function cargarPlanillaAsistencia(){
 // MÓDULO CENTROS DE INTERÉS
 // ============================================================
 function htmlCentrosInteres(){
-  if(sesion.r!=='admin') return '<div class="card">'+_htmlEstadoVacio('📭','Solo el administrador puede gestionar Centros de Interes.')+'</div>';
+  // RONDA 39: se extiende el acceso a Tutor PTA (vista aprobada b) — antes
+  // era exclusivamente del administrador.
+  if(sesion.r!=='admin'&&!_esTutorPTA()) return '<div class="card">'+_htmlEstadoVacio('📭','Solo el administrador o el Tutor PTA pueden gestionar Centros de Interés.')+'</div>';
   var centros=db.centrosInteres||[];
   var cardsHtml=centros.map(function(c,i){
     var etapasHtml=c.etapas.map(function(et,ei){
@@ -5453,6 +5455,125 @@ function enviarAusentismo(){
   })();
   customAlert('✅ Solicitud enviada al Rector(a). El rector recibirá notificación.\nRecibirá respuesta de aprobación/rechazo en esta sección.');
   pag='ausentismo';renderApp();
+}
+// ============================================================
+// RONDA 39 — Módulo especializado de DOCENTE ORIENTADOR:
+// (a) Atenciones y Fichas Psicopedagógicas
+// (c) Comité de Convivencia y Ruta de Atención Integral (Ley 1620/Dec.1965)
+// Ambos son vistas genuinamente nuevas (no existía un módulo equivalente
+// previo). Se guardan como arreglos nuevos dentro del blob de la propia
+// institución (db.atencionesPsicopedagogicas / db.casosConvivencia), igual
+// que cualquier otro dato institucional (ausentismos, observaciones, etc.),
+// usando el mismo patrón updDB(...) de guardado/sincronización.
+// ============================================================
+function htmlAtencionesPsico(){
+  if(!(sesion.r==='admin'||_esDocenteOrientador())) return _htmlEstadoVacio('🔒','No autorizado.');
+  const lista=(db.atencionesPsicopedagogicas||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const estsOpts=(db.ests||[]).slice().sort((a,b)=>(a.nom||'').localeCompare(b.nom||'')).map(e=>`<option value="${e.id}">${e.nom} — ${e.grado||''}</option>`).join('');
+  const rows=lista.map(a=>{
+    const est=(db.ests||[]).find(e=>e.id===a.estId);
+    return `<tr>
+      <td>${a.fecha||''}</td>
+      <td style="text-align:left">${est?est.nom:'(estudiante no encontrado)'}</td>
+      <td style="text-align:left;font-size:0.78rem">${a.tipo||''}</td>
+      <td style="text-align:left;font-size:0.78rem;max-width:280px">${(a.notas||'').slice(0,140)}${(a.notas||'').length>140?'…':''}</td>
+      <td>${a.docenteNombre||''}</td>
+      <td><button class="btn-sm" style="background:#c0392b" onclick="_eliminarAtencionPsico(${a.id})">🗑️</button></td>
+    </tr>`;
+  }).join('');
+  return `<h3 class="sec-title">🧑‍⚕️ Atenciones y Fichas Psicopedagógicas</h3>
+  <div class="info-box" style="margin-bottom:12px">Registro y seguimiento de atenciones individuales, entrevistas con acudientes y seguimiento psicopedagógico — módulo de uso exclusivo del/la Docente Orientador(a).</div>
+  <div class="card">
+    <h4 class="card-title">📝 Nueva Atención</h4>
+    <div class="grid2">
+      <div><label class="lbl">Estudiante</label><select id="atp_est"><option value="">— Seleccione —</option>${estsOpts}</select></div>
+      <div><label class="lbl">Tipo de Atención</label><select id="atp_tipo">
+        <option>Atención Individual al Estudiante</option>
+        <option>Entrevista con Acudiente</option>
+        <option>Seguimiento Psicopedagógico</option>
+        <option>Remisión Externa</option>
+      </select></div>
+    </div>
+    <label class="lbl">Notas / Descripción de la Atención</label>
+    <textarea id="atp_notas" style="height:80px" placeholder="Describa la atención realizada, acuerdos, remisiones, próximos pasos..."></textarea>
+    <button class="btn btn-green" style="margin-top:10px" onclick="_registrarAtencionPsico()">💾 Registrar Atención</button>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">📋 Histórico de Atenciones (${lista.length})</h4>
+    ${lista.length?`<div class="over"><table><thead><tr><th>Fecha</th><th>Estudiante</th><th>Tipo</th><th>Notas</th><th>Registrado por</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:_htmlEstadoVacio('📭','Aún no hay atenciones registradas.')}
+  </div>`;
+}
+function _registrarAtencionPsico(){
+  const estId=document.getElementById('atp_est')?.value;
+  const tipo=document.getElementById('atp_tipo')?.value||'';
+  const notas=document.getElementById('atp_notas')?.value.trim()||'';
+  if(!estId){customAlert('Seleccione un estudiante.');return;}
+  if(!notas){customAlert('Escriba las notas de la atención.');return;}
+  const reg={id:Date.now(),estId,tipo,notas,fecha:new Date().toISOString().slice(0,10),docente:sesion.u,docenteNombre:sesion.n};
+  updDB(d=>{if(!d.atencionesPsicopedagogicas)d.atencionesPsicopedagogicas=[];d.atencionesPsicopedagogicas.push(reg);return d;});
+  customAlert('✅ Atención registrada.');
+  pag='atenciones-psico';renderApp();
+}
+async function _eliminarAtencionPsico(id){
+  if(!await customConfirm('¿Eliminar este registro de atención?')) return;
+  updDB(d=>{d.atencionesPsicopedagogicas=(d.atencionesPsicopedagogicas||[]).filter(a=>a.id!==id);return d;});
+  pag='atenciones-psico';renderApp();
+}
+function htmlComiteConvivencia(){
+  if(!(sesion.r==='admin'||_esDocenteOrientador())) return _htmlEstadoVacio('🔒','No autorizado.');
+  const lista=(db.casosConvivencia||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const estsOpts=(db.ests||[]).slice().sort((a,b)=>(a.nom||'').localeCompare(b.nom||'')).map(e=>`<option value="${e.id}">${e.nom} — ${e.grado||''}</option>`).join('');
+  const tipoColor={'Tipología I':'#27ae60','Tipología II':'#e67e22','Tipología III':'#c0392b'};
+  const rows=lista.map(c=>{
+    const est=(db.ests||[]).find(e=>e.id===c.estId);
+    return `<tr>
+      <td>${c.fecha||''}</td>
+      <td style="text-align:left">${est?est.nom:'(estudiante no encontrado)'}</td>
+      <td><b style="color:${tipoColor[c.tipologia]||'#555'}">${c.tipologia||''}</b></td>
+      <td style="text-align:left;font-size:0.78rem;max-width:260px">${(c.descripcion||'').slice(0,140)}${(c.descripcion||'').length>140?'…':''}</td>
+      <td style="text-align:left;font-size:0.78rem">${c.seguimiento||'—'}</td>
+      <td><button class="btn-sm" style="background:#c0392b" onclick="_eliminarCasoConvivencia(${c.id})">🗑️</button></td>
+    </tr>`;
+  }).join('');
+  return `<h3 class="sec-title">⚖️ Comité de Convivencia y Ruta de Atención Integral</h3>
+  <div class="info-box" style="margin-bottom:12px">Registro de casos por tipología (Ley 1620 de 2013 / Decreto 1965 de 2013) y actas de seguimiento del Comité Escolar de Convivencia — módulo de uso exclusivo del/la Docente Orientador(a).</div>
+  <div class="card">
+    <h4 class="card-title">📝 Nuevo Caso</h4>
+    <div class="grid2">
+      <div><label class="lbl">Estudiante</label><select id="cc_est"><option value="">— Seleccione —</option>${estsOpts}</select></div>
+      <div><label class="lbl">Tipología (Dec. 1965/2013)</label><select id="cc_tipo">
+        <option>Tipología I</option>
+        <option>Tipología II</option>
+        <option>Tipología III</option>
+      </select></div>
+    </div>
+    <label class="lbl">Descripción del Caso</label>
+    <textarea id="cc_desc" style="height:70px" placeholder="Describa la situación reportada..."></textarea>
+    <label class="lbl">Acta de Seguimiento / Ruta de Atención Integral Activada</label>
+    <textarea id="cc_seg" style="height:60px" placeholder="Acciones tomadas, remisiones a entidades del Sistema Nacional de Convivencia Escolar, acuerdos..."></textarea>
+    <button class="btn btn-green" style="margin-top:10px" onclick="_registrarCasoConvivencia()">💾 Registrar Caso</button>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">📋 Casos Registrados (${lista.length})</h4>
+    ${lista.length?`<div class="over"><table><thead><tr><th>Fecha</th><th>Estudiante</th><th>Tipología</th><th>Descripción</th><th>Seguimiento</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:_htmlEstadoVacio('📭','Aún no hay casos registrados.')}
+  </div>`;
+}
+function _registrarCasoConvivencia(){
+  const estId=document.getElementById('cc_est')?.value;
+  const tipologia=document.getElementById('cc_tipo')?.value||'';
+  const descripcion=document.getElementById('cc_desc')?.value.trim()||'';
+  const seguimiento=document.getElementById('cc_seg')?.value.trim()||'';
+  if(!estId){customAlert('Seleccione un estudiante.');return;}
+  if(!descripcion){customAlert('Escriba la descripción del caso.');return;}
+  const reg={id:Date.now(),estId,tipologia,descripcion,seguimiento,fecha:new Date().toISOString().slice(0,10),docente:sesion.u,docenteNombre:sesion.n};
+  updDB(d=>{if(!d.casosConvivencia)d.casosConvivencia=[];d.casosConvivencia.push(reg);return d;});
+  customAlert('✅ Caso registrado.');
+  pag='comite-convivencia';renderApp();
+}
+async function _eliminarCasoConvivencia(id){
+  if(!await customConfirm('¿Eliminar este caso?')) return;
+  updDB(d=>{d.casosConvivencia=(d.casosConvivencia||[]).filter(c=>c.id!==id);return d;});
+  pag='comite-convivencia';renderApp();
 }
 function imprimirPermisoH03(id){
   const sol=(db.ausentismos||[]).find(s=>s.id===id);

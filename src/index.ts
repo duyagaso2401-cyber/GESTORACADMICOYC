@@ -13,14 +13,14 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos } from './db/index.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
 import etcRouter from './routes/etc.js';
 import educacionSuperiorRouter from './routes/educacion-superior.js';
 import contratacionRouter from './routes/contratacion.js';
-import { moduloHabilitado, activarFlagEnGestorDB, establecerFlagSimpleEnGestorDB, FLAG_AI_NEON_QUERIES, FLAG_AI_ECOSYSTEM_AUDITOR, FLAG_RENDER_KEEPALIVE_PING, checkAiNeonEnabled, checkAiAuditorEnabled, checkKeepAliveEnabled } from './lib/feature-flags.js';
+import { moduloHabilitado, activarFlagEnGestorDB, establecerFlagSimpleEnGestorDB, FLAG_AI_NEON_QUERIES, FLAG_AI_ECOSYSTEM_AUDITOR, FLAG_RENDER_KEEPALIVE_PING, FLAG_SIMAT_ETC_MODULE, checkAiNeonEnabled, checkAiAuditorEnabled, checkKeepAliveEnabled, checkSimatEtcEnabled } from './lib/feature-flags.js';
 import { FLAG_SMS_NOTIFICATIONS, smsNotificacionesHabilitadasGlobalmente } from './lib/sms-provider.js';
 import repositorioRouter from './routes/repositorio.js';
 import lmsRouter from './routes/lms.js';
@@ -45,6 +45,10 @@ import { sseClients, broadcastChange } from './lib/sync-bus.js';
 import { registrarActividadPlataforma, iniciarKeepAliveInteligente, estadoActividadReciente } from './lib/keep-alive.js';
 import agentRouter from './routes/agent.js';
 import * as ecosystemAgent from './services/ecosystemAgent.js';
+// RONDA 40 — Blindaje JWT/servidor (ver src/lib/jwt-auth.ts para el porqué
+// de un JWT HS256 artesanal en vez de la librería `jsonwebtoken`, que no
+// está disponible en este entorno).
+import { firmarJWT, verificarJWT, extraerBearer, rolBloqueadoParaNotas } from './lib/jwt-auth.js';
 // Ronda 20: "bitácora de conflictos" propuesta en el checklist de la Ronda
 // 19 — archivo nuevo y separado de routes/agent.js (ver el comentario en
 // src/routes/sync-log.js sobre por qué no se tocó ese archivo).
@@ -695,6 +699,82 @@ app.post('/api/inetis/rescate/verificar', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 40 — POST /api/auth/login: primer endpoint de servidor que valida
+// credenciales K-12 y EMITE un JWT firmado con la identidad/institución/rol
+// que el propio servidor determinó — no lo que el cliente afirme.
+// ------------------------------------------------------------------------------
+// CONTEXTO (ver también CHECKLIST_DESPLIEGUE.md, sección Ronda 40): antes de
+// esta ronda no existía NINGÚN endpoint de login de servidor para el núcleo
+// K-12 — `doLoginInstitucional()` (frontend) buscaba la credencial
+// directamente en el blob JSON de cada institución activa, descargado
+// completo al navegador. Esta ronda NO reemplaza ese mecanismo (habría sido
+// un cambio de arquitectura mucho más grande, riesgoso para un sistema en
+// producción) — lo COMPLEMENTA: el frontend sigue determinando a qué
+// institución entrar exactamente igual que antes, y AHORA, además, llama a
+// este endpoint (pasándole `sk`, `u`, `p`) para obtener un JWT que a partir
+// de ahí acompaña a las peticiones de escritura sensibles (ver
+// verificarJWT()/rolBloqueadoParaNotas() más abajo, aplicados en
+// POST /api/inetis/notas/guardar-fila).
+//
+// Esta ruta vuelve a validar la contraseña DEL LADO DEL SERVIDOR contra el
+// mismo blob de la institución (mismo esquema PBKDF2 que ya usa el
+// navegador — ver verificarPasswordServidor(), reutilizada tal cual de
+// src/lib/reset-tokens.ts, sin duplicar esa lógica) — el rol que queda
+// firmado dentro del JWT es el que el SERVIDOR encontró en `platDB.users`/
+// `platDB.ests`, nunca un valor que el cliente simplemente declare.
+// ════════════════════════════════════════════════════════════════════════════
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { sk, u, p } = req.body as { sk?: string; u?: string; p?: string };
+    if (!sk || !u || !p) return res.status(400).json({ error: 'Faltan datos (sk, u, p).' });
+    const estado = await verificarEstadoInstitucion(sk);
+    if (!estado.ok) return res.status(403).json({ error: estado.motivo });
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+    if (!rows.length) return res.status(404).json({ error: 'Institución no encontrada.' });
+    const platDB: any = rows[0].value || {};
+    const uStr = String(u), pStr = String(p);
+
+    // Mismo orden de prioridad server-side que ya usa doLoginInstitucional()
+    // en el cliente (Ronda 39) — se documenta aquí en vez de solo en el
+    // frontend porque esta es ahora la fuente de verdad que queda firmada.
+    // 1) Personal institucional (cualquier rol de staff), usuario exacto.
+    const staffUser = (platDB.users || []).find((x: any) => x.u === uStr && x.r !== 'elecciones');
+    if (staffUser && verificarPasswordServidor(pStr, staffUser.p)) {
+      const token = firmarJWT({ sub: uStr, sk, rol: staffUser.r, rolEspecifico: staffUser.rolEspecifico || undefined, nombre: staffUser.n || '' });
+      return res.json({ ok: true, token, rol: staffUser.r, rolEspecifico: staffUser.rolEspecifico || null });
+    }
+    // 2) Módulo de Elecciones.
+    if (uStr === 'elecciones') {
+      const eu = (platDB.users || []).find((x: any) => x.r === 'elecciones');
+      if (eu && verificarPasswordServidor(pStr, eu.p)) {
+        const token = firmarJWT({ sub: 'elecciones', sk, rol: 'elecciones', nombre: 'MÓDULO ELECCIONES' });
+        return res.json({ ok: true, token, rol: 'elecciones', rolEspecifico: null });
+      }
+      if (!eu && pStr === 'inetis2026') {
+        const token = firmarJWT({ sub: 'elecciones', sk, rol: 'elecciones', nombre: 'MÓDULO ELECCIONES' });
+        return res.json({ ok: true, token, rol: 'elecciones', rolEspecifico: null });
+      }
+    }
+    // 3) Estudiante (usuario = clave = su propio documento).
+    const est = (platDB.ests || []).find((e: any) => String(e.numDoc || '').trim() === uStr && String(e.numDoc || '').trim() === pStr);
+    if (est) {
+      const token = firmarJWT({ sub: uStr, sk, rol: 'estudiante', nombre: est.n || '', estId: est.id });
+      return res.json({ ok: true, token, rol: 'estudiante', rolEspecifico: null });
+    }
+    // 4) Acudiente (usuario = documento del acudiente, clave = documento del estudiante).
+    const estAcud = (platDB.ests || []).find((e: any) => String(e.numDocAcud || '').trim() === uStr && String(e.numDoc || e.numDocAcud || '').trim() === pStr);
+    if (estAcud) {
+      const token = firmarJWT({ sub: uStr, sk, rol: 'padre', nombre: estAcud.acudiente || 'ACUDIENTE', estId: estAcud.id });
+      return res.json({ ok: true, token, rol: 'padre', rolEspecifico: null });
+    }
+    return res.status(401).json({ error: 'Credenciales inválidas.' });
+  } catch (e) {
+    console.error('POST /api/auth/login', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 app.get('/api/inetis/db', async (req, res) => {
   try {
     const sk = String(req.query.sk || '');
@@ -778,9 +858,42 @@ app.delete('/api/inetis/db', async (req, res) => {
 // frontend, o el HTML de uso sin conexión), se guarda como antes,
 // sin verificación, para no romper compatibilidad.
 // ============================================================
+// RONDA 40 — defensa en profundidad para la clasificación granular del
+// Observador: como este endpoint recibe el BLOB COMPLETO de la institución
+// (no una fila aislada como guardar-fila), la única forma de detectar "un
+// Tutor PTA intentó crear una anotación DISCIPLINARIA/CONVIVENCIAL" es
+// comparar las observaciones NUEVAS contra las que ya existían antes de
+// este guardado. Se compara por firma de contenido (estudiante+periodo+
+// docente+fecha+texto+tipo) en vez de por índice de arreglo, porque el
+// cliente puede reordenar o eliminar observaciones en el mismo guardado sin
+// que eso sea, por sí mismo, sospechoso.
+function _firmaObs(o: any): string {
+  return [o?.per, o?.doc, o?.fecha, o?.txt, o?.tipo_anotacion].map(v => String(v ?? '')).join('\u0001');
+}
+function _tieneAnotacionDisciplinariaNuevaDeTutorPTA(dataNueva: any, dataVieja: any): boolean {
+  try {
+    const estsViejos: any[] = (dataVieja && dataVieja.ests) || [];
+    const firmasViejasPorEst = new Map<string, Set<string>>();
+    for (const e of estsViejos) {
+      firmasViejasPorEst.set(String(e.id), new Set((e.observaciones || []).map(_firmaObs)));
+    }
+    const estsNuevos: any[] = (dataNueva && dataNueva.ests) || [];
+    for (const e of estsNuevos) {
+      const firmasViejas = firmasViejasPorEst.get(String(e.id)) || new Set<string>();
+      for (const o of (e.observaciones || [])) {
+        if (firmasViejas.has(_firmaObs(o))) continue; // ya existía: no es una anotación nueva de este guardado
+        if (o && (o.tipo_anotacion === 'DISCIPLINARIA' || o.tipo_anotacion === 'CONVIVENCIAL')) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false; // ante cualquier forma de dato inesperada, no se bloquea el guardado (evitar falsos positivos que tumben el autoguardado de toda la institución)
+  }
+}
+
 app.post('/api/inetis/db', async (req, res) => {
   try {
-    const { sk, data, baseVersion } = req.body as { sk: string; data: unknown; baseVersion?: string | null };
+    const { sk, data, baseVersion, actorRolEspecifico } = req.body as { sk: string; data: unknown; baseVersion?: string | null; actorRolEspecifico?: string };
     if (!sk) return res.status(400).json({ error: 'sk requerido' });
     // Mismo candado que en el GET de arriba — ver comentarios ahí. Se
     // repite la verificación aquí porque este es un endpoint aparte: leer
@@ -814,6 +927,21 @@ app.post('/api/inetis/db', async (req, res) => {
       }
     }
 
+    // RONDA 40 — Tutor PTA no puede crear anotaciones DISCIPLINARIA/
+    // CONVIVENCIAL en el Observador (ver _tieneAnotacionDisciplinariaNuevaDeTutorPTA
+    // arriba para el porqué de comparar por firma de contenido). Solo se paga
+    // el costo de esta lectura extra cuando el propio cliente se identifica
+    // como Tutor PTA — para cualquier otro guardado (la inmensa mayoría del
+    // tráfico de este endpoint) el comportamiento y el rendimiento quedan
+    // exactamente iguales a antes de esta ronda.
+    if (actorRolEspecifico === 'Tutor PTA') {
+      const existingParaObs = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+      const dataVieja = existingParaObs.length ? existingParaObs[0].value : null;
+      if (_tieneAnotacionDisciplinariaNuevaDeTutorPTA(data, dataVieja)) {
+        return res.status(403).json({ error: 'El rol Tutor PTA no tiene permiso para registrar anotaciones de tipo DISCIPLINARIA o CONVIVENCIAL en el Observador del Estudiante.' });
+      }
+    }
+
     const nowTs = new Date();
     await db
       .insert(kvStore)
@@ -837,6 +965,132 @@ app.post('/api/inetis/db', async (req, res) => {
   } catch (e) {
     console.error('POST /api/inetis/db', e);
     return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 36 — PARTE 1.2: AUTOGUARDADO AISLADO Y ATÓMICO FILA POR FILA.
+// A diferencia de POST /api/inetis/db (arriba), que siempre recibe y
+// reescribe el blob JSON COMPLETO de la institución, este endpoint recibe
+// ÚNICAMENTE el paquete de UNA fila (un estudiante, en Planilla; una celda
+// estudiante+columna, en Notas de Actividades) y lo aplica con una
+// lectura-modificación-escritura QUIRÚRGICA sobre esa única ruta anidada del
+// JSON — nunca se compara, revalida ni retransmite el resto de la planilla.
+//
+// Trade-off documentado con transparencia: la persistencia de este proyecto
+// sigue siendo un único blob JSON por institución en `kv_store` (arquitectura
+// multi-tenant ya existente, no se reescribió a tablas relacionales de una
+// fila por nota — eso habría sido un cambio de arquitectura mucho más
+// grande y riesgoso). Lo que sí cambia de raíz es (a) lo que el NAVEGADOR
+// envía por la red en cada autoguardado (solo la fila afectada, no la
+// planilla entera) y (b) que este endpoint hace una lectura fresca
+// inmediatamente antes de escribir, sin usar `baseVersion`/fusión de 3 vías
+// ni disparar ningún aviso de "otra persona guardó" — cada llamada es
+// autocontenida: lee lo último, aplica el cambio de una sola fila, guarda.
+app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
+  try {
+    const { sk, tipo, estId, cId, per, notas, colId, valor, fecha, hora, obs, actorRolEspecifico } = (req.body || {}) as {
+      sk?: string; tipo?: 'planilla' | 'actividad'; estId?: string | number; cId?: number; per?: number;
+      notas?: Record<string, number>; colId?: string; valor?: number; fecha?: string; hora?: string; obs?: string;
+      // RONDA 39 — campo OPCIONAL de defensa en profundidad: este endpoint no
+      // tiene sesión/identidad de servidor (confía por completo en el `sk` de
+      // la institución, igual que el resto del núcleo K-12). Si el frontend
+      // decide enviar el rolEspecifico del usuario que hace la petición, se
+      // usa aquí para bloquear a Docente Orientador y Tutor PTA. Si el campo
+      // no se envía, este chequeo simplemente no aplica — la restricción real
+      // y primaria sigue siendo del lado del cliente (menú/UI oculta estas
+      // pantallas para esos 2 roles).
+      actorRolEspecifico?: string;
+    };
+    if (!sk || !tipo || estId === undefined || estId === null) {
+      return res.status(400).json({ ok: false, error: 'Faltan datos (sk, tipo o estId).' });
+    }
+    if (actorRolEspecifico === 'Docente Orientador' || actorRolEspecifico === 'Tutor PTA') {
+      return res.status(403).json({ ok: false, error: 'Este rol no tiene permiso para registrar o modificar notas/planillas.' });
+    }
+    // ════════════════════════════════════════════════════════════════════════
+    // RONDA 40 — verificación CRIPTOGRÁFICA real (no basada en lo que declare
+    // el body). Si llega un JWT en "Authorization: Bearer <token>", se
+    // verifica su firma HMAC-SHA256 y expiración (verificarJWT — rechaza de
+    // inmediato cualquier token alterado o vencido), y si el rol/rolEspecifico
+    // que el SERVIDOR firmó en su momento (no lo que el cliente mande ahora)
+    // corresponde a DOCENTE_ORIENTADOR, TUTOR_PTA, ESTUDIANTE o ACUDIENTE
+    // (rol interno 'padre'), se rechaza con 403 sin excepción.
+    //
+    // ALCANCE Y LIMITACIÓN (transparencia total, ver también
+    // CHECKLIST_DESPLIEGUE.md): este endpoint sigue sin EXIGIR un JWT como
+    // requisito obligatorio de acceso — si no llega ningún token, esta
+    // verificación simplemente no aplica y el endpoint sigue con el
+    // comportamiento heredado (chequeo opcional `actorRolEspecifico` de
+    // arriba, y en última instancia, confianza en el `sk`). Exigir JWT
+    // obligatorio en TODA petición habría roto de inmediato a cualquier
+    // cliente que todavía no lo esté enviando (el frontend recién empieza a
+    // pedirlo en esta misma ronda — ver doLoginInstitucional()) — por eso se
+    // adoptó la migración RETROCOMPATIBLE que pidió explícitamente el
+    // coordinador: cuando el JWT SÍ viene, su verificación es real,
+    // criptográfica, y su rechazo no se puede evadir mintiendo en el body;
+    // cuando NO viene, la protección disponible es la heredada (client-side
+    // + el chequeo opcional de arriba).
+    // ════════════════════════════════════════════════════════════════════════
+    const _tokenJWT = extraerBearer(req.headers.authorization);
+    if (_tokenJWT) {
+      const _payloadJWT = verificarJWT(_tokenJWT);
+      if (!_payloadJWT) {
+        return res.status(401).json({ ok: false, error: 'Token de sesión inválido o vencido.' });
+      }
+      if (rolBloqueadoParaNotas(_payloadJWT)) {
+        return res.status(403).json({ ok: false, error: 'Su rol (verificado por token de sesión firmado) no tiene permiso para registrar o modificar notas/planillas.' });
+      }
+    }
+    if (!_tieneRescateValido(req)) {
+      const estado = await verificarEstadoInstitucion(sk);
+      if (!estado.ok) return res.status(403).json({ error: estado.motivo });
+      const estadoSuscripcion = await verificarSuscripcionSaas(sk);
+      if (!estadoSuscripcion.ok) return res.status(402).json({ error: estadoSuscripcion.motivo, suscripcionVencida: true });
+    }
+
+    // Lectura fresca (sin caché de 5s) — es la garantía de que esta escritura
+    // parte siempre del dato más reciente posible, en vez de una copia local
+    // potencialmente vieja del resto de la planilla.
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+    if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
+    const blob: any = rows[0].value;
+
+    if (tipo === 'planilla') {
+      if (cId === undefined || per === undefined || !notas) {
+        return res.status(400).json({ ok: false, error: 'Faltan datos (cId, per o notas) para tipo=planilla.' });
+      }
+      const idx = (blob.ests || []).findIndex((x: any) => String(x.id) === String(estId));
+      if (idx === -1) return res.status(404).json({ ok: false, error: 'Estudiante no encontrado.' });
+      const e = blob.ests[idx];
+      e.nts = e.nts || {};
+      e.nts[cId] = e.nts[cId] || {};
+      e.nts[cId][per] = { ...(e.nts[cId][per] || {}), ...notas };
+    } else if (tipo === 'actividad') {
+      if (!colId) return res.status(400).json({ ok: false, error: 'Falta colId para tipo=actividad.' });
+      blob.notasAct = blob.notasAct || {};
+      const key = `${cId}_${per}_${colId}_${estId}`;
+      if (valor === undefined || valor === null) {
+        // valor ausente = solicitud explícita de ELIMINAR la celda (ver
+        // eliminarNotaAct() en el frontend) — se borra la clave por completo,
+        // sin dejar un residuo con valor 0 confundible con "nota en cero".
+        delete blob.notasAct[key];
+      } else {
+        blob.notasAct[key] = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '' };
+      }
+    } else {
+      return res.status(400).json({ ok: false, error: 'tipo debe ser "planilla" o "actividad".' });
+    }
+
+    const nowTs = new Date();
+    await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, sk));
+    guardarDbCache(sk, blob, nowTs, true);
+    broadcastChange(sk);
+    registrarActividadPlataforma(sk);
+    return res.json({ ok: true, version: nowTs.toISOString() });
+  } catch (e) {
+    console.error('POST /api/inetis/notas/guardar-fila', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al guardar la fila.' });
   }
 });
 
@@ -929,13 +1183,14 @@ app.post('/api/superadmin/activar-modulo-universidades', async (req, res) => {
 // gestorDB completo solo para leer 2 banderas.
 app.get('/api/superadmin/modulos-estado', async (_req, res) => {
   try {
-    const [etcHabilitado, universidadesHabilitado, smsHabilitado, aiNeonHabilitado, aiAuditorHabilitado, keepAliveHabilitado] = await Promise.all([
+    const [etcHabilitado, universidadesHabilitado, smsHabilitado, aiNeonHabilitado, aiAuditorHabilitado, keepAliveHabilitado, simatEtcHabilitado] = await Promise.all([
       moduloHabilitado('ETC_CONTRACTING'),
       moduloHabilitado('UNIVERSITIES'),
       smsNotificacionesHabilitadasGlobalmente(),
       checkAiNeonEnabled(),
       checkAiAuditorEnabled(),
       checkKeepAliveEnabled(),
+      checkSimatEtcEnabled(),
     ]);
     return res.json({
       ok: true,
@@ -945,6 +1200,7 @@ app.get('/api/superadmin/modulos-estado', async (_req, res) => {
       ENABLE_AI_NEON_QUERIES: aiNeonHabilitado,
       ENABLE_AI_ECOSYSTEM_AUDITOR: aiAuditorHabilitado,
       ENABLE_RENDER_KEEPALIVE_PING: keepAliveHabilitado,
+      ENABLE_SIMAT_ETC_MODULE: simatEtcHabilitado,
     });
   } catch (e) {
     console.error('GET /api/superadmin/modulos-estado', e);
@@ -1035,6 +1291,40 @@ app.post('/api/superadmin/activar-keepalive-ping', async (req, res) => {
   } catch (e) {
     console.error('POST /api/superadmin/activar-keepalive-ping', e);
     return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor de Keep-Alive de Render.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 37 — Interruptor MAESTRO del Módulo SIMAT/Portal ETC-Gobernación.
+// Mismo patrón EXACTO que los 3 anteriores (credenciales reales de Súper
+// Admin + establecerFlagSimpleEnGestorDB + auditoría en agent_audit_logs).
+// A diferencia de esos 3 (que nacen en "true"), este nace en "false"
+// (standby) — ver el comentario extenso junto a FLAG_SIMAT_ETC_MODULE en
+// src/lib/feature-flags.ts. Nótese que, a propósito, este endpoint NO
+// ejecuta ninguna migración SQL (a diferencia de activar-modulo-etc/
+// universidades): la migración de `simat_estudiantes` sigue siendo
+// perezosa y ahora, además, condicionada a este mismo flag — se dispara
+// sola la primera vez que un endpoint SIMAT se usa CON el flag ya en
+// true (ver _asegurarSchemaSimat() en src/routes/etc.ts), nunca desde
+// aquí. Esto es intencional: encender el interruptor no debe demorar la
+// respuesta de este endpoint esperando una migración que quizá ni haga
+// falta todavía (una ETC puede activar el módulo días antes de importar
+// su primer archivo SIMAT).
+// ════════════════════════════════════════════════════════════════════════════
+app.post('/api/superadmin/activar-simat-etc', async (req, res) => {
+  try {
+    const { u, p, activar } = (req.body || {}) as { u?: string; p?: string; activar?: boolean };
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows[0]?.value || null;
+    const superAdmin = gestorDB?.superAdmin;
+    const autorizado = !!(superAdmin && u && p && String(u) === String(superAdmin.u) && _verificarPasswordSuperAdminServidor(String(p), String(superAdmin.p || '')));
+    if (!autorizado) return res.status(401).json({ ok: false, error: 'Credenciales de Súper Admin incorrectas.' });
+    await establecerFlagSimpleEnGestorDB(FLAG_SIMAT_ETC_MODULE, !!activar);
+    await registrarAuditoriaSuperadmin(String(u), FLAG_SIMAT_ETC_MODULE, !!activar);
+    return res.json({ ok: true, modulo: FLAG_SIMAT_ETC_MODULE, activo: !!activar });
+  } catch (e) {
+    console.error('POST /api/superadmin/activar-simat-etc', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al cambiar el interruptor del Módulo SIMAT/ETC.' });
   }
 });
 
@@ -2258,6 +2548,166 @@ app.post('/api/inetis/boletin/verificar', (req, res) => {
     return res.status(500).json({ error: 'Error interno' });
   }
 });
+
+// ============================================================
+// RONDA 37 — VERIFICACIÓN DIGITAL PÚBLICA CON HASH/QR (certificados,
+// boletines, libros de calificaciones).
+// ------------------------------------------------------------------
+// La firma HMAC de arriba (boletin/firmar|verificar) es "stateless": para
+// comprobar un código hay que volver a mandarle al servidor TODOS los
+// datos originales del documento — algo que solo la propia app puede
+// hacer, porque ya los tiene. Eso es excelente para el flujo interno de
+// "escanee el QR con esta misma app" (funciona sin conexión a Neon en el
+// momento de verificar, ideal para sedes rurales), pero NO sirve para el
+// requisito nuevo: un tercero cualquiera (ej. un empleador) que escanea el
+// QR impreso y solo tiene el hash, sin la app y sin los datos originales.
+//
+// Por eso este es un mecanismo APARTE (no reemplaza al anterior, coexiste
+// con él): el servidor SÍ recuerda, en `certificados_emitidos`, un resumen
+// mínimo y no sensible de cada documento emitido (nombre del estudiante,
+// tipo de documento, institución, fecha de emisión) asociado a un hash
+// único. Deliberadamente NUNCA se guardan notas, número de documento
+// completo, dirección u otro dato sensible — ni siquiera el `datos`
+// original del documento: si se filtrara la tabla completa, lo máximo que
+// se expone es lo mismo que ya se ve impreso en el propio boletín.
+//
+// Hash = SHA-256 de (datos_no_sensibles + timestamp + DOC_SIGN_SECRET como
+// sal del servidor) — igual principio de "el navegador nunca puede fabricar
+// uno válido por su cuenta" que ya usa _firmarBlob().
+// ============================================================
+let _schemaCertificadosListo = false;
+async function _asegurarSchemaCertificados(): Promise<void> {
+  if (_schemaCertificadosListo) return;
+  await ensureSchemaCertificados();
+  _schemaCertificadosListo = true;
+}
+
+function _generarHashCertificado(payload: unknown): string {
+  const sal = DOC_SIGN_SECRET || 'inseguro-configure-DOC_SIGN_SECRET';
+  return crypto.createHash('sha256').update(_jsonEstable(payload) + '|' + sal).digest('hex');
+}
+
+// Emite (registra) un nuevo hash de verificación para un documento — se
+// llama desde el navegador justo al generar el PDF (boletín, certificado o
+// libro de calificaciones), después de que el documento ya está armado.
+// Solo recibe/guarda los campos no sensibles necesarios para la vista
+// pública; el PDF en sí sigue generándose 100% en el navegador (jsPDF),
+// igual que el resto del sistema.
+// RONDA 38 — se agregaron `documentoEstudiante` (opcional, ej. "T.I. 1234567")
+// y `anioLectivo` (opcional) al cuerpo aceptado, para que la vista pública
+// pueda mostrarlos (ver _htmlVerificacionCertificado abajo). Siguen siendo
+// OPCIONALES a propósito: los boletines (Ronda 37) ya venían llamando a este
+// endpoint sin esos 2 campos, y esta ronda no debía romper esa integración
+// existente — si no se envían, simplemente quedan como '' en la tabla.
+app.post('/api/inetis/certificado/emitir-hash', async (req, res) => {
+  try {
+    const { sk, tipoDocumento, nombreEstudiante, documentoEstudiante, anioLectivo, institucion, emitidoPor } = (req.body || {}) as {
+      sk?: string; tipoDocumento?: string; nombreEstudiante?: string; documentoEstudiante?: string; anioLectivo?: string; institucion?: string; emitidoPor?: string;
+    };
+    if (!sk || !tipoDocumento || !nombreEstudiante) {
+      return res.status(400).json({ ok: false, error: 'sk, tipoDocumento y nombreEstudiante son obligatorios.' });
+    }
+    await _asegurarSchemaCertificados();
+    const ip = _ipDelRequest(req);
+    const ahora = new Date();
+    const hash = _generarHashCertificado({ sk, tipoDocumento, nombreEstudiante, institucion: institucion || '', ts: ahora.toISOString(), rnd: crypto.randomBytes(8).toString('hex') });
+    await db.insert(certificadosEmitidos).values({
+      hash, sk, tipoDocumento: String(tipoDocumento), nombreEstudiante: String(nombreEstudiante),
+      documentoEstudiante: String(documentoEstudiante || ''), anioLectivo: String(anioLectivo || ''),
+      institucion: String(institucion || ''), emitidoPor: String(emitidoPor || ''), ip, fechaEmision: ahora,
+    });
+    return res.json({ ok: true, hash, urlVerificacion: '/verificar-certificado?hash=' + hash });
+  } catch (e) {
+    console.error('POST /api/inetis/certificado/emitir-hash', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al emitir el hash de verificación.' });
+  }
+});
+
+// Vista PÚBLICA (sin autenticación, sin sesión) de verificación por hash.
+// Devuelve SOLO nombre, tipo de documento, institución y fecha de emisión
+// — nunca notas, número de documento, ni ningún otro dato del estudiante.
+// Responde HTML legible por defecto (para que alguien que escanea el QR con
+// la cámara de su teléfono vea algo presentable de inmediato) y JSON si se
+// pide explícitamente (?formato=json), para integraciones.
+app.get('/verificar-certificado', async (req, res) => {
+  try {
+    const hash = String(req.query.hash || '').trim();
+    const quiereJson = String(req.query.formato || '') === 'json';
+    if (!hash) {
+      if (quiereJson) return res.status(400).json({ ok: false, error: 'Falta el parámetro hash.' });
+      return res.status(400).send(_htmlVerificacionCertificado({ valido: false, error: 'Falta el parámetro "hash" en el enlace.' }));
+    }
+    await _asegurarSchemaCertificados();
+    const filas = await db.select().from(certificadosEmitidos).where(eq(certificadosEmitidos.hash, hash));
+    const registro = filas[0];
+    if (!registro) {
+      if (quiereJson) return res.json({ ok: true, valido: false });
+      return res.send(_htmlVerificacionCertificado({ valido: false }));
+    }
+    const datosPublicos = {
+      valido: true,
+      nombreEstudiante: registro.nombreEstudiante,
+      documentoEstudiante: registro.documentoEstudiante || '',
+      anioLectivo: registro.anioLectivo || '',
+      tipoDocumento: registro.tipoDocumento,
+      institucion: registro.institucion,
+      fechaEmision: registro.fechaEmision,
+      estado: 'Válido — Emitido Oficialmente',
+    };
+    if (quiereJson) return res.json({ ok: true, ...datosPublicos });
+    return res.send(_htmlVerificacionCertificado(datosPublicos));
+  } catch (e) {
+    console.error('GET /verificar-certificado', e);
+    if (String(req.query.formato || '') === 'json') return res.status(500).json({ ok: false, error: 'Error interno' });
+    return res.status(500).send(_htmlVerificacionCertificado({ valido: false, error: 'Error interno al verificar el documento.' }));
+  }
+});
+
+function _escaparHtml(s: unknown): string {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+// RONDA 38 — nombres legibles para cada `tipoDocumento` interno (el mismo
+// valor que cada generador de PDF envía a /emitir-hash), tal como el
+// usuario pidió explícitamente ("Certificado de Estudio, Acta de Grado,
+// Boletín de Notas") en la vista pública. Si llega un tipo no listado
+// (ej. de una integración futura), se muestra tal cual llegó — nunca se
+// oculta el tipo de documento.
+const ETIQUETAS_TIPO_DOCUMENTO_PUBLICAS: Record<string, string> = {
+  boletin: 'Boletín de Notas',
+  informe_final: 'Informe Final Anual',
+  certificado_calificaciones: 'Certificado de Calificaciones',
+  certificado_estudio: 'Certificado de Estudios',
+  constancia_matricula: 'Constancia de Matrícula',
+  constancia_estudios_cursado: 'Constancia de Estudios Cursados',
+  acta_grado: 'Acta de Grado',
+  acta_promocion: 'Acta de Promoción/Graduación',
+  acta: 'Acta Institucional',
+  certificado_comportamiento: 'Certificado de Comportamiento / Conducta', // RONDA 39
+};
+function _htmlVerificacionCertificado(datos: { valido: boolean; error?: string; nombreEstudiante?: string; documentoEstudiante?: string; anioLectivo?: string; tipoDocumento?: string; institucion?: string; fechaEmision?: unknown; estado?: string }): string {
+  const color = datos.valido ? '#1e7e34' : '#c0392b';
+  const titulo = datos.valido ? '✅ Documento auténtico' : '❌ Documento no verificado';
+  const tipoLegible = ETIQUETAS_TIPO_DOCUMENTO_PUBLICAS[String(datos.tipoDocumento || '')] || String(datos.tipoDocumento || '');
+  const cuerpo = datos.valido
+    ? `<table style="margin:0 auto;text-align:left;font-size:1rem;line-height:1.8">
+        <tr><td style="color:#666;padding-right:12px">Institución:</td><td><b>${_escaparHtml(datos.institucion)}</b></td></tr>
+        <tr><td style="color:#666;padding-right:12px">Tipo de documento:</td><td><b>${_escaparHtml(tipoLegible)}</b></td></tr>
+        <tr><td style="color:#666;padding-right:12px">Estudiante:</td><td><b>${_escaparHtml(datos.nombreEstudiante)}${datos.documentoEstudiante ? ' — ' + _escaparHtml(datos.documentoEstudiante) : ''}</b></td></tr>
+        ${datos.anioLectivo ? `<tr><td style="color:#666;padding-right:12px">Año lectivo:</td><td><b>${_escaparHtml(datos.anioLectivo)}</b></td></tr>` : ''}
+        <tr><td style="color:#666;padding-right:12px">Fecha de emisión:</td><td><b>${_escaparHtml(datos.fechaEmision ? new Date(datos.fechaEmision as any).toLocaleString('es-CO') : '')}</b></td></tr>
+        <tr><td style="color:#666;padding-right:12px">Estado:</td><td><b style="color:#1e7e34">${_escaparHtml(datos.estado || 'Válido — Emitido Oficialmente')}</b></td></tr>
+      </table>`
+    : `<p style="color:#666">${_escaparHtml(datos.error || 'El código no corresponde a ningún documento emitido por esta plataforma, o fue escrito incorrectamente.')}</p>`;
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Verificación de documento — GESTOR ACADÉMICO YC</title></head>
+    <body style="font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#f4f6f8;margin:0;padding:32px 16px;text-align:center;color:#222">
+      <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:12px;padding:28px 22px;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
+        <h2 style="color:${color};margin-top:0">${titulo}</h2>
+        ${cuerpo}
+        <p style="font-size:0.75rem;color:#aaa;margin-top:24px">Verificación pública de GESTOR ACADÉMICO YC — no requiere iniciar sesión.</p>
+      </div>
+    </body></html>`;
+}
 
 // ============================================================
 // A05B · RUTAS — CARGA DE ARCHIVOS (Cloudinary)

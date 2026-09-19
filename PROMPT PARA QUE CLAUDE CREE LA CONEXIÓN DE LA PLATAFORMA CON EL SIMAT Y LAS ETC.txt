@@ -1,0 +1,77 @@
+Hola Claude, necesito realizar un paquete de actualizaciones estratégicas y correcciones críticas en GESTOR ACADÉMICO YC.
+
+Aplica primero las correcciones urgentes en la planilla de notas y el autoguardado, seguidas de los ajustes en Mi Perfil/F5, y finalmente implementa el Módulo de Interoperabilidad SIMAT y Portal ETC / Gobernación.
+
+----------------------------------------------------------------------
+PARTE 1: CORRECCIÓN URGENTE Y AISLAMIENTO FILA POR FILA EN PLANILLA DE NOTAS
+----------------------------------------------------------------------
+1. ELIMINACIÓN COMPLETA DE MENSAJES Y COMPARACIONES DE TERCEROS:
+   - Elimina por completo la lógica de detección de cambios de terceros, diffing de DOM o SSE/polling en segundo plano que genera notificaciones como "otra persona guardó una nota" o "se actualizaron las notas".
+   - DESACTIVA cualquier mensaje, modal o alerta relacionado con actualización concurrente de notas. No debe emitirse ninguna alerta ni bloquear la edición bajo ninguna circunstancia.
+
+2. AUTOGUARDADO AISLADO Y ATÓMICO FILA POR FILA (ROW-LEVEL AUTOSAVE):
+   - Modifica el autoguardado para que opere EXCLUSIVAMENTE A NIVEL DE FILA INDIVIDUAL (el estudiante actual en edición), eliminando el barrido o revalidación masiva sobre la totalidad de la planilla/grid.
+   - Flujo de edición: Mientras el docente ingresa o modifica las notas de actividades, recuperaciones o nota final de un estudiante determinado, el sistema debe esperar (debounced 1.5s - 2s tras terminar la edición en la fila) y enviar/guardar UNICAMENTE el paquete de datos correspondiente a ESA fila en Neon PostgreSQL.
+   - Prohibido reevaluar, reconsultar o rehidratar las filas de los demás estudiantes mientras se edita una fila activa. Las demás filas permanecen intactas y sin recargar.
+   - Cálculo automático local: El recálculo de definitivas o nota de recuperación se ejecuta en el cliente únicamente para la fila del estudiante afectado antes del envío.
+
+3. SINCRONIZACIÓN Y LIMPIEZA BIDIRECCIONAL (PLANILLA <-> ACTIVIDADES):
+   - Asegurar que cuando se borre o modifique una nota en la planilla, la eliminación/actualización se refleje de inmediato y sin residuos en la tabla/registro de notas por actividades correspondiente (y viceversa).
+
+----------------------------------------------------------------------
+PARTE 2: CORRECCIONES EN "MI PERFIL" Y PERSISTENCIA DE NAVEGACIÓN
+----------------------------------------------------------------------
+1. GESTIÓN COMPLETA DE HOJA DE VIDA EN "MI PERFIL":
+   - Cuando un usuario (Docente, Directivo, Administrativo) ya tiene una Hoja de Vida cargada (PDF/Word), la interfaz debe mostrar el estado del archivo y habilitar de forma clara las siguientes acciones:
+     a) "Previsualizar / Descargar": Permite abrir o descargar el documento actual.
+     b) "Cambiar / Reemplazar": Permite seleccionar un nuevo archivo y sobrescribir el existente de forma limpia.
+     c) "Quitar / Eliminar": Permite eliminar el archivo adjunto previa confirmación.
+   - Asegura la correcta actualización del registro y la URL/referencia del archivo en Neon PostgreSQL al reemplazar o quitar el documento.
+
+2. PERSISTENCIA EXACTA DE SUBMÓDULOS AL REFRESCAR (F5):
+   - Corregir la gestión de rutas / estado (Router State / URL Query Params / SessionStorage) para que al presionar F5 en cualquier rol, el sistema rehidrate directamente el submódulo o pestaña exacta donde el usuario estaba trabajando (ejemplo: Planilla de notas, Observador del estudiante, Asistencia) sin hacer scroll o reorientarlo al Dashboard principal.
+
+----------------------------------------------------------------------
+PARTE 3: MÓDULO DE INTEROPERABILIDAD SIMAT Y PORTAL ETC / GOBERNACIÓN
+----------------------------------------------------------------------
+Implementa un módulo desacoplado (Batch Sync / Módulo Híbrido) preservando la arquitectura offline-first para sedes rurales y la compatibilidad con Neon PostgreSQL y Express/Node.js:
+
+1. ESTRUCTURA DE DATOS Y CAMPOS OFICIALES MEN / SIMAT
+En el modelo de base de datos Neon PostgreSQL (tabla `estudiantes` y vistas relacionadas), amplía y estandariza los campos nativos del SIMAT según la normativa del Ministerio de Educación Nacional (MEN) de Colombia:
+- Identificación: Tipo de Documento, Número de Documento/NUIP, Nombres, Apellidos, Fecha de Nacimiento, Género.
+- Ubicación y Sede: Código DANE de la Institución, Código DANE de la Sede, Jornada, Grado SIMAT, Grupo.
+- Caracterización Social y Educativa: Tipo de Discapacidad, Población Vulnerable, Etnia (Indígena, Afrocolombiana, Raizal, Palenquera), Víctima del Conflicto, Estrato.
+- Estado de Matrícula: Estado SIMAT (Matriculado, Retirado, Trasladado, Promovido, No Promovido), Fecha de Registro y Novedad.
+
+2. MOTOR DE IMPORTACIÓN Y EXPORTACIÓN MASIVA SIMAT (BATCH SYNC)
+Crea los controladores y servicios backend en Node.js/Express para la comunicación en doble vía con el SIMAT:
+
+a) Importador Inteligente SIMAT (SIMAT -> Plataforma):
+   - Endpoint/Controlador de carga para archivos CSV/Excel (.csv, .xlsx) descargados del SIMAT.
+   - Motor de Mapeo y Deduplicación: Usar el número de documento/NUIP como clave única (`UPSERT`). Si el estudiante existe, actualiza su caracterización y grado sin borrar sus calificaciones/asistencias previas; si no existe, lo matricula automáticamente en el grupo/sede correspondiente.
+
+b) Generador de Planillas Oficiales SIMAT (Plataforma -> SIMAT):
+   - Endpoint que compile las matrículas, traslados, retiros y novedades registradas en la plataforma.
+   - Exportador automatizado en el formato exacto de archivo plano/Excel estandarizado que exige el SIMAT/MEN (Anexo 6A / Planilla de Novedades) para su subida masiva a la plataforma del gobierno.
+   - Motor de Pre-check/Validación: Verificar que no falten campos obligatorios del MEN (ej. Código DANE, fecha de nacimiento) antes de generar el archivo para evitar rechazos en la ETC.
+
+3. VISTA Y ROL DE ACCESO "PORTAL ETC / GOBERNACIÓN"
+Implementa un rol específico y una vista de panel de control (`GOBERNACION_ETC` / `AUDITOR_ETC`):
+- Tablero Consolidado de Mando: Vista exclusiva de lectura para supervisores, directores de núcleo y auditores de la Secretaría de Educación/Gobernación.
+- Métricas Clave: Indicadores consolidados de cobertura, matrícula activa por sede, índice de deserción, ausentismo y desempeño académico por grado/municipio.
+- Módulo de Verificación Digital: Sistema de validación de certificados de estudio, notas finales y libros de calificaciones mediante código Hash/QR firmado para auditorías sin necesidad de desplazamientos físicos.
+
+4. SEGURIDAD, AUDITORÍA Y REGISTRO
+- Control de Acceso: El rol `GOBERNACION_ETC` tiene permisos estrictos de SOLO LECTURA sobre datos consolidados y reportes, protegiendo la soberanía operativa de cada institución.
+- Trazabilidad y Logs: Registrar en la tabla de auditoría cada importación/exportación de archivos SIMAT, incluyendo fecha, hora, usuario e IP de ejecución.
+
+----------------------------------------------------------------------
+PRUEBAS AUTOMATIZADAS
+----------------------------------------------------------------------
+- Crear y actualizar las pruebas unitarias e integradas para validar:
+  a) Autoguardado atómico fila por fila sin alertas de terceros ni reescritura de la planilla completa.
+  b) Sincronización exacta al eliminar/editar notas entre planilla general y notas de actividades.
+  c) Funcionalidad de sustitución/eliminación de Hoja de Vida en el perfil y rehidratación exacta de submódulos tras F5.
+  d) Procesamiento de archivos SIMAT vía UPSERT en Neon PostgreSQL sin duplicados.
+  e) Generación del archivo plano estandarizado MEN y restricciones del rol `GOBERNACION_ETC`.
+- Garantizar que la suite completa de pruebas permanezca al 100% en verde (0 fallos).

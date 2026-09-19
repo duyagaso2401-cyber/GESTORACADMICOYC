@@ -963,6 +963,95 @@ export const perfilDocenteExtendido = pgTable('perfil_docente_extendido', {
   index('perfil_docente_ext_sk_user_idx').on(t.sk, t.userU),
 ]);
 
+// ── RONDA 36 — Módulo de Interoperabilidad SIMAT / Portal ETC-Gobernación ──
+// Decisión de arquitectura (documentada con transparencia): estos campos
+// SIMAT/MEN se guardan en una tabla RELACIONAL nueva de Neon, identificada
+// por (sk, nuip) — NO se integran al blob JSON de cada institución
+// (kv_store, donde vive `db.ests` con sus notas/asistencia). Motivo: el
+// importador debe poder hacer UPSERT por NUIP (actualizar caracterización/
+// grado) "SIN borrar calificaciones/asistencias previas" — si estos campos
+// vivieran dentro del mismo objeto JSON que las notas, cualquier import
+// tendría que leer, fusionar y reescribir el blob COMPLETO de la
+// institución (el mismo riesgo de "barrido masivo" que la Parte 1 de esta
+// ronda corrigió para las notas), y una sola importación mal sincronizada
+// podría arrastrar consigo datos de notas desactualizados. Con una tabla
+// aparte, un import/export SIMAT nunca toca `kv_store` en absoluto — el
+// vínculo entre un estudiante SIMAT y su ficha real (`db.ests`) se hace por
+// NUIP/número de documento (comparación de texto), no por una llave foránea
+// de base de datos, precisamente porque `db.ests` no vive en una tabla de
+// Neon sino en el JSON de cada institución.
+export const simatEstudiantes = pgTable('simat_estudiantes', {
+  id:                     serial('id').primaryKey(),
+  sk:                     text('sk').notNull(),
+  nuip:                   text('nuip').notNull(),
+  tipoDocumento:          text('tipo_documento').notNull().default(''),
+  nombres:                text('nombres').notNull().default(''),
+  apellidos:              text('apellidos').notNull().default(''),
+  fechaNacimiento:        text('fecha_nacimiento').notNull().default(''),
+  genero:                 text('genero').notNull().default(''),
+  codigoDaneInstitucion:  text('codigo_dane_institucion').notNull().default(''),
+  codigoDaneSede:         text('codigo_dane_sede').notNull().default(''),
+  jornada:                text('jornada').notNull().default(''),
+  gradoSimat:             text('grado_simat').notNull().default(''),
+  grupo:                  text('grupo').notNull().default(''),
+  tipoDiscapacidad:       text('tipo_discapacidad').notNull().default(''),
+  poblacionVulnerable:    text('poblacion_vulnerable').notNull().default(''),
+  etnia:                  text('etnia').notNull().default(''), // 'Indigena' | 'Afro' | 'Raizal' | 'Palenquera' | ''
+  victimaConflicto:       boolean('victima_conflicto').notNull().default(false),
+  estrato:                text('estrato').notNull().default(''),
+  estadoSimat:            text('estado_simat').notNull().default('Matriculado'), // Matriculado|Retirado|Trasladado|Promovido|No Promovido
+  fechaRegistroNovedad:   text('fecha_registro_novedad').notNull().default(''),
+  novedad:                text('novedad').notNull().default(''),
+  createdAt:              timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt:              timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex('simat_estudiantes_sk_nuip_idx').on(t.sk, t.nuip),
+  index('simat_estudiantes_sk_idx').on(t.sk),
+  index('simat_estudiantes_estado_idx').on(t.estadoSimat),
+]);
+
+// RONDA 37 — MÓDULO DE VERIFICACIÓN DIGITAL (Hash/QR de certificados). Se
+// creó una tabla nueva, aparte de la firma HMAC "stateless" que ya existía
+// para boletines (POST /api/inetis/boletin/firmar|verificar, que exige
+// volver a enviar TODOS los datos originales para comprobar el código —
+// algo que solo la propia app puede hacer porque ya conoce esos datos). El
+// nuevo requisito pide una vista PÚBLICA que reciba SOLO un hash (sin
+// sesión, sin reenviar datos) y muestre si es válido — para eso hace falta
+// que el servidor recuerde, aunque sea con un resumen mínimo, qué hash
+// corresponde a qué documento. Por eso esta tabla guarda ÚNICAMENTE los
+// campos que la vista pública puede mostrar sin riesgo (nombre, tipo de
+// documento, institución, fecha de emisión) — nunca notas, número de
+// documento completo, dirección, ni ningún otro dato sensible del
+// estudiante. No depende del flag ENABLE_SIMAT_ETC_MODULE: es una función
+// aparte, ya usaba DOC_SIGN_SECRET, que ya existe en toda instalación.
+// RONDA 38 — se agregaron `documentoEstudiante` y `anioLectivo` (columnas
+// NUEVAS, con default '' — ver ensureSchemaCertificados() en src/db/index.ts
+// para el ALTER TABLE retrocompatible) porque el usuario pidió que la vista
+// pública de verificación muestre, además, el documento del estudiante y el
+// año lectivo — antes solo existían para boletines (que ya mostraban el
+// nombre, pero no el documento ni el año, en la vista pública). Los
+// registros de boletines YA EMITIDOS en la Ronda 37 (antes de este ALTER)
+// simplemente quedan con estas dos columnas en '' — la vista pública las
+// omite quietamente si están vacías, en vez de mostrar un campo en blanco
+// engañoso (ver _htmlVerificacionCertificado() en src/index.ts).
+export const certificadosEmitidos = pgTable('certificados_emitidos', {
+  id:                serial('id').primaryKey(),
+  hash:              text('hash').notNull(),
+  sk:                text('sk').notNull(),
+  tipoDocumento:     text('tipo_documento').notNull().default(''), // 'boletin' | 'certificado_estudio' | 'constancia_matricula' | 'acta_grado' | ...
+  nombreEstudiante:  text('nombre_estudiante').notNull().default(''),
+  documentoEstudiante: text('documento_estudiante').notNull().default(''), // Ronda 38 — ej. "T.I. 1234567" (nunca el número completo de un adulto/tercero, solo del propio estudiante del documento)
+  anioLectivo:       text('anio_lectivo').notNull().default(''), // Ronda 38
+  institucion:       text('institucion').notNull().default(''),
+  emitidoPor:        text('emitido_por').notNull().default(''),
+  ip:                text('ip').notNull().default(''),
+  fechaEmision:      timestamp('fecha_emision', { withTimezone: true }).defaultNow(),
+  createdAt:         timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex('certificados_emitidos_hash_idx').on(t.hash),
+  index('certificados_emitidos_sk_idx').on(t.sk),
+]);
+
 // Auditoría append-only de cada actualización de "Mi Perfil" — fecha/hora,
 // usuario, rol e IP, tal como exige el punto 2 de la Ronda 35 ("trazabilidad
 // de auditoría para cada actualización... fecha, hora, rol e IP").

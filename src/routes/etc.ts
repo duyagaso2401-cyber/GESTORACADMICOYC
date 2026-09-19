@@ -15,10 +15,11 @@
 // cualquier petición aquí responde 403 sin tocar Neon.
 // ════════════════════════════════════════════════════════════════════════════
 import { Router } from 'express';
-import { db } from '../db/index.js';
-import { etcEntidades, etcInstituciones, etcContratos, etcOtpCodigos, etcDocumentos, etcAuditLog, docentePermisos, kvStore } from '../db/schema.js';
+import { db, ensureSchemaSimat } from '../db/index.js';
+import { etcEntidades, etcInstituciones, etcContratos, etcOtpCodigos, etcDocumentos, etcAuditLog, docentePermisos, kvStore, simatEstudiantes } from '../db/schema.js';
 import { eq, desc, and } from 'drizzle-orm';
-import { checkModuleEnabled } from '../lib/feature-flags.js';
+import { checkModuleEnabled, checkSimatEtcEnabled } from '../lib/feature-flags.js';
+import { generarEsquemaSimatDinamico } from '../lib/simat-dynamic-schema.js';
 import { verificarPertenenciaDocente, generarTokenAcceso, generarCodigoOtp } from '../lib/etc-verificacion.js';
 import { hashPasswordServidor, verificarPasswordServidor } from '../lib/reset-tokens.js';
 import { enviarNotificacionMulticanal, smsNotificacionesHabilitadasGlobalmente } from '../lib/sms-provider.js';
@@ -46,7 +47,15 @@ const router = Router();
 // que hoy no existe en ningún endpoint de este proyecto), pero el gate ya
 // es real: una petición que declare un rol no autorizado es rechazada.
 // ════════════════════════════════════════════════════════════════════════════
-type RolEtc = 'Docente' | 'Aspirante' | 'Rector' | 'Directivo' | 'Admin_ETC' | 'Superadmin';
+// RONDA 36 — se agrega 'GOBERNACION_ETC' (rol de solo-lectura para
+// supervisores/directores de núcleo/auditores de la Secretaría de
+// Educación — ver el Portal ETC/Gobernación más abajo). 'AUDITOR_ETC'
+// mencionado en la especificación se trata como el MISMO rol/permiso que
+// 'GOBERNACION_ETC' (un único valor de rol, dos nombres coloquiales para la
+// misma función) — no se duplicó el enum para no crear dos roles con
+// exactamente los mismos permisos que alguien tendría que mantener en
+// sincronía a mano.
+type RolEtc = 'Docente' | 'Aspirante' | 'Rector' | 'Directivo' | 'Admin_ETC' | 'Superadmin' | 'GOBERNACION_ETC';
 
 function _rolDeLaPeticion(req: Request): string {
   const b = (req.body && (req.body.rolActor || req.body.rol)) || '';
@@ -1020,6 +1029,269 @@ router.post('/notificaciones/enviar', async (req, res) => {
   } catch (e) {
     console.error('POST /api/etc/notificaciones/enviar', e);
     return res.status(500).json({ ok: false, error: 'Error interno al enviar la notificación.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 36 — PARTE 3: MÓDULO DE INTEROPERABILIDAD SIMAT Y PORTAL
+// ETC/GOBERNACIÓN. Ver el comentario extenso junto a `simatEstudiantes` en
+// src/db/schema.ts para la decisión de arquitectura (tabla relacional
+// aparte, vinculada por NUIP — no el blob JSON de cada institución).
+//
+// RONDA 37 — AJUSTE: `_asegurarSchemaSimat()` YA NO se ejecuta de forma
+// incondicional. Ahora es responsabilidad de CADA endpoint SIMAT llamar
+// primero a `_simatEstaEnStandby()` (ver abajo) y, si el módulo está
+// apagado, responder de forma elegante SIN llegar siquiera a llamar esta
+// función — así, con ENABLE_SIMAT_ETC_MODULE=false, ni `ensureSchemaSimat()`
+// ni ningún ALTER TABLE dinámico se ejecutan jamás. Ver el comentario
+// extenso de arquitectura en src/lib/feature-flags.ts (junto a
+// FLAG_SIMAT_ETC_MODULE) y en src/lib/simat-dynamic-schema.ts.
+// ════════════════════════════════════════════════════════════════════════════
+let _schemaSimatListo = false;
+async function _asegurarSchemaSimat(): Promise<void> {
+  if (_schemaSimatListo) return;
+  await ensureSchemaSimat();
+  _schemaSimatListo = true;
+}
+
+// Mensaje único y consistente de "módulo en standby" para los 3 endpoints
+// SIMAT — nunca un 500: el flag apagado es un estado NORMAL y esperado, no
+// un error. Devuelve `true` (y ya escribió la respuesta) cuando el llamador
+// debe detenerse aquí mismo.
+const MENSAJE_SIMAT_ETC_STANDBY =
+  'El Módulo SIMAT/Portal ETC-Gobernación está en modo standby (apagado). Un Súper Admin debe activarlo desde su panel (interruptor "Módulo SIMAT/ETC") antes de usar esta función. Mientras esté apagado, la plataforma no crea ni consulta ninguna tabla SIMAT en Neon.';
+async function _simatEstaEnStandby(res: Response): Promise<boolean> {
+  const habilitado = await checkSimatEtcEnabled();
+  if (habilitado) return false;
+  res.json({ ok: false, standby: true, error: MENSAJE_SIMAT_ETC_STANDBY });
+  return true;
+}
+
+function _ipDeLaPeticionEtc(req: Request): string {
+  const xf = req.headers['x-forwarded-for'];
+  const primera = Array.isArray(xf) ? xf[0] : (typeof xf === 'string' ? xf.split(',')[0] : '');
+  return (primera && primera.trim()) || req.socket?.remoteAddress || req.ip || '';
+}
+
+// Campos obligatorios para que un registro SIMAT no sea rechazado por la
+// ETC al recibir el Anexo 6A/Planilla de Novedades — el pre-check pedido
+// explícitamente ("motor de pre-check que valide campos obligatorios...
+// antes de generar, para evitar rechazos en la ETC").
+function _validarCamposObligatoriosSimat(fila: Record<string, any>): string[] {
+  const faltantes: string[] = [];
+  if (!fila.nuip) faltantes.push('NUIP/N° de documento');
+  if (!fila.tipoDocumento) faltantes.push('Tipo de documento');
+  if (!fila.nombres) faltantes.push('Nombres');
+  if (!fila.apellidos) faltantes.push('Apellidos');
+  if (!fila.fechaNacimiento) faltantes.push('Fecha de nacimiento');
+  if (!fila.codigoDaneInstitucion) faltantes.push('Código DANE de la institución');
+  if (!fila.gradoSimat) faltantes.push('Grado SIMAT');
+  return faltantes;
+}
+
+// ── PARTE 3.2.a — Importador SIMAT -> Plataforma (UPSERT por NUIP) ──────────
+// Recibe filas YA PARSEADAS por el navegador (SheetJS, reutilizando el mismo
+// patrón de lectura de .csv/.xlsx que ya usa el resto del sistema — ver
+// cargarNotasActExcel() en el frontend — en vez de parsear el archivo en el
+// servidor). Por cada fila: si el NUIP ya existe para esa institución (sk),
+// se ACTUALIZA solo la caracterización/grado (nunca toca `kv_store`, así que
+// jamás borra notas/asistencias); si no existe, se inserta y se devuelve en
+// `nuevos` para que el frontend lo matricule automáticamente en `db.ests`
+// (el roster real vive en el blob JSON de la institución, no en Neon).
+router.post('/simat/importar', requiereRol(['Admin_ETC', 'Rector', 'Directivo', 'Superadmin']), async (req, res) => {
+  try {
+    if (await _simatEstaEnStandby(res)) return;
+    await _asegurarSchemaSimat();
+    const { sk, filas } = (req.body || {}) as { sk?: string; filas?: Record<string, any>[] };
+    if (!sk) return res.status(400).json({ ok: false, error: 'sk es obligatorio.' });
+    if (!Array.isArray(filas) || !filas.length) return res.status(400).json({ ok: false, error: 'filas debe ser un arreglo no vacío.' });
+
+    // RONDA 37 — GENERADOR DINÁMICO: se detectan, del PRIMER registro
+    // recibido, los encabezados que el archivo trae y que NO pertenecen al
+    // esquema base (ver src/lib/simat-dynamic-schema.ts para la decisión de
+    // arquitectura completa y las garantías de seguridad del DDL). Se hace
+    // una sola vez por import (no por fila) porque todas las filas de un
+    // mismo archivo comparten los mismos encabezados.
+    const encabezadosDetectados = filas[0] ? Object.keys(filas[0]) : [];
+    const { columnasAgregadas } = await generarEsquemaSimatDinamico(sk, encabezadosDetectados);
+
+    const nuevos: Record<string, any>[] = [];
+    const actualizados: Record<string, any>[] = [];
+    const rechazados: { fila: Record<string, any>; motivos: string[] }[] = [];
+
+    for (const filaCruda of filas) {
+      const nuip = String(filaCruda.nuip || filaCruda.NUIP || filaCruda.documento || '').trim();
+      const fila = { ...filaCruda, nuip };
+      const motivos = _validarCamposObligatoriosSimat(fila);
+      if (motivos.length) { rechazados.push({ fila, motivos }); continue; }
+
+      const existentes = await db.select().from(simatEstudiantes).where(and(eq(simatEstudiantes.sk, sk), eq(simatEstudiantes.nuip, nuip)));
+      const valores = {
+        sk, nuip,
+        tipoDocumento: String(fila.tipoDocumento || ''),
+        nombres: String(fila.nombres || ''),
+        apellidos: String(fila.apellidos || ''),
+        fechaNacimiento: String(fila.fechaNacimiento || ''),
+        genero: String(fila.genero || ''),
+        codigoDaneInstitucion: String(fila.codigoDaneInstitucion || ''),
+        codigoDaneSede: String(fila.codigoDaneSede || ''),
+        jornada: String(fila.jornada || ''),
+        gradoSimat: String(fila.gradoSimat || ''),
+        grupo: String(fila.grupo || ''),
+        tipoDiscapacidad: String(fila.tipoDiscapacidad || ''),
+        poblacionVulnerable: String(fila.poblacionVulnerable || ''),
+        etnia: String(fila.etnia || ''),
+        victimaConflicto: !!fila.victimaConflicto,
+        estrato: String(fila.estrato || ''),
+        estadoSimat: String(fila.estadoSimat || 'Matriculado'),
+        fechaRegistroNovedad: String(fila.fechaRegistroNovedad || ''),
+        novedad: String(fila.novedad || ''),
+        updatedAt: new Date(),
+      };
+      if (existentes[0]) {
+        await db.update(simatEstudiantes).set(valores).where(eq(simatEstudiantes.id, existentes[0].id));
+        actualizados.push(valores);
+      } else {
+        await db.insert(simatEstudiantes).values(valores);
+        nuevos.push(valores); // el frontend matricula esto en db.ests (grupo/sede correspondiente)
+      }
+    }
+
+    await registrarAuditoriaEtc({
+      actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req), accion: 'importar_simat',
+      objetivoTipo: 'simat_estudiante',
+      detalle: { sk, ip: _ipDeLaPeticionEtc(req), total: filas.length, nuevos: nuevos.length, actualizados: actualizados.length, rechazados: rechazados.length, columnasDinamicasAgregadas: columnasAgregadas },
+    });
+
+    return res.json({ ok: true, nuevos, actualizados: actualizados.length, rechazados, columnasDinamicasAgregadas: columnasAgregadas });
+  } catch (e) {
+    console.error('POST /api/etc/simat/importar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al importar SIMAT.' });
+  }
+});
+
+// ── PARTE 3.2.b — Generador Plataforma -> SIMAT (pre-check + compilación) ───
+// Compila los registros de matrícula/novedades y corre el motor de pre-check
+// ANTES de exportar — devuelve, por cada registro, si está listo o qué
+// campos obligatorios le faltan, así el rector corrige antes de generar el
+// archivo (evita el rechazo en la ETC). La generación del archivo plano/
+// Excel en sí ocurre en el NAVEGADOR (SheetJS), reutilizando exactamente el
+// mismo patrón que ya usa descargarNotasActExcel() — este endpoint entrega
+// los datos ya validados y listos para convertir a archivo.
+router.post('/simat/exportar-precheck', requiereRol(['Admin_ETC', 'Rector', 'Directivo', 'Superadmin', 'GOBERNACION_ETC']), async (req, res) => {
+  try {
+    if (await _simatEstaEnStandby(res)) return;
+    await _asegurarSchemaSimat();
+    const { sk } = (req.body || {}) as { sk?: string };
+    if (!sk) return res.status(400).json({ ok: false, error: 'sk es obligatorio.' });
+    const filas = await db.select().from(simatEstudiantes).where(eq(simatEstudiantes.sk, sk));
+    const resultado = filas.map((f) => ({
+      registro: f,
+      listo: _validarCamposObligatoriosSimat(f as any).length === 0,
+      faltantes: _validarCamposObligatoriosSimat(f as any),
+    }));
+    await registrarAuditoriaEtc({
+      actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req), accion: 'exportar_simat_precheck',
+      objetivoTipo: 'simat_estudiante',
+      detalle: { sk, ip: _ipDeLaPeticionEtc(req), total: filas.length, conRechazo: resultado.filter((r) => !r.listo).length },
+    });
+    return res.json({ ok: true, total: filas.length, registros: resultado });
+  } catch (e) {
+    console.error('POST /api/etc/simat/exportar-precheck', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al preparar la exportación SIMAT.' });
+  }
+});
+
+// ── PARTE 3.3 — Portal ETC/Gobernación: tablero consolidado de SOLO LECTURA ─
+// Rol GOBERNACION_ETC (o AUDITOR_ETC, mismo permiso — ver el comentario del
+// tipo RolEtc arriba). SOLO expone métricas agregadas, JAMÁS una operación
+// de escritura — este es el único endpoint SIMAT que ese rol puede alcanzar
+// junto con exportar-precheck (arriba), ambos de solo lectura; ningún otro
+// endpoint de este router (ni de todo el sistema) acepta ese rol en su lista
+// de `requiereRol(...)`, así que un actor que se declare GOBERNACION_ETC no
+// puede escribir en ninguna parte del sistema.
+router.get('/simat/consolidado', requiereRol(['GOBERNACION_ETC', 'Superadmin', 'Admin_ETC']), async (req, res) => {
+  try {
+    if (await _simatEstaEnStandby(res)) return;
+    await _asegurarSchemaSimat();
+    const sk = String(req.query.sk || '');
+    if (!sk) return res.status(400).json({ ok: false, error: 'sk es obligatorio.' });
+    const filas = await db.select().from(simatEstudiantes).where(eq(simatEstudiantes.sk, sk));
+    const porEstado: Record<string, number> = {};
+    const porGrado: Record<string, number> = {};
+    const porSede: Record<string, number> = {};
+    let victimasConflicto = 0, conDiscapacidad = 0, poblacionEtnica = 0;
+    filas.forEach((f) => {
+      porEstado[f.estadoSimat] = (porEstado[f.estadoSimat] || 0) + 1;
+      if (f.gradoSimat) porGrado[f.gradoSimat] = (porGrado[f.gradoSimat] || 0) + 1;
+      if (f.codigoDaneSede) porSede[f.codigoDaneSede] = (porSede[f.codigoDaneSede] || 0) + 1;
+      if (f.victimaConflicto) victimasConflicto++;
+      if (f.tipoDiscapacidad) conDiscapacidad++;
+      if (f.etnia) poblacionEtnica++;
+    });
+
+    // RONDA 37 — Dashboard GOBERNACIÓN_ETC: 3 métricas consolidadas pedidas
+    // explícitamente (Cobertura, Deserción, Ausentismo).
+    //   - `coberturaPct`: proporción de la matrícula reportada en SIMAT que
+    //     está actualmente en estado "Matriculado" — es una aproximación
+    //     basada ÚNICAMENTE en los datos que la propia ETC/institución
+    //     reportó a este módulo, NO un cálculo poblacional/censal (para eso
+    //     se necesitaría la población en edad escolar del municipio, un
+    //     dato que este sistema no gestiona ni tiene por qué gestionar).
+    //   - `desercionPct`: proporción en estado "Retirado" sobre el total de
+    //     registros SIMAT de la institución.
+    //   - `ausentismoPct`: a diferencia de las dos anteriores (que salen de
+    //     `simat_estudiantes`), el ausentismo se calcula, de forma honesta,
+    //     a partir del módulo de asistencia YA EXISTENTE de la plataforma
+    //     (el arreglo `asistencia` dentro del blob JSON de la institución
+    //     en kv_store — ver d.asistencia.push(...) en
+    //     06-documentos-y-resto.js), NO de SIMAT (que no registra
+    //     asistencia diaria). Si la institución aún no tiene ningún
+    //     registro de asistencia cargado, se documenta explícitamente con
+    //     `ausentismoMuestraVacia: true` en vez de fingir un 0% engañoso.
+    const totalSimat = filas.length;
+    const matriculados = porEstado['Matriculado'] || 0;
+    const retirados = porEstado['Retirado'] || 0;
+    const coberturaPct = totalSimat ? Number(((matriculados / totalSimat) * 100).toFixed(1)) : 0;
+    const desercionPct = totalSimat ? Number(((retirados / totalSimat) * 100).toFixed(1)) : 0;
+
+    let totalMarcasAsistencia = 0, totalAusencias = 0;
+    try {
+      const rowsInst = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+      const registrosAsistencia: any[] = (rowsInst[0]?.value as any)?.asistencia || [];
+      registrosAsistencia.forEach((r) => {
+        if (r && r.deletedAt) return;
+        const presentes = Array.isArray(r?.presentes) ? r.presentes.length : 0;
+        const ausentes = Array.isArray(r?.ausentes) ? r.ausentes.length : 0;
+        const justificados = Array.isArray(r?.justificados) ? r.justificados.length : 0;
+        totalMarcasAsistencia += presentes + ausentes + justificados;
+        totalAusencias += ausentes;
+      });
+    } catch { /* si no se puede leer el blob institucional, se reporta muestra vacía abajo — nunca se rompe el consolidado por esto */ }
+    const ausentismoMuestraVacia = totalMarcasAsistencia === 0;
+    const ausentismoPct = ausentismoMuestraVacia ? 0 : Number(((totalAusencias / totalMarcasAsistencia) * 100).toFixed(1));
+
+    await registrarAuditoriaEtc({
+      actor: _actorDeLaPeticion(req), rol: _rolDeLaPeticion(req), accion: 'consultar_consolidado_gobernacion',
+      objetivoTipo: 'simat_estudiante', detalle: { sk, ip: _ipDeLaPeticionEtc(req) },
+    });
+    return res.json({
+      ok: true,
+      matriculaActiva: filas.length,
+      porEstadoMatricula: porEstado,
+      porGrado,
+      porSede,
+      victimasConflicto,
+      conDiscapacidad,
+      poblacionEtnica,
+      coberturaPct,
+      desercionPct,
+      ausentismoPct,
+      ausentismoMuestraVacia,
+    });
+  } catch (e) {
+    console.error('GET /api/etc/simat/consolidado', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al consultar el consolidado SIMAT.' });
   }
 });
 

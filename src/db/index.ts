@@ -778,5 +778,82 @@ export async function ensureSchemaPerfilExtendido(): Promise<void> {
   console.log('✅ [Ronda 35] Esquema de "Mi Perfil" (rol extendido + hoja de vida) creado/verificado en Neon.');
 }
 
+// RONDA 36 — Módulo de Interoperabilidad SIMAT: tabla relacional propia,
+// independiente del blob JSON de cada institución (ver el comentario extenso
+// en schema.ts, junto a `simatEstudiantes`, para la justificación completa
+// de esta decisión de arquitectura). Migración perezosa e idempotente, se
+// invoca desde los endpoints SIMAT en src/routes/etc.ts la primera vez que
+// se usan, nunca desde initDb().
+export async function ensureSchemaSimat(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS simat_estudiantes (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      nuip TEXT NOT NULL,
+      tipo_documento TEXT NOT NULL DEFAULT '',
+      nombres TEXT NOT NULL DEFAULT '',
+      apellidos TEXT NOT NULL DEFAULT '',
+      fecha_nacimiento TEXT NOT NULL DEFAULT '',
+      genero TEXT NOT NULL DEFAULT '',
+      codigo_dane_institucion TEXT NOT NULL DEFAULT '',
+      codigo_dane_sede TEXT NOT NULL DEFAULT '',
+      jornada TEXT NOT NULL DEFAULT '',
+      grado_simat TEXT NOT NULL DEFAULT '',
+      grupo TEXT NOT NULL DEFAULT '',
+      tipo_discapacidad TEXT NOT NULL DEFAULT '',
+      poblacion_vulnerable TEXT NOT NULL DEFAULT '',
+      etnia TEXT NOT NULL DEFAULT '',
+      victima_conflicto BOOLEAN NOT NULL DEFAULT FALSE,
+      estrato TEXT NOT NULL DEFAULT '',
+      estado_simat TEXT NOT NULL DEFAULT 'Matriculado',
+      fecha_registro_novedad TEXT NOT NULL DEFAULT '',
+      novedad TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS simat_estudiantes_sk_nuip_idx ON simat_estudiantes(sk, nuip);
+    CREATE INDEX IF NOT EXISTS simat_estudiantes_sk_idx ON simat_estudiantes(sk);
+    CREATE INDEX IF NOT EXISTS simat_estudiantes_estado_idx ON simat_estudiantes(estado_simat);
+  `);
+  console.log('✅ [Ronda 36] Esquema del Módulo SIMAT creado/verificado en Neon.');
+}
+
+// RONDA 37 — Módulo de Verificación Digital (Hash/QR de certificados/
+// boletines/libros de calificaciones). Migración perezosa e idempotente,
+// igual patrón que las anteriores — se invoca desde el endpoint de emisión
+// de hash en src/index.ts la primera vez que se usa. NO depende de
+// ENABLE_SIMAT_ETC_MODULE: es una función aparte que reutiliza
+// DOC_SIGN_SECRET (ya presente en toda instalación desde antes de esta
+// ronda), no el módulo SIMAT/ETC.
+export async function ensureSchemaCertificados(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS certificados_emitidos (
+      id SERIAL PRIMARY KEY,
+      hash TEXT NOT NULL,
+      sk TEXT NOT NULL,
+      tipo_documento TEXT NOT NULL DEFAULT '',
+      nombre_estudiante TEXT NOT NULL DEFAULT '',
+      documento_estudiante TEXT NOT NULL DEFAULT '',
+      anio_lectivo TEXT NOT NULL DEFAULT '',
+      institucion TEXT NOT NULL DEFAULT '',
+      emitido_por TEXT NOT NULL DEFAULT '',
+      ip TEXT NOT NULL DEFAULT '',
+      fecha_emision TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- RONDA 38 — ALTER TABLE retrocompatible: una instalación que ya tenía
+    -- esta tabla creada desde la Ronda 37 (sin estas 2 columnas) las recibe
+    -- ahora con IF NOT EXISTS, sin perder ni un solo registro ya emitido —
+    -- los boletines ya emitidos antes de esta ronda simplemente quedan con
+    -- '' en ambas columnas nuevas (la vista pública las omite si están
+    -- vacías, ver _htmlVerificacionCertificado() en src/index.ts).
+    ALTER TABLE certificados_emitidos ADD COLUMN IF NOT EXISTS documento_estudiante TEXT NOT NULL DEFAULT '';
+    ALTER TABLE certificados_emitidos ADD COLUMN IF NOT EXISTS anio_lectivo TEXT NOT NULL DEFAULT '';
+    CREATE UNIQUE INDEX IF NOT EXISTS certificados_emitidos_hash_idx ON certificados_emitidos(hash);
+    CREATE INDEX IF NOT EXISTS certificados_emitidos_sk_idx ON certificados_emitidos(sk);
+  `);
+  console.log('✅ [Ronda 37/38] Esquema del Módulo de Verificación Digital (Hash/QR) creado/verificado en Neon.');
+}
+
 // Exportar las tablas declaradas en el esquema
 export * from './schema.js';
