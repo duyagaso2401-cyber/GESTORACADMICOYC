@@ -10573,32 +10573,51 @@ function _bodyActorTraslado(extra){
 }
 function htmlTrasladoInterinstitucional(){
   if(sesion.r!=='admin') return _htmlEstadoVacio('🔒','Solo el Rector/Administrador de la institución puede usar el Traslado Inter-Institucional.');
-  const tab=window._tiTabActivo||'estudiantes';
-  const estOpts=(db.ests||[]).slice().sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b))).map(e=>`<option value="${e.id}">${fmtNombreEst(e)} — ${e.g||''} (${e.numDoc||'sin doc.'})</option>`).join('');
+  const tab=window._tiTabActivo||'red';
+  const estOpts=(db.ests||[]).slice().filter(e=>(e.estadoMatricula||'activo')==='activo').sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b))).map(e=>`<option value="${e.id}">${fmtNombreEst(e)} — ${e.g||''} (${e.numDoc||'sin doc.'})</option>`).join('');
   const docOpts=(db.users||[]).filter(u=>u.r==='docente').map(u=>`<option value="${u.u}">${u.n||u.u}</option>`).join('');
   const gradOpts=(db.grados||[]).map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
+  const nPend=window._tiPendientesCache?window._tiPendientesCache.length:0;
   return `<div class="card">
     <h3 class="card-title">🔄 Traslado Inter-Institucional de Estudiante/Docente</h3>
-    <p style="color:#666;font-size:0.85rem;margin-bottom:14px">Genera un <b>Paquete de Transferencia Digital Seguro</b> (JSON firmado criptográficamente) para enviarlo a otra institución de la plataforma, o importa uno que hayas recibido. Ningún dato se borra en el origen: exportar es una copia firmada, no un "mover".</p>
+    <p style="color:#666;font-size:0.85rem;margin-bottom:14px">Interconexión directa (online, vía Buzón de Solicitudes) o Paquete de Transferencia Digital Seguro (offline, JSON firmado) para enviar/recibir estudiantes y docentes de otras instituciones de la plataforma. Ningún dato se borra en el origen: el estudiante queda "Inactivo por Traslado" allá, no eliminado.</p>
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-      <button class="btn-sm" style="background:${tab==='estudiantes'?'#16a085':'#95a5a6'}" onclick="window._tiTabActivo='estudiantes';renderApp();">🎓 Estudiantes</button>
-      <button class="btn-sm" style="background:${tab==='docentes'?'#16a085':'#95a5a6'}" onclick="window._tiTabActivo='docentes';renderApp();">🧑‍🏫 Docentes</button>
+      <button class="btn-sm" style="background:${tab==='red'?'#16a085':'#95a5a6'};position:relative" onclick="window._tiTabActivo='red';renderApp();_tiCargarBandejaPendientes();">📡 Red / Buzón${nPend?` <span style="background:#c0392b;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;margin-left:4px">${nPend}</span>`:''}</button>
+      <button class="btn-sm" style="background:${tab==='estudiantes'?'#16a085':'#95a5a6'}" onclick="window._tiTabActivo='estudiantes';renderApp();">🎓 Estudiantes (Offline)</button>
+      <button class="btn-sm" style="background:${tab==='docentes'?'#16a085':'#95a5a6'}" onclick="window._tiTabActivo='docentes';renderApp();">🧑‍🏫 Docentes (Offline)</button>
     </div>
-    ${tab==='estudiantes'?`
+    ${tab==='red'?`
     <div class="card" style="background:#f8f9fa;margin-bottom:16px">
-      <h4 class="card-title">📤 Exportar estudiante (paquete de transferencia)</h4>
+      <h4 class="card-title">🔍 Buscar Estudiante en la Red GESTOR YC por Documento/NUIP</h4>
+      <p style="color:#666;font-size:0.82rem">Úsalo cuando tu institución va a RECIBIR a un estudiante que ya está matriculado en otro colegio de la plataforma.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="ti_red_nuip" placeholder="Número de documento / NUIP" style="flex:1;min-width:200px;padding:9px;border-radius:7px;border:1px solid #ccc">
+        <button class="btn" style="background:#2980b9;color:#fff" onclick="_tiBuscarEnRed()">🔍 Buscar en la Red</button>
+      </div>
+      <div id="ti_red_resultado" style="margin-top:12px"></div>
+    </div>
+    <div class="card" style="background:#f8f9fa">
+      <h4 class="card-title">📬 Bandeja de Solicitudes de Traslado (institución de ORIGEN)</h4>
+      <p style="color:#666;font-size:0.82rem">Solicitudes de otras instituciones que quieren recibir a un estudiante actualmente matriculado aquí.</p>
+      <div id="ti_bandeja_lista">${_tiHtmlBandeja()}</div>
+    </div>
+    `:tab==='estudiantes'?`
+    <div class="card" style="background:#f8f9fa;margin-bottom:16px">
+      <h4 class="card-title">📤 Trasladar Estudiante (Modo Offline)</h4>
+      <p style="color:#666;font-size:0.82rem">Descarga el paquete de expediente firmado y, de inmediato, este estudiante queda marcado <b>"Inactivo por Traslado / Retirado"</b> en esta institución.</p>
       <label class="lbl">Estudiante</label>
-      <select id="ti_est_exp" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${estOpts||'<option value="">No hay estudiantes</option>'}</select>
-      <button class="btn btn-green" style="margin-top:10px" onclick="_tiExportarEstudiante()">📦 Generar Paquete</button>
+      <select id="ti_est_exp" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${estOpts||'<option value="">No hay estudiantes activos</option>'}</select>
+      <button class="btn btn-green" style="margin-top:10px" onclick="_tiExportarEstudiante()">📤 Trasladar Estudiante (Modo Offline)</button>
       <div id="ti_est_exp_resultado" style="margin-top:12px"></div>
     </div>
     <div class="card" style="background:#f8f9fa">
-      <h4 class="card-title">📥 Importar estudiante (paquete recibido)</h4>
-      <label class="lbl">Pega aquí el JSON del paquete recibido</label>
-      <textarea id="ti_est_imp_json" style="width:100%;height:110px;font-family:monospace;font-size:0.78rem;padding:8px;border-radius:7px;border:1px solid #ccc" placeholder='{"datos":{...},"firma":"..."}'></textarea>
+      <h4 class="card-title">📥 Cargar Archivo de Traslado de Estudiante</h4>
+      <label class="lbl">Selecciona o pega el paquete recibido (.json)</label>
+      <input type="file" id="ti_est_imp_file" accept=".json,application/json" style="margin-bottom:8px" onchange="_tiCargarArchivoImportEstudiante(this)">
+      <textarea id="ti_est_imp_json" style="width:100%;height:100px;font-family:monospace;font-size:0.78rem;padding:8px;border-radius:7px;border:1px solid #ccc" placeholder='{"datos":{...},"firma":"..."}'></textarea>
       <label class="lbl" style="margin-top:8px">Grado destino en esta institución *</label>
       <select id="ti_est_imp_grado" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${gradOpts||'<option value="">No hay grados</option>'}</select>
-      <button class="btn" style="margin-top:10px;background:#2980b9;color:#fff" onclick="_tiPrevisualizarImportEstudiante()">🔍 Vista previa</button>
+      <button class="btn" style="margin-top:10px;background:#2980b9;color:#fff" onclick="_tiPrevisualizarImportEstudiante()">🔍 Vista Previa y Validación de Firma</button>
       <div id="ti_est_imp_preview" style="margin-top:12px"></div>
     </div>
     `:`
@@ -10619,23 +10638,60 @@ function htmlTrasladoInterinstitucional(){
     `}
   </div>`;
 }
+function _tiHtmlBandeja(){
+  const lista=window._tiPendientesCache||[];
+  if(!lista.length) return _htmlEstadoVacio('📭','No hay solicitudes pendientes.');
+  return lista.map(s=>`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:0.85rem;color:#856404">
+    🔔 La institución <b>${s.institucionDestinoNombre}</b> solicita la transferencia del expediente de <b>${s.nombreEstudiante||('NUIP '+s.nuip)}</b> (grado destino: ${s.gradoDestino}).
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn-sm" style="background:#16a085" onclick="_tiAprobarSolicitud(${s.id})">✅ Aprobar y Transferir</button>
+      <button class="btn-sm" style="background:#c0392b" onclick="_tiRechazarSolicitud(${s.id})">✗ Rechazar</button>
+    </div>
+  </div>`).join('');
+}
+async function _tiCargarBandejaPendientes(){
+  try{
+    const r=await fetch(API_BASE+'/api/red/solicitudes/pendientes?'+new URLSearchParams(_bodyActorTraslado({sk:_skActual()})),{headers:_hdrsTraslado()});
+    const j=await r.json();
+    window._tiPendientesCache=(r.ok&&j.ok)?(j.solicitudes||[]):[];
+  }catch(e){window._tiPendientesCache=window._tiPendientesCache||[];}
+  const cont=document.getElementById('ti_bandeja_lista');
+  if(cont) cont.innerHTML=_tiHtmlBandeja();
+}
 async function _tiExportarEstudiante(){
   const estId=document.getElementById('ti_est_exp')?.value;
   if(!estId){customAlert('Seleccione un estudiante.');return;}
+  if(!await customConfirm('¿Trasladar este estudiante en Modo Offline? El estudiante quedará marcado de inmediato como "Inactivo por Traslado/Retirado" en esta institución, y se descargará el paquete de expediente firmado.')) return;
   const cont=document.getElementById('ti_est_exp_resultado');
-  cont.innerHTML='<p style="color:#888">Generando paquete…</p>';
+  cont.innerHTML='<p style="color:#888">Generando paquete y actualizando estado…</p>';
   try{
     const r=await fetch(API_BASE+'/api/traslado/exportar-estudiante',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({sk:_skActual(),estId}))});
     const j=await r.json();
     if(!r.ok||!j.ok){cont.innerHTML=`<p style="color:#c0392b">❌ ${j.error||'Error al generar el paquete.'}</p>`;return;}
     const jsonTxt=JSON.stringify(j.paquete);
-    cont.innerHTML=`<div style="background:#e8f8f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:0.85rem">✅ Paquete generado. Entrégalo a la institución destino (correo, WhatsApp, USB) para que lo pegue en su pantalla de Importar.</div>
+    // RONDA 43 — secuencia exacta pedida: la descarga se activa
+    // AUTOMÁTICAMENTE (no requiere un segundo clic) apenas se genera el
+    // paquete, y el estado ya quedó cambiado en el servidor en la misma
+    // llamada (ver estadoMatricula en la respuesta).
+    _tiDescargarJSON(jsonTxt,'paquete_estudiante_'+estId+'.json');
+    cont.innerHTML=`<div style="background:#e8f8f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:0.85rem">✅ Descarga iniciada automáticamente. El estudiante quedó marcado <b>"${j.estadoMatricula==='inactivo_traslado'?'Inactivo por Traslado / Retirado':j.estadoMatricula}"</b> en esta institución. Entrega el archivo a la institución destino (correo, WhatsApp, USB) para que lo cargue en su pantalla "Cargar Archivo de Traslado de Estudiante".</div>
       <textarea readonly style="width:100%;height:100px;font-family:monospace;font-size:0.75rem;padding:8px;border-radius:7px;border:1px solid #ccc">${jsonTxt.replace(/</g,'&lt;')}</textarea>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn-sm" onclick="_tiCopiarTexto(this)" data-json='${jsonTxt.replace(/'/g,"&apos;")}'>📋 Copiar</button>
-        <button class="btn-sm" style="background:#2980b9" onclick="_tiDescargarJSON('${jsonTxt.replace(/'/g,"&apos;")}','paquete_estudiante_${estId}.json')">💾 Descargar .json</button>
+        <button class="btn-sm" style="background:#2980b9" onclick="_tiDescargarJSON('${jsonTxt.replace(/'/g,"&apos;")}','paquete_estudiante_${estId}.json')">💾 Descargar de nuevo</button>
       </div>`;
+    await _pullDB();
   }catch(err){cont.innerHTML='<p style="color:#c0392b">❌ Error de red al generar el paquete.</p>';}
+}
+function _tiCargarArchivoImportEstudiante(input){
+  const file=input.files&&input.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=function(){
+    const ta=document.getElementById('ti_est_imp_json');
+    if(ta) ta.value=String(reader.result||'');
+  };
+  reader.readAsText(file);
 }
 async function _tiExportarDocente(){
   const usuario=document.getElementById('ti_doc_exp')?.value;
@@ -10675,14 +10731,16 @@ function _tiPrevisualizarImportEstudiante(){
   if(!paquete||!paquete.datos){cont.innerHTML='<p style="color:#c0392b">❌ El paquete no tiene el formato esperado (falta "datos").</p>';return;}
   const d=paquete.datos;
   const e=d.estudiante||{};
+  const firmaPresente=!!(paquete.firma&&String(paquete.firma).length);
   cont.innerHTML=`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 14px;font-size:0.85rem;color:#856404">
+    ${firmaPresente?'✅ El paquete trae una firma criptográfica adjunta (se validará contra el servidor antes de guardar nada).':'⚠️ Este paquete NO trae firma — será rechazado por el servidor.'}<br><br>
     <b>Se importará:</b><br>
     Estudiante: <b>${e.n||'—'}</b> · Doc: <b>${d.numDoc||'—'}</b><br>
-    Institución de origen (sk): <code>${d.origenSk||'—'}</code><br>
+    Institución de origen: <code>${d.origenSk||'—'}</code><br>
     Se incluyen: notas históricas (${Object.keys(e.nts||{}).length} materia(s)), observador (${(e.observaciones||[]).length} anotación(es)), ficha de matrícula ${e.ficha?'sí':'no'}, atenciones psicopedagógicas (${(d.atencionesPsicopedagogicas||[]).length}), casos de convivencia (${(d.casosConvivencia||[]).length}), histórico académico (${(d.historicoAcademico||[]).length}).<br><br>
-    ⚠️ Esta operación es <b>irreversible</b> desde esta pantalla (crea/actualiza el registro del estudiante en esta institución). La firma del paquete se verificará en el servidor antes de aplicar nada.
+    ⚠️ Esta operación es <b>irreversible</b> desde esta pantalla (crea/actualiza el registro del estudiante en esta institución, y lo matricula activo aquí).
   </div>
-  <button class="btn btn-green" style="margin-top:10px" onclick='_tiConfirmarImportEstudiante(${JSON.stringify(txt)})'>✅ Confirmar Importación</button>`;
+  <button class="btn btn-green" style="margin-top:10px" onclick='_tiConfirmarImportEstudiante(${JSON.stringify(txt)})'>💾 Guardar y Registrar Matrícula</button>`;
 }
 async function _tiConfirmarImportEstudiante(txt){
   if(!await customConfirm('¿Confirmar la importación de este estudiante? Esta acción no se puede deshacer desde esta pantalla.')) return;
@@ -10731,5 +10789,64 @@ async function _tiConfirmarImportDocente(txt){
     await _pullDB();
     pag='traslado-institucional';renderApp();
   }catch(err){cont.innerHTML+='<p style="color:#c0392b;margin-top:8px">❌ Error de red al importar.</p>';}
+}
+
+// ============================================================
+// RONDA 43 — MÓDULO ONLINE: BÚSQUEDA EN RED + BUZÓN DE SOLICITUDES
+// ============================================================
+async function _tiBuscarEnRed(){
+  const nuip=(document.getElementById('ti_red_nuip')?.value||'').trim();
+  const cont=document.getElementById('ti_red_resultado');
+  if(!nuip){customAlert('Escriba un número de documento/NUIP.');return;}
+  cont.innerHTML='<p style="color:#888">Buscando en la Red GESTOR YC…</p>';
+  try{
+    const r=await fetch(API_BASE+'/api/red/buscar-estudiante-nuip?'+new URLSearchParams(_bodyActorTraslado({nuip,sk:_skActual()})),{headers:_hdrsTraslado()});
+    const j=await r.json();
+    if(!r.ok||!j.ok){cont.innerHTML=`<p style="color:#c0392b">❌ ${j.error||'Error al buscar.'}</p>`;return;}
+    if(!j.encontrado){cont.innerHTML='<p style="color:#888">No se encontró ningún estudiante activo con ese documento en otra institución de la red.</p>';return;}
+    const gradOpts=(db.grados||[]).map(g=>`<option value="${g.n}">${g.n}</option>`).join('');
+    cont.innerHTML=`<div style="background:#e8f8f5;border-radius:8px;padding:12px 14px;font-size:0.85rem">
+      ✅ Encontrado: <b>${j.nombreCompleto}</b> — actualmente matriculado en <b>${j.institucionOrigenNombre}</b> (grado ${j.grado||'—'}).<br><br>
+      <label class="lbl">Grado destino en esta institución *</label>
+      <select id="ti_red_grado_dest" style="width:100%;padding:9px;border-radius:7px;border:1px solid #ccc">${gradOpts||'<option value="">No hay grados</option>'}</select>
+      <button class="btn btn-green" style="margin-top:10px" onclick='_tiCrearSolicitud(${JSON.stringify(nuip)},${JSON.stringify(j.skOrigen)},${JSON.stringify(j.nombreCompleto)})'>📨 Solicitar Transferencia del Expediente</button>
+    </div>`;
+  }catch(err){cont.innerHTML='<p style="color:#c0392b">❌ Error de red al buscar.</p>';}
+}
+async function _tiCrearSolicitud(nuip,skOrigen,nombreEstudiante){
+  const gradoDestino=document.getElementById('ti_red_grado_dest')?.value;
+  if(!gradoDestino){customAlert('Seleccione el grado destino.');return;}
+  if(!await customConfirm('¿Enviar la solicitud de transferencia de '+nombreEstudiante+' a su institución de origen?')) return;
+  const cont=document.getElementById('ti_red_resultado');
+  try{
+    const r=await fetch(API_BASE+'/api/red/solicitudes/crear',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({nuip,skOrigen,skDestino:_skActual(),gradoDestino,nombreEstudiante}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){cont.innerHTML+=`<p style="color:#c0392b;margin-top:8px">❌ ${j.error||'Error al crear la solicitud.'}</p>`;return;}
+    _showToast('✅ Solicitud enviada. Aparecerá en la bandeja del Rector de la institución de origen.','#16a085');
+    cont.innerHTML='<p style="color:#16a085">✅ Solicitud enviada correctamente. Quedará "Pendiente" hasta que la institución de origen la apruebe o rechace.</p>';
+  }catch(err){cont.innerHTML+='<p style="color:#c0392b;margin-top:8px">❌ Error de red al crear la solicitud.</p>';}
+}
+async function _tiAprobarSolicitud(id){
+  if(!await customConfirm('¿Aprobar y Transferir? Esto migrará de inmediato el 100% del expediente a la institución solicitante, y marcará al estudiante como "Inactivo por Traslado" aquí. Esta acción no se puede deshacer.')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/red/solicitudes/'+id+'/aprobar',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({skActor:_skActual()}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){customAlert('❌ '+(j.error||'Error al aprobar la solicitud.'));return;}
+    _showToast('✅ Expediente transferido correctamente.','#16a085');
+    await _pullDB();
+    await _tiCargarBandejaPendientes();
+    pag='traslado-institucional';renderApp();
+  }catch(err){customAlert('❌ Error de red al aprobar la solicitud.');}
+}
+async function _tiRechazarSolicitud(id){
+  if(!await customConfirm('¿Rechazar esta solicitud de traslado?')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/red/solicitudes/'+id+'/rechazar',{method:'POST',headers:_hdrsTraslado(),body:JSON.stringify(_bodyActorTraslado({skActor:_skActual()}))});
+    const j=await r.json();
+    if(!r.ok||!j.ok){customAlert('❌ '+(j.error||'Error al rechazar la solicitud.'));return;}
+    _showToast('Solicitud rechazada.','#7f8c8d');
+    await _tiCargarBandejaPendientes();
+    pag='traslado-institucional';renderApp();
+  }catch(err){customAlert('❌ Error de red al rechazar la solicitud.');}
 }
 

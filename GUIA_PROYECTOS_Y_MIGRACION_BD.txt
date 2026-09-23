@@ -1,0 +1,555 @@
+=====================================================================
+ GUIA PRACTICA: PROYECTOS EN VS CODE Y MIGRACION DE BASE DE DATOS
+ (Windows + PowerShell + Node.js + GitHub + Render + PostgreSQL)
+=====================================================================
+
+REGLAS DE ORO (leelas siempre)
+  1. Las claves y URLs de base de datos NUNCA van en el codigo ni en
+     GitHub. Van en el archivo .env (que esta en .gitignore) y en las
+     variables de entorno de Render.
+  2. NUNCA pegues una URL con su clave en un chat o correo. Si debes
+     mostrarla, reemplaza la clave por la palabra CLAVE.
+  3. Ejecuta los comandos DE UNO EN UNO y revisa el resultado antes de
+     pasar al siguiente. PowerShell sigue con el siguiente comando
+     aunque el anterior haya fallado.
+  4. Antes de tocar una base en produccion: copia de seguridad, y hazlo
+     cuando nadie este guardando datos.
+  5. Los archivos con datos de personas (respaldos .dump, .sql, .json)
+     NO se suben a GitHub.
+
+
+=====================================================================
+ PARTE 1: EMPEZAR UN PROYECTO NUEVO EN VS CODE
+=====================================================================
+
+PASO 0. Verificar herramientas instaladas
+-----------------------------------------
+Abre VS Code > menu Terminal > Nuevo terminal, y ejecuta:
+
+    node -v
+    npm -v
+    git --version
+    code --version
+
+Si alguno dice "no se reconoce", instalalo:
+
+    winget install OpenJS.NodeJS.LTS
+    winget install Git.Git
+
+Cierra y vuelve a abrir VS Code despues de instalar.
+
+
+PASO 1. Configurar Git (una sola vez en el computador)
+------------------------------------------------------
+    git config --global user.name "Tu Nombre"
+    git config --global user.email "tu_correo@ejemplo.com"
+    git config --global init.defaultBranch main
+
+Comprobar:
+
+    git config --global --list
+
+
+PASO 2. Crear la carpeta del proyecto y abrirla en VS Code
+----------------------------------------------------------
+    cd D:\
+    mkdir MI_PROYECTO
+    cd MI_PROYECTO
+    code .
+
+(Evita nombres con espacios o acentos en carpetas de proyectos; da
+menos problemas.)
+
+
+PASO 3. Crear el .gitignore ANTES del primer commit
+---------------------------------------------------
+Pega esto en la terminal (crea el archivo .gitignore):
+
+@'
+node_modules/
+.env
+.env.*
+!.env.example
+*.dump
+*.sql
+respaldo*
+RESPALDO*
+*.log
+dist/
+build/
+.DS_Store
+'@ | Set-Content .gitignore
+
+Si un archivo ya fue subido a GitHub por error, ver "Errores comunes"
+al final de esta parte.
+
+
+PASO 4. Iniciar Git y Node
+--------------------------
+    git init
+    git branch -M main
+    npm init -y
+
+Instalar dependencias tipicas de un servidor con base PostgreSQL:
+
+    npm install express pg dotenv
+
+
+PASO 5. Crear el .env y el .env.example
+---------------------------------------
+El .env guarda los secretos reales (NO se sube a GitHub). El
+.env.example es una plantilla sin secretos (SI se sube).
+
+    @'
+DATABASE_URL=postgresql://USUARIO:CLAVE@HOST:5432/BASE?sslmode=require
+PORT=3000
+'@ | Set-Content .env
+
+    @'
+DATABASE_URL=
+PORT=3000
+'@ | Set-Content .env.example
+
+Edita el .env en VS Code y pon tu URL real.
+
+
+PASO 6. Probar la conexion a la base (archivo test-db.js)
+---------------------------------------------------------
+    @'
+require("dotenv").config();
+const { Pool } = require("pg");
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+pool.query("SELECT now()")
+  .then(r => { console.log("Conexion OK:", r.rows[0]); return pool.end(); })
+  .catch(e => { console.error("Error de conexion:", e.message); process.exit(1); });
+'@ | Set-Content test-db.js
+
+    node test-db.js
+
+Debe imprimir "Conexion OK". Si falla, revisa la URL del .env.
+
+
+PASO 7. Primer commit (verifica que .env NO aparezca)
+-----------------------------------------------------
+    git add .
+    git status
+
+En la lista NO deben aparecer .env, node_modules ni archivos de
+respaldo. Si aparecen, detente y revisa el .gitignore. Si todo bien:
+
+    git commit -m "Primer commit"
+
+
+PASO 8. Subir a GitHub
+----------------------
+Opcion A (sin instalar nada): crea un repositorio vacio en github.com
+(New repository, SIN README), copia su URL y ejecuta:
+
+    git remote add origin https://github.com/USUARIO/MI_PROYECTO.git
+    git push -u origin main
+
+Opcion B (con GitHub CLI):
+
+    winget install GitHub.cli
+    gh auth login
+    gh repo create MI_PROYECTO --private --source=. --push
+
+
+PASO 9. Desplegar en Render
+---------------------------
+En render.com > New > Web Service > conecta tu repositorio de GitHub.
+
+    Build Command:  npm install
+    Start Command:  node server.js      (o el archivo de tu servidor)
+
+En la seccion Environment agrega las variables (las mismas del .env):
+
+    DATABASE_URL = tu URL de la base
+    PORT         = (Render la asigna sola; usa process.env.PORT)
+
+Guarda. Render despliega solo. Revisa la pestana Logs para ver errores.
+Nota: en el plan gratuito, el servicio se "duerme" tras un rato sin
+visitas y la primera carga puede tardar.
+
+Tu servidor debe escuchar el puerto asi:
+
+    app.listen(process.env.PORT || 3000);
+
+
+PASO 10. Flujo de trabajo diario
+--------------------------------
+    git pull                          (traer lo ultimo)
+    git checkout -b mejora-notas      (rama nueva para cada cambio)
+    ... editar codigo, probar en local ...
+    git add .
+    git status                        (revisar que no haya secretos)
+    git commit -m "Describe el cambio"
+    git push -u origin mejora-notas
+
+Luego, en GitHub: Pull Request > Merge a main. Render redespliega
+cuando main cambia.
+
+Para volver a main y actualizar:
+
+    git checkout main
+    git pull
+
+
+PASO 11. Extensiones utiles de VS Code
+--------------------------------------
+    - Claude Code (Anthropic)  : asistente que edita tu codigo
+    - GitLens                  : historial de cambios por linea
+    - ESLint / Prettier        : errores y formato de codigo
+    - PostgreSQL (opcional)    : explorar la base desde VS Code
+
+Instalar desde el panel Extensiones (Ctrl+Shift+X).
+
+
+ERRORES COMUNES (PARTE 1)
+-------------------------
+* "git no se reconoce" / "node no se reconoce"
+  Falta instalarlo o reiniciar VS Code. Ver PASO 0.
+
+* "la ejecucion de scripts esta deshabilitada" (npm en PowerShell)
+    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+* Puerto ocupado (EADDRINUSE)
+    netstat -ano | findstr :3000
+    taskkill /PID NUMERO_PID /F
+
+* Subi el .env a GitHub por error
+    git rm --cached .env
+    git commit -m "Quitar .env del repositorio"
+    git push
+  IMPORTANTE: la clave ya quedo expuesta en el historial. Cambia la
+  contrasena de la base de datos de inmediato y actualiza .env y Render.
+
+* "rejected ... non-fast-forward" al hacer push
+    git pull --rebase
+    git push
+
+* Render dice "Application failed to respond" / puerto
+  Usa process.env.PORT en app.listen y revisa los Logs.
+
+
+=====================================================================
+ PARTE 2: MIGRAR UNA BASE DE DATOS POSTGRESQL A OTRA
+ (Neon, Supabase, Render, local, etc. Origen y destino: PostgreSQL)
+=====================================================================
+
+IDEA CLAVE
+  Copiar las tablas (estructura) y copiar los datos son cosas
+  distintas. Un script de migraciones (Prisma, Sequelize, Django...)
+  suele crear solo la estructura, vacia. Para copiar TODO usa
+  pg_dump (exportar) y pg_restore (importar).
+
+
+PASO 0. Instalar las herramientas de PostgreSQL (una sola vez)
+--------------------------------------------------------------
+La version de pg_dump debe ser IGUAL O MAYOR que la del servidor de
+ORIGEN. Si el origen es PostgreSQL 18, necesitas la version 18.
+
+    winget install PostgreSQL.PostgreSQL.18
+
+Durante la instalacion deja marcado "Command Line Tools" (puedes
+desmarcar el resto). Cambia el 18 por la version que necesites.
+
+Si ya lo tienes instalado, busca donde quedo:
+
+    Get-ChildItem "C:\Program Files\PostgreSQL" -Recurse -Filter pg_dump.exe -ErrorAction SilentlyContinue | Select-Object FullName
+
+
+PASO 1. Cargar las herramientas en la terminal (cada vez que abras una)
+-----------------------------------------------------------------------
+Ajusta el numero de version a la carpeta que tengas:
+
+    $env:Path = "C:\Program Files\PostgreSQL\18\bin;" + $env:Path
+    pg_dump --version
+
+Debe mostrar la version esperada. Si muestra otra, hay otra version
+primero en el PATH: cierra la terminal, abre una nueva y repite.
+
+
+PASO 2. Conseguir las URLs correctas
+------------------------------------
+ORIGEN o DESTINO en NEON:
+  - Para pg_dump / pg_restore usa la conexion DIRECTA: el host SIN
+    "-pooler" en el nombre.
+  - Quita "&channel_binding=require" de la URL.
+  - Ejemplo:
+    postgresql://USUARIO:CLAVE@ep-xxxx.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require
+
+ORIGEN o DESTINO en SUPABASE:
+  - En el panel: boton "Connect" > tipo URI > "Session pooler"
+    (puerto 5432). Copia la cadena COMPLETA del panel.
+  - No uses la "conexion directa": suele ser solo IPv6 y en Windows a
+    veces no conecta.
+  - Reemplaza [YOUR-PASSWORD] por la clave, sin corchetes.
+  - NUNCA dejes marcadores como REGION o XXXX: deben ser los valores
+    reales del panel.
+  - Si la clave tiene simbolos (@ # / : ? %), cambiala por una sin
+    simbolos o codificalos (@ = %40, # = %23, / = %2F, : = %3A).
+
+
+PASO 3. Guardar las URLs en variables
+-------------------------------------
+Escribe cada linea POR SEPARADO, con la URL real entre comillas:
+
+    $origen  = "postgresql://USUARIO:CLAVE@HOST_ORIGEN/BASE?sslmode=require"
+
+    $destino = "postgresql://USUARIO:CLAVE@HOST_DESTINO:5432/postgres"
+
+Estas lineas no muestran nada al ejecutarse; es normal.
+(Evita usar Read-Host para pegar URLs: Ctrl+V no funciona en ese
+prompt y queda un "^V" guardado. Si te aparece un prompt ">>", faltan
+comillas: presiona Ctrl+C y repite.)
+
+Comprobar sin mostrar claves (solo el host):
+
+    ($origen  -split "@")[-1]
+    ($destino -split "@")[-1]
+
+
+PASO 4. Probar la conexion a ambas bases
+----------------------------------------
+    "SELECT version();" | psql $origen
+
+    "SELECT version();" | psql $destino
+
+Ambas deben responder con una version de PostgreSQL. Si alguna se
+queda mas de 15 segundos, Ctrl+C y revisa la URL (ver errores al
+final).
+
+
+PASO 5. Ver que hay en el ORIGEN (tablas y numero de filas)
+-----------------------------------------------------------
+    @'
+SELECT table_name,
+  (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text::int AS filas
+FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+ORDER BY 1;
+'@ | psql $origen
+
+Guarda o copia este resultado: lo compararas al final.
+
+NOTA: si tus tablas se llaman con mayusculas (por ejemplo "Estudiante"),
+en consultas manuales van entre comillas dobles. En PowerShell, envia
+la consulta por tuberia para que no se pierdan las comillas:
+
+    'SELECT count(*) FROM "Estudiante";' | psql $origen
+
+
+PASO 6. (Recomendado) Copia de seguridad del DESTINO
+----------------------------------------------------
+El restore con --clean BORRA y recrea las tablas del destino. Si el
+destino tiene datos que te importan, respaldalos primero:
+
+    pg_dump $destino -n public --no-owner --no-acl -Fc -f destino_antes.dump
+
+
+PASO 7. Detener lo que escriba en las bases
+-------------------------------------------
+Mientras migras, nada debe estar guardando datos:
+  - Cierra el servidor local (Ctrl+C en la terminal donde corre).
+  - Revisa procesos de Node:
+        Get-Process node -ErrorAction SilentlyContinue
+  - Si la base es de produccion: hazlo fuera del horario de uso y, si
+    puedes, suspende el servicio en Render mientras copias.
+  - En apps que crean datos por defecto al arrancar, una app conectada
+    al destino puede pisar lo que restauraste.
+
+
+PASO 8. Exportar del ORIGEN
+---------------------------
+    Remove-Item respaldo.dump -ErrorAction SilentlyContinue
+
+    pg_dump $origen -n public --no-owner --no-acl -Fc -f respaldo.dump
+
+    Get-Item respaldo.dump | Select-Object Name, Length
+
+- No muestra nada al terminar bien; solo vuelve el prompt.
+- El archivo debe pesar mas de 0 bytes.
+- Para ver progreso, agrega -v al comando de pg_dump.
+- Si dice "server version mismatch": tu pg_dump es mas antiguo que el
+  servidor de origen. Instala la version igual o mayor (PASO 0).
+
+
+PASO 9. Importar en el DESTINO
+------------------------------
+    pg_restore --no-owner --no-acl --clean --if-exists -n public -d $destino respaldo.dump 2> restore_errores.txt
+
+    Select-String -Path restore_errores.txt -Pattern "error" | Select-Object -First 15
+
+- Avisos de que algo "no existe" al limpiar: normales.
+- Avisos por diferencia de versiones (por ejemplo "unrecognized
+  configuration parameter"): suelen ser inofensivos; pg_restore sigue.
+- Revisa el archivo restore_errores.txt antes de compartirlo con
+  alguien: algunos errores incluyen fragmentos de datos.
+- Lo importante es verificar los conteos en el paso siguiente.
+
+
+PASO 10. Verificar (origen vs destino)
+--------------------------------------
+Ejecuta la misma consulta del PASO 5 contra el destino:
+
+    @'
+SELECT table_name,
+  (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text::int AS filas
+FROM information_schema.tables
+WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+ORDER BY 1;
+'@ | psql $destino
+
+Las tablas y el numero de filas deben coincidir con los del origen.
+Si el resultado es 0 filas en todas partes o falta algo, revisa
+restore_errores.txt y que ninguna app este escribiendo en el destino.
+
+Si tu app guarda su estado en una tabla clave/valor (ejemplo
+kv_store), compara tambien claves y tamanos:
+
+    @'
+SELECT key, pg_column_size(value) AS bytes, updated_at FROM kv_store ORDER BY key;
+'@ | psql $destino
+
+Espera uno o dos minutos y repite: si los valores cambian solos, hay
+una app conectada que esta escribiendo.
+
+
+PASO 11. Solo si el destino es SUPABASE: activar RLS
+----------------------------------------------------
+Las tablas creadas por SQL quedan sin Row Level Security y quedan
+expuestas a la API publica de Supabase. Si tienen datos reales,
+activalo (tu servidor, conectado con el usuario "postgres.xxxx",
+sigue funcionando):
+
+    @'
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', r.tablename);
+  END LOOP;
+END $$;
+'@ | psql $destino
+
+Debe responder "DO". Comprobar (debe dar 0):
+
+    "SELECT count(*) AS sin_rls FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = false;" | psql $destino
+
+
+PASO 12. Apuntar el proyecto a la base nueva
+--------------------------------------------
+1. Cambia DATABASE_URL en el .env local por la URL del destino.
+   (Si es Supabase, usa la del Session pooler. Si es Neon, para la
+   app puedes usar la del pooler, con "-pooler" y sslmode=require.)
+2. Prueba en local:  node test-db.js   y luego arranca la app.
+3. Cambia la MISMA variable en Render (Environment) y guarda.
+4. Espera el redespliegue (estado Live) y revisa los Logs.
+5. Abre la app en una ventana de incognito y comprueba que aparecen
+   los datos.
+
+
+PASO 13. Limpieza y seguridad
+-----------------------------
+1. Cambia las contrasenas de las bases que usaste (Neon: "Reset
+   password"; Supabase: Project Settings > Database > Reset database
+   password) y actualiza .env y Render. Orden recomendado: primero la
+   base nueva (y Render), despues la vieja.
+2. Borra los respaldos cuando ya no los necesites:
+
+       Remove-Item respaldo.dump, destino_antes.dump, restore_errores.txt -ErrorAction SilentlyContinue
+
+3. Verifica que no se suben a GitHub:
+
+       git check-ignore -v respaldo.dump
+
+   Debe indicar la regla del .gitignore que lo ignora.
+
+
+ALTERNATIVA: exportar a SQL en texto plano
+------------------------------------------
+Util para revisar el contenido o si pg_restore da problemas:
+
+    pg_dump $origen -n public --no-owner --no-acl -f respaldo.sql
+
+    psql $destino -f respaldo.sql
+
+(Ojo: si las tablas ya existen en el destino, habra errores de "already
+exists"; usa un destino vacio.)
+
+
+SI TU PROYECTO USA UN ORM (Prisma, Sequelize, Django...)
+--------------------------------------------------------
+Para dejar la estructura oficial del proyecto en el destino:
+
+    Prisma:     npx prisma migrate deploy
+    Sequelize:  npx sequelize-cli db:migrate
+    Django:     python manage.py migrate
+
+Luego copia los DATOS con pg_dump/pg_restore. Si el destino ya tiene
+las tablas creadas por migraciones, usa restore solo de datos:
+
+    pg_dump $origen -n public --data-only --no-owner -Fc -f datos.dump
+    pg_restore --no-owner --data-only -d $destino datos.dump 2> restore_errores.txt
+
+(Si hay errores por claves foraneas, es mas simple dejar que
+pg_restore cree todo: usa el flujo principal con --clean.)
+
+
+ERRORES COMUNES (PARTE 2)
+-------------------------
+ Mensaje / sintoma                        Causa y solucion
+ ---------------------------------------  ---------------------------------
+ pg_dump no se reconoce                   Falta instalar o cargar el PATH
+                                          (PASO 0 y 1).
+ server version mismatch                  pg_dump mas viejo que el origen.
+                                          Instala version igual o mayor.
+ could not translate host name            Host mal escrito o con
+ ... Name or service not known            marcadores (REGION, XXXX).
+                                          Copia el host real del panel.
+ Network is unreachable                   Conexion directa de Supabase
+                                          (IPv6). Usa el Session pooler.
+ password authentication failed           Clave mal copiada, o simbolos
+                                          sin codificar en la URL.
+ Password for user HP: (pide clave)       $origen/$destino quedaron vacios
+                                          o mal (psql intento tu base
+                                          local). Ctrl+C y repite PASO 3.
+ Prompt ">>" que no termina               Faltan comillas. Ctrl+C y
+                                          reescribe la linea completa.
+ Se queda "pensando"                      Puede estar esperando una clave.
+                                          Ctrl+C. Prueba PASO 4 primero.
+ input file is too short                  respaldo.dump vacio porque
+                                          pg_dump fallo. Borra y repite.
+ relation "estudiante" does not exist     Tabla con mayusculas: usa
+ (aunque existe como "Estudiante")        comillas dobles con tuberia.
+ Tablas existen pero con 0 filas          Solo se copio la estructura (por
+                                          migraciones) o algo pisa el
+                                          destino. Revisa PASO 7 y 9.
+ permission denied to create extension    Activa la extension desde el
+                                          panel del proveedor y repite.
+ Origen bloqueado por limite de red       En Neon gratis, esperar a que se
+                                          reinicie el ciclo mensual.
+
+
+CHECKLIST RAPIDO DE MIGRACION
+-----------------------------
+  [ ] pg_dump con version igual o mayor que el origen
+  [ ] URLs reales (sin REGION/XXXX), origen directo, destino correcto
+  [ ] SELECT version() funciona en ambas bases
+  [ ] Conteos del origen guardados
+  [ ] Respaldo del destino (si tiene datos)
+  [ ] Ninguna app escribiendo durante la migracion
+  [ ] pg_dump y pg_restore ejecutados sin errores graves
+  [ ] Conteos del destino = conteos del origen
+  [ ] RLS activado (si es Supabase con datos reales)
+  [ ] DATABASE_URL actualizada en .env y Render
+  [ ] App probada en incognito
+  [ ] Contrasenas cambiadas; respaldos borrados; nada en GitHub
+
+=====================================================================
+ FIN DE LA GUIA
+=====================================================================

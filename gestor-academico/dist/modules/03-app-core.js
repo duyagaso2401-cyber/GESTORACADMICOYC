@@ -725,6 +725,19 @@ function _enviarFilaNotasAlServidor(sk,info){
     })
     .catch(function(){
       _updateSyncChip('offline');
+      // RONDA 45 — DIMENSIÓN 2: este catch() es justamente el caso "no hay
+      // red de verdad" (un error de fetch, no una respuesta 4xx/5xx del
+      // servidor — ese otro caso ya lo maneja la rama "else" de arriba,
+      // sin tocarla). Además del respaldo que YA existía (reintentar con
+      // el blob completo en 350ms), se encola el mismo payload en la cola
+      // de resiliencia offline de IndexedDB (ver 08-outbox-notas.js) — si
+      // la pestaña se cierra o el celular pierde señal por horas antes de
+      // que ese reintento de 350ms tenga oportunidad de funcionar, el
+      // cambio de todas formas sobrevive y se reenvía solo en cuanto
+      // vuelva la conexión, en el mismo orden en que se generó.
+      if(typeof OutboxNotas!=='undefined'&&OutboxNotas&&OutboxNotas.encolar){
+        OutboxNotas.encolar(payload,API_BASE+'/api/notas/actualizar',_hdrsGuardarFila).catch(function(){});
+      }
       if(_saveTimer) clearTimeout(_saveTimer);
       _saveTimer=setTimeout(_pushDB,350);
     });
@@ -910,9 +923,29 @@ async function _resolverConflictoDB(conflicto,_sk){
       if(pag==='planilla') _refrescarTodoPlanillaGranular();
       else if(pag==='notas-actividades') _refrescarTodoNotasActGranular();
     }else{
-      _showToast(conflictos>0
-        ? '⚠️ Se combinaron cambios guardados por otra persona; '+conflictos+' valor(es) coincidentes se resolvieron automáticamente.'
-        : '🔄 Se combinaron automáticamente cambios guardados por otra persona.', conflictos>0?'warning':'info', 5500);
+      // RONDA 52 — el usuario reportó como "molesto" el aviso emergente
+      // AZUL ('info', #1a3a5c) que aparecía automáticamente en CUALQUIER
+      // pantalla (incluido el chat) cada vez que una fusión de 3 vías se
+      // resolvía SIN ningún conflicto real de valores (conflictos===0) —
+      // es decir, el caso puramente rutinario/exitoso donde no hay nada
+      // que el docente necesite revisar (de hecho, este caso ni siquiera
+      // se registraba en la bitácora — ver _registrarConflictoBitacora()
+      // arriba, que retorna de inmediato si conflictos es 0 — así que el
+      // toast azul no aportaba ninguna información nueva, solo ruido).
+      // Se deja de mostrar ese aviso azul de forma automática.
+      //
+      // El caso NARANJA (conflictos>0: dos personas editando el MISMO dato
+      // casi al mismo tiempo, resuelto automáticamente eligiendo un valor)
+      // SÍ se conserva tal cual — no es el caso que el usuario pidió
+      // silenciar (no es "rutinario/sin novedad": hubo una colisión real de
+      // datos), coincide con el único caso que además SÍ queda registrado
+      // en la bitácora de auditoría (agent_audit_logs, panel "🤖 Auditoría
+      // IA / Agente" del Súper Admin), y es la clase de aviso que el
+      // coordinador pidió explícitamente NO eliminar ("alertas necesarias
+      // para... resultados que el usuario debería poder ver").
+      if(conflictos>0){
+        _showToast('⚠️ Se combinaron cambios guardados por otra persona; '+conflictos+' valor(es) coincidentes se resolvieron automáticamente.', 'warning', 5500);
+      }
       const _reaplicarConSync=function(){ renderApp(); _reaplicarPendientes(); _reaplicarPendientesNAC(); };
       _renderPreservandoContexto(_reaplicarConSync);
     }
@@ -2448,6 +2481,42 @@ function _solicitarCodigo2FALogin(sesionData,platDB,plat,pagTarget){
     input.addEventListener('keydown',function(e){ if(e.key==='Enter') verificar(); });
   });
 }
+// RONDA 47 — FRENTE 2: extraída de la cola de `doLoginPortal()` (misma
+// lógica exacta, sin cambiarla) para poder reutilizarla también desde el
+// camino de Smart Auth (`doLoginInstitucional()` → `renderBienvenidaInstitucion()`),
+// que ya trae `sesionData`/`platDB` VALIDADOS de antemano y no debe volver
+// a pasar por `doLoginPortal()` (que revalida usuario/contraseña desde
+// cero contra un formulario). `doLoginPortal()` sigue existiendo tal cual,
+// sin tocarse, para el caso legítimo en que sí hace falta pedir
+// credenciales (ver el comentario en renderBienvenidaInstitucion()).
+async function _finalizarSesionInstitucional(plat,sesionData,platDB,pagTarget){
+  const rol=sesionData.r;
+  if(plat.bloqueada&&rol!=='admin'){customAlert('🔒 Esta plataforma está temporalmente bloqueada por el administrador del sistema. Comuníquese con su institución.');renderGestorLanding();return;}
+  if(plat.pantallaBlanca&&!_esRescateSuperAdminActivo()){_activarPantallaBlanca();return;}
+  if(platDB.nivelEducativo==='UNIVERSIDAD'&&['admin','docente','estudiante'].includes(rol)){
+    try{
+      const userId=rol==='admin'||rol==='docente'?sesionData.u:sesionData.estId;
+      const rUniv=await fetch(API_BASE+'/api/university/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:plat.sk,rol:rol,userId:userId,nombre:sesionData.n})});
+      const dUniv=await rUniv.json();
+      if(!rUniv.ok||dUniv.error) throw new Error(dUniv.error||'No se pudo iniciar el sistema de Educación Superior.');
+      window.location.href='/universidad/index.html?token='+encodeURIComponent(dUniv.token);
+    }catch(err){
+      customAlert('⚠️ No se pudo abrir el Aula Virtual: '+(err.message||'error desconocido')+'. Intente de nuevo o contacte soporte.');
+    }
+    return;
+  }
+  db=platDB;
+  window._currentPlatSK=plat.sk;
+  window._currentPlatId=plat.id;
+  window._sbSearchQuery='';
+  _tomarVersionRecienCargada(plat.sk);
+  sesion=sesionData;
+  pag=pagTarget||(rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla');
+  _sseInit();
+  _checkSchemaMigrationBanner();
+  _actualizarBannerSyncManual();
+  render();
+}
 function renderBienvenidaInstitucion(platId){
   // Misma protección aplicada a las otras 2 pantallas de login: si la
   // persona ya está escribiendo su usuario/contraseña aquí, no se vuelve
@@ -2463,6 +2532,42 @@ function renderBienvenidaInstitucion(platId){
   const pl=gestorDB.platforms.find(x=>x.id===platId);
   if(!pl){renderGestorLanding();return;}
   const pending=window._pendingLogin;
+  // ════════════════════════════════════════════════════════════════════════
+  // RONDA 47 — FRENTE 2: BUG REAL CORREGIDO (no era una confusión del
+  // usuario). Investigación: `doLoginInstitucional()` (Ronda 39, Smart
+  // Auth) YA valida usuario/contraseña, detecta el rol automáticamente, y
+  // guarda el resultado en `window._pendingLogin` — pero esta función
+  // (`renderBienvenidaInstitucion`, que se llama justo después) nunca
+  // llegó a CONSUMIR ese resultado: en vez de entrar directo, seguía
+  // dibujando una SEGUNDA tarjeta completa con el logo de la institución,
+  // un selector de rol ("Seleccione su perfil") y un formulario de
+  // usuario/contraseña EN BLANCO que había que volver a llenar y enviar
+  // (`doLoginPortal()`, la lógica de validación de ANTES de la Ronda 39,
+  // con su propio selector de rol manual). Ese formulario nunca se
+  // eliminó cuando se construyó el Smart Auth — quedó huérfano,
+  // re-pidiendo credenciales ya validadas. Esto es exactamente el
+  // "segundo portal" que reportó el usuario: no es una confusión entre 2
+  // mecanismos de login (JWT de notas vs. K-12) ni una pantalla de
+  // selección de INSTITUCIÓN — es un segundo formulario de credenciales
+  // real, remanente de antes del Smart Auth, con selector de ROL (no de
+  // institución: `platId` ya venía fijo).
+  //
+  // CORRECCIÓN: si `window._pendingLogin` existe y corresponde a ESTA
+  // institución (viene de un login recién validado por
+  // `doLoginInstitucional()`, con o sin 2FA de por medio), se finaliza la
+  // sesión de inmediato con esos mismos datos ya validados — sin volver a
+  // pedir usuario/contraseña ni mostrar el selector de rol — y se entra
+  // directo al panel del rol detectado. El formulario de abajo (con su
+  // selector de rol y `doLoginPortal`) se conserva SOLO para el otro caso
+  // legítimo que ya usaba esta misma pantalla: volver aquí SIN haber
+  // iniciado sesión (ej. el botón "← Volver al portal" desde Pre-Matrícula,
+  // línea ~19720, donde `_pendingLogin` no existe) — ese camino no se tocó,
+  // para no romper nada de las 46 rondas anteriores.
+  if(pending&&pending.plat&&pending.plat.id===platId){
+    window._pendingLogin=null; // se consume una sola vez — nunca se reutiliza
+    _finalizarSesionInstitucional(pending.plat,pending.sesionData,pending.platDB,pending.pag);
+    return;
+  }
   const rolPre=pending?pending.sesionData.r:'admin';
 
   const escudoHtml=pl.escudo
@@ -2574,7 +2679,15 @@ async function abrirPreMatriculaPortalIntermedio(platId){
   _tomarVersionRecienCargada(p.sk);
   abrirPreMatriculaPublica();
 }
-function cerrarGestorSesion(){gestorSesion=null;gestorEnPlataforma=null;sesion=null;window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();render();}
+function cerrarGestorSesion(){
+  gestorSesion=null;gestorEnPlataforma=null;sesion=null;window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();
+  // RONDA 51 — mismo saneamiento que _cerrarSesionReal(): purgar el estado
+  // visual de sincronización/institución para que el banner no quede
+  // pegado en pantalla tras salir por completo del modo Súper Admin.
+  try{ sessionStorage.removeItem('_bannerSyncManualCerrado'); }catch(e){}
+  _actualizarBannerSyncManual();
+  render();
+}
 
 // ============================================================
 // S05 · PANEL ADMINISTRADOR GENERAL (GESTOR YC)
@@ -2596,6 +2709,7 @@ function renderGestorAdmin(){
   else if(_gestorPag==='planes') contenido=htmlGestorPlanes();
   else if(_gestorPag==='salud') contenido=htmlGestorSalud();
   else if(_gestorPag==='agenteia') contenido=htmlGestorAgenteIA();
+  else if(_gestorPag==='infraestructura') contenido=htmlGestorInfraestructura();
   else if(_gestorPag==='etc') contenido=htmlGestorETC();
   else if(_gestorPag==='universidades') contenido=htmlGestorUniversidades();
   document.getElementById('app').innerHTML=`
@@ -2620,6 +2734,7 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#186a3b" onclick="_gestorPag='planes';renderGestorAdmin()" title="Gestionar el plan y el estado de facturación de cada institución">💰 Planes y Facturación</button>
         <button class="tbtn" style="background:#922b21" onclick="_gestorPag='salud';renderGestorAdmin()" title="Detectar instituciones con problemas de guardado o papelera creciendo sin control">🏥 Salud del Sistema</button>
         <button class="tbtn" style="background:#16a085" onclick="_gestorPag='agenteia';renderGestorAdmin()" title="Historial del Agente Administrador y Auditor Supremo del ecosistema: rendimiento académico, inasistencias, integridad técnica y sincronización">🤖 Auditoría IA / Agente</button>
+        <button class="tbtn" style="background:#34495e" onclick="_gestorPag='infraestructura';renderGestorAdmin()" title="RAM, CPU, disco y conexiones a la base de datos del servidor, con alertas automáticas">🖥️ Estado del Servidor</button>
         <button class="tbtn" style="background:${gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE?'#6c3483':'#5d4037'}" onclick="_gestorPag='etc';renderGestorAdmin()" title="Gestión Documental, Contratación y Permisos para Entidades Territoriales Certificadas (ETC)">🏛️ Entidades Territoriales</button>
         <button class="tbtn" style="background:${gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE?'#1a5276':'#5d4037'}" onclick="_gestorPag='universidades';renderGestorAdmin()" title="Catálogo de Universidades / Educación Superior">🎓 Universidades</button>
         <button class="tbtn" style="background:#2980b9;position:relative" onclick="_gestorPag='notificaciones';renderGestorAdmin()">🔔 <span id="notifBadgeTxt">Notif</span><span id="notifBadge" style="display:none;background:#e74c3c;color:#fff;border-radius:10px;font-size:0.65rem;padding:1px 5px;margin-left:2px;font-weight:bold">0</span></button>
@@ -2642,6 +2757,7 @@ function renderGestorAdmin(){
   if(_gestorPag==='plataformas') setTimeout(function(){ if(!_entrandoAPlataforma) _refrescarStatsPlataformasReal(); },1200);
   if(_gestorPag==='salud') setTimeout(_refrescarSaludSistema,150);
   if(_gestorPag==='agenteia'){ setTimeout(_refrescarAgenteIA,150); if(_controlProcesosCargado===null) setTimeout(_refrescarControlProcesosIA,150); }
+  if(_gestorPag==='infraestructura') setTimeout(_refrescarInfraestructura,150);
   if(_gestorPag==='etc'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE){ setTimeout(_refrescarEtcEntidades,120); if(_smsGlobalHabilitado===null) setTimeout(_refrescarEstadoSms,120); }
   if(_gestorPag==='universidades'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE) setTimeout(_refrescarUniversidades,120);
 }
@@ -4094,6 +4210,7 @@ function htmlGestorAgenteIA(){
       <option value="Academico">📚 Académico</option>
       <option value="Tecnico">🛠️ Técnico</option>
       <option value="Sincronizacion">🔄 Sincronización</option>
+      <option value="Infraestructura">🖥️ Infraestructura</option>
     </select>
     <span id="agenteEstadoGemini" style="font-size:0.76rem;color:#888"></span>
   </div>
@@ -4122,7 +4239,7 @@ async function _refrescarAgenteIA(){
       return;
     }
     const badgeInfo={'Corregido':{c:'#27ae60',l:'🟢 Corregido'},'Alerta':{c:'#f39c12',l:'🟡 Alerta'},'Informativo':{c:'#2980b9',l:'🔵 Informativo'}};
-    const catIcon={'Academico':'📚','Tecnico':'🛠️','Sincronizacion':'🔄'};
+    const catIcon={'Academico':'📚','Tecnico':'🛠️','Sincronizacion':'🔄','Infraestructura':'🖥️'};
     cont.innerHTML=`<div class="card"><div class="over"><table><thead><tr style="background:#16a085;color:#fff">
       <th style="text-align:left">Fecha y hora</th><th style="text-align:left">Categoría</th><th style="text-align:left">Problema detectado</th><th style="text-align:left">Acción autónoma ejecutada</th><th>Estado</th><th>Detalle</th>
     </tr></thead><tbody>${_agenteLogsCache.map(function(l,i){
@@ -4161,6 +4278,106 @@ async function _dispararAuditoriaAgente(){
     _showToast('Error al disparar la auditoría: '+e.message,'error',5000);
   }finally{
     if(btn){ btn.disabled=false; btn.textContent='▶️ Disparar Auditoría Ahora'; }
+  }
+}
+
+// ── 🖥️ RONDA 49 — ESTADO DEL SERVIDOR & INFRAESTRUCTURA ──────────────────
+// Mismo patrón visual (tarjetas .card, misma paleta de colores por
+// severidad, tabla de historial) ya usado en "🏥 Salud del Sistema" y
+// "🤖 Auditoría IA / Agente" arriba — no se inventó un estilo nuevo.
+// Consume GET /api/admin/infrastructure-status (telemetría en vivo, sin
+// efectos secundarios — ver el comentario de esa ruta en src/index.ts) y
+// reutiliza GET /api/agent/logs?category=Infraestructura (mismo endpoint
+// que ya usa el panel de arriba) para el historial corto de eventos, en
+// vez de crear un endpoint de historial paralelo.
+function _colorPorPorcentaje(pct){
+  if(pct>=90) return '#c0392b'; // rojo — crítico
+  if(pct>=80) return '#e67e22'; // ámbar — preventivo
+  return '#27ae60'; // verde — normal
+}
+function _htmlBarraKpi(titulo,pct,detalle){
+  const color=_colorPorPorcentaje(pct);
+  const pctClamp=Math.max(0,Math.min(100,pct));
+  return `<div class="card" style="flex:1;min-width:200px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+      <span style="font-size:0.82rem;color:#666;font-weight:bold">${titulo}</span>
+      <span style="font-size:1.15rem;font-weight:bold;color:${color}">${pct}%</span>
+    </div>
+    <div style="background:#e8e8e8;border-radius:6px;height:10px;overflow:hidden">
+      <div style="background:${color};width:${pctClamp}%;height:100%;transition:width 0.4s"></div>
+    </div>
+    <div style="font-size:0.74rem;color:#888;margin-top:6px">${detalle}</div>
+  </div>`;
+}
+function htmlGestorInfraestructura(){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px">
+    <h3 style="color:#003366;margin:0">🖥️ Estado del Servidor &amp; Infraestructura</h3>
+    <button class="btn" id="btnRecargarInfraestructura" style="background:#34495e" onclick="_refrescarInfraestructura()">🔄 Recargar Telemetría</button>
+  </div>
+  <p style="font-size:0.83rem;color:#666;margin-bottom:14px">Uso de RAM, CPU, disco y conexiones a la base de datos EN VIVO de este servidor. Un job en segundo plano revisa estos mismos datos cada 15 minutos y avisa aquí mismo (y por correo, en casos críticos) si algo se acerca a su límite.</p>
+  <div id="infraResultado"><div class="card"><p class="empty" style="padding:30px">⏳ Consultando telemetría del servidor...</p></div></div>`;
+}
+async function _refrescarInfraestructura(){
+  const cont=document.getElementById('infraResultado');
+  if(!cont) return;
+  const btn=document.getElementById('btnRecargarInfraestructura');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Consultando...'; }
+  try{
+    const [rTelemetria,jLogs]=await Promise.all([
+      fetch(API_BASE+'/api/admin/infrastructure-status').then(function(r){return r.json().then(function(j){return {status:r.status,body:j};});}),
+      fetch(API_BASE+'/api/agent/logs?category=Infraestructura&limit=12').then(function(r){return r.json();}).catch(function(){return {logs:[]};})
+    ]);
+    if(rTelemetria.status===401){
+      cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">🔒 Esta sección requiere una sesión válida de Súper Admin. Si acaba de entrar, recargue la página e inicie sesión de nuevo.</p></div>';
+      return;
+    }
+    if(!rTelemetria.body||!rTelemetria.body.ok){
+      cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">⚠️ No se pudo consultar la telemetría: '+(rTelemetria.body&&rTelemetria.body.error?rTelemetria.body.error:'error desconocido')+'</p></div>';
+      return;
+    }
+    const t=rTelemetria.body.telemetria;
+    const alertas=rTelemetria.body.alertas||[];
+    const logs=jLogs.logs||[];
+
+    const alertasHtml=alertas.length?`<div style="margin-bottom:14px">${alertas.map(function(a){
+      const color=a.nivel==='critica'?'#c0392b':'#e67e22';
+      return `<div class="card" style="border-left:4px solid ${color};margin-bottom:8px;padding:12px 14px">
+        <div style="font-weight:bold;color:${color}">${a.mensaje}</div>
+        <div style="font-size:0.8rem;color:#666;margin-top:4px">💡 ${a.sugerencia}</div>
+      </div>`;
+    }).join('')}</div>` : '<div class="card" style="border-left:4px solid #27ae60;margin-bottom:14px"><p style="padding:14px;color:#1e8449;margin:0">✅ Todo dentro de los rangos normales — RAM, disco y conexiones de base de datos por debajo del 80%.</p></div>';
+
+    const kpisHtml=`<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+      ${_htmlBarraKpi('🧠 Memoria RAM',t.ram.porcentajeUso,t.ram.usadoLegible+' usados de '+t.ram.totalLegible)}
+      ${_htmlBarraKpi('⚙️ Carga de CPU (aprox.)',t.cpu.porcentajeCargaAprox,'Load avg 1min: '+t.cpu.loadAvg1+' — '+t.cpu.nucleos+' núcleo(s)')}
+      ${t.disco.metodo!=='no-disponible'?_htmlBarraKpi('💽 Disco',t.disco.porcentajeUso,t.disco.usadoLegible+' usados de '+t.disco.totalLegible+' ('+t.disco.metodo+')'):'<div class="card" style="flex:1;min-width:200px"><span style="font-size:0.82rem;color:#666;font-weight:bold">💽 Disco</span><div style="font-size:0.78rem;color:#888;margin-top:8px">No disponible en este entorno</div></div>'}
+      ${_htmlBarraKpi('🗄️ Conexiones a BD (pool)',t.baseDatos.poolAplicacion.porcentajeUso,t.baseDatos.poolAplicacion.total+' de '+t.baseDatos.poolAplicacion.max+' en uso'+(t.baseDatos.conexionesPgStatActivity!==null?' — Postgres reporta '+t.baseDatos.conexionesPgStatActivity:''))}
+    </div>`;
+
+    const infoExtra=`<div class="card" style="margin-bottom:14px;font-size:0.8rem;color:#666;display:flex;gap:24px;flex-wrap:wrap;padding:12px 14px">
+      <span>📦 Tamaño de la base de datos: <b>${t.baseDatos.tamanoLegible}</b></span>
+      <span>⏱️ Uptime del proceso: <b>${Math.floor(t.uptimeProcesoSegundos/3600)}h ${Math.floor((t.uptimeProcesoSegundos%3600)/60)}m</b></span>
+      <span>🖥️ Uptime del servidor: <b>${Math.floor(t.uptimeServidorSegundos/3600)}h ${Math.floor((t.uptimeServidorSegundos%3600)/60)}m</b></span>
+    </div>`;
+
+    const historialHtml=logs.length?`<div class="card"><div class="over"><table><thead><tr style="background:#34495e;color:#fff">
+      <th style="text-align:left">Fecha y hora</th><th style="text-align:left">Evento</th><th>Estado</th>
+    </tr></thead><tbody>${logs.map(function(l){
+      let fecha='—';
+      try{ fecha=new Date(l.timestamp).toLocaleString('es-CO',{dateStyle:'short',timeStyle:'short'}); }catch(e){}
+      const esAlerta=l.status==='Alerta';
+      return `<tr>
+        <td style="white-space:nowrap;font-size:0.78rem">${fecha}</td>
+        <td style="text-align:left;font-size:0.8rem;max-width:420px">${String(l.issueDetected||'').replace(/</g,'&lt;')}</td>
+        <td><span style="background:${esAlerta?'#c0392b':'#2980b9'};color:#fff;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:bold;white-space:nowrap">${esAlerta?'🔴 Alerta':'🔵 Info'}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table></div></div>` : '<div class="card"><p class="empty" style="padding:20px">Sin eventos de infraestructura registrados todavía — el monitoreo corre cada 15 minutos automáticamente.</p></div>';
+
+    cont.innerHTML = alertasHtml + kpisHtml + infoExtra + '<h4 style="color:#003366;margin:18px 0 8px">🕓 Historial reciente de mantenimiento</h4>' + historialHtml;
+  }catch(e){
+    cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">⚠️ No se pudo cargar el estado del servidor: '+(e&&e.message?e.message:'error desconocido')+'</p></div>';
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='🔄 Recargar Telemetría'; }
   }
 }
 
@@ -6081,8 +6298,32 @@ function _cerrarBannerSyncManual(){
   document.body.style.paddingTop='';
   try{ sessionStorage.setItem('_bannerSyncManualCerrado','1'); }catch(e){}
 }
+// RONDA 51 — guarda estricta pedida por el usuario (equivalente vanilla-JS
+// de `if (!user || !currentInstitution) return null;`): el banner de
+// sincronización manual SOLO puede mostrarse si hay una sesión activa
+// (institución vía `sesion`, o Súper Admin dentro de una plataforma vía
+// `gestorSesion && gestorEnPlataforma`) Y una institución/plataforma
+// seleccionada (`_obtenerPlatActual()`). Antes, esta función solo se
+// invocaba desde dentro de `renderApp()` (sesión activa) y nunca se volvía
+// a invocar tras un logout — como el banner es un `<div>` fijo insertado
+// directo en `document.body` (fuera del árbol que `render()` normalmente
+// reemplaza), quedaba visualmente "pegado" en pantalla incluso después de
+// volver al landing/selector de plataformas. Ahora esta función se llama
+// también explícitamente desde el logout (`_cerrarSesionReal()` /
+// `cerrarGestorSesion()`), y esta guarda de arriba asegura que, sin importar
+// desde dónde se llame, el banner se retire de inmediato si ya no hay una
+// sesión+institución activas.
+function _hayEstadoActivoParaBannerSyncManual(){
+  const hayInstitucion=!!(typeof sesion!=='undefined'&&sesion)||!!(typeof gestorSesion!=='undefined'&&gestorSesion&&typeof gestorEnPlataforma!=='undefined'&&gestorEnPlataforma);
+  return hayInstitucion&&!!_obtenerPlatActual();
+}
 function _actualizarBannerSyncManual(){
   const banner=document.getElementById('_bannerSyncManual');
+  if(!_hayEstadoActivoParaBannerSyncManual()){
+    if(banner) banner.remove();
+    document.body.style.paddingTop='';
+    return;
+  }
   const debeMostrarse=!_sincronizacionAutoHabilitadaAhora();
   if(!debeMostrarse){
     if(banner) banner.remove();
@@ -6106,8 +6347,15 @@ function _actualizarBannerSyncManual(){
 }
 window.addEventListener('resize',_ajustarPaddingBannerSyncManual);
 window.addEventListener('orientationchange',_ajustarPaddingBannerSyncManual);
-function _sincronizarAhoraManual(){
-  _syncAll(true);
+// RONDA 52 — este es el botón manual explícito ("Sincronizar ahora") al que
+// se refiere el pedido del usuario: la confirmación visible de que se
+// combinaron/consolidaron datos SÍ debe aparecer aquí (acción explícita del
+// usuario), aunque ya NO aparezca de forma automática en segundo plano (ver
+// el comentario de Ronda 52 junto a _showToast(conflictos>0...) más arriba,
+// en _resolverConflictoDB()).
+async function _sincronizarAhoraManual(){
+  await _syncAll(true);
+  _showToast('🔄 Sincronización manual completada — datos consolidados con el servidor.','info',4000);
 }
 
 // ── "Pantalla en Blanco" ────────────────────────────────────────────────
@@ -6185,7 +6433,10 @@ async function _pedirTokenRescate(body){
   window.fetch=function(input,init){
     try{
       const url=typeof input==='string'?input:(input&&input.url)||'';
-      if(url.indexOf('/api/inetis/db')!==-1){
+      // RONDA 49: se agregó /api/admin/infrastructure-status a la lista —
+      // ese endpoint nuevo usa el MISMO token de rescate como control de
+      // acceso (ver el comentario junto a app.get('/api/admin/infrastructure-status') en src/index.ts).
+      if(url.indexOf('/api/inetis/db')!==-1||url.indexOf('/api/admin/infrastructure-status')!==-1){
         const token=_tokenRescateSuperAdmin();
         if(token){
           init=init||{};
@@ -7518,7 +7769,14 @@ function renderApp(){
   else if(pag==='atenciones-psico'&&(isAdmin||_esDocenteOrientador())) contenido=htmlAtencionesPsico();
   else if(pag==='comite-convivencia'&&(isAdmin||_esDocenteOrientador())) contenido=htmlComiteConvivencia();
   // RONDA 42 — Traslado Inter-Institucional (solo Rector/Admin)
-  else if(pag==='traslado-institucional'&&isAdmin) contenido=htmlTrasladoInterinstitucional();
+  else if(pag==='traslado-institucional'&&isAdmin){
+    contenido=htmlTrasladoInterinstitucional();
+    // RONDA 43 — carga la bandeja de solicitudes pendientes una sola vez al
+    // entrar a la pantalla (no en cada re-render), para que el contador de
+    // notificación en la pestaña "📡 Red / Buzón" ya aparezca sin que el
+    // rector tenga que hacer clic primero en esa pestaña.
+    if(!window._tiPendientesCache) setTimeout(_tiCargarBandejaPendientes,60);
+  }
   // repositorio: abre en nueva pestaña (ver href en menu.push), sin contenido iframe aquí
 
   const _platId2=gestorEnPlataforma||window._currentPlatId;
@@ -7975,9 +8233,21 @@ function _cerrarSesionReal(){
   _actualizarChipTiempoSesion(null);
   if(gestorSesion&&gestorEnPlataforma){
     gestorEnPlataforma=null;db=loadDB();window._currentPlatSK=null;window._currentPlatId=null;
+    // RONDA 51 — purga el banner de sincronización manual y cualquier
+    // "cerrado manualmente" heredado de la institución anterior ANTES de
+    // volver al panel del Súper Admin (ver comentario junto a
+    // _actualizarBannerSyncManual/_hayEstadoActivoParaBannerSyncManual).
+    try{ sessionStorage.removeItem('_bannerSyncManualCerrado'); }catch(e){}
+    _actualizarBannerSyncManual();
     renderGestorAdmin();return;
   }
   window._currentPlatSK=null;window._currentPlatId=null;db=loadDB();
+  // RONDA 51 — mismo motivo: purgar el estado de institución/sincronización
+  // visual ANTES de volver al landing, para que el banner "Sincronización
+  // automática desactivada para tu institución..." no quede pegado en
+  // pantalla tras cerrar sesión (bug reportado por el usuario).
+  try{ sessionStorage.removeItem('_bannerSyncManualCerrado'); }catch(e){}
+  _actualizarBannerSyncManual();
   render();
 }
 function cerrarSesion(){

@@ -2160,4 +2160,1408 @@ Las 4 operaciones quedan registradas en `blob.logMatricula` (el mismo log de aud
 3. **El "historial de carga académica" es un resumen de texto, no una estructura ligada a materias reales de la institución destino** — sirve como referencia de hoja de vida/experiencia, pero el admin destino debe crear las asignaciones de `db.carga` reales manualmente; no hay ningún intento de homologación automática de esas asignaciones (a diferencia del traslado de estudiante, donde sí se homologa por nombre de materia).
 4. **Los 4 endpoints ya exigen `admin`, pero siguen sin exigir JWT de forma obligatoria** (igual que el resto de la plataforma desde la Ronda 40) — si un cliente no envía el header `Authorization`, el servidor cae al chequeo `actorRol==='admin'` declarado por el body, que un cliente malicioso con acceso directo a la API podría falsificar. Esto es la misma limitación estructural ya documentada, ahora también presente aquí de forma explícita.
 5. **`sesion.jwt` debe existir para que la ruta más segura (JWT) se use** — si el login no logró obtener uno (ver limitaciones de la Ronda 40), estas 4 pantallas siguen funcionando, pero bajo el modelo de confianza retrocompatible, no el criptográfico.
-6. **No se agregó una pantalla de "historial de operaciones de traslado"** (un listado visual de `blob.logMatricula` filtrado a estos 4 tipos) — los registros de auditoría existen y son consultables desde donde ya se muestra `logMatricula` en el sistema (Historial de Notas/Matrícula), pero no se construyó una vista dedicada solo para traslados inter-institucionales en esta ronda.
+6. **No se agregó una pantalla de "historial de operaciones de traslado"** (un listado visual de `blob.logMatricula` filtrado a estos 4 tipos) — los registros de auditoría existen y son consultables desde donde ya se muestra `logMatricula` en el sistema (Historial de Notas/Matrícula), pero no se construyó una vista dedicada solo para traslados inter-institucionales en esta ronda. **La pieza de "directorio/búsqueda cruzada" se construyó en la Ronda 43 — ver abajo.**
+
+## Ronda 43 — Interconexión Directa (Buzón de Solicitudes online) + Flujo Offline perfeccionado
+
+El usuario pidió construir exactamente la pieza marcada como "fuera de alcance" al final de la Ronda 42: un directorio/búsqueda cruzada entre instituciones, un Buzón de Solicitudes con migración directa server-side, y que el flujo offline existente cumpla una secuencia exacta de estados y botones.
+
+### (1) Arquitectura del índice cruzado entre instituciones
+
+**Decisión evaluada con criterio de ingeniería, entre las 2 alternativas que planteó el coordinador:** se optó por un **índice relacional separado** (`estudiantes_indice_red`, tabla nueva en Neon) en vez de recorrer los blobs JSON de todas las instituciones en cada búsqueda. Razones: (a) costo — pasar de O(instituciones × tamaño de cada blob completo) a una única consulta por clave primaria (`nuip`) en una tabla angosta de 6 columnas; (b) privacidad — el índice **no puede** filtrar de más porque físicamente no contiene notas, observador, ficha ni ningún dato sensible, a diferencia de tener que recortar campos de un blob completo en cada respuesta (un error de "se me olvidó excluir ese campo" ahí sería mucho más costoso); (c) consistencia con el patrón ya usado en el proyecto para tablas de solo-índice (`simat_estudiantes`, Ronda 36).
+
+**Sincronización:** por HOOKS en los puntos donde el blob ya se guarda — nunca un job batch aparte, para minimizar desactualización:
+- `POST /api/inetis/db` (el guardado genérico de TODO el blob — el punto por el que pasa cualquier matrícula, retiro o edición hecha desde la UI normal) dispara `_resincronizarIndiceRedInstitucion()` para el arreglo `ests` completo, **sin `await`** (fire-and-forget) para no añadir latencia al guardado real, que es lo que le importa al usuario en el momento.
+- Los endpoints de traslado (`exportar-estudiante`, `importar-estudiante`, y la nueva aprobación de solicitud) llaman a `_sincronizarIndiceRedEstudiante()` para el estudiante puntual afectado, justo después de persistir el cambio.
+
+**Qué expone la búsqueda pública (`GET /api/red/buscar-estudiante-nuip`) — mínimo indispensable:** nombre completo, nombre de la institución de origen, su `sk` (necesario para poder crear la solicitud) y el grado. **Nunca** notas, observador, ficha ni cualquier otro dato sensible — no pueden filtrarse porque no existen en esta tabla. Si el estudiante no existe en la red, existe pero está inactivo, o pertenece a la MISMA institución que consulta, la respuesta es idénticamente "no encontrado" en los 3 casos — deliberadamente, para no revelar por diferencia de respuesta que un documento SÍ es un NUIP real y activo en el sistema.
+
+### (2) Flujo del Buzón de Solicitudes — paso a paso
+
+1. Rector de la institución DESTINO busca por NUIP: `GET /api/red/buscar-estudiante-nuip?nuip=...&sk=...`.
+2. Si aparece, confirma y crea la solicitud: `POST /api/red/solicitudes/crear` (guarda en la tabla `solicitudes_traslado`, `estado='PENDING'`; rechaza con 409 si ya hay una solicitud pendiente para ese mismo estudiante).
+3. El Rector de la institución de ORIGEN ve su bandeja: `GET /api/red/solicitudes/pendientes?sk=...` — filtra por `skOrigen` + `estado='PENDING'`. En la UI aparece como una alerta tipo notificación: *"La institución [Nombre Destino] solicita la transferencia del expediente de [Estudiante]"* (texto literal, con un badge numérico en la pestaña del menú).
+4. Aprobar: `POST /api/red/solicitudes/:id/aprobar` (exige que quien llama pertenezca a `skOrigen`) — ejecuta la Migración Directa (ver punto 3 abajo) y marca la solicitud como `APROBADA`.
+5. Rechazar: `POST /api/red/solicitudes/:id/rechazar` (misma exigencia de pertenencia a `skOrigen`) — marca `RECHAZADA` con motivo opcional.
+
+### (3) Migración Directa Server-Side — motor reutilizado, no duplicado
+
+Se extrajeron 2 funciones puras del código de las Rondas 41-42: `_construirPaqueteExportacionEstudiante()` y `_aplicarImportacionEstudianteADestino()`. **Los 3 disparadores posibles** (el endpoint HTTP `exportar-estudiante` del flujo offline, el endpoint HTTP `importar-estudiante` del flujo offline, y el nuevo `aprobar-solicitud` del flujo online) llaman a estas MISMAS 2 funciones — verificado con pruebas que buscan la llamada textual exacta en cada endpoint. La aprobación de una solicitud, en una sola petición HTTP, lee el blob de origen, construye el paquete, marca al estudiante inactivo en origen, aplica la importación en destino, y persiste ambos blobs — "atómica" en el sentido de negocio (una sola llamada del Rector, sin dejar el traslado a medias desde su perspectiva), aunque **no es una transacción real de base de datos entre las 2 filas de `kv_store`** (Neon/Postgres sí las soporta, pero este proyecto nunca las ha usado entre distintas claves de `kv_store` en ninguna ronda anterior — introducirlas solo aquí habría sido inconsistente con el resto de la arquitectura; se documenta como limitación honesta, no como algo resuelto).
+
+### (4) Flujo offline — qué se encontró y qué se corrigió
+
+**Se encontró:** el botón de exportar (Ronda 41-42) generaba el paquete pero **NO** cambiaba ningún estado del estudiante en origen — quedaba activo, contradiciendo la secuencia exacta pedida. **Se corrigió:** se creó `_marcarEstudianteInactivoPorTraslado()` (fija `e.estadoMatricula='inactivo_traslado'` — campo NUEVO, no pisa ningún campo previo del sistema) y se invoca DENTRO del mismo endpoint `exportar-estudiante`, en la misma operación que genera el paquete y lo persiste — no un paso separado que el rector pudiera saltarse. La UI ahora también dispara la **descarga automática** del archivo apenas se genera (antes requería un clic adicional en "Descargar").
+
+**Se encontró:** la vista previa de importación ya existía (Ronda 42) pero el botón decía "Confirmar Importación" y no había selector de archivo (solo pegar texto). **Se corrigió:** el botón final ahora dice exactamente **"Guardar y Registrar Matrícula"**, la sección se tituló **"Cargar Archivo de Traslado de Estudiante"**, se agregó un `<input type="file">` para cargar el `.json` directamente (además de poder pegar el texto), y la vista previa ahora declara explícitamente si el paquete trae una firma criptográfica adjunta antes de mostrar el botón final (la validación real sigue ocurriendo en el servidor, como siempre).
+
+**Ya cumplía, sin cambios:** la fusión sin pérdida de datos al importar, y el uso de `historicoExterno` para el expediente entrante cuando las materias no coinciden — eso ya estaba correcto desde la Ronda 41.
+
+### (5) Portabilidad docente — confirmación de regresión
+
+Se verificó, con pruebas explícitas, que la regla de la Ronda 42 sigue intacta sin cambios: el paquete de docente sigue incluyendo `historialCargaAcademica` (resumen sin notas) y `repositorioPedagogico`, y el registro de auditoría de importación sigue declarando explícitamente que las notas de estudiantes de la institución de origen NO se migran. No se tocó ningún código de esa ruta en esta ronda salvo lo estrictamente necesario para que siguiera compilando junto a los cambios nuevos.
+
+### Verificación de esta ronda
+
+`node --check` sin errores en `03-app-core.js` y `06-documentos-y-resto.js`; `node --experimental-strip-types --experimental-transform-types --check` sin errores en `src/index.ts`, `src/db/index.ts` y `src/db/schema.ts`. Se creó `test_ronda43_interconexion_directa_y_offline.mjs` (58 aserciones, con ejecución real de la lógica de "activo" del índice y de `_aplicarImportacionEstudianteADestino`). **Corrección transparente y autorizada** sobre `test_ronda42_ui_traslado_y_portabilidad_docente.mjs` (2 aserciones): se actualizaron los patrones para reflejar (a) que el enrutamiento de `traslado-institucional` ahora vive dentro de un bloque `{}` (para disparar también la carga de la bandeja), y (b) que `_autorizarActorAdmin()` renombró su variable interna de `body` a `fuente` (para poder leer también el query string en el nuevo endpoint GET de la bandeja) — ambas siguen verificando exactamente la misma garantía de fondo, documentado en el propio archivo de prueba. **Regresión completa del proyecto: 45 de 45 archivos de prueba en verde, ~1180 aserciones agregadas en total.**
+
+### Archivos nuevos/modificados en esta ronda
+
+- **Modificado:** `src/db/schema.ts` — nuevas tablas `estudiantesIndiceRed` (`estudiantes_indice_red`) y `solicitudesTraslado` (`solicitudes_traslado`).
+- **Modificado:** `src/db/index.ts` — `ensureSchemaRedInterinstitucional()`.
+- **Modificado:** `src/index.ts` — `_autorizarActorAdmin()` extendida a query string; motor compartido `_construirPaqueteExportacionEstudiante()`/`_aplicarImportacionEstudianteADestino()`/`_marcarEstudianteInactivoPorTraslado()`; helpers de índice `_sincronizarIndiceRedEstudiante()`/`_resincronizarIndiceRedInstitucion()`/`_obtenerNombreInstitucion()`; hook en `POST /api/inetis/db`; 5 endpoints nuevos: `GET /api/red/buscar-estudiante-nuip`, `POST /api/red/solicitudes/crear`, `GET /api/red/solicitudes/pendientes`, `POST /api/red/solicitudes/:id/aprobar`, `POST /api/red/solicitudes/:id/rechazar`; `exportar-estudiante`/`importar-estudiante` refactorizados para reutilizar el motor compartido y marcar el estado de matrícula correcto.
+- **Modificado:** `gestor-academico/dist/modules/03-app-core.js` — el enrutamiento de `traslado-institucional` ahora también dispara la carga de la bandeja de solicitudes pendientes.
+- **Modificado:** `gestor-academico/dist/modules/06-documentos-y-resto.js` — nueva pestaña "📡 Red / Buzón" (búsqueda + bandeja con alerta y badge), funciones `_tiBuscarEnRed`/`_tiCrearSolicitud`/`_tiAprobarSolicitud`/`_tiRechazarSolicitud`/`_tiCargarBandejaPendientes`/`_tiHtmlBandeja`; ajustes de texto/flujo en la pestaña Estudiantes (Offline): descarga automática, selector de archivo, botón "Guardar y Registrar Matrícula", confirmación de estado inmediato al exportar.
+- **No se tocó ningún secreto real** — no se requirió ninguna variable de entorno nueva.
+- **Modificado (corrección transparente):** `test_ronda42_ui_traslado_y_portabilidad_docente.mjs` — 2 aserciones (ver "Verificación de esta ronda").
+- **Nuevo (pruebas):** `test_ronda43_interconexion_directa_y_offline.mjs` — 58 aserciones.
+
+### Riesgos, limitaciones y trabajo pendiente (transparencia total)
+
+1. **La migración directa server-side NO es una transacción de base de datos real entre las 2 instituciones** (ver punto 3) — si el servidor cayera justo entre el guardado del blob de origen y el de destino, el estudiante quedaría inactivo en origen sin haberse creado aún en destino. Es una ventana de riesgo pequeña (milisegundos, sin ningún `await` intermedio de red) pero real, y consistente con que el resto del proyecto tampoco usa transacciones multi-fila en `kv_store`.
+2. **La resincronización completa del índice en cada `POST /api/inetis/db`** recorre TODOS los estudiantes de la institución con upserts secuenciales — para instituciones muy grandes (miles de estudiantes) esto podría tardar varios segundos en segundo plano; no bloquea la respuesta al usuario (es fire-and-forget), pero si el proceso del servidor se reinicia a mitad de esa resincronización, algunas filas del índice podrían quedar con datos ligeramente desactualizados hasta el siguiente guardado.
+3. **La búsqueda en red exige `nuip` exacto** (no hay búsqueda parcial por nombre) — es deliberado por privacidad (buscar por nombre parcial en una tabla de otras instituciones sería mucho más propenso a exponer coincidencias no deseadas), pero significa que un error de tipeo en el documento no encuentra al estudiante.
+4. **No hay una notificación push/proactiva cuando llega una nueva solicitud** — el Rector de origen debe entrar a la pantalla de Traslado Inter-Institucional para verla (el badge se carga la primera vez que entra a esa pantalla en la sesión, no en tiempo real). Conectar esto al sistema de notificaciones push ya existente en la plataforma (Ronda 33) queda como trabajo pendiente explícito.
+5. **El rechazo de una solicitud no notifica automáticamente a quien la creó** — queda registrado en la tabla (`estado='RECHAZADA'`, `motivoRechazo`), consultable, pero no hay un aviso proactivo hacia la institución solicitante en esta ronda.
+6. **Los 5 nuevos endpoints exigen rol `admin`, pero (igual que el resto de la plataforma) no exigen JWT de forma obligatoria** — la misma limitación estructural documentada desde la Ronda 40, ahora también presente aquí.
+
+## Ronda 44 — Prompt Maestro de 11 Dimensiones (refactorización arquitectónica, aplicada de forma aditiva/conservadora)
+
+El usuario envió un "Prompt Maestro de 11 Dimensiones" pidiendo una refactorización muy grande: compresión HTTP, endpoints REST granulares en vez del blob JSON monolítico, UPSERT atómico, cola offline Outbox/IndexedDB, caché con ETags, login de un paso con bypass de Súper Admin, modo oscuro WCAG AA, IA dual Gemini/Ollama + tablas SaaS, auto-seeding, independencia de proveedor de BD, Docker/Nginx, y el cierre de las 4 limitaciones documentadas al final de la Ronda 43. Dado el riesgo real de un "big bang" sobre una arquitectura multi-tenant (blob JSON por institución en `kv_store`) que sostiene las 43 rondas anteriores, esta ronda se abordó con **criterio conservador y aditivo**, dimensión por dimensión, priorizando explícitamente NO ROMPER producción sobre completar las 11 al 100%.
+
+**Dimensiones completadas de verdad, funcionalmente:** 1 (parcial: 1.1 completa, 1.2 adaptada), 2, 5 (ya cumplía + bypass confirmado), 7 (capa de infraestructura nueva, sin rewire de Adán), 9 (confirmación), 10 (entregables de infraestructura, sin ejecución real), 11 (a, b, c, d — las 4 completas).
+**Dimensiones explícitamente diferidas, con razón documentada:** 3, 4, 6 (6 se auditó y **ya cumplía**, sin necesitar cambios), 8 (ya existía en la forma que aplica a esta arquitectura, ver abajo).
+
+### Dimensión 1 — Compresión HTTP + endpoints REST granulares
+
+**1.1 (GZIP/Brotli) — YA EXISTÍA, verificado, sin cambios:** `compression` ya estaba instalado (`package.json`) y montado en `src/index.ts` (`app.use(compression({ threshold: 1024 }))`). No se prometía nada nuevo aquí porque ya estaba resuelto en una ronda anterior.
+
+**1.2 (eliminar el JSON monolítico por tablas relacionales por nota) — ADAPTADA, decisión de ingeniería explícita: NO SE HIZO la migración de almacenamiento.** Migrar de "un blob JSON por institución" a "una fila por nota" es un cambio de la BASE de datos de todo el sistema — tocaría cada endpoint que lee/escribe notas, ficha, observador, matrícula, etc. en las 43 rondas anteriores, sin poder probarlo contra una base de datos real de prueba en este entorno. Se consideró un riesgo desproporcionado para una sola ronda.
+
+**Lo que SÍ se hizo, real y aditivo:** 3 endpoints GET nuevos que leen el MISMO blob existente (reutilizando la caché en memoria de 5s ya usada por `GET /api/inetis/db`) pero devuelven solo el fragmento pedido, reduciendo el payload de red sin tocar el almacenamiento:
+- `GET /api/grados` → `{grados:[{n}]}` (lista de grados distintos presentes en `ests`).
+- `GET /api/grados/:id/estudiantes` → `{estudiantes:[{id,n,numDoc,estadoMatricula}]}` filtrado por grado.
+- `GET /api/grados/:id/materias/:materiaId/notas` → `{notas:[{estId,n,notas}]}` (solo la sub-rama de esa materia).
+
+### Dimensión 2 — UPSERT atómico por nota
+
+El endpoint `POST /api/inetis/notas/guardar-fila` (Ronda 41) ya seguía el patrón leer-fresco → fusionar por spread → escribir, semánticamente equivalente a `INSERT ... ON CONFLICT (est_id, c_id, per) DO UPDATE SET ...`. Se extrajo su lógica a una función compartida `_ejecutarGuardarFilaNotas(req)` y se expuso TAMBIÉN bajo el nombre literal pedido por el Prompt Maestro, `POST /api/notas/actualizar` — ambas rutas ejecutan exactamente el mismo motor, sin duplicar lógica ni comportamiento.
+
+### Dimensión 3 — Outbox Pattern / IndexedDB — DIFERIDA esta ronda
+
+Razón: ya existe una arquitectura offline-first basada en localStorage/sessionStorage + sincronización de blob, ampliamente probada en 43 rondas. Reemplazar o superponer un mecanismo de cola IndexedDB con reintentos/backoff en el flujo crítico de guardado de notas, sin poder ejecutar pruebas de integración reales de red intermitente en este entorno, se consideró de riesgo alto para el beneficio marginal inmediato. Queda documentada como candidata explícita para una ronda dedicada exclusivamente a esto, con su propio plan de pruebas.
+
+### Dimensión 4 — Caché local con ETags — DIFERIDA esta ronda
+
+El servidor ya soporta ETag para `GET /api/inetis/db` (ronda anterior). Extenderlo a los 3 endpoints nuevos de la Dimensión 1.2 y construir la capa de validación de caché en el cliente (localStorage/IndexedDB) es trabajo real pero no crítico frente a las Dimensiones que sí se cerraron — se prioriza no dejar esta capa a medias (ETag sin el cliente que lo aproveche no aporta valor real) y se documenta como pendiente para una próxima ronda junto con la Dimensión 3.
+
+### Dimensión 5 — Login de un solo paso + bypass oculto de Súper Admin
+
+**Verificado, ya cumplía, sin necesitar cambios de código:**
+- `doLoginInstitucional()` (Ronda 39, `gestor-academico/dist/modules/03-app-core.js`) ya es un formulario de un solo paso: un único usuario + una única contraseña, sin selector de rol — prueba las 4 formas de credencial (personal, elecciones, estudiante, acudiente) contra TODAS las instituciones activas en paralelo, y detecta el rol automáticamente.
+- El "bypass oculto para Súper Admin" **ya existe**: una función instalada globalmente (`_instalarRescateSuperAdminGlobal`, línea ~6199) escucha teclas cuando NINGÚN campo de formulario tiene el foco; si la persona escribe la secuencia literal `super` en cualquier pantalla (incluida la de login), aparece un `prompt()` pidiendo la contraseña maestra, que se hashea (SHA-256) y se envía al servidor para pedir un "token de rescate" — sin pasar por el formulario de usuario/contraseña normal ni exponer ningún selector o botón visible. Es exactamente el patrón de "bypass oculto" pedido: no se agregó nada nuevo, se confirma y documenta su existencia.
+
+### Dimensión 6 — Modo oscuro WCAG 2.1 AA (4.5:1) — auditado, YA CUMPLÍA
+
+Se localizaron las paletas de modo oscuro (`html[data-theme="dark"]`, `gestor-academico/dist/portal.html`, líneas ~148-218: variables `--bg-page`, `--bg-card`, `--bg-card-alt`, `--text-main`, `--text-secondary`, `--text-muted`, y 14 colores de acento remapeados para modo oscuro). Se calculó la razón de contraste real (fórmula WCAG de luminancia relativa) de las 15 combinaciones texto/fondo contra los 3 fondos usados (`--bg-page` #111722, `--bg-card` #1b2432, `--bg-card-alt` #1e2836): **las 45 combinaciones resultantes dan entre 5.57:1 y 15.25:1 — todas por encima del umbral 4.5:1 de AA.** No se necesitó ningún cambio. Script de auditoría conservado en `test_ronda44_dimension6_wcag_contraste.mjs`.
+
+### Dimensión 7 — IA dual Gemini/Ollama (Strategy Pattern) + tabla SaaS `ai_subscriptions`
+
+**Nuevo archivo `src/lib/ai-service.ts`:** interfaz `AIStrategy` + `GeminiStrategy` (usa `@google/genai`, ya instalado, misma resolución de API key que el sistema ya usaba) + `OllamaStrategy` (usa `fetch` nativo de Node contra `OLLAMA_BASE_URL`, protocolo REST estándar de Ollama `POST /api/generate` — **sin instalar ningún paquete nuevo**, según la restricción de este entorno) + `obtenerEstrategiaIA()`/`generarConEstrategiaIA()` que eligen el proveedor: **por defecto SIEMPRE Gemini** (nada cambia si no se configura nada), y solo cambia a Ollama si `AI_PROVIDER=ollama` Y `OLLAMA_BASE_URL` están ambas configuradas.
+
+**ADAPTADO explícitamente:** el endpoint SSE existente del asistente "Adán" (`/api/adan/*`, ~línea 3919 de `src/index.ts`) **NO se reescribió** para usar esta capa en esta ronda — es uno de los flujos más usados y delicados del sistema (streaming, historial, function calling ya construido a mano sobre `GoogleGenAI`), y no había forma de probar un servidor Ollama real en este entorno para validar el rewire end-to-end sin riesgo. La capa queda lista, documentada e importada en `src/index.ts`, disponible para una futura ronda que sí quiera migrar ese endpoint con pruebas reales disponibles.
+
+**Tabla `ai_subscriptions`** creada de forma idempotente en `initDb()` (`src/db/index.ts`): columnas `sk` (única), `proveedor`, `plan`, `estado`, `limite_mensual`, `uso_mes_actual`, `metadata`. **Sin cobros reales activados** — solo esquema + 2 endpoints CRUD básicos (`GET`/`POST /api/ai-subscriptions/:sk`, el POST protegido con `_exigirJWTAdmin`).
+
+Variables nuevas agregadas a `.env`/`.env.example` (comentadas, opcionales, no rompen nada si no se configuran): `AI_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`.
+
+### Dimensión 8 — Auto-seeding / auto-migración
+
+`initDb()` (`src/db/index.ts`) ya usa `CREATE TABLE IF NOT EXISTS` de forma idempotente desde el inicio del proyecto para TODAS las tablas de Neon — confirmado, sin cambios necesarios ahí.
+
+**Sobre el "seeding de datos maestros" (Súper Admin default, roles, grados/asignaturas base):** en esta arquitectura, esos datos NO viven en una tabla global de Neon — viven en el objeto `GESTOR_DEFAULT` del lado del cliente (`gestor-academico/dist/modules/03-app-core.js`, incluye `superAdmin:{u:'gestor',p:'...',nombre:'...'}` como valor por defecto), que se usa para inicializar `gestorDB` en `localStorage` **solo si no existe todavía** — es decir, ya es auto-seeding idempotente, solo que del lado del cliente en vez del servidor, porque así está diseñada la plataforma (multi-tenant, cada institución define sus propios grados/asignaturas al crearse, no hay un catálogo global de Neon que poblar). No se forzó una migración de este patrón a tablas de servidor porque sería, otra vez, un cambio de arquitectura de fondo fuera del alcance conservador de esta ronda — se documenta la equivalencia funcional en vez de fingir que falta algo que en realidad ya está cubierto por el diseño existente.
+
+### Dimensión 9 — Independencia de proveedor de BD
+
+Confirmado, sin cambios: `src/db/index.ts` usa `pg.Pool` genérico + `DATABASE_URL` (variable de entorno estándar) + `ssl:{rejectUnauthorized:false}` (opción genérica de TLS de `pg`, no una característica propietaria de Neon). No se usa ningún driver, extensión SQL o feature exclusivo de Neon (branching, `neon_utils`, etc.) en ningún archivo del proyecto — se confirmó con búsqueda de `neon` en el código fuente (`src/`), sin resultados de dependencia funcional real, solo el propio valor de `DATABASE_URL` en `.env` (que sí apunta a un proyecto Neon en este despliegue, pero el CÓDIGO funcionaría igual contra cualquier Postgres ≥13).
+
+### Dimensión 10 — Docker + Nginx (entregables de infraestructura)
+
+**LIMITACIÓN DECLARADA EXPLÍCITAMENTE (según la instrucción de esta ronda):** este entorno no tiene Docker Engine ni una base Postgres real de prueba — los 3 archivos se entregaron como archivos de texto listos para usar, validados solo por estructura/sintaxis (YAML bien formado, instrucciones Dockerfile válidas), **nunca ejecutados de verdad aquí.**
+
+Nuevos archivos en `infra/`:
+- `Dockerfile` — multi-stage (`deps` con `npm ci --omit=dev`, `runtime` con usuario sin privilegios, `HEALTHCHECK`, `EXPOSE 5000`).
+- `docker-compose.yml` — 3 servicios: `backend` (build desde el Dockerfile), `postgres` (opcional, para desarrollo local u on-premise sin depender de Neon — ver Dimensión 9), `nginx` (reverse proxy).
+- `nginx.conf` — reverse proxy hacia el backend, `gzip on` con los mismos tipos MIME relevantes, `proxy_buffering off` para no romper el streaming SSE del asistente Adán.
+
+### Dimensión 11 — Cierre de las 4 limitaciones documentadas al final de la Ronda 43
+
+**11.a — Transacciones SQL reales:** el flujo de aprobar una solicitud (`POST /api/red/solicitudes/:id/aprobar`) ahora envuelve las 3 escrituras (blob de origen, blob de destino, estado de la solicitud) en `await db.transaction(async (tx) => {...})` (API nativa de `drizzle-orm/node-postgres`, ya disponible en `drizzle-orm@0.30.10`, sin paquete nuevo) — si CUALQUIERA de las 3 falla, TODAS se revierten automáticamente (ROLLBACK real), no solo un "mejor esfuerzo" secuencial como antes. Se prefirió `db.transaction()` sobre manejar un `pool.connect()`+`BEGIN/COMMIT/ROLLBACK` manual porque es la forma idiomática ya soportada por la librería que el proyecto ya usa, con la misma garantía real de atomicidad y menos código nuevo que mantener — una adaptación menor y justificada de la sugerencia literal del Prompt Maestro.
+
+**11.b — JWT obligatorio en los 5 endpoints `/api/red/*`:** nueva función `_exigirJWTAdmin(req)` (distinta de `_autorizarActorAdmin`, que sigue existiendo sin cambios) — rechaza con 401 si no hay un JWT válido en el header `Authorization: Bearer ...`, sin ningún fallback a `actorRol` del body/query. Aplicada EXCLUSIVAMENTE a los 5 endpoints de red (`GET /api/red/buscar-estudiante-nuip`, `POST /api/red/solicitudes/crear`, `GET /api/red/solicitudes/pendientes`, `POST /api/red/solicitudes/:id/aprobar`, `POST /api/red/solicitudes/:id/rechazar`). `_autorizarActorAdmin` (retrocompatible) se mantuvo sin tocar en `/api/traslado/*` y `guardar-fila`, exactamente como se pidió ("no toques el resto").
+
+**11.c — Reindexación incremental:** nueva función `_sincronizarIndiceRedIncremental(sk, estsAntes, estsAhora)` con huella por estudiante (`_huellaIndiceRed`: concatena numDoc+n+g+estadoMatricula) — en `POST /api/inetis/db` se captura el snapshot "antes" desde la caché en memoria justo antes de sobreescribir el blob, y solo se re-sincronizan en Neon las filas cuya huella cambió o que son nuevas. Si no hay snapshot en caché (arranque en frío del proceso), se usa como EXCEPCIÓN documentada el `_resincronizarIndiceRedInstitucion()` completo de la Ronda 43 (mantenido intacto como respaldo, ya no como regla general).
+
+**11.d — Búsqueda por NUIP exacto:** confirmado sin cambios — `GET /api/red/buscar-estudiante-nuip` sigue usando `eq(estudiantesIndiceRed.nuip, nuip)` (comparación exacta), no se relajó a `ILIKE`/parcial en ningún punto de esta ronda.
+
+### Pruebas
+
+`test_ronda44_dimensiones.mjs` (nuevo, en el scratchpad de pruebas) cubre por inspección de código + sub-pruebas de ejecución real: presencia y montaje de `compression`; los 3 endpoints `/api/grados*`; la función compartida `_ejecutarGuardarFilaNotas` y el alias `/api/notas/actualizar`; `_exigirJWTAdmin` definida y usada en los 5 endpoints `/api/red/*` (y NO en `/api/traslado/*` ni en `guardar-fila`, que deben seguir con `_autorizarActorAdmin`); `db.transaction(` presente dentro del handler de `aprobar`; `_sincronizarIndiceRedIncremental`/`_huellaIndiceRed` presentes y con lógica de huella verificada por ejecución real de la función reimplementada; comparación exacta (`eq(`) en `buscar-estudiante-nuip`; existencia y contenido de `src/lib/ai-service.ts` (Strategy Pattern real, ambas estrategias, selección por defecto a Gemini verificada por ejecución real de `obtenerEstrategiaIA` con distintas combinaciones de env vars simuladas); tabla `ai_subscriptions` en `initDb()`; auditoría WCAG de las 45 combinaciones de color del modo oscuro (recalculada dentro del propio test, no solo referenciada); existencia y validez estructural de los 3 archivos de `infra/` (parseo manual de YAML para `docker-compose.yml`, verificación de stages en el `Dockerfile`, balance de llaves en `nginx.conf`); ausencia de dependencia funcional a features propietarias de Neon en `src/`.
+
+Se re-ejecutó la suite COMPLETA de pruebas (todos los `test_*.mjs` del proyecto, incluyendo las 43 rondas anteriores) tras estos cambios — 100% verde. Ver el conteo final al pie de este documento / en el reporte de entrega de esta ronda.
+
+## Ronda 45 — FASE 1 de las 4 dimensiones diferidas en la Ronda 44 (Dual-Write / Strangler Fig)
+
+El usuario aceptó el criterio conservador de la Ronda 44 y pidió completar las 4 dimensiones que quedaron diferidas (migración de almacenamiento, cola offline IndexedDB, caché ETag en cliente, auto-seeding server-side), autorizando explícitamente a hacerlo "por partes" mientras al final quede completo. Esta ronda entrega la **Fase 1** de la migración de almacenamiento (Dual-Write / Strangler Fig Pattern, la estrategia más segura para este tipo de migración) y las otras 3 dimensiones completas. **El blob JSON sigue siendo la fuente de verdad autoritativa — no se depreca en esta ronda.**
+
+### Dimensión 1 — Migración de almacenamiento (Fase 1: Dual-Write)
+
+**Qué se implementó:**
+- 3 tablas relacionales normalizadas en Neon: `estudiantes_rel`, `materias_rel`, `calificaciones_rel` (con índices únicos por institución+estudiante, institución+materia, e institución+estudiante+materia+periodo respectivamente — la clave exacta de UPSERT). Creación perezosa e idempotente vía `ensureSchemaRelacionalNotas()` (`src/db/index.ts`) — **nunca dentro de `initDb()`**, para no arriesgar el arranque de producción con una creación de esquema adicional en cada boot.
+- Una 4ta tabla, `migracion_relacional_notas` — el "interruptor" por institución. Es la pieza que hace segura la lectura relacional: el dual-write incremental (ver abajo) llena las 3 tablas SOLO para estudiantes/materias que alguien guarda de nuevo después de esta ronda — eso, por sí solo, dejaría listas INCOMPLETAS si se leyera directo. Los 3 endpoints `/api/grados*` solo leen de las tablas relacionales cuando existe una fila en este interruptor para ese `sk` (puesta ahí únicamente por el script de backfill tras un respaldo COMPLETO y exitoso) — mientras no exista, se usa el blob completo, sin importar cuántas filas relacionales parciales ya haya.
+- **Dual-write real** en `_ejecutarGuardarFilaNotas()`/`POST /api/notas/actualizar`: cada vez que se guarda una nota de tipo `planilla`, además de escribir en el blob (sin cambios, sigue siendo la escritura autoritativa), se hace un `INSERT ... ON CONFLICT DO UPDATE` real (`_dualWriteCalificacionRel()`) hacia las 3 tablas — envuelto en try/catch, de forma que un fallo ahí **nunca** hace fallar el guardado real. **Alcance explícito:** solo `tipo='planilla'` se migra en esta fase (el grano que necesitan los 3 endpoints modulares); `tipo='actividad'` (notas de quiz/actividad puntual) sigue viviendo únicamente en el blob — documentado como decisión de alcance, no un olvido.
+- Los 3 endpoints GET de la Ronda 44 (`/api/grados`, `/api/grados/:id/estudiantes`, `/api/grados/:id/materias/:materiaId/notas`) ahora consultan primero el interruptor de migración (`_institucionYaMigradaRelacional()`); si la institución ya fue backfileada, leen directo de las tablas indexadas (rápido, sin cargar el blob de 3 MB); si no, caen exactamente al mismo camino de la Ronda 44 (blob completo, recorte del fragmento). Cada respuesta declara explícitamente `fuente: 'relacional' | 'blob'` — trazabilidad honesta para depurar en producción.
+- **Script de backfill histórico**, `scripts/migrar-notas-a-relacional.ts`: recorre todas las instituciones (todas las filas de `kv_store` salvo la del Gestor), copia estudiantes/materias/calificaciones con el mismo UPSERT idempotente (correrlo dos veces nunca duplica), y al terminar cada institución sin errores, marca su interruptor en `migracion_relacional_notas`. Soporta `--sk=<institución>` (una sola institución) y `--dry-run` (solo cuenta, no escribe). **No se ejecuta automáticamente en ningún arranque** — es una herramienta manual que se corre cuando se decida activar la Fase 1 en el ambiente real.
+
+**Qué se adaptó respecto al pedido literal y por qué:** el pedido original describía "los 3 endpoints deben consultar directamente las tablas relacionales... sin cargar el blob". Se adaptó a "consultan las tablas relacionales SOLO si la institución ya fue backfileada por completo" — sin esa condición, una institución con dual-write incremental parcial (algunos estudiantes con notas nuevas desde esta ronda, la mayoría todavía no) devolvería listas de estudiantes/notas incompletas la primera vez que alguien la consultara, lo cual sería un bug de datos, no una optimización. El interruptor por institución es la pieza que hace segura esa transición.
+
+**Qué se verificó de verdad vs. qué queda pendiente de confirmar en un despliegue real:** se verificó por inspección de código la presencia y forma correcta de las 4 tablas, los índices, el dual-write, el fallback, y el script; y se EJECUTÓ de verdad (en Node, dentro del test) la lógica de UPSERT (usando un `Map` en memoria como sustituto fiel de `ON CONFLICT DO UPDATE`), la lógica del interruptor de migración, y el conteo de agrupamiento de notas que usa el backfill. **Lo que NO se pudo verificar en este entorno** (no hay una Neon real de prueba disponible): el backfill corriendo de verdad contra datos de producción reales, el tiempo real que tomaría en una institución grande, ni concurrencia real (dual-write en caliente mientras el backfill corre). Se recomienda correr el script primero con `--dry-run` contra un respaldo antes de usarlo en el ambiente real.
+
+**Fase 2 (futura, NO implementada, requiere pedido explícito del usuario):** una vez que haya evidencia real de estabilidad en producción (Render + datos reales durante un tiempo razonable), se podría invertir la prioridad — relacional como fuente de verdad, blob como respaldo — y eventualmente dejar de escribir en el blob para notas de tipo planilla; más adelante, extender el mismo patrón a `tipo='actividad'` y a otras partes del blob (ficha, observador, asistencia). Ninguno de esos pasos se hizo aquí porque este entorno no puede dar esa evidencia de estabilidad.
+
+### Dimensión 2 — Cola offline con IndexedDB (Outbox Pattern) — implementada de verdad
+
+**Qué se implementó:** nuevo módulo `gestor-academico/dist/modules/08-outbox-notas.js`, cargado en `portal.html` después de `07-sync-engine.js`. Base de datos IndexedDB `_outboxNotasDB` con el object store `cola_notas_pendientes`; cada nota fallida se encola como un evento `NOTA_CAMBIADA` (`{tipo, payload, endpoint, headers, estado:'pending', intentos, ts}`). Un trabajador en segundo plano (`OutboxNotas.procesarCola()`) procesa la cola **en orden (FIFO, por timestamp de creación)**, reintenta con backoff exponencial (1s, 2s, 4s, 8s, tope 16s), se dispara automáticamente al detectar el evento `online` del navegador y también cada 20s mientras haya pendientes (cubre redes rurales donde `online` no siempre dispara de forma confiable). Al confirmar un envío, se hace una **actualización FINA del DOM**: se toca únicamente el elemento `base-{estId}` de la fila del estudiante afectado (destello verde + tooltip "Sincronizado"), sin re-renderizar la tabla ni llamar a `renderApp()`.
+
+**Tensión de diseño reconocida y resuelta (tal como pidió el coordinador que se documentara):** ya existía un mecanismo de guardado optimista con reintento (`_debounceGuardarFilaNotas`/`_enviarFilaNotasAlServidor`, Rondas 36/41) — reemplazarlo por completo con IndexedDB habría significado reescribir el flujo crítico de guardado de notas sin poder probar concurrencia ni IndexedDB de navegador real en este entorno (el mismo riesgo que la Ronda 44 ya rechazó para el backend). Se optó, en cambio, por la salida más segura: **IndexedDB coexiste como cola de RESILIENCIA**, activándose específicamente en el `catch()` de un error de RED real (no en una respuesta 4xx/5xx del servidor, que ya maneja el código existente sin cambios) — el mecanismo viejo (reintento con el blob completo a los 350ms) sigue intacto, sin tocarse; la cola de IndexedDB es una segunda capa que sobrevive a que se cierre la pestaña o se pierda la señal por horas, algo que el mecanismo anterior no podía garantizar.
+
+**Qué se verificó de verdad vs. qué queda pendiente:** se verificó por inspección de código la estructura completa del módulo y su punto de integración exacto, y se EJECUTÓ de verdad la lógica de backoff exponencial y de orden FIFO (reimplementadas en el test). **Lo que NO se pudo verificar en este entorno:** el comportamiento real de IndexedDB en un navegador de verdad — Node no tiene IndexedDB nativo, así que no hay forma de correr el módulo end-to-end aquí. Esto requiere un despliegue real (o al menos abrir la pantalla en un navegador de verdad) para confirmarse del todo.
+
+### Dimensión 3 — Caché local y validación ETag en cliente — completa
+
+**Servidor:** los 3 endpoints modulares de la Ronda 44 (`/api/grados*`) ahora responden con un header `ETag` (hash SHA-1 del cuerpo JSON exacto — funciona igual por el camino relacional o el camino blob, porque se calcula sobre el resultado final) y honran `If-None-Match` con un `304 Not Modified` sin cuerpo (`_responderConETag()` en `src/index.ts`).
+
+**Cliente:** nuevo helper genérico `EtagCache.fetchConCache(url)` (en el mismo `08-outbox-notas.js`) — guarda en `localStorage` el último ETag+cuerpo recibido por URL exacta, envía `If-None-Match` en la siguiente petición, usa la copia cacheada ante un 304, actualiza la caché ante un 200, y devuelve la copia cacheada (mejor una respuesta un poco vieja que ninguna) si la petición falla por red y hay caché disponible.
+
+**Alcance honesto:** los 3 endpoints modulares todavía no tienen ninguna pantalla que los consuma (se crearon en la Ronda 44 como infraestructura de lectura liviana, sin reemplazar ninguna pantalla existente). El helper de cliente queda listo, documentado y probado en su lógica — la primera pantalla que decida consumir esos endpoints (esta ronda o una futura) solo necesita llamar a `EtagCache.fetchConCache(url)` en vez de `fetch(url)`. No se forzó a ninguna pantalla existente a migrar, para no arriesgar una regresión visual sin poder probarla en un navegador real en este entorno.
+
+### Dimensión 4 — Auto-seeding server-side completo
+
+**Qué se implementó:** nueva función `autoSeedSuperAdmin(gestorSk)` en `src/db/index.ts`, invocada al terminar de arrancar el servidor (`app.listen(...)`, best-effort, nunca bloquea ni puede tumbar el arranque). Es **idempotente**: si ya existe cualquier fila para la clave del Gestor (`GESTOR_SK`) en `kv_store` — sin importar su contenido — la función se sale de inmediato sin tocar nada. Solo si esa fila NO existe (base de datos nueva/limpia), crea un Súper Admin por defecto (`usuario: 'gestor'`) con una contraseña **NUNCA hardcodeada**: si la variable de entorno `SUPERADMIN_SEED_PASSWORD` está configurada, se usa esa; si no, se genera aleatoriamente (`crypto.randomBytes(16)`, 128 bits) y se imprime **una sola vez** en los logs de arranque — se guarda ya cifrada con el mismo esquema PBKDF2 (100.000 iteraciones, SHA-256) que ya usa el verificador existente del Súper Admin, así que el login normal funciona sin ningún cambio adicional. El `gestorDB` sembrado arranca con `platforms: []` (sin la institución de demostración que sí trae `GESTOR_DEFAULT` del lado del cliente) para no crear datos falsos en un despliegue de producción real.
+
+**Qué se verificó de verdad:** se reimplementó y EJECUTÓ de verdad, en este entorno, tanto la generación del hash como su verificación (usando el mismo esquema PBKDF2), confirmando que una contraseña generada por el seeding sí puede iniciar sesión correctamente contra el verificador existente, y que una contraseña incorrecta nunca pasa. **Lo que NO se pudo verificar:** el arranque real contra una Neon vacía de verdad (no hay una disponible en este entorno) — se recomienda observar los logs del primer arranque en el despliegue real para confirmar que el seeding se disparó como se espera.
+
+### Retrocompatibilidad
+
+Se confirmó (por inspección + re-ejecución de la suite completa) que nada de esta ronda tocó el comportamiento de `_autorizarActorAdmin`, `_exigirJWTAdmin`, ni la transacción SQL real de `aprobar-solicitud` — las 3 piezas centrales de seguridad de la Ronda 44 siguen intactas.
+
+### Pruebas
+
+`test_ronda45_dimensiones.mjs` (nuevo): 81 pruebas, organizadas por las 4 dimensiones, cada bloque con una nota explícita de qué se verificó por inspección/ejecución real en este entorno vs. qué requiere un despliegue real (Postgres real, navegador real) para confirmarse del todo. Suite completa re-ejecutada: **47 archivos, ~1284 aserciones agregadas, 100% verde**, sin necesidad de modificar ningún test previamente congelado (a diferencia de la Ronda 44, esta ronda no cambió la forma de ningún código ya cubierto por aserciones anteriores).
+
+## Guía de Migración y Validación — Ronda 45 (Ronda 46: empaquetado final)
+
+Esta sección es la guía operativa, copiable, para ejecutar en Render el script de backfill `scripts/migrar-notas-a-relacional.ts` (Ronda 45, Dimensión 1) y para ubicar la contraseña autogenerada del Súper Admin (Ronda 45, Dimensión 4) en el primer arranque en frío. Ninguna de las dos cosas es automática — ambas requieren una acción manual de quien opera el despliegue, a propósito, tal como se documentó en la Ronda 45.
+
+### A) Cómo ejecutar el backfill de notas a esquema relacional en Render
+
+**Runtime del proyecto:** este proyecto NO compila a JavaScript antes de correr — usa `tsx` (ya declarado en `devDependencies` de `package.json`) para ejecutar los `.ts` directamente, exactamente igual que `"start": "tsx src/index.ts"` y `"migrate-db": "tsx scripts/migrate-db.ts"`. El script de backfill se ejecuta con el mismo runtime.
+
+**Dónde correrlo:** en el dashboard de Render, dentro del servicio ya desplegado → pestaña **"Shell"** (abre una terminal conectada al mismo contenedor en ejecución, con las mismas variables de entorno — incluida `DATABASE_URL` — ya cargadas). No hace falta configurar nada adicional: el script lee `DATABASE_URL` del entorno igual que el resto del servidor.
+
+**Paso 1 — Dry-run (sin riesgo, no escribe nada):**
+```
+npx tsx scripts/migrar-notas-a-relacional.ts --dry-run
+```
+Esto recorre TODAS las instituciones y solo CUENTA cuántos estudiantes, materias y calificaciones encontraría para migrar — no toca la base de datos en ningún momento. La salida se ve así, institución por institución:
+```
+  ✓ ie_sincelejito_db_v4: 312 estudiantes, 18 materias, 4104 calificaciones
+```
+y al final un resumen total (`Instituciones procesadas`, `Total estudiantes`, `Total materias`, `Total calificaciones`) más la línea `DRY-RUN: no se escribió nada. Corra sin --dry-run para aplicar de verdad.` **Cómo interpretarlo:** compare los conteos contra lo que espera de esa institución (por ejemplo, el número de estudiantes matriculados que ya conoce) — si los números se ven razonables, es seguro continuar; si algo se ve claramente mal (0 estudiantes en una institución que sabe que tiene cientos, por ejemplo), deténgase y revise antes de seguir.
+
+**Paso 2 — Prueba piloto con UNA sola institución (recomendado antes de hacerlo para todas):**
+```
+npx tsx scripts/migrar-notas-a-relacional.ts --sk=<sk_de_esa_institucion>
+```
+(El valor de `--sk=` es el mismo identificador `sk` que ya usa esa institución en el resto del sistema — se puede confirmar en el panel del Gestor Académico YC, en los datos de la plataforma, o pidiéndolo a quien la administra.) Esto SÍ escribe en la base de datos, pero solo para esa institución — es la forma de validar el proceso completo (incluida la activación del "interruptor" `migracion_relacional_notas` para esa institución, que hace que sus 3 endpoints `/api/grados*` empiecen a leer de las tablas relacionales) sin afectar al resto de la plataforma. Después de correrlo, verifique en la aplicación que esa institución sigue funcionando con total normalidad (planilla, notas, todo se ve igual) — el `fuente` que devuelven esos 3 endpoints ahora debería decir `"relacional"` en vez de `"blob"` para esa institución.
+
+**Paso 3 — Ejecutarlo para todas las instituciones:**
+```
+npx tsx scripts/migrar-notas-a-relacional.ts
+```
+Sin ninguna bandera, procesa TODAS las instituciones (salvo la fila especial del propio Gestor Académico YC, que el script excluye automáticamente). Puede tardar más en instituciones grandes — no hay problema en dejarlo correr; no bloquea al resto del servidor porque corre en un proceso aparte (la terminal Shell), no dentro del proceso web que atiende peticiones.
+
+**Es completamente seguro re-ejecutarlo cuantas veces haga falta, en cualquiera de los 3 pasos:** el script usa `INSERT ... ON CONFLICT DO UPDATE` (UPSERT real) para cada fila — correrlo dos veces nunca duplica datos, solo actualiza los mismos registros con la información más reciente del blob. **El JSON (el blob de `kv_store`) sigue siendo la fuente de verdad autoritativa durante toda esta fase** (Ronda 45, Fase 1 — Dual-Write/Strangler Fig): el backfill solo COPIA hacia las tablas relacionales, nunca borra ni modifica el blob original. Si algo saliera mal a mitad del proceso (el Shell se desconecta, Render reinicia el servicio, etc.), no hay ningún riesgo de pérdida de datos — el peor caso es que algunas instituciones queden sin su "interruptor" activado todavía, y sus 3 endpoints modulares simplemente seguirán leyendo del blob (exactamente el mismo comportamiento de la Ronda 44) hasta que se vuelva a correr el script para ellas.
+
+*(Nota de conveniencia agregada en esta ronda: se agregó también el atajo `npm run migrar-notas-relacional -- --dry-run` en `package.json`, equivalente exacto al comando de arriba, siguiendo la misma convención que ya usa `npm run migrate-db`.)*
+
+### B) Dónde ver la contraseña autogenerada del Súper Admin (primer arranque en frío)
+
+Si el servicio en Render arranca contra una base de datos Postgres/Neon **completamente nueva o vacía** (sin ningún registro previo de Gestor Académico YC), `autoSeedSuperAdmin()` (Ronda 45) crea automáticamente un Súper Admin por defecto y **imprime la contraseña generada una única vez**, en ese primer arranque, en los logs del servidor.
+
+**Dónde buscarla:** en Render → su servicio → pestaña **"Logs"** (los logs en vivo del proceso, los mismos donde aparece `"API Server escuchando en puerto..."` al arrancar). Busque (Ctrl+F / el buscador de la pestaña de Logs) el bloque delimitado por esta línea exacta, que aparece dos veces seguidas (arriba y abajo del bloque):
+```
+════════════════════════════════════════════════════════════════
+```
+Dentro de ese bloque, el mensaje exacto que imprime el código es:
+```
+🌱 [Ronda 45] AUTO-SEEDING: se creó un Súper Admin por defecto porque
+   la base de datos no tenía ningún registro de Gestor Académico YC.
+   Usuario: gestor
+   Contraseña (generada aleatoriamente, GUÁRDELA — no se repetirá en los logs):
+   <aquí aparece la contraseña generada, una sola línea>
+   Cámbiela cuanto antes desde el panel del Súper Admin una vez ingrese.
+════════════════════════════════════════════════════════════════
+```
+(Si en cambio `SUPERADMIN_SEED_PASSWORD` está configurada como variable de entorno en Render, la línea de la contraseña cambia por `Contraseña: la definida en la variable de entorno SUPERADMIN_SEED_PASSWORD.` — en ese caso no hay ninguna contraseña que copiar de los logs, porque ya la definió usted mismo de antemano.)
+
+**Cómo filtrar rápido:** el emoji `🌱` y el texto `AUTO-SEEDING` son literales y únicos en todo el código — buscar cualquiera de los dos en el buscador de logs de Render lleva directo al bloque, sin tener que revisar todo el historial de arranque.
+
+**Recomendación de seguridad (aplica siempre, generada o fijada por variable):** copie la contraseña de los logs de inmediato — **no se vuelve a imprimir** en arranques posteriores (la función es idempotente: solo actúa la primera vez, cuando no existe todavía ningún registro). Inicie sesión como `gestor` con esa contraseña y **cámbiela de inmediato** desde el panel del Súper Admin (la misma pantalla de cambio de contraseña que ya existe en el sistema desde antes de esta ronda). Si en algún momento sospecha que la contraseña autogenerada quedó expuesta (por ejemplo, alguien más tiene acceso a los logs de Render), el mismo cambio de contraseña desde el panel es suficiente para invalidarla — no hace falta ningún paso adicional en la base de datos.
+
+## Ronda 46 — Empaquetado final de cierre (documentación y verificación, sin cambios funcionales)
+
+El usuario aprobó plenamente la Ronda 45 y pidió, antes de sus pruebas de campo en Render, 3 cosas puntuales de cierre: (1) la "Guía de Migración y Validación — Ronda 45" de arriba (instrucciones exactas para `scripts/migrar-notas-a-relacional.ts` en Render, y dónde ver la contraseña autogenerada del Súper Admin); (2) confirmar que `.env.example` documenta todas las variables nuevas de las Rondas 40-45; (3) una corrida final de la suite completa antes de empaquetar. No se tocó ningún código funcional del backend ni del frontend — el único cambio fuera de documentación fue agregar el atajo `npm run migrar-notas-relacional` a `package.json` (equivalente exacto a `npx tsx scripts/migrar-notas-a-relacional.ts`, misma convención que `migrate-db`), para que el comando de la guía de arriba sea copiable con la forma habitual del proyecto.
+
+**Verificación de `.env.example`:** se revisó de arriba a abajo — `JWT_SECRET` (Ronda 40), `DOC_SIGN_SECRET` y `RESCATE_SUPER_ADMIN_HASH` (rondas previas), `GEMINI_API_KEY`/`GOOGLE_API_KEY`/`GEMINI_MODEL` (IA existente), `AI_PROVIDER`/`OLLAMA_BASE_URL`/`OLLAMA_MODEL` (Ronda 44, conmutación Gemini/Ollama) y `SUPERADMIN_SEED_PASSWORD` (Ronda 45) — todas estaban ya presentes, cada una con su bloque de comentario explicando su propósito. No faltaba ninguna; no se agregó ninguna variable nueva a `.env.example` en esta ronda, solo se confirmó su completitud.
+
+**Pruebas:** se re-ejecutó la suite completa sin ningún cambio de código funcional esperado — 47 archivos, 100% verde, mismo conteo de aserciones que al cierre de la Ronda 45.
+
+## Ronda 47 — Optimización de latencia del servicio IA + corrección del "segundo portal" de login (bug real encontrado)
+
+El usuario probó en local (no en Render) y reportó 2 problemas: latencia de varios segundos en cada consulta a la IA por reintentos con modelos Gemini obsoletos, y una pantalla intermedia inesperada de selección de perfil después de iniciar sesión, que describió como un "segundo portal". Ambos frentes se investigaron con evidencia de código real antes de tocar nada.
+
+### Frente 1 — Modelos Gemini: lista de candidatos recortada al modelo real + un solo fallback
+
+**Dónde vivía el problema (evidencia):** la lista de reintento de modelos NO está en `src/lib/ai-service.ts` (la capa de Strategy Pattern de la Ronda 44, que nunca tuvo esta lista y sigue sin tocarse) — vive en `src/index.ts`, en el helper `CANDIDATE_MODELS` que alimenta el endpoint real del asistente "Adán" (`for (const m of CANDIDATE_MODELS)`, usado en 4 puntos del archivo). Antes de esta ronda, la lista era:
+```
+[PRIMARY_MODEL, 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash']
+```
+Como `PRIMARY_MODEL` por defecto YA es `'gemini-2.5-flash'` (deduplicado en la práctica), cada consulta sin `GEMINI_MODEL` configurado terminaba probando en orden: `gemini-2.5-flash` → `gemini-1.5-flash` → (recién ahí, si ambos fallan) `gemini-3.6-flash`/`gemini-3.7-flash` — exactamente los 404 que el usuario reportó ver en sus logs antes de llegar al modelo que sí respondía.
+
+**Qué se cambió:** la lista quedó en `[PRIMARY_MODEL, 'gemini-3.7-flash']` — 2 elementos, no 5. `PRIMARY_MODEL` (`process.env.GEMINI_MODEL || 'gemini-2.5-flash'`) sigue siendo, como siempre, el PRIMER intento real (no cambió su valor por defecto, solo dejó de tener 3 fallbacks obsoletos por delante que probar antes de llegar a uno que funcione). Se retiró `'gemini-1.5-flash'` (confirmado deprecado por el propio reporte del usuario) y `'gemini-3.6-flash'` (se dejó un solo fallback razonable tras el primario, tal como pidió el coordinador, no cero).
+
+**Limitación honesta:** este entorno no tiene acceso de red a la API real de Gemini para confirmar en vivo qué nombres de modelo responden hoy. El cambio se basa en lo que el propio usuario reportó ver en sus logs reales, no en una verificación propia contra la API. Si `gemini-2.5-flash` también estuviera deprecado en la cuenta/región del usuario, seguiría fallando como primer intento pero ahora caería a un único fallback (`gemini-3.7-flash`), no a tres — un salto, no tres. La solución definitiva en ese caso es que el usuario confirme qué modelo le funciona y lo fije en `GEMINI_MODEL` (variable de entorno ya existente, sin cambios), lo que lo convierte en el primer intento sin ningún salto.
+
+**Strategy Pattern Gemini/Ollama (Ronda 44):** confirmado intacto — `src/lib/ai-service.ts` no tenía ninguna lista de modelos de fallback que tocar (su `GeminiStrategy` usa un solo modelo configurable, sin lista de reintento) y no se modificó ni una línea de ese archivo esta ronda.
+
+### Frente 2 — El "segundo portal" de login: BUG REAL encontrado y corregido (no era una confusión del usuario)
+
+**Investigación, con evidencia exacta de código:**
+- `doLoginInstitucional()` (Ronda 39, Smart Auth, sin cambios de comportamiento) SÍ funciona como se diseñó: un solo usuario + una sola contraseña, detecta el rol automáticamente entre las 4 formas de credencial, sin ningún selector visible.
+- Al validar las credenciales con éxito, guarda el resultado en `window._pendingLogin={sesionData,platDB,plat,pag:pagTarget}` y llama a `renderBienvenidaInstitucion(plat.id)` (2 puntos de llamada: login directo y tras verificar el código 2FA).
+- **Aquí estaba el bug:** `renderBienvenidaInstitucion()` NUNCA llegó a consumir ese `_pendingLogin` — en cambio, dibujaba una SEGUNDA tarjeta completa (con el logo de la institución) que incluía un selector de rol manual ("Seleccione su perfil" — botones Admin/Docente/Padre/Estudiante/Elecciones, función `seleccionarRolBI`) y un formulario de usuario/contraseña EN BLANCO, que había que volver a llenar y enviar contra `doLoginPortal()` — la función de validación de credenciales **anterior a la Ronda 39** (con su propio selector de rol manual, sin auto-detección), que nunca se retiró cuando se construyó el Smart Auth.
+- **Confirmado que NO es una confusión entre 2 mecanismos de login coexistiendo** (la hipótesis (a) del coordinador sobre el JWT de `/api/auth/login` vs. el login K-12): el JWT de la Ronda 40 se pide de forma transparente y en segundo plano DENTRO de `doLoginInstitucional()` (línea con `fetch(API_BASE+'/api/auth/login',...)`) — nunca se le muestra al usuario ninguna pantalla propia; el "segundo portal" que veía el usuario es 100% del lado del K-12 client-side, un remanente visual de antes de la Ronda 39.
+- **Confirmado que NO es la pantalla de selección de institución** (hipótesis (b)): `renderInstList()` (que sí lista instituciones con un selector de rol PREVIO) es código muerto — está definida pero no tiene ningún punto de llamada en todo el archivo. La única pantalla real y alcanzable con un selector de rol post-login es `renderBienvenidaInstitucion()`, y `platId` ya llega FIJO (no hay elección de institución ahí, solo de rol) — el usuario describió correctamente la experiencia ("me pide de nuevo antes de entrar") aunque el nombre técnico exacto sea "selector de rol", no "selector de institución".
+
+**Qué se corrigió:** nueva función `_finalizarSesionInstitucional(plat, sesionData, platDB, pag)` (extraída, sin modificar, de la cola de `doLoginPortal()` — mismos 3 chequeos de seguridad: plataforma bloqueada, "Pantalla en Blanco", y el desvío al sistema de Educación Superior). `renderBienvenidaInstitucion()` ahora, si detecta un `_pendingLogin` válido para esa misma institución, lo consume una sola vez (`window._pendingLogin=null`) y llama directo a `_finalizarSesionInstitucional()` — entrando al panel del rol detectado SIN mostrar el formulario ni el selector de rol huérfano.
+
+**Qué NO se tocó, a propósito:** el formulario y `doLoginPortal()` dentro de `renderBienvenidaInstitucion()` se CONSERVAN intactos para el único caso legítimo que ya usaba esa misma pantalla sin haber iniciado sesión todavía: el botón "← Volver al portal" desde la Pre-Matrícula pública (línea ~19720, `sesion=null` antes de volver a `renderBienvenidaInstitucion`) — ahí `_pendingLogin` no existe, así que el camino de siempre sigue funcionando sin cambios.
+
+**Bypass oculto del Súper Admin:** confirmado intacto, sin ningún cambio — la secuencia de teclado "super" (sin foco en ningún campo) sigue abriendo el mismo flujo de rescate de la Ronda 44.
+
+### Pruebas
+
+`test_ronda47_ia_y_login_unificado.mjs` (nuevo): 30 pruebas — Frente 1 (lista de candidatos recortada, PRIMARY_MODEL como primer intento real, ausencia de modelos deprecados, Strategy Pattern intacto, ejecución real del orden de intentos simulado) y Frente 2 (evidencia de código del bug, la corrección exacta, preservación del camino legítimo de re-entrada sin sesión, preservación de los 3 chequeos de seguridad, bypass del Súper Admin intacto). Suite completa re-ejecutada: **48 archivos, ~1314 aserciones agregadas, 100% verde**, sin necesidad de modificar ningún test previamente congelado.
+
+## Ronda 48 — Auditoría y refactorización profunda de la resiliencia de Gemini (retry + backoff + fallback centralizado, cero hardcoding disperso)
+
+### Contexto: el vaivén de nombres entre Ronda 47 y Ronda 48
+
+En la Ronda 47, el usuario reportó 404 reales en sus logs con `gemini-1.5-flash`
+y `gemini-2.5-flash`, y se ajustó `src/index.ts` para dejar
+`gemini-2.5-flash` como primario, retirando `gemini-1.5-flash`. **Una ronda
+después**, el mismo usuario reporta que ahora es `gemini-2.5-flash` el que
+falla intermitentemente, y sugiere volver a considerar `gemini-1.5-flash`.
+
+Esto confirma, con evidencia de primera mano, la premisa de fondo de esta
+ronda: **ningún nombre de modelo fijo es una solución duradera**. Google
+depreca y renombra modelos de Gemini con más frecuencia que el ciclo de
+rondas de este proyecto, y ni este entorno de trabajo ni quien atienda la
+próxima ronda tiene acceso de red en vivo a la API de Google para verificar
+cuál modelo responde 200 en el momento exacto en que se lee este documento.
+
+Investigación de referencia (documentación pública de Google, consultada en
+esta ronda — no verificación en vivo, ver limitación honesta más abajo):
+- `ai.google.dev/gemini-api/docs/deprecations`: la familia Gemini 1.5
+  (incluido `gemini-1.5-flash`) está retirada desde hace tiempo — **NO se
+  reintrodujo** en esta ronda pese a que el usuario la mencionó como
+  opción, precisamente por esta razón (ver más abajo).
+- La familia Gemini 2.5 (incluido `gemini-2.5-flash`) está documentada con
+  fecha de retiro aproximada a mediados de octubre de 2026 — todavía puede
+  funcionar por unas semanas, pero ya no es una apuesta segura como único
+  modelo.
+- `ai.google.dev/gemini-api/docs/gemini-3` y
+  `ai.google.dev/gemini-api/docs/latest-model`: la generación recomendada
+  en la fecha de esta ronda es Gemini 3.x (`gemini-3.5-flash`,
+  `gemini-3.7-flash`, `gemini-3.8-flash`). Existe también el alias
+  `gemini-flash-latest`, con reportes de desarrolladores de 404
+  inesperados cuando Google re-apunta el alias antes de actualizar su
+  propia documentación — por eso se incluyó como UNA opción más de la
+  lista de respaldo, nunca como primario ni como única red de seguridad.
+
+**La solución de fondo NO es perseguir mejor el nombre correcto** — es la
+que se implementa en esta ronda: un wrapper de resiliencia real
+(retry + backoff exponencial ante 429/503, fallback automático de modelo
+ante 404) reutilizado por absolutamente todos los puntos de instanciación
+de Gemini del sistema, con el modelo primario ajustable en una sola
+variable de entorno (`GEMINI_MODEL`) sin tocar código ni esperar una nueva
+ronda de desarrollo.
+
+### 1) Archivo central de configuración — `src/lib/gemini-config.ts` (NUEVO)
+
+Se creó este archivo nuevo (en vez de sobrecargar `ai-service.ts`, que ya
+tiene una responsabilidad clara como capa de Strategy Pattern) que exporta:
+
+- `DEFAULT_PRIMARY_MODEL = 'gemini-3.5-flash'` — el único lugar del código
+  donde vive este literal, para no duplicarlo entre archivos.
+- `PRIMARY_MODEL` — resuelve `process.env.GEMINI_MODEL` o
+  `DEFAULT_PRIMARY_MODEL`.
+- `MODEL_FALLBACKS` — arreglo ordenado: `['gemini-3.7-flash',
+  'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash']`.
+  Deliberadamente **nunca incluye `gemini-1.5-flash`**.
+- `ALL_CANDIDATE_MODELS` — `[PRIMARY_MODEL, ...MODEL_FALLBACKS]`,
+  deduplicado.
+- `llamarGeminiConResiliencia(construirLlamada, opciones)` — el wrapper
+  único: prueba cada modelo de la lista en orden; ante 429/503 reintenta
+  el MISMO modelo con backoff exponencial (1s, 2s, 4s..., tope
+  configurable, default 3 intentos); ante 404 o backoff agotado pasa
+  inmediatamente al siguiente modelo; si todos fallan, devuelve
+  `{ ok:false, error, modelosIntentados }` — **nunca lanza una excepción
+  no capturada ni tumba el proceso**. Logging limpio: un log INFO por
+  reintento o cambio de modelo, nunca un stack trace crudo para estos
+  casos esperados.
+- `generarContenidoConResiliencia(genAI, params, opciones)` — atajo para el
+  caso más común (`genAI.models.generateContent`).
+
+El archivo documenta explícitamente, con un comentario extenso, el
+vaivén de nombres entre rondas y por qué la lista deberá revisarse
+periódicamente.
+
+### 2) Puntos de instanciación migrados (los 4 reales del proyecto)
+
+Se localizaron con `grep -rn "getGenerativeModel\|GoogleGenAI\|genAI\.\|gemini-"` en todo `src/`:
+
+1. **`src/index.ts`** — Asistente Adán K-12, 4 endpoints:
+   `/api/inetis/ai/status`, `/api/inetis/ai/chat` (streaming),
+   `/api/inetis/ai/general`, `/api/inetis/ai/psicopedagogico`. Se eliminó
+   la declaración local `const PRIMARY_MODEL = ...` / `const
+   CANDIDATE_MODELS = [...]` de la Ronda 47 — ahora importa
+   `PRIMARY_MODEL`, `ALL_CANDIDATE_MODELS`, `llamarGeminiConResiliencia` y
+   `generarContenidoConResiliencia` desde la config central. También se
+   eliminó un bloque de código MUERTO comentado (`/* for (const
+   candidateModel...) */`) que quedaba de una versión anterior del
+   endpoint de chat.
+2. **`src/lib/ai-service.ts`** — `GeminiStrategy.generar()` (Strategy
+   Pattern de Ronda 44) ahora usa `llamarGeminiConResiliencia` con
+   `ALL_CANDIDATE_MODELS` (o `[opciones.modelo, ...ALL_CANDIDATE_MODELS]`
+   si el llamador pide un modelo explícito) — antes hacía UN solo intento,
+   sin fallback ni retry alguno.
+3. **`src/services/ecosystemAgent.js`** — el Agente Auditor del
+   Ecosistema (Ronda 34), 2 puntos: la llamada de Function Calling dentro
+   de `runFullAudit()` y `processVoiceGrades()` (dictado de voz a notas).
+   Ambas migradas a `llamarGeminiConResiliencia`. `AGENT_MODEL` conserva
+   su propia variable de entorno (`GEMINI_AGENT_MODEL`), pero ya no
+   declara su propio default hardcodeado — usa `DEFAULT_PRIMARY_MODEL` y
+   `MODEL_FALLBACKS` de la config central (`AGENT_CANDIDATE_MODELS =
+   [AGENT_MODEL, ...MODEL_FALLBACKS]`). El cron semanal
+   (`runFullAudit({ trigger: 'cron-semanal' })`) usa esta misma función,
+   así que queda cubierto automáticamente.
+4. **`src/routes/university.ts`** — el Asistente Universitario
+   (`/api/university/asistente/chat`). **Este era el hallazgo más
+   importante de la auditoría**: tenía su PROPIA lista local
+   `_ASISTENTE_MODELOS_CANDIDATOS` con `'gemini-2.5-flash',
+   'gemini-1.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash'`
+   hardcodeados — exactamente el tipo de hardcoding disperso y
+   desincronizado que la Ronda 47 ya había corregido en `src/index.ts`
+   pero que quedó sin tocar aquí. Se eliminó por completo esa lista local
+   y ahora usa `llamarGeminiConResiliencia` con la lista central.
+
+### 3) Confirmación por grep: cero hardcoding disperso
+
+```
+grep -rn "model:\s*'gemini-[0-9.]+-flash'" src/ --include="*.ts" --include="*.js"
+```
+No arroja ningún resultado en código real (solo aparecen los nombres
+dentro de comentarios que narran el historial de las rondas 47/48, nunca
+en una llamada real al SDK). Los 4 archivos de arriba importan
+`gemini-config.ts`/`gemini-config.js` y ninguno declara su propia lista de
+modelos.
+
+### 4) Strategy Pattern Gemini/Ollama (Ronda 44) — confirmado intacto
+
+`OllamaStrategy` no se tocó: sigue resolviendo `OLLAMA_BASE_URL` y
+hablando el protocolo REST de Ollama exactamente igual que en la Ronda 44.
+El wrapper de resiliencia de Gemini vive DENTRO de `GeminiStrategy`
+únicamente — se confirmó con una aserción de test que
+`llamarGeminiConResiliencia` no aparece en el cuerpo de `OllamaStrategy`.
+`obtenerEstrategiaIA()` (el criterio de selección Gemini/Ollama) no
+cambió.
+
+### 5) Qué se verificó con ejecución real vs. qué es imposible verificar aquí
+
+**Verificado con ejecución real** (mocks de errores 429/503/404 sobre el
+módulo real `gemini-config.ts`, importado con `tsx`, no reimplementado ni
+solo inspeccionado por texto):
+- Backoff exponencial real, con tiempo transcurrido medido (30ms → 60ms
+  ≈ 90ms mínimo antes del éxito en el 3er intento).
+- Reintento del MISMO modelo ante 429/503, hasta agotar el máximo
+  configurado, y solo entonces cambio de modelo.
+- Cambio INMEDIATO de modelo ante 404 (sin reintentar el modelo
+  descontinuado ni una sola vez).
+- Fallo total (todos los modelos fallan): el wrapper nunca lanza una
+  excepción no capturada, siempre devuelve `{ ok:false, error,
+  modelosIntentados }` de forma controlada.
+- `generarContenidoConResiliencia` delega correctamente en el wrapper con
+  un `genAI` simulado.
+
+**Imposible de verificar en este entorno** (limitación honesta, ya
+señalada en Ronda 47 y que se repite aquí porque sigue siendo cierta): no
+hay acceso de red desde este entorno a la API real de Google Gemini, así
+que no se puede confirmar en vivo cuál de los nombres de la lista
+(`gemini-3.5-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`,
+`gemini-flash-latest`, `gemini-2.5-flash`) responde 200 hoy en la cuenta
+del usuario. Lo que SÍ se garantiza con certeza, verificado con ejecución
+real, es que el MECANISMO de resiliencia (retry + backoff + fallback +
+logging limpio) funciona correctamente pase lo que pase con los nombres —
+y eso es lo que resuelve el problema de fondo de forma duradera, en vez de
+depender de adivinar el nombre correcto en cada ronda.
+
+### 6) Pruebas
+
+Se agregó `test_ronda48_resiliencia_gemini.mjs` con **59 aserciones**
+(archivo central, ausencia de hardcoding disperso vía grep real, los 4
+puntos de instanciación migrados, Ollama intacto, y 5 casos de ejecución
+real con mocks de 429/503/404/fallo total). Este archivo requiere
+ejecutarse con `node --experimental-strip-types --experimental-transform-types`
+porque hace `import()` dinámico del módulo `.ts` real (no lo reimplementa),
+para probar el código de producción tal cual, no una copia simulada.
+
+Se actualizaron (excepción documentada y autorizada explícitamente por el
+usuario en su mensaje de esta ronda, que pidió mover la configuración de
+modelos a un archivo central) 2 aserciones de
+`test_ronda47_ia_y_login_unificado.mjs` (Frente 1 únicamente — el Frente 2,
+sobre el login, no se tocó): ya no verifican una declaración local de
+`CANDIDATE_MODELS` en `src/index.ts` (dejó de existir a propósito, se
+centralizó), sino que ese archivo importa la config central; y ya no
+asumen que `ai-service.ts` quedó "sin cambios" (Ronda 48 sí le añadió
+resiliencia dentro de `GeminiStrategy`, autorizado explícitamente), sino
+que verifican que `OllamaStrategy` específicamente no se vio afectada.
+
+**Suite completa re-ejecutada: 49 archivos, ~1373 aserciones agregadas
+(1314 previas + 59 nuevas), 100% verde** (exit code 0 en los 49 archivos).
+
+### 7) `.env.example`
+
+Se actualizó el bloque de `GEMINI_MODEL`/`GEMINI_AGENT_MODEL` para
+documentar explícitamente que esa variable es la forma recomendada de
+ajustar el modelo primario sin tocar código ni esperar una nueva ronda de
+desarrollo, con instrucciones de qué hacer si en el futuro el modelo
+sugerido también empieza a fallar con 404. No se tocó ningún secreto real
+(`.env` no se modificó).
+
+## Ronda 49 — Guía de despliegue en VPS propio (infra/README.md) + Monitoreo de Infraestructura y Telemetría con alertas automáticas
+
+### Contexto
+
+Esta ronda cierra directamente la carencia de documentación confirmada en
+la respuesta de soporte previa a esta ronda (investigación de la Dimensión
+9/10 de Ronda 44): existían los 3 archivos de `infra/` pero ningún README
+que explicara, paso a paso y en español simple, cómo usarlos para
+desplegar en un VPS propio. Además, se implementó un módulo nuevo de
+telemetría/monitoreo del servidor, con alertas automáticas, en el Panel de
+Súper Admin.
+
+### 1) `infra/README.md` (nuevo)
+
+Guía completa en español sencillo, con las 4 secciones pedidas:
+requisitos previos, despliegue con Docker paso a paso, dominio y SSL
+gratuito con Certbot, y mantenimiento/respaldos. Todos los comandos usan
+los archivos REALES de `infra/` (verificados contra su contenido antes de
+escribir la guía, y con verificación cruzada en el nuevo test — ej. el
+comando de `pg_dump` usa el usuario/BD reales `gestor`/`gestor_academico`
+que `docker-compose.yml` define, no valores inventados).
+
+**Aclaración de SSL/`DATABASE_URL` (el punto crítico señalado explícitamente
+en esta ronda):** se verificó en el código fuente de la librería `pg`
+(`node_modules/pg/lib/connection.js`) que, si el cliente pide SSL y el
+servidor responde que no lo soporta, `pg` lanza el error real *"The server
+does not support SSL connections"* — la conexión falla por completo, sin
+degradarse a texto plano en silencio. Esto SÍ era un problema real: el
+Postgres del propio `infra/docker-compose.yml` (imagen oficial
+`postgres:16-alpine`) no trae TLS configurado por defecto, y
+`src/db/index.ts` forzaba `ssl:{rejectUnauthorized:false}` sin condición
+alguna. Se resolvió así (agnóstico al proveedor, sin romper Neon):
+
+- **Nuevo archivo `src/lib/db-ssl.ts`** — exporta `resolverSslPg(connectionString)`,
+  que decide si activar SSL mirando (en orden): 1) `sslmode` explícito en
+  la propia cadena de conexión (`disable`/`allow` → sin SSL;
+  `require`/`prefer`/`verify-*` → con SSL), 2) la variable de entorno nueva
+  `DATABASE_SSL` (`true`/`false`) como vía de escape manual, 3) por
+  defecto, SSL activado (comportamiento histórico intacto).
+- `src/db/index.ts` y `src/university-lms/lib/db.js` (el mismo problema
+  existía en ambos pools) ahora usan `resolverSslPg(connectionString)` en
+  vez del `ssl` fijo.
+- `infra/docker-compose.yml`: el valor por defecto de `DATABASE_URL` del
+  servicio `backend` ahora incluye `?sslmode=disable`
+  (`postgres://gestor:gestor@postgres:5432/gestor_academico?sslmode=disable`),
+  así que un despliegue nuevo con Docker Compose queda resuelto sin que el
+  usuario tenga que tocar nada — `DATABASE_SSL` es la vía manual para
+  cualquier otro caso.
+- Confirmado con Neon (producción real, `.env` sin tocar): su cadena
+  siempre trae `sslmode=require`, así que `resolverSslPg` sigue activando
+  SSL exactamente igual que antes — cero riesgo de regresión.
+- `infra/README.md` explica esto en la sección 2.4, con la causa real del
+  error (no solo el parche sin contexto), y menciona al final que si se
+  prefiere un Postgres externo distinto de Neon, la única diferencia es
+  cambiar `DATABASE_URL` por la cadena de ese proveedor.
+
+**Dominio y SSL (sección 3 del README):** además de documentar, se
+extendió la infraestructura real para que la guía fuera ejecutable de
+principio a fin, sin pasos huérfanos: se agregó un servicio `certbot`
+(imagen oficial `certbot/certbot`, sin dependencias nuevas de npm) a
+`infra/docker-compose.yml`, con volúmenes compartidos con `nginx`
+(`certbot-etc`/`certbot-www`); se agregó la ruta
+`/.well-known/acme-challenge/` a `infra/nginx.conf` (backward-compatible —
+no cambia nada para quien ya estaba en HTTP-only); y se creó
+`infra/nginx-ssl.conf.example`, una plantilla con el bloque HTTPS (443) ya
+armado, que el README instruye copiar sobre `nginx.conf` DESPUÉS de
+obtener el primer certificado (nunca antes, porque Nginx fallaría al
+arrancar apuntando a un certificado que aún no existe). Traefik se
+menciona como alternativa válida, sin implementarla (fuera del alcance de
+los archivos que ya trae el proyecto, para no introducir una herramienta
+nueva no usada en el resto del sistema).
+
+### 2) Monitoreo de Infraestructura y Telemetría del Servidor (nuevo)
+
+**Arquitectura — 2 archivos nuevos, separados a propósito:**
+
+- **`src/lib/infra-thresholds.ts`** (SIN dependencias externas — solo
+  `fs`/`child_process` nativos) — la lógica PURA: umbrales
+  (`UMBRAL_PREVENTIVO_PCT=80`, `UMBRAL_CRITICO_PCT=90`,
+  `UMBRAL_POOL_SATURADO_PCT=90`, `INTERVALO_MONITOREO_MS=15min`),
+  `evaluarAlertas(telemetria)` (función pura, sin I/O) y `medirDisco(ruta)`.
+  Se separó de `infraTelemetry.ts` específicamente para poder probarla con
+  **ejecución real** en este entorno de trabajo, que no tiene `node_modules`
+  instalados para el proyecto (no puede importar dinámicamente nada que
+  dependa de `drizzle-orm`/`pg` reales).
+- **`src/services/infraTelemetry.ts`** — la parte con I/O real: recolecta
+  RAM (`os.freemem()`/`os.totalmem()`), CPU (`os.loadavg()`), disco
+  (`medirDisco()`), y base de datos (`pg_stat_activity` filtrado por
+  `datname = current_database()` para conexiones, `pg_database_size(current_database())`
+  para el tamaño, y los contadores propios del pool de `pg`
+  — `pool.totalCount`/`idleCount`/`waitingCount`/`options.max`, sin
+  necesitar SQL); además `procesarAlertas()` (notificación interna +
+  correo) y `ejecutarCicloMonitoreo()`/`iniciarMonitoreoInfraestructura()`
+  (el job).
+
+**Disco — decisión documentada:** `fs.promises.statfs()` (nativo desde
+Node ≥18.15/19.6; el `Dockerfile` del proyecto usa `node:20-alpine`, así
+que está disponible en el despliegue real) como método PRIMARIO, verificado
+con ejecución real contra el filesystem de este mismo entorno de trabajo
+(devolvió datos reales y coherentes). Fallback a `df -k` vía
+`child_process` (comando POSIX estándar, sin dependencia nueva, presente
+incluso en la imagen Alpine vía BusyBox) si `statfs` no está disponible o
+falla.
+
+**Conexiones de BD — dos números, mostrados por separado:** (a) el pool de
+la propia aplicación (siempre disponible, sin SQL) y (b) `pg_stat_activity`
+(puede fallar por permisos en algunos proveedores administrados —
+envuelto en try/catch, degrada a "no disponible" sin romper el resto). La
+alerta de "saturación" se define sobre (a) — el número sobre el que el
+sistema tiene control real — `>90%` de `pool.options.max`.
+
+**CPU/Load Average:** se muestra como KPI informativo pero, a propósito,
+NO participa en los umbrales de alerta 80%/90% — el usuario solo
+especificó esos umbrales para RAM/Disco/conexiones; agregar un umbral
+inventado de CPU habría sido una extrapolación no pedida. Documentado
+explícitamente en el código, y confirmado con una prueba de ejecución real
+(CPU al 500% simulado no genera ninguna alerta).
+
+**Job cada 15 minutos:** mismo patrón (`setTimeout` inicial + `setInterval`)
+que el resto de tareas autónomas de `src/index.ts` (cierre de planillas,
+alertas de ausentismo, limpieza de tokens). Sin flag `ENABLE_*` nuevo —
+decisión documentada: es monitoreo de salud del propio servidor, no un
+módulo de negocio opcional, mismo criterio que Keep-Alive Inteligente
+(`src/lib/keep-alive.ts`), que tampoco tiene flag propio.
+
+**Notificación interna:** reutiliza `agent_audit_logs` (la tabla que ya
+usa el panel "🤖 Auditoría IA / Agente" desde Ronda 34), con una categoría
+nueva `'Infraestructura'` (columna de texto libre, sin restricción de
+enum en la BD — agregarla no rompe nada existente). Se integró también al
+panel existente: nueva opción en el filtro de categorías y su propio
+ícono (🖥️) en `catIcon`.
+
+**Correo de alerta crítica:** reutiliza `enviarCorreoGeneral()` (el motor
+de correo de Ronda 32, multicanal SMTP/API HTTP), enviado al destino de la
+variable de entorno nueva `SUPERADMIN_ALERT_EMAIL` — se verificó que
+`gestorDB.superAdmin` (el objeto del panel) nunca tuvo un campo de correo,
+así que se usó una variable de entorno en vez de modificar esa estructura
+ya usada en 48 rondas anteriores. Si no está configurada, se registra la
+notificación interna igual, y se deja un aviso en los logs del servidor
+(nunca se pierde silenciosamente, nunca rompe el ciclo).
+
+**Anti-spam de correo:** el job corre cada 15 minutos; para no reenviar el
+mismo correo mientras una condición crítica persiste durante horas, se
+recuerda en memoria (variable de módulo) el último nivel por área, y solo
+se envía correo cuando el nivel EMPEORA a "crítica" (transición), nunca en
+cada ciclo mientras se mantiene igual. Se registra también, sin correo,
+cuando un área se recupera. Limitación aceptada y documentada: esta
+memoria se reinicia si el proceso Node se reinicia (peor caso: un correo
+de más tras un reinicio con la condición aún activa, nunca menos alertas
+de las debidas).
+
+**Endpoint `GET /api/admin/infrastructure-status`:** protegido con el
+MISMO mecanismo de control de acceso ya usado para acciones sensibles del
+Súper Admin — el token de rescate firmado (`_tieneRescateValido`, HMAC,
+12h de validez), que ya se emite de forma transparente al iniciar sesión
+normal como Súper Admin (no pide nada aparte). Se prefirió sobre exigir
+`{u,p}` en cada `GET` (como hacen `activar-modulo-etc`/`universidades`)
+porque este endpoint se sondea repetidamente desde el panel (carga de la
+pestaña, botón "Recargar Telemetría"), y pedir contraseña en cada sondeo
+sería mala experiencia — el token de rescate es, en esencia, el "JWT de
+sesión de Súper Admin" que ya usa este proyecto, así que reutilizarlo es
+exactamente el criterio "JWT si aplica" pedido esta ronda.
+`_envolverFetchParaRescate` (frontend) se extendió para adjuntar el token
+también a esta nueva URL. **Importante:** el endpoint SOLO lee y evalúa
+telemetría (`obtenerTelemetria()` + `evaluarAlertas()`) — a propósito NO
+llama a `ejecutarCicloMonitoreo()`/`procesarAlertas()`, para que clicar
+"Recargar Telemetría" repetidamente no dispare notificaciones/correos
+duplicados; solo el job de 15 minutos tiene esos efectos secundarios.
+
+**Frontend:** nueva pestaña **"🖥️ Estado del Servidor & Infraestructura"**
+en el Panel de Súper Admin (`htmlGestorInfraestructura()` /
+`_refrescarInfraestructura()`), con el mismo patrón visual (`.card`, la
+misma paleta de colores por severidad) ya usado en "🏥 Salud del Sistema" y
+"🤖 Auditoría IA / Agente" — tarjetas KPI con barra de progreso coloreada
+(verde <80%, ámbar 80-90%, rojo ≥90%) para RAM, CPU, Disco y Conexiones de
+BD, botón manual "🔄 Recargar Telemetría", e historial corto de eventos
+reutilizando `GET /api/agent/logs?category=Infraestructura` (el mismo
+endpoint que ya usa el panel de Auditoría IA/Agente, sin crear un
+endpoint de historial paralelo).
+
+### 3) Variables de entorno nuevas (`.env`/`.env.example`, sin tocar secretos reales)
+
+- `DATABASE_SSL` — vía de escape manual para desactivar SSL sin editar la
+  cadena de conexión (vacía por defecto = comportamiento histórico).
+- `SUPERADMIN_ALERT_EMAIL` — destino de las alertas críticas de
+  infraestructura (vacía por defecto = solo notificación interna, sin
+  correo).
+
+Ambas agregadas también a `.env` real como declaraciones VACÍAS (sin
+ningún secreto expuesto ni tocado) junto a sus variables relacionadas.
+
+### 4) Pruebas
+
+`test_ronda49_readme_y_telemetria.mjs` (nuevo): 96 aserciones — cubre el
+contenido real del README verificado contra los archivos de `infra/`
+(verificación cruzada, no solo texto suelto), la sintaxis YAML de
+`docker-compose.yml` y el balance de `nginx.conf`/`nginx-ssl.conf.example`,
+ejecución real de `resolverSslPg` (4 escenarios: disable, Neon require,
+default, y `DATABASE_SSL=false`), ejecución real de `evaluarAlertas` (10
+escenarios: umbrales exactos inclusivos en 80%/90%, disco no-disponible
+nunca alerta, CPU nunca alerta, múltiples alertas simultáneas, mensajes
+con el formato exacto pedido por el usuario) y de `medirDisco`/`formatearBytes`
+contra el filesystem real de este entorno, inspección de código del
+endpoint (auth, ausencia de efectos secundarios en el GET) y del job (setTimeout+setInterval,
+os.freemem/loadavg/uptime, pg_stat_activity, pg_database_size, sin flag
+ENABLE_* propio), y del frontend nuevo (pestaña, KPIs, colores, botón de
+recarga, historial, integración con el panel existente).
+
+Suite completa re-ejecutada: **50 archivos, ~1410 aserciones agregadas,
+100% verde**, sin necesidad de modificar ningún test previamente
+congelado.
+
+## Ronda 50 — Mensajes de error amigables (fin del JSON crudo en el chat), backoff diferenciado 429 vs 503, y confirmación del interruptor Neon
+
+### 1) Bug real corregido: JSON/error técnico crudo filtrándose al chat
+
+El usuario reportó que, al agotar todos los modelos de Gemini (típicamente
+por 429/RESOURCE_EXHAUSTED), el chat mostraba el mensaje técnico crudo del
+SDK de Google en vez de un aviso amigable. Se encontraron y corrigieron
+**4 puntos de instanciación** en `src/index.ts` y `src/routes/university.ts`,
+cada uno con su propio patrón de fuga (algunos ya sanos, otros no):
+
+- **`POST /api/inetis/ai/chat` (SSE, Adán chat)**: la rama de fallo del
+  wrapper de resiliencia hacía
+  `` `⚠️ Error de conexión con Gemini: ${intento.error?.message}` `` — el
+  `.message` del SDK de Google (que puede incluir JSON embebido, ej.
+  `{"error":{"code":429,...,"status":"RESOURCE_EXHAUSTED"}}`) se escribía
+  tal cual en el stream SSE. El `catch` externo también interpolaba
+  `e.message` crudo. **Corregido**: ambas ramas ahora usan
+  `mensajeAmigablePorError()`.
+- **`POST /api/inetis/ai/general`**: filtraba `lastError?.message` crudo
+  tanto en el campo `error` como en `content` de la respuesta JSON. Se
+  confirmó además, revisando el frontend real
+  (`gestor-academico/dist/modules/03-app-core.js`,
+  `generarDescDesdeArchivoIA` y la generación de observadores; y
+  `06-documentos-y-resto.js`, `analizarInasistenciaAdan`), que **varios
+  flujos del frontend leen el campo `error` directamente** y lo muestran sin
+  filtrar (`throw new Error(data.error)` → `customAlert('...' + err.message)`,
+  o `_showToast('Aviso de IA: ' + d.error, ...)`) — por eso no bastaba con
+  sanear solo `content`; ambos campos ahora llevan el mismo mensaje amigable.
+  El `catch` externo tenía el mismo problema y se corrigió igual.
+- **`POST /api/inetis/ai/psicopedagogico`**: tenía además un bug de UX
+  distinto — cuando TODOS los modelos fallaban, el endpoint respondía
+  `ok:true` con `report:''` (falla silenciosa, sin avisar al usuario). Ahora
+  detecta explícitamente ese caso y responde con el mensaje amigable
+  clasificado. Su `catch` externo también filtraba `e?.message` crudo;
+  corregido igual.
+- **Asistente Universitario (`POST /api/university/asistente/chat`)**: ya
+  tenía un `catch` con mensaje genérico sano (no había fuga de JSON), pero
+  hacía `throw intentoAsistente.error` en la rama de fallo del wrapper, lo
+  cual dependía de que el `catch` externo capturara todo correctamente para
+  quedar seguro. Se reemplazó por el mismo mensaje amigable clasificado
+  (429/503/404/otro) que los otros 3 endpoints, por consistencia. Se
+  confirmó además contra el frontend real
+  (`gestor-academico/dist/universidad/app.js`) que el helper `api()` lee
+  específicamente `data.error` en respuestas no-2xx
+  (`throw new Error(data.error || 'Error de conexión con el servidor.')`) —
+  por eso el `catch` de este endpoint pone el mensaje amigable en `error`,
+  no en `respuesta` (que solo se lee en respuestas 2xx).
+
+**Solución de fondo**: nueva función exportada `mensajeAmigablePorError()`
+en `src/lib/gemini-config.ts`, que clasifica el error (usando la misma
+`_clasificarErrorGemini()` ya existente desde Ronda 48, ahora extendida) y
+devuelve SIEMPRE uno de 4 mensajes fijos, nunca el objeto de error original
+ni `JSON.stringify` de nada:
+
+- 429 → `⚡ El servicio de IA está experimentando un alto volumen de
+  consultas o se ha alcanzado temporalmente el límite de peticiones. Por
+  favor, espera un momento e intenta de nuevo.` (texto exacto pedido por el
+  usuario).
+- 503 → `⚡ El servicio de IA está temporalmente saturado. Por favor, espera
+  un momento e intenta de nuevo.` (mismo estilo, distinto de 429 a propósito
+  — ver decisión de diseño abajo).
+- 404 → `⚠️ El servicio de IA no está disponible en este momento. Por favor,
+  contacta al administrador del sistema si el problema persiste.`
+- Cualquier otro caso (500/desconocido) → `⚠️ Ocurrió un problema inesperado
+  al conectar con el servicio de IA. Por favor, intenta de nuevo en unos
+  minutos.`
+
+El detalle técnico completo (`intento.error`, modelos intentados) se sigue
+registrando en los logs del servidor vía `console.error`, nunca se pierde
+para depuración — solo deja de llegar al usuario final.
+
+### 2) Backoff diferenciado 429 vs 503 (Frente 2)
+
+Ronda 48 trataba 429 y 503 como el mismo caso (`'RATE_LIMIT'`), con
+idéntico backoff: reintentar el MISMO modelo hasta 3 veces (1s/2s/4s). El
+coordinador pidió reconsiderar esto específicamente para 429, con el
+criterio de que "reintentar el mismo modelo rate-limited es poco útil".
+
+**Análisis y decisión final**: 503 (UNAVAILABLE/overloaded) es saturación
+TEMPORAL del servidor de Google, que suele resolverse en segundos — se
+**mantiene exactamente el comportamiento de Ronda 48** para este caso
+(hasta 3 intentos, backoff 1s/2s/4s). 429 (RESOURCE_EXHAUSTED) es un límite
+de CUOTA (por minuto/día/RPM del plan de la API key) — reintentar el MISMO
+modelo en un bucle rápido casi nunca libera cuota a tiempo y además maltrata
+la API key insistiendo contra un límite ya conocido. Por eso, para 429 se
+usan parámetros DISTINTOS y configurables:
+
+- `maxReintentosPor429` (default **2**, en vez de 3): un solo reintento por
+  modelo antes de rendirse con ese modelo y saltar al siguiente.
+- `backoffBase429Ms` (default **4000ms**, en vez de 1000ms): backoff inicial
+  4× más largo, para dar más tiempo real a que la cuota se refresque en ese
+  único reintento — pero como hay menos reintentos, el sistema en conjunto
+  llega MÁS RÁPIDO al siguiente modelo de respaldo (que típicamente tiene su
+  propia cuota independiente) en vez de insistir en uno ya bloqueado.
+
+Ambos parámetros son configurables por llamada vía
+`OpcionesResilienciaGemini`, sin tocar código, para el punto de
+instanciación que lo necesite. El tipo de error (`'RATE_LIMIT_429'` /
+`'OVERLOAD_503'` / `'NOT_FOUND'` / `'OTRO'`) ahora es explícito (antes
+`'RATE_LIMIT'` cubría 429 y 503 a la vez) y se expone en el resultado
+(`tipoError`) para que el llamador pueda mapear el mensaje amigable
+correcto sin re-inspeccionar el error crudo.
+
+### 3) Lista de modelos: la discrepancia de `gemini-1.5-flash` (transparencia total)
+
+El usuario volvió a mencionar `gemini-1.5-flash` como ejemplo en su reporte
+de bug de esta ronda. **Se investigó de nuevo con el mismo criterio de
+Ronda 48** (sin acceso de red en vivo a la API de Google desde este
+entorno): la familia Gemini 1.5 sigue documentada como **retirada por
+completo** en `ai.google.dev/gemini-api/docs/deprecations`. **No se
+reintrodujo bajo ninguna circunstancia** — hacerlo solo cambiaría un
+404/429 real por otro 404 garantizado, deshaciendo la corrección ya hecha
+en Rondas 47-48. Se es transparente con el usuario sobre este punto: el
+ejemplo que dio ya no es un modelo válido en la API de Gemini, y el sistema
+sigue una lista de candidatos vigentes en su lugar (configurable vía
+`GEMINI_MODEL` sin tocar código).
+
+Como gesto de buena fe hacia la petición del coordinador ("solo añadir
+`gemini-2.0-flash` si el criterio confirma que sigue vigente"), se añadió
+`gemini-2.0-flash` **al final** de `MODEL_FALLBACKS` (después de
+`gemini-2.5-flash`, nunca como primario): es un modelo real, documentado
+por Google como disponible en general (GA) en su momento. No se puede
+confirmar en vivo desde este entorno si sigue activo hoy (22 de septiembre
+de 2026) o si ya fue retirado igual que 1.5 — esa incertidumbre queda
+documentada explícitamente en el código fuente
+(`src/lib/gemini-config.ts`). Como va al final de la cadena de fallback, el
+peor caso de que también esté retirado es un 404 más antes de agotar la
+lista (sin costo real de disponibilidad, gracias al wrapper de resiliencia);
+el mejor caso es una red de seguridad adicional real.
+
+### 4) Interruptor "Agente IA - Consultas Base de Datos Neon" (Frente 3) — confirmado, sin regresión
+
+Se confirmó (no se reimplementó) que `ENABLE_AI_NEON_QUERIES`
+(`checkAiNeonEnabled()`, criterio `_esConsultaDeAuditoriaGlobal()` de
+Rondas 34/35) sigue funcionando exactamente igual tras los cambios de
+Rondas 47/48/50:
+
+- `/ai/chat` y `/ai/general` siguen comprobando el switch **antes** de
+  tocar Gemini, y responden el mensaje de mantenimiento estático
+  (`MENSAJE_PAUSA_CONSULTA_DB_IA`, 200 conversacional, nunca un error) SOLO
+  cuando `context.gestorMode === true` (el chat de auditoría global del
+  Súper Admin) Y el switch está apagado.
+- Cualquier consulta docente normal (planeación de clase, actividades,
+  dudas, extracción de descriptores, etc.) NUNCA pasa `gestorMode:true` y
+  por lo tanto sigue funcionando con normalidad sin importar el estado del
+  switch — el criterio estructural (`ctx.gestorMode === true`, no
+  heurísticas sobre el contenido del contexto) sigue intacto.
+- `/ai/psicopedagogico` sigue **excluido por diseño** del switch (no llama
+  `checkAiNeonEnabled()` en absoluto) — por ser siempre un reporte de
+  aula/orientación individual, nunca una operación de infraestructura
+  global.
+
+No se encontró ninguna regresión; los cambios de esta ronda solo tocaron
+las RAMAS DE FALLO de Gemini (después de superar o no el chequeo del
+switch), nunca la lógica de gating en sí.
+
+### 5) Pruebas
+
+`test_ronda50_errores_amigables_backoff_neon.mjs` (nuevo): cubre, con
+ejecución real (import dinámico de `src/lib/gemini-config.ts`) y con
+inspección de código verificada contra offsets reales de `src/index.ts` /
+`src/routes/university.ts`:
+
+- Que el patrón original del bug (`errMsg`/`lastError?.message`/`e.message`
+  interpolado crudo) ya no existe en ningún punto de los 4 endpoints.
+- `mensajeAmigablePorError()` nunca deja pasar JSON crudo ni el `.message`
+  técnico original, para 429/503/404/otro, ejecutando la función real con
+  errores simulados realistas (incluyendo JSON embebido en `.message`, como
+  devolvería el SDK real de Google).
+- El mensaje amigable EXACTO para 429 pedido por el usuario.
+- 429 y 503 producen mensajes DISTINTOS.
+- Los 4 puntos de instanciación usan `mensajeAmigablePorError()` en TODAS
+  sus ramas de fallo (rama del wrapper + `catch` externo).
+- Verificación cruzada con el frontend real (`03-app-core.js`,
+  `06-documentos-y-resto.js`, `universidad/app.js`) de que los campos
+  `error`/`respuesta` que el backend sanea son efectivamente los que el
+  frontend lee y muestra sin filtrar.
+- Backoff diferenciado 429 vs 503 con ejecución real y cronometrada: 429
+  reintenta el mismo modelo MENOS veces que 503 con la configuración por
+  defecto, y el backoff base por defecto de 429 es mayor que el de 503.
+- Ningún literal de modelo `1.5` en las listas reales ni en el código
+  fuente (fuera de los comentarios que documentan por qué se excluyó).
+  `gemini-2.0-flash` presente al final de `MODEL_FALLBACKS`, nunca como
+  primario, con el comentario de incertidumbre documentado.
+- El switch `ENABLE_AI_NEON_QUERIES` sigue gating `/ai/chat` y `/ai/general`
+  antes de tocar Gemini, con el criterio `gestorMode===true`, y
+  `/ai/psicopedagogico` sigue excluido por diseño.
+- Presencia de esta sección "## Ronda 50" en el checklist, con mención
+  explícita de la discrepancia de `gemini-1.5-flash`.
+
+Suite completa re-ejecutada tras esta ronda: **51 archivos, 100% verde**,
+sin necesidad de modificar ningún test previamente congelado.
+
+## Ronda 51 — Banner de sincronización pegado tras logout + mensaje amigable de IA actualizado (429/503 convergen)
+
+### 1) Bug real: banner "Sincronización automática desactivada..." persistía tras cerrar sesión
+
+**Causa raíz encontrada**: el banner (`gestor-academico/dist/modules/03-app-core.js`,
+`_actualizarBannerSyncManual()`) es un `<div id="_bannerSyncManual">` insertado
+directo en `document.body` (fixed, fuera del árbol que `render()` normalmente
+reemplaza) — no es parte del HTML que se regenera en cada render. Esta
+función solo se invocaba desde DENTRO de `renderApp()` (con sesión activa).
+Al cerrar sesión, `render()` enruta a `renderGestorLanding()` (rama
+`sesion===null`), que **nunca** vuelve a llamar
+`_actualizarBannerSyncManual()` — así que si el banner ya estaba visible
+antes del logout, el `<div>` seguía en el DOM indefinidamente, sin que nada
+lo retirara, aunque la sesión y la institución ya no existieran.
+
+**Arreglo (dos capas, exactamente como pidió el usuario)**:
+
+1. **Guarda estricta** (equivalente vanilla-JS de
+   `if (!user || !currentInstitution) return null;`): nueva función pura
+   `_hayEstadoActivoParaBannerSyncManual()`, invocada como PRIMERA
+   comprobación dentro de `_actualizarBannerSyncManual()` — exige que exista
+   una sesión activa (`sesion`, o Súper Admin dentro de una plataforma vía
+   `gestorSesion && gestorEnPlataforma`) Y una institución/plataforma
+   seleccionada (`_obtenerPlatActual()`); si falta cualquiera de las dos,
+   retira el banner del DOM de inmediato y no evalúa nada más.
+2. **Purga explícita en el logout real**: `_cerrarSesionReal()` (el logout
+   real de una institución, disparado desde `cerrarSesion()` tras el modal
+   de sugerencias) y `cerrarGestorSesion()` (logout del Súper Admin fuera
+   del modo institución) ahora, DESPUÉS de limpiar
+   `window._currentPlatSK`/`window._currentPlatId`, invocan explícitamente
+   `_actualizarBannerSyncManual()` (que ahora sí retira el banner gracias a
+   la guarda) y purgan también `sessionStorage['_bannerSyncManualCerrado']`
+   (el flag de "la persona ya cerró el banner manualmente en esta sesión de
+   navegador"), para que una institución distinta iniciando sesión en la
+   misma pestaña del navegador no herede por error ese flag de la sesión
+   anterior.
+
+Se confirmó que este es el ÚNICO banner de este tipo (insertado directo en
+`document.body`, fuera del árbol de render) en todo el frontend — no se
+encontró ningún otro elemento con el mismo patrón de fuga.
+
+**No se tocó**: la lógica de negocio de CUÁNDO debe mostrarse el banner
+(`_sincronizacionAutoHabilitadaAhora()`, el interruptor institucional en sí)
+sigue exactamente igual — solo se agregó la guarda adicional de sesión
+ANTES de esa comprobación existente. La persistencia de sesión por F5
+(Ronda 41, `_guardarSesionEnStorage`/`_restaurarSesionDesdeStorage`) tampoco
+se tocó: el logout sigue limpiando su propia clave de sesión guardada vía
+`_borrarSesionDeStorage()` (sin cambios), y la única clave nueva que se
+purga (`_bannerSyncManualCerrado`) es exclusiva del estado visual del
+banner, no de la sesión de navegación — un login normal posterior no se ve
+afectado.
+
+**Limitación honesta de verificación en este sandbox**: `03-app-core.js`
+depende del DOM del navegador (`document`, `sessionStorage`) y de variables
+globales del módulo (`sesion`, `gestorSesion`, `db`, etc. definidas en otros
+archivos del mismo bundle), por lo que no puede importarse ni ejecutarse
+tal cual en Node en este entorno (no hay jsdom instalado, y el proyecto no
+lo usa). La verificación se hizo por dos vías: (a) inspección de código
+exacta contra los offsets reales del archivo (orden de las llamadas,
+presencia de la guarda antes de la lógica existente, etc.), y (b) ejecución
+real, en Node puro, de la EXPRESIÓN BOOLEANA equivalente de la guarda
+(`_hayEstadoActivoParaBannerSyncManual`) para sus 5 combinaciones relevantes
+de sesión/institución — la lógica en sí (sin DOM) sí se ejecuta y se
+verifica con casos reales, no solo se inspecciona.
+
+### 2) Mensaje amigable de la IA actualizado (Frente 2 — texto de Ronda 51)
+
+Se confirmó que la solución de fondo de Ronda 50 (`mensajeAmigablePorError()`
+en `src/lib/gemini-config.ts`, usada en los 4 puntos de instanciación reales:
+`/ai/chat` SSE, `/ai/general`, `/ai/psicopedagogico` y el Asistente
+Universitario) sigue intacta y sigue siendo la única fuente del texto que
+llega al usuario — no había ningún punto adicional del frontend construyendo
+su propio string crudo (`"Error de conexión con Gemini: " + JSON.stringify(...)`
+no aparece en ningún archivo del bundle; verificado con búsqueda exacta en
+`03-app-core.js`, `06-documentos-y-resto.js` y `universidad/app.js`). El
+usuario probablemente seguía viendo JSON crudo en LOCAL por estar probando
+contra una copia de código previa a la Ronda 50, no por un punto de fuga sin
+corregir.
+
+Se actualizó el texto exacto pedido esta ronda (ligeramente distinto al de
+Ronda 50), y — cambio de criterio explícito del coordinador — ahora **429 y
+503 comparten el MISMO mensaje visible** (en Ronda 50 se distinguían a
+propósito; esta ronda el usuario pidió un único texto para "algún error
+puntual... como 429... o 503"):
+
+> ⚡ El servicio de IA está experimentando un alto volumen de consultas en
+> este momento. Por favor, intenta tu pregunta nuevamente en unos segundos.
+
+**No se tocó** (tal como pidió explícitamente el usuario/coordinador): la
+clasificación interna de errores (`RATE_LIMIT_429`/`OVERLOAD_503` siguen
+siendo tipos internos distintos, solo convergen en el texto mostrado), el
+backoff diferenciado de Ronda 50 (`maxReintentosPor429`/`backoffBase429Ms`
+vs `maxReintentosPorModelo`/`backoffBaseMs`), ni la lista de modelos
+`MODEL_FALLBACKS`/`gemini-2.0-flash`/exclusión de `gemini-1.5-flash` — todo
+verificado con ejecución real de que sigue intacto.
+
+**Test previamente congelado modificado (con autorización explícita del
+coordinador)**: `test_ronda50_errores_amigables_backoff_neon.mjs` tenía dos
+aserciones que fijaban el texto EXACTO de Ronda 50 y afirmaban que 429/503
+debían producir mensajes DISTINTOS — ambas quedaron obsoletas por el cambio
+de criterio pedido explícitamente en el mensaje de Ronda 51 del coordinador
+("actualiza el mensaje amigable exacto... usa este texto exacto ahora como
+el mensaje por defecto para 429/503"). Se actualizaron esas dos aserciones
+para reflejar el nuevo texto y la nueva convergencia 429=503, dejando un
+comentario en el propio test explicando el cambio y remitiendo a esta
+sección del checklist. Ninguna otra aserción de ese archivo (backoff
+diferenciado, exclusión de 1.5, saneamiento de los 4 endpoints, interruptor
+Neon) se tocó.
+
+### 3) Pruebas
+
+`test_ronda51_banner_logout_y_mensaje_ia.mjs` (nuevo): inspección de código
+verificada contra offsets reales de `03-app-core.js` (guarda antes de la
+lógica existente, orden de las llamadas en el logout, purga del flag de
+sessionStorage, único banner de este tipo en todo el bundle), ejecución
+real de la expresión booleana de la guarda para 5 combinaciones de
+sesión/institución, ejecución real de `mensajeAmigablePorError()` con el
+texto exacto nuevo para 429 y 503 (confirmando que son iguales), ejecución
+real del backoff diferenciado (confirmando que sigue intacto sin cambios),
+verificación de ausencia de construcción de errores crudos en los 3
+archivos del frontend, y presencia de esta sección del checklist.
+
+Suite completa re-ejecutada: **52 archivos, 100% verde** (1 test
+previamente congelado actualizado con autorización explícita, documentado
+arriba; ningún otro test tocado).
+
+## Ronda 52 — Optimización del Agente Auditor (LIMIT + timeout Neon/Gemini) y fin del toast azul automático
+
+### 1) Agente Auditor Adán — Function Calling contra Neon (Frente 1)
+
+**Investigación previa**: se confirmó (comentario ya existente en
+`src/index.ts`, verificado de nuevo) que el Asistente Adán conversacional
+(los 3 endpoints `/ai/chat`, `/ai/general`, `/ai/psicopedagogico`) **no hace
+ninguna consulta SQL propia ni Function Calling en vivo** — el único
+componente con Function Calling real contra Neon PostgreSQL es el **Agente
+Auditor del Ecosistema** (`src/services/ecosystemAgent.js`,
+`runFullAudit()`), disparado por el cron semanal o manualmente desde el
+botón "▶️ Disparar Auditoría Ahora" del panel "🤖 Auditoría IA / Agente"
+(`POST /api/agent/run-full-audit`). Es este flujo el que se optimizó.
+
+**a) LIMIT explícito en la consulta SQL.** La consulta incremental de
+`runFullAudit()` (`updated_at > cursor`, ya optimizada desde antes para
+traer solo 3 columnas y solo filas cambiadas) **no tenía LIMIT** — si el
+agente llevaba tiempo sin correr (apagado, o primer arranque tras
+desplegar), el cursor podía ser muy antiguo y la consulta traer decenas o
+cientos de instituciones cambiadas de una sola vez. El bucle de auditoría
+procesa cada institución **en serie**, y cada una puede disparar su propia
+llamada de Function Calling a Gemini — con muchas instituciones en un solo
+ciclo, la duración total se acumula, exactamente la "lentitud, a veces
+timeout" reportada. Se agregó `LIMITE_INSTITUCIONES_POR_CICLO = 20` junto
+con `ORDER BY updated_at ASC` (para que el LIMIT sea determinista: siempre
+se procesan primero las instituciones que llevan más tiempo esperando).
+
+**Cuidado especial con el cursor**: si el cursor avanzara ciegamente hasta
+"ahora" cuando el LIMIT recortó el resultado, las instituciones que
+quedaron fuera de esa tanda de 20 se perderían para siempre (la próxima
+consulta usa `updated_at > cursor`, y esas filas tienen `updated_at` menor
+a "ahora" pero mayor al cursor viejo — nunca volverían a aparecer). Se
+corrigió: el nuevo cursor es "ahora" SOLO cuando se procesó absolutamente
+todo lo pendiente (no se alcanzó el LIMIT); cuando el LIMIT sí se alcanzó,
+el cursor avanza solo hasta el `updated_at` de la última fila REALMENTE
+procesada en ese ciclo — el próximo ciclo (el cron semanal, o un disparo
+manual inmediato) retoma exactamente donde este se quedó, repartiendo el
+trabajo en más de un ciclo sin perder ni repetir ninguna institución.
+
+**b) Timeout explícito de la llamada a Gemini (Function Calling).**
+Investigación real del SDK `@google/genai` instalado (`node_modules` de
+referencia de una ronda anterior): confirmado que el SDK **no aplica ningún
+timeout por defecto** a sus llamadas HTTP (`timeout_ms` interno vale `-1`,
+"sin límite", salvo que se pase `httpOptions.timeout` explícitamente). Es
+decir, el problema no era "un timeout corto mal puesto" — era la AUSENCIA
+total de un límite: un intento individual podía quedar colgado
+indefinidamente (una conexión TCP que nunca responde ni falla) sin que el
+wrapper de resiliencia (`llamarGeminiConResiliencia`, Ronda 48/50) pudiera
+siquiera entrar a decidir un reintento o cambio de modelo, porque esa
+lógica solo actúa DESPUÉS de que el intento actual termina. Se agregó
+`TIMEOUT_GEMINI_FUNCTION_CALLING_MS = 18000` (18s, dentro del margen 15-20s
+pedido explícitamente) en `src/lib/gemini-config.ts` — central, para que
+quede documentado en un solo lugar — aplicado vía `httpOptions.timeout` SOLO
+en la llamada de Function Calling del Agente Auditor
+(`src/services/ecosystemAgent.js`). Es un timeout POR INTENTO, no
+acumulado: un intento colgado se corta a los 18s como máximo y ENTONCES
+(recién ahí) el wrapper de resiliencia decide si reintenta el mismo modelo
+(con su backoff diferenciado 429/503 de Ronda 50, sin tocar) o pasa al
+siguiente — mismo flujo de decisión de siempre, solo con un techo razonable
+por intento en vez de un intento potencialmente infinito. **No se tocó**
+el timeout de los otros 4 endpoints conversacionales de Adán (no hacen
+Function Calling, no fueron parte de este reporte).
+
+**c) Sin reintentos redundantes fuera del wrapper central.** Se confirmó
+(inspección de código) que la llamada de Function Calling en
+`ecosystemAgent.js` sigue siendo una ÚNICA llamada a
+`llamarGeminiConResiliencia()` (migrada desde Ronda 48), sin ningún
+retry-loop propio (`for`/`while`/`setTimeout` manual) alrededor —
+`llamarGeminiConResiliencia` sigue siendo la única vía de reintento/backoff
+de todo el flujo, así que no hay riesgo de "reintentos redundantes que
+agoten la cuota por minuto" fuera de lo ya diseñado en Ronda 48/50.
+
+### 2) Fin del toast azul automático de "combinando" (Frente 2)
+
+**Localización real** (se confirmó con `grep`, no se asumió el archivo):
+el aviso azul (`#1a3a5c`, tipo `'info'` de `_showToast`) se dispara dentro
+de `_resolverConflictoDB()` en `gestor-academico/dist/modules/03-app-core.js`
+— la función que se ejecuta AUTOMÁTICAMENTE cada vez que un guardado en
+segundo plano choca con uno de otra persona (respuesta 409 del servidor) y
+el sistema resuelve la fusión de 3 vías (Ronda 20/21) sin que el usuario
+haga nada. Esto puede ocurrir en CUALQUIER pantalla, incluido el chat de
+Adán — de ahí que apareciera como un popup "molesto" e inesperado.
+
+Se identificaron dos casos distintos dentro de esa misma función:
+- **`conflictos===0`** (fusión limpia, sin ningún choque real de valores):
+  mostraba el toast AZUL ("🔄 Se combinaron automáticamente cambios
+  guardados por otra persona.") — y, se confirmó revisando
+  `_registrarConflictoBitacora()`, este caso **ni siquiera se registraba en
+  ningún lado** (esa función retorna de inmediato si `conflictos` es 0) —
+  es decir, el toast azul no aportaba ninguna información nueva ni
+  recuperable después: puro ruido rutinario.
+- **`conflictos>0`** (dos personas editando el MISMO dato casi al mismo
+  tiempo, resuelto automáticamente eligiendo un valor): mostraba el toast
+  NARANJA (`'warning'`) Y quedaba registrado en `agent_audit_logs`
+  (categoría "Sincronizacion", visible en el panel "🤖 Auditoría IA /
+  Agente" del Súper Admin) — este SÍ es un evento con valor informativo real
+  (una colisión de datos concreta), coincide con el tipo de alerta que el
+  coordinador pidió explícitamente conservar, y es el único de los dos que
+  ya tenía un registro duradero antes de esta ronda.
+
+**Cambio aplicado**: el toast AZUL rutinario (`conflictos===0`) ya no se
+muestra de forma automática — se conserva toda la lógica de fondo sin
+ningún cambio (la fusión de 3 vías, el reintento de guardado, el
+re-renderizado con `_renderPreservandoContexto` para no perder el trabajo
+en curso del docente). El toast NARANJA (`conflictos>0`, colisión real) se
+dejó exactamente igual — sigue apareciendo de forma automática, porque es
+la clase de alerta que el usuario pidió NO eliminar.
+
+**Confirmación explícita del botón manual**: `_sincronizarAhoraManual()`
+(el botón "🔄 Sincronizar ahora" del banner de Ronda 51) ahora SÍ da una
+confirmación visible ("🔄 Sincronización manual completada — datos
+consolidados con el servidor.") tras esperar a que `_syncAll(true)`
+termine — exactamente el caso que el coordinador pidió mantener visible
+("cuando el usuario presione explícitamente un botón de
+Sincronizar/Consolidar"). Antes, este botón no daba ninguna confirmación
+visible propia.
+
+**No se tocaron alertas de errores reales**: se confirmó que las 2 alertas
+de fallo real del outbox en `gestor-academico/dist/modules/07-sync-engine.js`
+("celda(s) no se pudieron guardar", "No se pudo guardar automáticamente...")
+siguen intactas — esas SÍ deben seguir notificando, tal como pidió el
+coordinador. Tampoco se tocó el punto de sincronización periódica
+("pull-periódico" dentro de `_syncAll()`), que ya era silencioso antes de
+esta ronda (solo registra en la bitácora si hubo conflicto real, nunca
+mostró un toast).
+
+### 3) Test previamente congelado modificado (con autorización explícita)
+
+`test_ronda28_autoguardado_silencioso.mjs` tenía una aserción (`d8`) que
+verificaba textualmente que la rama "else" de `_resolverConflictoDB()`
+mostrara el toast de forma incondicional (`_showToast(conflictos>0 ? ... :
+...)`) — ese patrón cambió de raíz en esta ronda (ahora es un `if
+(conflictos>0)` explícito, sin rama para el caso 0). Se actualizó esa
+aserción para verificar el nuevo comportamiento (toast condicionado a
+`conflictos>0`) y se agregó una aserción complementaria (`d9`) confirmando
+que el re-render con los datos fusionados sigue ocurriendo siempre, con o
+sin conflicto — igual que antes. El resto del archivo (Ronda 28,
+supresión silenciosa dentro de Planilla/Notas de Actividades) no se tocó.
+
+### 4) Pruebas y limitaciones de verificación
+
+`test_ronda52_agente_auditor_y_toast_azul.mjs` (nuevo): inspección de
+código verificada contra offsets reales de `ecosystemAgent.js` y
+`03-app-core.js` (LIMIT+ORDER BY, cálculo del nuevo cursor, timeout vía
+`httpOptions`, ausencia de retry-loops propios, condicionamiento del toast
+azul, confirmación del toast naranja intacto, alertas reales del outbox sin
+tocar), ejecución real de `mensajeAmigablePorError`/`llamarGeminiConResiliencia`
+contra `gemini-config.ts` (dependency-free, sí se puede importar en este
+sandbox), y una réplica PURA (sin DB) de la decisión de avance de cursor
+ejecutada con casos reales (con y sin LIMIT alcanzado) para confirmar la
+lógica, no solo inspeccionarla.
+
+**Limitación honesta**: `src/services/ecosystemAgent.js` importa
+`drizzle-orm`/`pg` (vía `src/db/index.js`), y este sandbox no tiene
+`node_modules` instalado para el proyecto — no es posible importarlo ni
+ejecutar `runFullAudit()` de verdad contra una base de datos Neon real, ni
+invocar la API de Gemini en vivo para medir el timeout de 18s contra una
+respuesta real. La verificación se hizo por inspección de código exacta
+más la réplica aislada y ejecutada de la lógica pura (cálculo de cursor),
+siguiendo el mismo patrón usado en rondas anteriores (Ronda 21, Ronda 49)
+para archivos que dependen de Postgres/red en vivo.
+
+Suite completa re-ejecutada: **53 archivos, 100% verde** (1 test
+previamente congelado actualizado con autorización explícita, documentado
+arriba; ningún otro test tocado).
+
+## Ronda 53 — Hallazgo crítico de metodología (`node --check` no valida `.ts`), fix real de compilación en `src/db/index.ts`, y priorización del Agente Auditor por institución activa
+
+### 0) HALLAZGO CRÍTICO DE METODOLOGÍA — `node --check` es un no-op silencioso para archivos `.ts` en este entorno
+
+Antes de investigar el punto 2 (la corrección de compilación pedida), se
+descubrió algo que afecta la CONFIANZA de las verificaciones de sintaxis
+reportadas en rondas anteriores de este proyecto: en el Node.js instalado
+en este entorno (v22.22.2), `node --check archivo.ts` **no es confiable
+para NINGÚN archivo `.ts` real de este proyecto**, aunque por dos motivos
+distintos según cómo empiece el archivo (investigado con precisión, no de
+forma genérica):
+
+- **Archivos que empiezan con `import`/`export` de nivel superior** (el
+  caso de TODOS los archivos `.ts` reales de este proyecto, incluido
+  `src/db/index.ts`): `--check` (con o sin
+  `--experimental-strip-types`/`--experimental-transform-types`) se
+  convierte en un **no-op silencioso** — se probó con un archivo `.ts` que
+  empieza con `import 'dotenv/config';` (igual que el archivo real) seguido
+  de un error de sintaxis flagrante e inequívoco
+  (`function foo(: string) { ... }`) y `--check` reportó "sin errores" en
+  los 3 casos de flags probados. Este es el caso relevante para el bug de
+  esta ronda.
+- **Archivos SIN `import`/`export` al inicio**: `--check` SÍ ejecuta un
+  parseo real (tratando el archivo como CommonJS clásico), pero con el
+  problema inverso, ya documentado desde la Ronda 47: sintaxis TypeScript
+  legítima puede marcarse como error porque ese camino no aplica el
+  despojo de tipos correctamente (falsos POSITIVOS).
+
+En cualquiera de los dos casos, `--check` no es confiable para `.ts` en
+este entorno — el mismo contenido guardado como `.js`/`.mjs` SÍ es
+detectado correctamente en ambos escenarios
+(`SyntaxError: Unexpected token ':'`), confirmando que el problema es
+específico de cómo Node maneja la extensión `.ts` internamente aquí, no un
+problema general de su parser.
+
+**Impacto**: en rondas anteriores de este proyecto, cuando se reportó
+"`node --check archivo.ts` → sin salida → sintaxis OK" como parte de la
+verificación de un cambio, esa confirmación específica (para archivos con
+extensión `.ts`) no era una verificación real — era un resultado vacío que
+por casualidad coincide con "todo bien". **Esto NO significa que el código
+de rondas anteriores tenga errores** — de hecho, se volvió a verificar
+ahora mismo con el método correcto (ver abajo) TODOS los archivos `.ts`
+tocados en rondas anteriores de esta sesión (`gemini-config.ts`,
+`db-ssl.ts`, `infra-thresholds.ts`, `infraTelemetry.ts`, `university.ts`,
+`index.ts`, y el propio `db/index.ts`) y ninguno tenía ya ningún error de
+sintaxis real — solo significa que la HERRAMIENTA usada para confirmarlo no
+era la correcta, y por pura suerte no hubo ningún error de sintaxis
+introducido en ese punto ciego. El bug real que sí quedó sin detectar por
+esta vía fue precisamente el de la sección 2 de abajo (el backtick de
+`src/db/index.ts`), que existía desde la Ronda 44 y nunca fue detectado
+porque el archivo siempre "pasaba" `--check` sin haber sido realmente
+parseado.
+
+**Método correcto (adoptado de aquí en adelante para todo archivo `.ts`)**:
+importar dinámicamente el archivo real con
+`node --experimental-strip-types --experimental-transform-types` vía
+`import(pathToFileURL(archivo).href)` y capturar la excepción. Este entorno
+no tiene `node_modules` instalado para el proyecto, así que un archivo que
+importa paquetes reales (`drizzle-orm`, `express`, `@google/genai`, etc.)
+nunca terminará de importarse con éxito — pero la distinción es la que
+importa: si la excepción es un `SyntaxError`, el archivo tiene un error de
+sintaxis REAL; si es cualquier otro tipo de `Error` (típicamente
+`Cannot find package '...'`), significa que el parseo fue exitoso y el
+fallo ocurrió recién al intentar RESOLVER un import — es decir, la sintaxis
+es válida. Un archivo sin dependencias externas (como `gemini-config.ts`)
+simplemente termina de importarse con éxito. Este método ya se venía usando
+de forma ad-hoc en rondas anteriores para casos donde `--check` daba falsos
+POSITIVOS (reportaba error en un archivo válido) — ahora se confirma que
+también es necesario para evitar falsos NEGATIVOS (nunca reportar el error
+real que sí existía), así que pasa a ser el método ÚNICO y estándar para
+verificar sintaxis de archivos `.ts` en este proyecto, reemplazando
+`node --check` por completo para esa extensión.
+
+### 1) Focalización del Agente de IA por institución activa
+
+**Investigación** (tal como pidió el coordinador: confirmar con evidencia
+real antes de inventar un cambio): se revisó a fondo si el chat
+conversacional de Adán (`POST /api/inetis/ai/chat` en `src/index.ts`)
+comparte alguna cola, bloqueo o tiempo de espera con el barrido masivo del
+Agente Auditor (`runFullAudit()` en `src/services/ecosystemAgent.js`).
+Evidencia encontrada:
+
+- `runFullAudit()` se invoca ÚNICAMENTE desde dos lugares:
+  `ecosystemAgent.iniciarAuditoriaProgramada()` (el cron semanal) y
+  `POST /api/agent/run-full-audit` (el botón manual del panel "🤖 Auditoría
+  IA / Agente" del Súper Admin, en `src/routes/agent.js`). Ninguno de los 3
+  endpoints de Adán (`/ai/chat`, `/ai/general`, `/ai/psicopedagogico`) ni el
+  Asistente Universitario lo importan, lo llaman, ni esperan su resultado —
+  búsqueda exhaustiva de `runFullAudit`/`ecosystemAgent\.` en `src/index.ts`
+  confirma que las únicas referencias son la importación del módulo y las 2
+  invocaciones ya mencionadas (cron + log de arranque), nada dentro del
+  handler de `/ai/chat`.
+- `getGenAI()` (el helper que crea el cliente de Gemini para el chat) crea
+  una instancia NUEVA de `GoogleGenAI` en CADA petición HTTP
+  (`return new GoogleGenAI({ apiKey })`, sin caché ni singleton) — dos
+  peticiones de chat simultáneas de dos instituciones distintas (o de la
+  misma) nunca comparten cliente, cola, ni candado alguno.
+- El contexto de cada petición de chat (`context`, con `sk` incluido) es
+  100% local a esa petición HTTP (variables `const`/`let` dentro del
+  handler `async (req, res) => {...}`) — no hay ninguna variable de módulo
+  mutable compartida entre peticiones concurrentes que pudiera mezclar datos
+  de dos instituciones.
+- Node.js/Express procesa peticiones concurrentes de forma asíncrona sobre
+  un único hilo: cada `await` (a Gemini, a Neon) cede el control del event
+  loop — un `runFullAudit()` en curso (cron o manual) NO bloquea ni retrasa
+  el procesamiento de una petición de chat concurrente, porque ambos ceden
+  el control en sus propios puntos de `await` sin ningún candado compartido
+  entre ellos.
+
+**Conclusión, con la misma honestidad de siempre**: el chat conversacional
+de Adán **ya estaba correctamente acotado por institución y nunca invoca ni
+espera el barrido masivo** — no se encontró ningún acoplamiento real que
+corregir en ese camino específico, y no se inventó un cambio artificial ahí
+solo para reportar algo.
+
+**Mejora real y acotada que sí se aplicó** (al barrido de fondo en sí, no
+al chat): dentro del lote ya limitado por Ronda 52
+(`LIMITE_INSTITUCIONES_POR_CICLO = 20`), `runFullAudit()` ahora reordena
+(orden estable, sin afectar el criterio de avance seguro del cursor de
+Ronda 52, que sigue calculándose sobre el arreglo original ordenado por
+`updated_at`) para procesar PRIMERO las instituciones que tienen al menos
+un dispositivo con sesión en vivo conectada por SSE en este momento
+(reutilizando `contarClientesSse()`, ya existente en `src/lib/sync-bus.ts`
+y ya usado por `triggerSystemSync`) — así, si 2 o 3 colegios tienen gente
+usando el sistema ahora mismo mientras otros quedaron con cambios
+pendientes pero sin nadie conectado, los primeros reciben su
+reparación/aviso de sincronización antes que los segundos, sin cambiar
+cuántas instituciones se procesan por ciclo ni el criterio de avance del
+cursor. Esto sí responde directamente a la letra del pedido ("priorizará la
+respuesta inmediata al usuario que está interactuando") de forma real y
+verificable, sin tocar ni debilitar el camino del chat (que, como se
+documentó arriba, no lo necesitaba).
+
+### 2) Corrección permanente de compilación en `src/db/index.ts`
+
+**Causa raíz confirmada con evidencia real** (no solo revisión visual):
+la línea 556 de `src/db/index.ts`, dentro de un comentario SQL (`-- ...`)
+que a su vez vive DENTRO de un template literal de JavaScript/TypeScript
+(`await db.execute(sql\`...\`)`, abierto en la línea 43 y cerrado en la
+línea 573), contenía dos backticks ASCII literales (\`fin_suscripciones\`)
+usados como formato "código" del comentario en prosa. Para Postgres, esos
+backticks son inofensivos (están dentro de un comentario `--`, que ignora
+su contenido). Pero para el parser de JavaScript/TypeScript, cualquier
+backtick sin escapar DENTRO de un template literal lo CIERRA — el primer
+backtick de la línea 556 cerraba el template literal abierto en la línea
+43, dejando el identificador suelto `fin_suscripciones` como una expresión
+adicional sin operador que la conecte a `db.execute(...)`, y el segundo
+backtick abría un NUEVO template literal (que se extendía hasta el
+`` ` ``de cierre original en la línea 573) — un error de sintaxis real,
+reproducido y confirmado con el método correcto de la sección 0:
+
+```
+node --experimental-strip-types --experimental-transform-types -e "import(...)"
+→ SyntaxError: Expected ',', got 'fin_suscripciones'
+```
+
+Esto coincide exactamente con el reporte del usuario ("error de compilación
+... alrededor de la línea 556 ... comillas invertidas incorrectas") — el
+nombre de la ruta que mencionó (`src/app/db/index.ts`) no existe en este
+proyecto; se confirmó (otra vez) que la ruta real es `src/db/index.ts`. Se
+revisó también si algún generador/script sobrescribe este archivo (pedido
+explícito del usuario) — no existe ningún script de build, codegen de
+Drizzle/Prisma, ni proceso automático que regenere `src/db/index.ts`; es un
+archivo de código fuente escrito a mano, así que el arreglo es permanente y
+no será sobrescrito por ninguna herramienta.
+
+**Corrección aplicada**: se cambiaron esos dos backticks por comillas
+simples (`'fin_suscripciones'`), tal como sugirió el propio usuario como
+alternativa válida — Postgres sigue ignorando el contenido del comentario
+igual que antes (sin ningún cambio de comportamiento en el DDL real
+ejecutado contra Neon), y el parser de JS/TS ya no interpreta nada especial
+ahí. Se siguió la convención ya usada en el resto del archivo para nombres
+de columnas/conceptos en español dentro de comentarios SQL (texto plano,
+sin tildes en los identificadores de columna reales — se confirmó
+revisando las columnas de la tabla `ai_subscriptions`, la más cercana a la
+línea 556, de Ronda 44: todas sus columnas ya usan snake_case en español
+SIN tildes — `sk`, `proveedor`, `plan`, `estado`, `limite_mensual`,
+`uso_mes_actual` — consistente con `fin_suscripciones`, que tampoco lleva
+tilde).
+
+**Verificación real de que el error de compilación ya no ocurre** (crítico,
+pedido explícitamente por el usuario — no solo "arreglado a ojo"): se
+reprodujo el bug ORIGINAL en una copia del archivo (revirtiendo
+temporalmente el fix) y se confirmó el `SyntaxError` exacto de arriba; se
+restauró el fix y se confirmó que la importación real avanza hasta el
+primer `import` no resuelto en este sandbox (`Cannot find package
+'dotenv'`) — es decir, el archivo ahora PARSEA completo y correctamente de
+principio a fin, sin ningún error de sintaxis. Se hizo además un barrido de
+todo el archivo (todas las líneas con backtick) para confirmar que no
+existe ningún otro backtick suelto dentro de los 9 bloques `sql\`...\`` del
+archivo — solo había uno, ya corregido.
+
+### 3) Pruebas
+
+`test_ronda53_compilacion_db_y_agente_focalizado.mjs` (nuevo): ejecución
+real (no solo inspección) del método correcto de verificación de sintaxis
+contra `src/db/index.ts` (confirmando que ya no lanza `SyntaxError`, y que
+SÍ lo lanzaba con el backtick original mediante una reproducción controlada
+del bug en un archivo temporal), inspección de código verificada contra
+offsets reales de `src/index.ts` (ausencia de cualquier llamada a
+`runFullAudit`/`ecosystemAgent` dentro de los handlers de chat) y de
+`ecosystemAgent.js` (uso de `contarClientesSse` para la priorización, orden
+estable, `filasCambiadas` sin alterar para el cálculo del cursor), y
+ejecución real de la lógica de ordenamiento por prioridad de forma aislada
+(réplica pura, sin DB) con casos concretos (instituciones activas e
+inactivas mezcladas).
+
+Suite completa re-ejecutada: **54 archivos, 100% verde** — ningún test
+previamente congelado modificado ni roto en esta ronda.

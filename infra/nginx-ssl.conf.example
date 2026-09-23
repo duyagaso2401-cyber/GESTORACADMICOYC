@@ -1,0 +1,83 @@
+# ════════════════════════════════════════════════════════════════════════════
+# RONDA 49 — PLANTILLA de configuración de Nginx CON HTTPS ya activado.
+#
+# NO se usa automáticamente — es una PLANTILLA que usted copia sobre
+# nginx.conf DESPUÉS de haber obtenido su primer certificado con certbot
+# (ver infra/README.md, sección 3, paso a paso completo). Si se usara desde
+# el principio, Nginx fallaría al arrancar porque el bloque 443 de abajo
+# apunta a archivos de certificado que todavía no existen.
+#
+# Reemplace TODAS las apariciones de "SU_DOMINIO_AQUI" por su dominio real
+# (ej. "colegio-ejemplo.com") antes de usarla.
+# ════════════════════════════════════════════════════════════════════════════
+worker_processes auto;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  include       mime.types;
+  default_type  application/octet-stream;
+  sendfile      on;
+  keepalive_timeout 65;
+
+  gzip on;
+  gzip_comp_level 6;
+  gzip_min_length 1024;
+  gzip_proxied any;
+  gzip_vary on;
+  gzip_types
+    text/plain
+    text/css
+    text/javascript
+    application/javascript
+    application/json
+    application/xml
+    image/svg+xml;
+
+  upstream gestor_backend {
+    server backend:5000;
+  }
+
+  # Puerto 80: sigue sirviendo la verificación de Let's Encrypt (necesaria
+  # también para las RENOVACIONES automáticas del certificado, cada ~90
+  # días) y redirige todo lo demás a HTTPS.
+  server {
+    listen 80;
+    server_name SU_DOMINIO_AQUI;
+
+    location /.well-known/acme-challenge/ {
+      root /var/www/certbot;
+    }
+
+    location / {
+      return 301 https://$host$request_uri;
+    }
+  }
+
+  # Puerto 443: el tráfico real de la aplicación, ya cifrado.
+  server {
+    listen 443 ssl;
+    server_name SU_DOMINIO_AQUI;
+
+    ssl_certificate     /etc/letsencrypt/live/SU_DOMINIO_AQUI/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/SU_DOMINIO_AQUI/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 25m;
+
+    location / {
+      proxy_pass http://gestor_backend;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      # Soporte para SSE (Adán usa Server-Sent Events) — sin buffering, para
+      # que los chunks lleguen al cliente en tiempo real.
+      proxy_buffering off;
+      proxy_read_timeout 300s;
+    }
+  }
+}

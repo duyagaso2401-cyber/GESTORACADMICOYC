@@ -13,6 +13,7 @@
 // =====================================================================
 import 'dotenv/config';
 import pg from 'pg';
+import { resolverSslPg } from '../../lib/db-ssl.js';
 
 const { Pool } = pg;
 
@@ -25,9 +26,12 @@ if (!connectionString) {
 // Drizzle que ya existe en src/db/index.ts sin pisarlo. Si prefieres
 // reutilizar exactamente el mismo pool, exporta el `pool` desde
 // src/db/index.ts y sustituye este archivo por un simple re-export.
+// RONDA 49: SSL agnóstico (ver src/lib/db-ssl.ts) — antes era fijo, ahora
+// respeta `?sslmode=disable` en la cadena o `DATABASE_SSL=false`, igual
+// que el pool principal de src/db/index.ts.
 export const pool = new Pool({
   connectionString,
-  ssl: { rejectUnauthorized: false },
+  ssl: resolverSslPg(connectionString),
   max: Number(process.env.UNIV_DB_POOL_MAX || 8),
   idleTimeoutMillis: 30_000,
 });

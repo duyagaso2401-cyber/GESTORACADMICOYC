@@ -26,6 +26,7 @@ import { eq, and, asc, sql } from 'drizzle-orm';
 import { uploadMemoria, subirBufferACloudinary } from '../lib/upload.js';
 import { leerFichaPlataformaGestor as _leerFichaPlataformaGestorCacheada, verificarEstadoInstitucion } from '../lib/gestor-cache.js';
 import { GoogleGenAI } from '@google/genai';
+import { llamarGeminiConResiliencia, mensajeAmigablePorError } from '../lib/gemini-config.js';
 import type { Express } from 'express';
 interface ArchivoSubidoMulter { buffer: Buffer; mimetype: string; originalname: string; size: number; }
 
@@ -1496,11 +1497,13 @@ function _asistenteUniversitarioSystemPrompt(contexto: any): string {
     + `Estás ayudando a ${rolLabel}. Responde en español, de forma clara, profesional y concisa, enfocado en temas académicos, administrativos y de uso del sistema universitario (programas, asignaturas, matrícula, aula virtual, cuestionarios, calificaciones, cortes evaluativos). `
     + `Si te preguntan algo fuera de ese ámbito, puedes responder con normalidad, pero mantén siempre tu identidad como "Asistente Universitario".`;
 }
-const _ASISTENTE_MODELOS_CANDIDATOS = [
-  (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, ''),
-  'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash',
-].filter((m, i, self) => Boolean(m) && self.indexOf(m) === i);
-
+// RONDA 48: esta lista local (con 'gemini-1.5-flash' y 'gemini-3.6-flash'
+// hardcodeados, ambos ya retirados) era EXACTAMENTE el tipo de hardcoding
+// disperso que la auditoría de esta ronda pidió eliminar — se detectó por
+// grep, junto con src/index.ts y src/lib/ai-service.ts, como uno de los 4
+// puntos reales de instanciación de Gemini del sistema. Ahora usa
+// ALL_CANDIDATE_MODELS de la configuración central (src/lib/gemini-config.ts)
+// a través del wrapper de resiliencia, igual que el resto del sistema.
 router.post('/asistente/chat', async (req: any, res) => {
   try {
     const { mensaje, historial } = req.body || {};
@@ -1521,34 +1524,45 @@ router.post('/asistente/chat', async (req: any, res) => {
     // forma de enviar el mensaje: en streaming (sendMessageStream) — no
     // existe un "sendMessage" simple. Aquí se recolecta el texto completo
     // del streaming en vez de mandarlo por partes, porque este widget no
-    // necesita streaming, solo la respuesta final. Se intenta con varios
-    // modelos por si el configurado no está disponible en este momento.
+    // necesita streaming, solo la respuesta final.
+    // RONDA 48: migrado al wrapper central de resiliencia — reintenta el
+    // mismo modelo con backoff ante 429/503 y cambia de modelo ante 404,
+    // usando la lista central (ALL_CANDIDATE_MODELS) en vez de una lista
+    // local hardcodeada.
     let textoCompleto = '';
-    let ultimoError: any = null;
-    let respondido = false;
-    for (const modelo of _ASISTENTE_MODELOS_CANDIDATOS) {
-      try {
-        const chat = genAI.chats.create({
-          model: modelo,
-          config: { systemInstruction: systemPrompt, temperature: 0.7, maxOutputTokens: 2048 },
-          history: historialFormateado,
-        });
-        const stream = await chat.sendMessageStream({ message: String(mensaje) });
-        for await (const chunk of stream) {
-          if (chunk.text) textoCompleto += chunk.text;
-        }
-        respondido = true;
-        break;
-      } catch (err: any) {
-        ultimoError = err;
-        console.warn(`⚠️ Asistente Universitario — intento fallido con modelo ${modelo}:`, err?.message || err);
+    const intentoAsistente = await llamarGeminiConResiliencia(async (modelo) => {
+      const chat = genAI.chats.create({
+        model: modelo,
+        config: { systemInstruction: systemPrompt, temperature: 0.7, maxOutputTokens: 2048 },
+        history: historialFormateado,
+      });
+      const stream = await chat.sendMessageStream({ message: String(mensaje) });
+      let texto = '';
+      for await (const chunk of stream) {
+        if (chunk.text) texto += chunk.text;
       }
+      return texto;
+    }, { etiqueta: 'Asistente Universitario' });
+    if (!intentoAsistente.ok) {
+      // RONDA 50 — ya no lanzaba el error crudo (esto era seguro porque el
+      // catch de abajo YA daba un mensaje genérico sin filtrar detalle
+      // técnico), pero ahora se usa el mismo mensaje amigable CLASIFICADO
+      // (429/503/404/otro) que los otros 3 puntos de instanciación, en vez
+      // del genérico único, para consistencia en toda la aplicación.
+      console.error(`[Asistente Universitario] Fallaron todos los modelos (${intentoAsistente.modelosIntentados.join(', ')}):`, intentoAsistente.error);
+      return res.json({ respuesta: mensajeAmigablePorError(intentoAsistente) });
     }
-    if (!respondido) throw ultimoError || new Error('No se pudo conectar con ningún modelo disponible.');
+    textoCompleto = intentoAsistente.resultado || '';
     res.json({ respuesta: textoCompleto || 'No se pudo generar una respuesta en este momento.' });
   } catch (err) {
+    // RONDA 50 — mismo criterio: nunca el `.message` crudo. IMPORTANTE: el
+    // frontend (gestor-academico/dist/universidad/app.js, helper `api()`)
+    // lee específicamente el campo `error` en respuestas no-2xx
+    // (`throw new Error(data.error || 'Error de conexión con el servidor.')`)
+    // y lo muestra tal cual como '⚠️ '+e.message — por eso aquí el mensaje
+    // amigable va en `error`, no en `respuesta` (que solo se lee en 2xx).
     console.error('POST /api/university/asistente/chat error:', err);
-    res.status(500).json({ error: 'El Asistente Universitario no pudo responder en este momento. Intente de nuevo.' });
+    res.status(500).json({ error: mensajeAmigablePorError(err) });
   }
 });
 

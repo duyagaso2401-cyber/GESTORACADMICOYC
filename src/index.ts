@@ -13,7 +13,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources } from './db/index.js';
+import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources, ensureSchemaRedInterinstitucional, estudiantesIndiceRed, solicitudesTraslado, ensureSchemaRelacionalNotas, autoSeedSuperAdmin, estudiantesRel, materiasRel, calificacionesRel, migracionRelacionalNotas } from './db/index.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
@@ -30,7 +30,8 @@ import universityRouter, { exigirSesion as exigirSesionUniv, verificarInstitucio
 // mismo esquema de sesión (exigirSesion/verificarInstitucionActiva) para
 // no duplicar lógica de autenticación. Ver src/university-lms/routes/university.routes.js
 import universityLmsRouter from './university-lms/routes/university.routes.js';
-import { eq, desc, and, isNull, or } from 'drizzle-orm';
+import { eq, desc, and, isNull, or, sql } from 'drizzle-orm';
+import { obtenerEstrategiaIA, generarConEstrategiaIA } from './lib/ai-service.js';
 import { GoogleGenAI } from '@google/genai';
 import { enviarPushParaNotificacion, VAPID_PUBLIC_KEY, PUSH_HABILITADO } from './lib/push-provider.js';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
@@ -43,6 +44,8 @@ import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado }
 import { emailApiConfigurado, emailApiProveedor, enviarPorApiHttp } from './lib/email-http-provider.js';
 import { sseClients, broadcastChange } from './lib/sync-bus.js';
 import { registrarActividadPlataforma, iniciarKeepAliveInteligente, estadoActividadReciente } from './lib/keep-alive.js';
+import { PRIMARY_MODEL, ALL_CANDIDATE_MODELS, llamarGeminiConResiliencia, generarContenidoConResiliencia, mensajeAmigablePorError } from './lib/gemini-config.js';
+import * as infraTelemetry from './services/infraTelemetry.js';
 import agentRouter from './routes/agent.js';
 import * as ecosystemAgent from './services/ecosystemAgent.js';
 // RONDA 40 — Blindaje JWT/servidor (ver src/lib/jwt-auth.ts para el porqué
@@ -409,16 +412,26 @@ function getGeminiApiKey(req?: express.Request): string {
   return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 }
 
-// Modelos activos y vigentes únicamente
-const PRIMARY_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '').trim();
-
-const CANDIDATE_MODELS = [
-    PRIMARY_MODEL,
-    'gemini-2.5-flash',
-    'gemini-1.5-flash',
-    'gemini-3.6-flash',
-    'gemini-3.7-flash',
-].filter((model, index, self) => Boolean(model) && self.indexOf(model) === index);
+// RONDA 47 (histórico) — el reporte del usuario en su momento fue que el
+// sistema intentaba primero contra 'gemini-2.5-flash' y 'gemini-1.5-flash'
+// (ambos con 404) antes de llegar a un modelo que sí respondía. Esa ronda
+// retiró 'gemini-1.5-flash' y dejó 'gemini-2.5-flash' como primario.
+//
+// RONDA 48 — UNA RONDA DESPUÉS, el mismo usuario reportó que ahora es
+// 'gemini-2.5-flash' el que falla intermitentemente, y sugirió volver a
+// 'gemini-1.5-flash'. Este vaivén de nombres confirma que perseguir "el
+// nombre correcto" ronda tras ronda no es sostenible — ni este entorno ni
+// quien atienda la próxima ronda puede verificar en vivo contra la API de
+// Google cuál modelo responde 200 en el momento exacto en que se lee este
+// comentario. La solución de fondo (ver `src/lib/gemini-config.ts`, con la
+// justificación completa y las fuentes de documentación consultadas) es
+// centralizar la lista de candidatos ahí, con un wrapper de resiliencia
+// (retry + backoff exponencial para 429/503, fallback automático de
+// modelo para 404) reutilizado por TODOS los puntos de instanciación de
+// Gemini del sistema — 'gemini-1.5-flash' sigue sin reintroducirse (familia
+// confirmada retirada, ver comentario de cabecera de gemini-config.ts).
+// `PRIMARY_MODEL`/`ALL_CANDIDATE_MODELS` ahora se importan desde ahí — este
+// archivo ya no declara su propia lista de modelos.
 
 function getGenAI(apiKeyParam?: string) {
   const apiKey = (apiKeyParam || getGeminiApiKey()).trim();
@@ -827,6 +840,148 @@ app.get('/api/inetis/db', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 44 — DIMENSIÓN 1.2 (ADAPTADA, decisión de ingeniería explícita):
+// el prompt del usuario pide "eliminar el JSON monolítico" y reemplazarlo
+// por endpoints REST granulares respaldados por TABLAS RELACIONALES por
+// nota. Eso NO se hizo en esta ronda — sería migrar el almacenamiento de
+// las 43 rondas anteriores (planillas, observador, asistencia, actas, TODO
+// vive en el blob de kv_store) a un modelo relacional nuevo, sin batería de
+// pruebas de integración real contra Postgres en este entorno, con
+// altísimo riesgo de romper producción. Se adoptó, en cambio, el enfoque
+// CONSERVADOR y ADITIVO que pidió el coordinador: estos 2 endpoints GET
+// siguen leyendo del MISMO blob JSON (vía la misma caché de 5s de
+// GET /api/inetis/db), pero devuelven solo el FRAGMENTO pedido — reducen
+// el payload de RED para quien solo necesita, por ejemplo, la lista de
+// estudiantes de un grado, sin tocar el almacenamiento subyacente ni el
+// resto de las 43 rondas anteriores. Documentado también en
+// CHECKLIST_DESPLIEGUE.md, Ronda 44, Dimensión 1.
+// ════════════════════════════════════════════════════════════════════════
+async function _leerBlobInstitucionParaFragmento(sk: string): Promise<any | null> {
+  const cacheada = leerDbCacheado(sk);
+  if (cacheada) return cacheada.existe ? cacheada.value : null;
+  const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+  const existe = rows.length > 0;
+  const value = existe ? rows[0].value : null;
+  guardarDbCache(sk, value, existe ? rows[0].updatedAt : null, existe);
+  return value;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 45 — DIMENSIÓN 1, FASE 1: los 3 endpoints de abajo ahora intentan
+// leer PRIMERO de las tablas relacionales — pero SOLO para una institución
+// (sk) que ya tiene una fila en `migracion_relacional_notas` (el
+// "interruptor" de institución backfileada por completo, ver
+// scripts/migrar-notas-a-relacional.ts y el comentario junto a esa tabla
+// en src/db/schema.ts). Mientras esa fila no exista, se usa el mismo
+// camino de la Ronda 44 (leer el blob completo, recortar el fragmento) —
+// el dual-write incremental de guardar-fila por sí solo NUNCA activa el
+// camino relacional, justamente para no devolver listas incompletas.
+//
+// DIMENSIÓN 3 (ETag): las 3 respuestas ahora incluyen un header ETag
+// (hash SHA-1 del cuerpo JSON exacto que se envía) y honran
+// `If-None-Match` con un 304 sin cuerpo — funciona igual de bien por
+// cualquiera de los 2 caminos (relacional o blob), porque el ETag se
+// calcula sobre el resultado final, no sobre la fuente.
+function _responderConETag(req: express.Request, res: express.Response, payload: any): express.Response {
+  const cuerpo = JSON.stringify(payload);
+  const etag = '"' + crypto.createHash('sha1').update(cuerpo).digest('hex') + '"';
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
+  res.setHeader('ETag', etag);
+  res.setHeader('Content-Type', 'application/json');
+  return res.status(200).send(cuerpo);
+}
+
+async function _institucionYaMigradaRelacional(sk: string): Promise<boolean> {
+  try {
+    await _asegurarSchemaRelNotas();
+    const filas = await db.select().from(migracionRelacionalNotas).where(eq(migracionRelacionalNotas.sk, sk));
+    return filas.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// GET /api/grados?sk=... — lista liviana de grados (sin estudiantes ni notas).
+app.get('/api/grados', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    if (await _institucionYaMigradaRelacional(sk)) {
+      const filas = await db.select({ grado: estudiantesRel.grado }).from(estudiantesRel).where(eq(estudiantesRel.sk, sk));
+      const gradosUnicos = [...new Set(filas.map((f) => f.grado).filter(Boolean))];
+      return _responderConETag(req, res, { grados: gradosUnicos.map((n) => ({ n })), fuente: 'relacional' });
+    }
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { grados: [], fuente: 'blob' });
+    return _responderConETag(req, res, { grados: (blob.grados || []).map((g: any) => ({ n: g.n })), fuente: 'blob' });
+  } catch (e) {
+    console.error('GET /api/grados', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/grados/:id/estudiantes?sk=... — SOLO los estudiantes de un grado,
+// con sus campos básicos (nombre, documento, id) — NO su blob completo de
+// notas/observador/ficha, que sigue viviendo en GET /api/inetis/db para
+// quien de verdad lo necesite completo.
+app.get('/api/grados/:id/estudiantes', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const grado = decodeURIComponent(req.params.id || '');
+    if (!sk || !grado) return res.status(400).json({ error: 'sk y grado (id) requeridos' });
+    if (await _institucionYaMigradaRelacional(sk)) {
+      const filas = await db.select().from(estudiantesRel).where(and(eq(estudiantesRel.sk, sk), eq(estudiantesRel.grado, grado)));
+      const estudiantes = filas.map((f) => ({ id: f.estIdOrigen, n: f.nombre, numDoc: f.numDoc, estadoMatricula: f.estadoMatricula }));
+      return _responderConETag(req, res, { estudiantes, fuente: 'relacional' });
+    }
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { estudiantes: [], fuente: 'blob' });
+    const estudiantes = (blob.ests || [])
+      .filter((e: any) => e.g === grado)
+      .map((e: any) => ({ id: e.id, n: e.n, numDoc: e.numDoc || '', estadoMatricula: e.estadoMatricula || 'activo' }));
+    return _responderConETag(req, res, { estudiantes, fuente: 'blob' });
+  } catch (e) {
+    console.error('GET /api/grados/:id/estudiantes', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/grados/:id/materias/:materiaId/notas?sk=... — SOLO las notas de
+// UNA materia/carga (`cId`) para el grado dado, en todos los periodos — el
+// fragmento exacto que necesita, por ejemplo, la pantalla de Planilla, sin
+// arrastrar el resto de materias/estudiantes/módulos de la institución.
+app.get('/api/grados/:id/materias/:materiaId/notas', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const grado = decodeURIComponent(req.params.id || '');
+    const materiaId = req.params.materiaId;
+    if (!sk || !grado || !materiaId) return res.status(400).json({ error: 'sk, grado (id) y materiaId requeridos' });
+    if (await _institucionYaMigradaRelacional(sk)) {
+      const filasEst = await db.select().from(estudiantesRel).where(and(eq(estudiantesRel.sk, sk), eq(estudiantesRel.grado, grado)));
+      const filasCal = await db.select().from(calificacionesRel).where(and(eq(calificacionesRel.sk, sk), eq(calificacionesRel.cIdOrigen, String(materiaId))));
+      const notasPorEst = new Map<string, Record<string, any>>();
+      for (const c of filasCal) {
+        if (!notasPorEst.has(c.estIdOrigen)) notasPorEst.set(c.estIdOrigen, {});
+        notasPorEst.get(c.estIdOrigen)![c.periodo] = c.notas;
+      }
+      const notas = filasEst.map((f) => ({ estId: f.estIdOrigen, n: f.nombre, notas: notasPorEst.get(f.estIdOrigen) || {} }));
+      return _responderConETag(req, res, { notas, fuente: 'relacional' });
+    }
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { notas: [], fuente: 'blob' });
+    const notas = (blob.ests || [])
+      .filter((e: any) => e.g === grado)
+      .map((e: any) => ({ estId: e.id, n: e.n, notas: (e.nts && e.nts[materiaId]) || {} }));
+    return _responderConETag(req, res, { notas, fuente: 'blob' });
+  } catch (e) {
+    console.error('GET /api/grados/:id/materias/:materiaId/notas', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
 // Elimina definitivamente los datos de una institución (usado por el súper
 // admin al borrar una plataforma). Antes solo se limpiaba el localStorage
 // del navegador que hacía la operación; los datos reales quedaban huérfanos
@@ -942,6 +1097,11 @@ app.post('/api/inetis/db', async (req, res) => {
       }
     }
 
+    // RONDA 44 — DIMENSIÓN 11.c: se toma una instantánea de `ests` ANTES de
+    // sobrescribir, para poder diferenciar después qué estudiantes
+    // realmente cambiaron (reindexación incremental) en vez de
+    // resincronizar la institución completa contra el índice de red.
+    const _estsAntesDelGuardado = leerDbCacheado(sk)?.value?.ests;
     const nowTs = new Date();
     await db
       .insert(kvStore)
@@ -961,6 +1121,30 @@ app.post('/api/inetis/db', async (req, res) => {
     // auto-ping adaptativo mantenga intervalos cortos mientras hay uso, y los
     // espacie solo cuando de verdad no está pasando nada — ver keep-alive.ts.
     registrarActividadPlataforma(sk);
+    // RONDA 43/44 — hook de sincronización del índice cruzado entre
+    // instituciones (estudiantes_indice_red). Deliberadamente SIN `await`:
+    // este es el endpoint de guardado genérico más usado de toda la
+    // plataforma (cualquier matrícula, retiro o edición de cualquier tipo
+    // pasa por aquí), así que no se le agrega latencia a la respuesta
+    // principal por una tabla que es, en esencia, un índice de búsqueda de
+    // segunda mano — un fallo o demora aquí nunca debe afectar al guardado
+    // real del blob, que ya se completó arriba.
+    //
+    // RONDA 44 — DIMENSIÓN 11.c (CERRADA): si se pudo capturar una
+    // instantánea de "antes" (la institución estaba en caché — el caso
+    // normal, dado el TTL de 5s y que el mismo cliente casi siempre acaba
+    // de leer antes de guardar), se usa reindexación INCREMENTAL — solo se
+    // toca en `estudiantes_indice_red` la fila de cada estudiante cuyo
+    // numDoc/nombre/grado/estadoMatricula realmente cambió, o que es nuevo.
+    // Si no había nada en caché (arranque en frío, o cambió el proceso del
+    // servidor), se cae al resincronizado completo de antes — mismo
+    // fallback ya documentado, ahora usado solo como excepción y no como
+    // regla.
+    if (Array.isArray(_estsAntesDelGuardado)) {
+      _sincronizarIndiceRedIncremental(sk, _estsAntesDelGuardado, (data as any)?.ests).catch(() => {});
+    } else {
+      _resincronizarIndiceRedInstitucion(sk, (data as any)?.ests).catch(() => {});
+    }
     return res.json({ ok: true, version: nowTs.toISOString() });
   } catch (e) {
     console.error('POST /api/inetis/db', e);
@@ -987,127 +1171,159 @@ app.post('/api/inetis/db', async (req, res) => {
 // inmediatamente antes de escribir, sin usar `baseVersion`/fusión de 3 vías
 // ni disparar ningún aviso de "otra persona guardó" — cada llamada es
 // autocontenida: lee lo último, aplica el cambio de una sola fila, guarda.
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 44 — DIMENSIÓN 2 (UPSERT ATÓMICO). El pedido literal era
+// "POST /api/notas/actualizar con UPSERT SQL ON CONFLICT". Se investigó
+// primero (instrucción explícita del coordinador de no asumir): este
+// endpoint YA hace, desde la Ronda 36, una lectura-modificación-escritura
+// atómica de UNA sola fila (no reescribe el blob completo), y la fusión
+// `{...(e.nts[cId][per]||{}), ...notas}` es semánticamente un UPSERT — si
+// la celda no existía, se crea; si existía, se fusiona sin pisar columnas
+// que este guardado no tocó. Migrar esto a un `INSERT ... ON CONFLICT` de
+// SQL real exigiría que cada nota fuera una FILA de una tabla relacional
+// (Dimensión 1.2, que se decidió NO migrar esta ronda por riesgo — ver el
+// comentario grande sobre las tablas granulares más arriba). Lo que SÍ se
+// hizo: (a) extraer la lógica a `_ejecutarGuardarFilaNotas()` para que
+// pueda reutilizarse; (b) exponer el mismo motor bajo el nombre de ruta
+// exacto que pidió el prompt, `POST /api/notas/actualizar`, como alias —
+// AMBAS rutas ejecutan la MISMA función, nunca una copia.
+// ════════════════════════════════════════════════════════════════════════
+async function _ejecutarGuardarFilaNotas(req: express.Request): Promise<{ status: number; body: any }> {
+  const { sk, tipo, estId, cId, per, notas, colId, valor, fecha, hora, obs, actorRolEspecifico } = (req.body || {}) as {
+    sk?: string; tipo?: 'planilla' | 'actividad'; estId?: string | number; cId?: number; per?: number;
+    notas?: Record<string, number>; colId?: string; valor?: number; fecha?: string; hora?: string; obs?: string;
+    // RONDA 39 — campo OPCIONAL de defensa en profundidad: este endpoint no
+    // tiene sesión/identidad de servidor (confía por completo en el `sk` de
+    // la institución, igual que el resto del núcleo K-12). Si el frontend
+    // decide enviar el rolEspecifico del usuario que hace la petición, se
+    // usa aquí para bloquear a Docente Orientador y Tutor PTA. Si el campo
+    // no se envía, este chequeo simplemente no aplica — la restricción real
+    // y primaria sigue siendo del lado del cliente (menú/UI oculta estas
+    // pantallas para esos 2 roles).
+    actorRolEspecifico?: string;
+  };
+  if (!sk || !tipo || estId === undefined || estId === null) {
+    return { status: 400, body: { ok: false, error: 'Faltan datos (sk, tipo o estId).' } };
+  }
+  if (actorRolEspecifico === 'Docente Orientador' || actorRolEspecifico === 'Tutor PTA') {
+    return { status: 403, body: { ok: false, error: 'Este rol no tiene permiso para registrar o modificar notas/planillas.' } };
+  }
+  // RONDA 40 — verificación CRIPTOGRÁFICA real (no basada en lo que declare
+  // el body). ALCANCE Y LIMITACIÓN: este endpoint sigue sin EXIGIR un JWT como
+  // requisito obligatorio (retrocompatible con clientes/pestañas viejas que
+  // aún no tienen token) — RONDA 44, Dimensión 11.b sí volvió el JWT
+  // OBLIGATORIO, pero únicamente en los 5 endpoints /api/red/*, no aquí.
+  const _tokenJWT = extraerBearer(req.headers.authorization);
+  if (_tokenJWT) {
+    const _payloadJWT = verificarJWT(_tokenJWT);
+    if (!_payloadJWT) {
+      return { status: 401, body: { ok: false, error: 'Token de sesión inválido o vencido.' } };
+    }
+    if (rolBloqueadoParaNotas(_payloadJWT)) {
+      return { status: 403, body: { ok: false, error: 'Su rol (verificado por token de sesión firmado) no tiene permiso para registrar o modificar notas/planillas.' } };
+    }
+  }
+  if (!_tieneRescateValido(req)) {
+    const estado = await verificarEstadoInstitucion(sk);
+    if (!estado.ok) return { status: 403, body: { error: estado.motivo } };
+    const estadoSuscripcion = await verificarSuscripcionSaas(sk);
+    if (!estadoSuscripcion.ok) return { status: 402, body: { error: estadoSuscripcion.motivo, suscripcionVencida: true } };
+  }
+
+  // Lectura fresca (sin caché de 5s) — es la garantía de que esta escritura
+  // parte siempre del dato más reciente posible, en vez de una copia local
+  // potencialmente vieja del resto de la planilla.
+  const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+  if (!rows.length) return { status: 404, body: { ok: false, error: 'Institución no encontrada.' } };
+  const blob: any = rows[0].value;
+
+  // RONDA 41 — PARTE 1.1: PROPIEDAD DE LA INFORMACIÓN Y AUDITORÍA. El dato
+  // en sí (e.nts[cId][per], blob.notasAct[key]) sigue clave-ando EXACTAMENTE
+  // igual que antes: por (asignatura/curso, periodo, [columna], estudiante)
+  // — nunca por docente. El id del docente que hizo ESTE guardado se anota
+  // aparte, en blob.auditoriaNotas, como metadato de solo lectura para
+  // trazabilidad ("¿quién registró esto?"). Ningún endpoint de lectura ni
+  // de permisos consulta blob.auditoriaNotas para decidir si una nota
+  // existe o es visible — existir/verse depende solo de la clave real de
+  // arriba, jamás de quién la escribió.
+  const _docenteAuditoriaId = (() => {
+    if (_tokenJWT) {
+      const _p = verificarJWT(_tokenJWT);
+      if (_p) return _p.sub;
+    }
+    return (req.body && (req.body as any).actorUsuario) || null;
+  })();
+  if (tipo === 'planilla') {
+    if (cId === undefined || per === undefined || !notas) {
+      return { status: 400, body: { ok: false, error: 'Faltan datos (cId, per o notas) para tipo=planilla.' } };
+    }
+    const idx = (blob.ests || []).findIndex((x: any) => String(x.id) === String(estId));
+    if (idx === -1) return { status: 404, body: { ok: false, error: 'Estudiante no encontrado.' } };
+    const e = blob.ests[idx];
+    e.nts = e.nts || {};
+    e.nts[cId] = e.nts[cId] || {};
+    // UPSERT: si la fila del periodo no existía, se crea (INSERT); si ya
+    // existía, se fusiona campo por campo sin pisar columnas que esta
+    // llamada no envió (UPDATE parcial) — equivalente semántico de
+    // `INSERT ... ON CONFLICT (est_id, c_id, per) DO UPDATE SET ...`.
+    e.nts[cId][per] = { ...(e.nts[cId][per] || {}), ...notas };
+    blob.auditoriaNotas = blob.auditoriaNotas || [];
+    blob.auditoriaNotas.push({ tipo: 'planilla', estId, cId, per, registradoPorDocenteId: _docenteAuditoriaId, ts: new Date().toISOString() });
+    // RONDA 45 — DIMENSIÓN 1: DUAL-WRITE best-effort hacia la capa
+    // relacional (Fase 1 de la migración de almacenamiento). Se dispara
+    // DESPUÉS de aplicar el cambio al blob en memoria (blob ya tiene el
+    // valor fusionado) pero se corre AQUÍ, antes del guardado del kv_store
+    // de abajo, para poder capturar cualquier error sin afectar la
+    // respuesta — no bloquea ni puede hacer fallar este guardado: un fallo
+    // en la tabla relacional únicamente significa que esa institución no
+    // se beneficia todavía de la lectura rápida de /api/grados* (fallback
+    // automático al blob, ver esos 3 endpoints más abajo).
+    await _dualWriteCalificacionRel(sk, blob, String(estId), Number(cId), Number(per), e.nts[cId][per]);
+  } else if (tipo === 'actividad') {
+    if (!colId) return { status: 400, body: { ok: false, error: 'Falta colId para tipo=actividad.' } };
+    blob.notasAct = blob.notasAct || {};
+    const key = `${cId}_${per}_${colId}_${estId}`;
+    if (valor === undefined || valor === null) {
+      // valor ausente = solicitud explícita de ELIMINAR la celda (ver
+      // eliminarNotaAct() en el frontend) — se borra la clave por completo,
+      // sin dejar un residuo con valor 0 confundible con "nota en cero".
+      delete blob.notasAct[key];
+    } else {
+      blob.notasAct[key] = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '', registradoPorDocenteId: _docenteAuditoriaId };
+    }
+  } else {
+    return { status: 400, body: { ok: false, error: 'tipo debe ser "planilla" o "actividad".' } };
+  }
+
+  const nowTs = new Date();
+  await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, sk));
+  guardarDbCache(sk, blob, nowTs, true);
+  broadcastChange(sk);
+  registrarActividadPlataforma(sk);
+  return { status: 200, body: { ok: true, version: nowTs.toISOString() } };
+}
+
 app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
   try {
-    const { sk, tipo, estId, cId, per, notas, colId, valor, fecha, hora, obs, actorRolEspecifico } = (req.body || {}) as {
-      sk?: string; tipo?: 'planilla' | 'actividad'; estId?: string | number; cId?: number; per?: number;
-      notas?: Record<string, number>; colId?: string; valor?: number; fecha?: string; hora?: string; obs?: string;
-      // RONDA 39 — campo OPCIONAL de defensa en profundidad: este endpoint no
-      // tiene sesión/identidad de servidor (confía por completo en el `sk` de
-      // la institución, igual que el resto del núcleo K-12). Si el frontend
-      // decide enviar el rolEspecifico del usuario que hace la petición, se
-      // usa aquí para bloquear a Docente Orientador y Tutor PTA. Si el campo
-      // no se envía, este chequeo simplemente no aplica — la restricción real
-      // y primaria sigue siendo del lado del cliente (menú/UI oculta estas
-      // pantallas para esos 2 roles).
-      actorRolEspecifico?: string;
-    };
-    if (!sk || !tipo || estId === undefined || estId === null) {
-      return res.status(400).json({ ok: false, error: 'Faltan datos (sk, tipo o estId).' });
-    }
-    if (actorRolEspecifico === 'Docente Orientador' || actorRolEspecifico === 'Tutor PTA') {
-      return res.status(403).json({ ok: false, error: 'Este rol no tiene permiso para registrar o modificar notas/planillas.' });
-    }
-    // ════════════════════════════════════════════════════════════════════════
-    // RONDA 40 — verificación CRIPTOGRÁFICA real (no basada en lo que declare
-    // el body). Si llega un JWT en "Authorization: Bearer <token>", se
-    // verifica su firma HMAC-SHA256 y expiración (verificarJWT — rechaza de
-    // inmediato cualquier token alterado o vencido), y si el rol/rolEspecifico
-    // que el SERVIDOR firmó en su momento (no lo que el cliente mande ahora)
-    // corresponde a DOCENTE_ORIENTADOR, TUTOR_PTA, ESTUDIANTE o ACUDIENTE
-    // (rol interno 'padre'), se rechaza con 403 sin excepción.
-    //
-    // ALCANCE Y LIMITACIÓN (transparencia total, ver también
-    // CHECKLIST_DESPLIEGUE.md): este endpoint sigue sin EXIGIR un JWT como
-    // requisito obligatorio de acceso — si no llega ningún token, esta
-    // verificación simplemente no aplica y el endpoint sigue con el
-    // comportamiento heredado (chequeo opcional `actorRolEspecifico` de
-    // arriba, y en última instancia, confianza en el `sk`). Exigir JWT
-    // obligatorio en TODA petición habría roto de inmediato a cualquier
-    // cliente que todavía no lo esté enviando (el frontend recién empieza a
-    // pedirlo en esta misma ronda — ver doLoginInstitucional()) — por eso se
-    // adoptó la migración RETROCOMPATIBLE que pidió explícitamente el
-    // coordinador: cuando el JWT SÍ viene, su verificación es real,
-    // criptográfica, y su rechazo no se puede evadir mintiendo en el body;
-    // cuando NO viene, la protección disponible es la heredada (client-side
-    // + el chequeo opcional de arriba).
-    // ════════════════════════════════════════════════════════════════════════
-    const _tokenJWT = extraerBearer(req.headers.authorization);
-    if (_tokenJWT) {
-      const _payloadJWT = verificarJWT(_tokenJWT);
-      if (!_payloadJWT) {
-        return res.status(401).json({ ok: false, error: 'Token de sesión inválido o vencido.' });
-      }
-      if (rolBloqueadoParaNotas(_payloadJWT)) {
-        return res.status(403).json({ ok: false, error: 'Su rol (verificado por token de sesión firmado) no tiene permiso para registrar o modificar notas/planillas.' });
-      }
-    }
-    if (!_tieneRescateValido(req)) {
-      const estado = await verificarEstadoInstitucion(sk);
-      if (!estado.ok) return res.status(403).json({ error: estado.motivo });
-      const estadoSuscripcion = await verificarSuscripcionSaas(sk);
-      if (!estadoSuscripcion.ok) return res.status(402).json({ error: estadoSuscripcion.motivo, suscripcionVencida: true });
-    }
-
-    // Lectura fresca (sin caché de 5s) — es la garantía de que esta escritura
-    // parte siempre del dato más reciente posible, en vez de una copia local
-    // potencialmente vieja del resto de la planilla.
-    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
-    if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
-    const blob: any = rows[0].value;
-
-    // RONDA 41 — PARTE 1.1: PROPIEDAD DE LA INFORMACIÓN Y AUDITORÍA. El dato
-    // en sí (e.nts[cId][per], blob.notasAct[key]) sigue clave-ando EXACTAMENTE
-    // igual que antes: por (asignatura/curso, periodo, [columna], estudiante)
-    // — nunca por docente. El id del docente que hizo ESTE guardado se anota
-    // aparte, en blob.auditoriaNotas, como metadato de solo lectura para
-    // trazabilidad ("¿quién registró esto?"). Ningún endpoint de lectura ni
-    // de permisos consulta blob.auditoriaNotas para decidir si una nota
-    // existe o es visible — existir/verse depende solo de la clave real de
-    // arriba, jamás de quién la escribió.
-    const _docenteAuditoriaId = (() => {
-      if (_tokenJWT) {
-        const _p = verificarJWT(_tokenJWT);
-        if (_p) return _p.sub;
-      }
-      return (req.body && (req.body as any).actorUsuario) || null;
-    })();
-    if (tipo === 'planilla') {
-      if (cId === undefined || per === undefined || !notas) {
-        return res.status(400).json({ ok: false, error: 'Faltan datos (cId, per o notas) para tipo=planilla.' });
-      }
-      const idx = (blob.ests || []).findIndex((x: any) => String(x.id) === String(estId));
-      if (idx === -1) return res.status(404).json({ ok: false, error: 'Estudiante no encontrado.' });
-      const e = blob.ests[idx];
-      e.nts = e.nts || {};
-      e.nts[cId] = e.nts[cId] || {};
-      e.nts[cId][per] = { ...(e.nts[cId][per] || {}), ...notas };
-      blob.auditoriaNotas = blob.auditoriaNotas || [];
-      blob.auditoriaNotas.push({ tipo: 'planilla', estId, cId, per, registradoPorDocenteId: _docenteAuditoriaId, ts: new Date().toISOString() });
-    } else if (tipo === 'actividad') {
-      if (!colId) return res.status(400).json({ ok: false, error: 'Falta colId para tipo=actividad.' });
-      blob.notasAct = blob.notasAct || {};
-      const key = `${cId}_${per}_${colId}_${estId}`;
-      if (valor === undefined || valor === null) {
-        // valor ausente = solicitud explícita de ELIMINAR la celda (ver
-        // eliminarNotaAct() en el frontend) — se borra la clave por completo,
-        // sin dejar un residuo con valor 0 confundible con "nota en cero".
-        delete blob.notasAct[key];
-      } else {
-        blob.notasAct[key] = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '', registradoPorDocenteId: _docenteAuditoriaId };
-      }
-    } else {
-      return res.status(400).json({ ok: false, error: 'tipo debe ser "planilla" o "actividad".' });
-    }
-
-    const nowTs = new Date();
-    await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, sk));
-    guardarDbCache(sk, blob, nowTs, true);
-    broadcastChange(sk);
-    registrarActividadPlataforma(sk);
-    return res.json({ ok: true, version: nowTs.toISOString() });
+    const { status, body } = await _ejecutarGuardarFilaNotas(req);
+    return res.status(status).json(body);
   } catch (e) {
     console.error('POST /api/inetis/notas/guardar-fila', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al guardar la fila.' });
+  }
+});
+
+// RONDA 44 — DIMENSIÓN 2: alias con el nombre de ruta exacto pedido por el
+// prompt del usuario ("POST /api/notas/actualizar"). Ejecuta EXACTAMENTE
+// el mismo motor que /api/inetis/notas/guardar-fila — se mantiene el
+// nombre original como ruta primaria (no romper clientes ya desplegados
+// que lo llaman) y este como alias hacia adelante.
+app.post('/api/notas/actualizar', async (req, res) => {
+  try {
+    const { status, body } = await _ejecutarGuardarFilaNotas(req);
+    return res.status(status).json(body);
+  } catch (e) {
+    console.error('POST /api/notas/actualizar', e);
     return res.status(500).json({ ok: false, error: 'Error interno al guardar la fila.' });
   }
 });
@@ -1155,18 +1371,316 @@ app.post('/api/inetis/notas/guardar-fila', async (req, res) => {
 // es, como mínimo, el mismo estándar que el resto del núcleo K-12.
 // ════════════════════════════════════════════════════════════════════════
 function _autorizarActorAdmin(req: express.Request): { ok: true; actorUsuario: string; actorNombre: string } | { ok: false; status: number; error: string } {
-  const body: any = req.body || {};
+  // RONDA 43 — acepta actorRol/actorUsuario/actorNombre tanto del body
+  // (POST) como del query string (GET, ej. la bandeja de solicitudes
+  // pendientes) para no duplicar esta función por verbo HTTP.
+  const fuente: any = (req.body && Object.keys(req.body).length ? req.body : req.query) || {};
   const tokenJWT = extraerBearer(req.headers.authorization);
   if (tokenJWT) {
     const payload = verificarJWT(tokenJWT);
     if (!payload) return { ok: false, status: 401, error: 'Token de sesión inválido o vencido.' };
     if (payload.rol !== 'admin') return { ok: false, status: 403, error: 'Solo el Rector/Administrador de la institución puede realizar operaciones de traslado.' };
-    return { ok: true, actorUsuario: payload.sub, actorNombre: body.actorNombre || payload.sub };
+    return { ok: true, actorUsuario: payload.sub, actorNombre: fuente.actorNombre || payload.sub };
   }
-  if (body.actorRol !== 'admin') {
+  if (fuente.actorRol !== 'admin') {
     return { ok: false, status: 403, error: 'Solo el Rector/Administrador de la institución puede realizar operaciones de traslado.' };
   }
-  return { ok: true, actorUsuario: body.actorUsuario || '—', actorNombre: body.actorNombre || body.actorUsuario || '—' };
+  return { ok: true, actorUsuario: fuente.actorUsuario || '—', actorNombre: fuente.actorNombre || fuente.actorUsuario || '—' };
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 44 — DIMENSIÓN 11.b: JWT OBLIGATORIO específicamente para los 5
+// endpoints /api/red/* (búsqueda en la red + Buzón de Solicitudes). A
+// diferencia de `_autorizarActorAdmin()` (retrocompatible: JWT opcional,
+// cae a `actorRol` del body si no hay token — usado por guardar-fila y por
+// /api/traslado/* offline, que el coordinador pidió NO tocar en esta
+// ronda), esta función RECHAZA con 401 cualquier petición sin un JWT
+// válido. Justificación del alcance más estricto: estos 5 endpoints son
+// los que mueven expedientes ENTRE instituciones (no dentro de la propia),
+// así que el coordinador pidió tratarlos como el conjunto más sensible de
+// toda la plataforma — y son, además, los más NUEVOS (Ronda 43), sin
+// clientes desplegados que dependan todavía del modo retrocompatible.
+function _exigirJWTAdmin(req: express.Request): { ok: true; actorUsuario: string; actorNombre: string } | { ok: false; status: number; error: string } {
+  const fuente: any = (req.body && Object.keys(req.body).length ? req.body : req.query) || {};
+  const tokenJWT = extraerBearer(req.headers.authorization);
+  if (!tokenJWT) {
+    return { ok: false, status: 401, error: 'Este endpoint requiere un token de sesión (JWT) válido — inicie sesión de nuevo si el problema persiste.' };
+  }
+  const payload = verificarJWT(tokenJWT);
+  if (!payload) return { ok: false, status: 401, error: 'Token de sesión inválido o vencido.' };
+  if (payload.rol !== 'admin') return { ok: false, status: 403, error: 'Solo el Rector/Administrador de la institución puede realizar operaciones de interconexión entre instituciones.' };
+  return { ok: true, actorUsuario: payload.sub, actorNombre: fuente.actorNombre || payload.sub };
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 45 — DIMENSIÓN 1, FASE 1: capa de lectura/escritura relacional
+// (dual-write) — ver el comentario extenso de arquitectura junto a
+// `ensureSchemaRelacionalNotas()` en src/db/index.ts.
+let _schemaRelNotasListo = false;
+async function _asegurarSchemaRelNotas(): Promise<void> {
+  if (_schemaRelNotasListo) return;
+  await ensureSchemaRelacionalNotas();
+  _schemaRelNotasListo = true;
+}
+
+// Dual-write BEST-EFFORT de una nota de tipo "planilla" hacia las 3 tablas
+// relacionales. Alcance de esta fase: SOLO tipo='planilla' (el grano
+// est×materia×periodo, que es exactamente el que necesitan los 3
+// endpoints /api/grados* de la Ronda 44) — tipo='actividad' (notas de
+// quiz/actividad puntual, clave distinta: est×col×fecha) NO se migra en
+// esta fase; sigue viviendo únicamente en el blob, documentado como
+// decisión explícita de alcance (no un olvido). Cualquier error aquí se
+// atrapa y se registra, pero NUNCA se propaga — el guardado real (el
+// blob JSON, la fuente de verdad) ya se completó antes de llamar a esto.
+async function _dualWriteCalificacionRel(sk: string, blob: any, estId: string, cId: number, per: number, notasFusionadas: any): Promise<void> {
+  try {
+    await _asegurarSchemaRelNotas();
+    const e = (blob.ests || []).find((x: any) => String(x.id) === String(estId));
+    const carga = (blob.carga || []).find((c: any) => String(c.id) === String(cId));
+    const grado = (e && e.g) || (carga && carga.g) || '';
+    if (e) {
+      await db.insert(estudiantesRel)
+        .values({ sk, estIdOrigen: String(estId), nombre: e.n || '', numDoc: e.numDoc || '', grado, estadoMatricula: e.estadoMatricula || 'activo', updatedAt: new Date() })
+        .onConflictDoUpdate({ target: [estudiantesRel.sk, estudiantesRel.estIdOrigen], set: { nombre: e.n || '', numDoc: e.numDoc || '', grado, estadoMatricula: e.estadoMatricula || 'activo', updatedAt: new Date() } });
+    }
+    if (carga) {
+      await db.insert(materiasRel)
+        .values({ sk, cIdOrigen: String(cId), nombre: carga.m || '', grado: carga.g || grado, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: [materiasRel.sk, materiasRel.cIdOrigen], set: { nombre: carga.m || '', grado: carga.g || grado, updatedAt: new Date() } });
+    }
+    await db.insert(calificacionesRel)
+      .values({ sk, estIdOrigen: String(estId), cIdOrigen: String(cId), periodo: String(per), notas: notasFusionadas, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: [calificacionesRel.sk, calificacionesRel.estIdOrigen, calificacionesRel.cIdOrigen, calificacionesRel.periodo], set: { notas: notasFusionadas, updatedAt: new Date() } });
+  } catch (err) {
+    console.error('_dualWriteCalificacionRel (best-effort, no afecta el guardado real en el blob)', err);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 43 — ÍNDICE CRUZADO ENTRE INSTITUCIONES (estudiantes_indice_red).
+//
+// DECISIÓN DE ARQUITECTURA (documentada con transparencia, evaluando las 2
+// alternativas que planteó el coordinador): se eligió un ÍNDICE RELACIONAL
+// separado en Neon en vez de recorrer los blobs JSON de todas las
+// instituciones en cada búsqueda. Razones: (a) el costo de una búsqueda por
+// NUIP pasa de O(instituciones × estudiantes_por_institución) — leyendo
+// blobs completos, cada uno potencialmente de varios MB — a una única
+// consulta indexada por clave primaria (nuip) en una tabla angosta con 6
+// columnas; (b) el índice no expone JAMÁS datos sensibles (notas,
+// observador, ficha) porque físicamente no los contiene — es estructuralmente
+// imposible filtrar de más por un bug de "se me olvidó excluir ese campo",
+// a diferencia de tener que recortar campos de un blob completo en cada
+// respuesta; (c) es la misma filosofía que ya usa este proyecto en otras
+// tablas de solo-índice/auditoría (ej. `simat_estudiantes`, Ronda 36).
+// Costo aceptado: hay que mantenerlo sincronizado explícitamente (no es
+// una vista derivada en vivo) — se hace con hooks en los puntos donde el
+// blob se guarda, nunca con un job batch aparte, para minimizar el margen
+// de desactualización.
+let _schemaRedListo = false;
+async function _asegurarSchemaRed(): Promise<void> {
+  if (_schemaRedListo) return;
+  await ensureSchemaRedInterinstitucional();
+  _schemaRedListo = true;
+}
+
+// Nombre de la institución a partir de su sk — lee el blob especial de la
+// plataforma (GESTOR_SK) y busca dentro de `platforms`. Con fallback al sk
+// mismo si no se encuentra (nunca debe romper el flujo por esto).
+async function _obtenerNombreInstitucion(sk: string): Promise<string> {
+  try {
+    const rows = await db.select().from(kvStore).where(eq(kvStore.key, GESTOR_SK));
+    const gestorDB: any = rows.length ? rows[0].value : null;
+    const plat = gestorDB && Array.isArray(gestorDB.platforms) ? gestorDB.platforms.find((p: any) => p.sk === sk) : null;
+    return (plat && plat.nombre) || sk;
+  } catch {
+    return sk;
+  }
+}
+
+// Sincroniza UNA fila del índice a partir del estudiante real (nunca copia
+// más campos que los estrictamente necesarios para la búsqueda pública).
+// Best-effort: un fallo aquí NUNCA debe tumbar la operación principal que
+// lo llama (guardar notas, matricular, trasladar) — se registra en consola
+// y se sigue.
+async function _sincronizarIndiceRedEstudiante(sk: string, e: any): Promise<void> {
+  try {
+    const numDoc = String(e?.numDoc || '').trim();
+    if (!numDoc) return; // sin documento no hay forma de correlacionar en la red — se omite, no es un error
+    await _asegurarSchemaRed();
+    const institucionNombre = await _obtenerNombreInstitucion(sk);
+    const activo = (e.estadoMatricula || 'activo') === 'activo';
+    await db.insert(estudiantesIndiceRed).values({
+      nuip: numDoc, sk, nombreCompleto: e.n || '', institucionNombre, grado: e.g || '', activo, updatedAt: new Date(),
+    }).onConflictDoUpdate({
+      target: estudiantesIndiceRed.nuip,
+      set: { sk, nombreCompleto: e.n || '', institucionNombre, grado: e.g || '', activo, updatedAt: new Date() },
+    });
+  } catch (err) {
+    console.error('_sincronizarIndiceRedEstudiante', err);
+  }
+}
+
+// Resincroniza TODOS los estudiantes de una institución de una sola vez —
+// se usa como hook desde POST /api/inetis/db (el guardado genérico de todo
+// el blob), que es el punto por el que pasa CUALQUIER matrícula, retiro o
+// edición hecha desde la UI normal (no solo los endpoints de traslado).
+async function _resincronizarIndiceRedInstitucion(sk: string, ests: any[]): Promise<void> {
+  try {
+    if (!Array.isArray(ests) || !ests.length) return;
+    await _asegurarSchemaRed();
+    const institucionNombre = await _obtenerNombreInstitucion(sk);
+    for (const e of ests) {
+      const numDoc = String(e?.numDoc || '').trim();
+      if (!numDoc) continue;
+      const activo = (e.estadoMatricula || 'activo') === 'activo';
+      await db.insert(estudiantesIndiceRed).values({
+        nuip: numDoc, sk, nombreCompleto: e.n || '', institucionNombre, grado: e.g || '', activo, updatedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: estudiantesIndiceRed.nuip,
+        set: { sk, nombreCompleto: e.n || '', institucionNombre, grado: e.g || '', activo, updatedAt: new Date() },
+      });
+    }
+  } catch (err) {
+    console.error('_resincronizarIndiceRedInstitucion', err);
+  }
+}
+
+// RONDA 44 — DIMENSIÓN 11.c: versión INCREMENTAL de la resincronización —
+// compara `estsAntes` (instantánea previa al guardado) contra `estsAhora`
+// (lo que se acaba de guardar) y solo toca en el índice las filas de los
+// estudiantes cuyo numDoc/nombre/grado/estadoMatricula cambió, o que son
+// nuevos (no existían en `estsAntes`). Un estudiante sin ningún cambio
+// relevante para el índice (ej. se le agregó una nota) no genera ningún
+// UPDATE contra estudiantes_indice_red.
+function _huellaIndiceRed(e: any): string {
+  return [e?.numDoc, e?.n, e?.g, e?.estadoMatricula || 'activo'].map((v) => String(v ?? '')).join('\u0001');
+}
+async function _sincronizarIndiceRedIncremental(sk: string, estsAntes: any[], estsAhora: any[]): Promise<void> {
+  try {
+    if (!Array.isArray(estsAhora) || !estsAhora.length) return;
+    const huellasAntes = new Map<string, string>();
+    for (const e of (Array.isArray(estsAntes) ? estsAntes : [])) {
+      huellasAntes.set(String(e?.id), _huellaIndiceRed(e));
+    }
+    const cambiados = estsAhora.filter((e: any) => {
+      const huellaVieja = huellasAntes.get(String(e?.id));
+      return huellaVieja === undefined || huellaVieja !== _huellaIndiceRed(e);
+    });
+    if (!cambiados.length) return; // nada relevante para el índice cambió en este guardado
+    await _asegurarSchemaRed();
+    const institucionNombre = await _obtenerNombreInstitucion(sk);
+    for (const e of cambiados) {
+      const numDoc = String(e?.numDoc || '').trim();
+      if (!numDoc) continue;
+      const activo = (e.estadoMatricula || 'activo') === 'activo';
+      await db.insert(estudiantesIndiceRed).values({
+        nuip: numDoc, sk, nombreCompleto: e.n || '', institucionNombre, grado: e.g || '', activo, updatedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: estudiantesIndiceRed.nuip,
+        set: { sk, nombreCompleto: e.n || '', institucionNombre, grado: e.g || '', activo, updatedAt: new Date() },
+      });
+    }
+  } catch (err) {
+    console.error('_sincronizarIndiceRedIncremental', err);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 43 — MOTOR COMPARTIDO DE MIGRACIÓN (usado por 3 flujos distintos:
+// el paquete OFFLINE de las Rondas 41-42, y la Migración Directa Server-Side
+// del nuevo Buzón de Solicitudes). Se extrae aquí para que "reutilizar el
+// motor, no reescribirlo" sea literal: los 3 disparadores llaman a las
+// MISMAS 2 funciones, nunca copias.
+// ════════════════════════════════════════════════════════════════════════
+function _construirPaqueteExportacionEstudiante(blob: any, sk: string, estId: string | number): { datos: any; e: any } | null {
+  const e = (blob.ests || []).find((x: any) => String(x.id) === String(estId));
+  if (!e) return null;
+  const carga = (blob.carga || []).filter((c: any) => c.g === e.g);
+  const datos = {
+    version: 1,
+    origenSk: sk,
+    numDoc: e.numDoc || '',
+    estudiante: e, // incluye nts, observaciones, ficha, foto, etc. — el objeto completo del estudiante
+    materiasGradoOrigen: carga.map((c: any) => ({ id: c.id, m: c.m, a: c.a })),
+    atencionesPsicopedagogicas: (blob.atencionesPsicopedagogicas || []).filter((a: any) => String(a.estId) === String(estId)),
+    casosConvivencia: (blob.casosConvivencia || []).filter((c: any) => String(c.estId) === String(estId)),
+    asistencia: (blob.asistencia || []).filter((a: any) => Array.isArray(a.registros) ? a.registros.some((r: any) => String(r.estId) === String(estId)) : false)
+      .map((a: any) => ({ fecha: a.fecha, grado: a.grado, registro: (a.registros || []).find((r: any) => String(r.estId) === String(estId)) })),
+    historicoAcademico: (blob.historicoAcademico || []).filter((h: any) => String(h.estId) === String(estId)),
+    emitidoEn: new Date().toISOString(),
+  };
+  return { datos, e };
+}
+
+// RONDA 43 — al generar el paquete (sea por el botón offline o por la
+// aprobación de una solicitud), el estudiante queda marcado de inmediato
+// como 'inactivo_traslado' en el blob de ORIGEN — cumple la secuencia
+// exacta pedida ("se cambia de inmediato el estado ... a Inactivo por
+// Traslado/Retirado"). No se elimina al estudiante ni sus datos: solo se
+// anota `estadoMatricula`, un campo NUEVO (no pisa ningún campo existente
+// como `e.estado`/`e.activo`, que este sistema no usaba de forma consistente
+// antes de esta ronda — ver CHECKLIST_DESPLIEGUE.md).
+function _marcarEstudianteInactivoPorTraslado(e: any): void {
+  e.estadoMatricula = 'inactivo_traslado';
+  e.fechaInactivoPorTraslado = new Date().toISOString();
+}
+
+function _aplicarImportacionEstudianteADestino(blobDestino: any, datos: any, gradoDestino: string): string | number {
+  const numDoc = String(datos.numDoc || '');
+  const estudianteEntrante = datos.estudiante || {};
+  blobDestino.ests = blobDestino.ests || [];
+  let idx = numDoc ? blobDestino.ests.findIndex((x: any) => String(x.numDoc || '') === numDoc) : -1;
+  let nuevoId: string | number;
+  if (idx === -1) {
+    // No existe todavía en destino: se crea con un id nuevo propio de esta
+    // institución (los ids son locales a cada blob/sk), conservando todo
+    // el resto del expediente entrante (nombre, ficha, notas históricas,
+    // observador, etc.) bajo un nuevo campo `historicoExterno` para no
+    // mezclarlo silenciosamente con la estructura `nts`/`observaciones`
+    // nativa de esta institución (evita colisiones de ids de "carga" entre
+    // colegios distintos). El estudiante llega ACTIVO en destino
+    // (estadoMatricula no se copia del origen — allá quedó inactivo, aquí
+    // empieza una matrícula nueva y activa).
+    nuevoId = 'trasl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    blobDestino.ests.push({
+      ...estudianteEntrante,
+      id: nuevoId,
+      g: gradoDestino,
+      nts: {}, // las notas del colegio de origen no son comparables por id de carga — se archivan aparte, íntegras, ver historicoExterno
+      estadoMatricula: 'activo',
+      historicoExterno: {
+        origenSk: datos.origenSk,
+        notas: estudianteEntrante.nts || {},
+        materiasGradoOrigen: datos.materiasGradoOrigen || [],
+        observaciones: estudianteEntrante.observaciones || [],
+        ficha: estudianteEntrante.ficha || null,
+        importadoEn: new Date().toISOString(),
+      },
+    });
+  } else {
+    // Ya existe en destino (reingreso, o el traslado se registró dos
+    // veces): se fusiona sin pisar nada local — el expediente entrante
+    // queda anexado en historicoExterno para consulta, y nunca sobrescribe
+    // notas/observaciones que la institución destino ya tenga.
+    nuevoId = blobDestino.ests[idx].id;
+    blobDestino.ests[idx].estadoMatricula = 'activo';
+    blobDestino.ests[idx].historicoExterno = blobDestino.ests[idx].historicoExterno || [];
+    (Array.isArray(blobDestino.ests[idx].historicoExterno) ? blobDestino.ests[idx].historicoExterno : [blobDestino.ests[idx].historicoExterno]).push({
+      origenSk: datos.origenSk,
+      notas: estudianteEntrante.nts || {},
+      materiasGradoOrigen: datos.materiasGradoOrigen || [],
+      observaciones: estudianteEntrante.observaciones || [],
+      ficha: estudianteEntrante.ficha || null,
+      importadoEn: new Date().toISOString(),
+    });
+  }
+  blobDestino.atencionesPsicopedagogicas = blobDestino.atencionesPsicopedagogicas || [];
+  (datos.atencionesPsicopedagogicas || []).forEach((a: any) => blobDestino.atencionesPsicopedagogicas.push({ ...a, estId: nuevoId, id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }));
+  blobDestino.casosConvivencia = blobDestino.casosConvivencia || [];
+  (datos.casosConvivencia || []).forEach((c: any) => blobDestino.casosConvivencia.push({ ...c, estId: nuevoId, id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }));
+  blobDestino.historicoAcademico = blobDestino.historicoAcademico || [];
+  (datos.historicoAcademico || []).forEach((h: any) => blobDestino.historicoAcademico.push({ ...h, estId: nuevoId }));
+  return nuevoId;
 }
 
 app.post('/api/traslado/exportar-estudiante', async (req, res) => {
@@ -1181,23 +1695,15 @@ app.post('/api/traslado/exportar-estudiante', async (req, res) => {
     const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
     if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución no encontrada.' });
     const blob: any = rows[0].value;
-    const e = (blob.ests || []).find((x: any) => String(x.id) === String(estId));
-    if (!e) return res.status(404).json({ ok: false, error: 'Estudiante no encontrado.' });
-    const carga = (blob.carga || []).filter((c: any) => c.g === e.g);
-    const datos = {
-      version: 1,
-      origenSk: sk,
-      numDoc: e.numDoc || '',
-      estudiante: e, // incluye nts, observaciones, ficha, foto, etc. — el objeto completo del estudiante
-      materiasGradoOrigen: carga.map((c: any) => ({ id: c.id, m: c.m, a: c.a })),
-      atencionesPsicopedagogicas: (blob.atencionesPsicopedagogicas || []).filter((a: any) => String(a.estId) === String(estId)),
-      casosConvivencia: (blob.casosConvivencia || []).filter((c: any) => String(c.estId) === String(estId)),
-      asistencia: (blob.asistencia || []).filter((a: any) => Array.isArray(a.registros) ? a.registros.some((r: any) => String(r.estId) === String(estId)) : false)
-        .map((a: any) => ({ fecha: a.fecha, grado: a.grado, registro: (a.registros || []).find((r: any) => String(r.estId) === String(estId)) })),
-      historicoAcademico: (blob.historicoAcademico || []).filter((h: any) => String(h.estId) === String(estId)),
-      emitidoEn: new Date().toISOString(),
-    };
+    const construido = _construirPaqueteExportacionEstudiante(blob, sk, estId);
+    if (!construido) return res.status(404).json({ ok: false, error: 'Estudiante no encontrado.' });
+    const { datos, e } = construido;
     const firma = _firmarBlob(datos);
+    // RONDA 43 — secuencia exacta pedida: el botón "Trasladar Estudiante
+    // (Modo Offline)" debe dejar al estudiante como 'Inactivo por Traslado'
+    // en origen de inmediato, en la MISMA operación que genera el paquete
+    // (no un paso separado que el rector pudiera olvidar).
+    _marcarEstudianteInactivoPorTraslado(e);
     // RONDA 42 — AUDITORÍA: se registra en el mismo log de auditoría de
     // matrícula ya existente (d.logMatricula, ver _registrarCambioMatricula
     // en el frontend) para que quede trazado quién generó este paquete,
@@ -1212,12 +1718,14 @@ app.post('/api/traslado/exportar-estudiante', async (req, res) => {
       estId,
       estNombre: e.n || '',
       tipo: 'traslado_interinstitucional_export_estudiante',
-      detalle: `Paquete de transferencia generado (destino a definir fuera de banda).`,
+      detalle: `Paquete de transferencia generado (modo offline). Estudiante marcado 'Inactivo por Traslado' en esta institución.`,
     });
     const nowTs = new Date();
     await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, sk));
     guardarDbCache(sk, blob, nowTs, true);
-    return res.json({ ok: true, paquete: { datos, firma } });
+    broadcastChange(sk);
+    await _sincronizarIndiceRedEstudiante(sk, e);
+    return res.json({ ok: true, paquete: { datos, firma }, estadoMatricula: e.estadoMatricula });
   } catch (e) {
     console.error('POST /api/traslado/exportar-estudiante', e);
     return res.status(500).json({ ok: false, error: 'Error interno al exportar el paquete de traslado.' });
@@ -1247,56 +1755,13 @@ app.post('/api/traslado/importar-estudiante', async (req, res) => {
     const rows = await db.select().from(kvStore).where(eq(kvStore.key, skDestino));
     if (!rows.length) return res.status(404).json({ ok: false, error: 'Institución destino no encontrada.' });
     const blob: any = rows[0].value;
-    const numDoc = String(paquete.datos.numDoc || '');
     const estudianteEntrante = paquete.datos.estudiante || {};
-    blob.ests = blob.ests || [];
-    let idx = numDoc ? blob.ests.findIndex((x: any) => String(x.numDoc || '') === numDoc) : -1;
-    let nuevoId: string | number;
-    if (idx === -1) {
-      // No existe todavía en destino: se crea con un id nuevo propio de esta
-      // institución (los ids son locales a cada blob/sk), conservando todo
-      // el resto del expediente entrante (nombre, ficha, notas históricas,
-      // observador, etc.) bajo un nuevo campo `historicoExterno` para no
-      // mezclarlo silenciosamente con la estructura `nts`/`observaciones`
-      // nativa de esta institución (evita colisiones de ids de "carga" entre
-      // colegios distintos).
-      nuevoId = 'trasl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      blob.ests.push({
-        ...estudianteEntrante,
-        id: nuevoId,
-        g: gradoDestino,
-        nts: {}, // las notas del colegio de origen no son comparables por id de carga — se archivan aparte, íntegras, ver historicoExterno
-        historicoExterno: {
-          origenSk: paquete.datos.origenSk,
-          notas: estudianteEntrante.nts || {},
-          materiasGradoOrigen: paquete.datos.materiasGradoOrigen || [],
-          observaciones: estudianteEntrante.observaciones || [],
-          ficha: estudianteEntrante.ficha || null,
-          importadoEn: new Date().toISOString(),
-        },
-      });
-    } else {
-      // Ya existe en destino (reingreso, o el traslado se registró dos
-      // veces): se fusiona sin pisar nada local — el expediente entrante
-      // queda anexado en historicoExterno para consulta, y nunca sobrescribe
-      // notas/observaciones que la institución destino ya tenga.
-      nuevoId = blob.ests[idx].id;
-      blob.ests[idx].historicoExterno = blob.ests[idx].historicoExterno || [];
-      (Array.isArray(blob.ests[idx].historicoExterno) ? blob.ests[idx].historicoExterno : [blob.ests[idx].historicoExterno]).push({
-        origenSk: paquete.datos.origenSk,
-        notas: estudianteEntrante.nts || {},
-        materiasGradoOrigen: paquete.datos.materiasGradoOrigen || [],
-        observaciones: estudianteEntrante.observaciones || [],
-        ficha: estudianteEntrante.ficha || null,
-        importadoEn: new Date().toISOString(),
-      });
-    }
-    blob.atencionesPsicopedagogicas = blob.atencionesPsicopedagogicas || [];
-    (paquete.datos.atencionesPsicopedagogicas || []).forEach((a: any) => blob.atencionesPsicopedagogicas.push({ ...a, estId: nuevoId, id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }));
-    blob.casosConvivencia = blob.casosConvivencia || [];
-    (paquete.datos.casosConvivencia || []).forEach((c: any) => blob.casosConvivencia.push({ ...c, estId: nuevoId, id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }));
-    blob.historicoAcademico = blob.historicoAcademico || [];
-    (paquete.datos.historicoAcademico || []).forEach((h: any) => blob.historicoAcademico.push({ ...h, estId: nuevoId }));
+    // RONDA 43 — reutiliza el MISMO motor de importación que usa la
+    // Migración Directa Server-Side del Buzón de Solicitudes (ver
+    // _aplicarImportacionEstudianteADestino más arriba) — el flujo offline
+    // (copiar/pegar JSON) y el flujo online (aprobar solicitud) terminan en
+    // exactamente la misma operación de fondo.
+    const nuevoId = _aplicarImportacionEstudianteADestino(blob, paquete.datos, gradoDestino);
 
     // RONDA 42 — AUDITORÍA en el blob DESTINO (mismo log que arriba).
     blob.logMatricula = blob.logMatricula || [];
@@ -1308,13 +1773,15 @@ app.post('/api/traslado/importar-estudiante', async (req, res) => {
       estId: nuevoId,
       estNombre: estudianteEntrante.n || '',
       tipo: 'traslado_interinstitucional_import_estudiante',
-      detalle: `Expediente importado desde institución origen (sk=${paquete.datos.origenSk || '—'}) al grado ${gradoDestino}.`,
+      detalle: `Expediente importado desde institución origen (sk=${paquete.datos.origenSk || '—'}) al grado ${gradoDestino}. Matrícula registrada como activa.`,
     });
 
     const nowTs = new Date();
     await db.update(kvStore).set({ value: blob, updatedAt: nowTs }).where(eq(kvStore.key, skDestino));
     guardarDbCache(skDestino, blob, nowTs, true);
     broadcastChange(skDestino);
+    const eNuevo = (blob.ests || []).find((x: any) => x.id === nuevoId);
+    if (eNuevo) await _sincronizarIndiceRedEstudiante(skDestino, eNuevo);
     return res.json({ ok: true, estIdDestino: nuevoId });
   } catch (e) {
     console.error('POST /api/traslado/importar-estudiante', e);
@@ -1525,6 +1992,229 @@ app.post('/api/traslado/importar-docente', async (req, res) => {
   } catch (e) {
     console.error('POST /api/traslado/importar-docente', e);
     return res.status(500).json({ ok: false, error: 'Error interno al importar el perfil docente.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 43 — MÓDULO ONLINE: BUZÓN DE SOLICITUDES E INTERCONEXIÓN DIRECTA
+// ════════════════════════════════════════════════════════════════════════
+
+// GET /api/red/buscar-estudiante-nuip?nuip=...&sk=... — el Rector que quiere
+// RECIBIR a un estudiante busca por NUIP/documento. Consulta ÚNICAMENTE el
+// índice (estudiantes_indice_red), NUNCA los blobs completos de otras
+// instituciones. Expone el mínimo indispensable: nombre completo, nombre de
+// la institución de origen y su sk (necesario para poder crear la
+// solicitud) — NUNCA notas, observador, ficha, ni ningún otro dato personal
+// sensible, que físicamente no existen en esta tabla. Si el estudiante no
+// existe en la red, o existe pero en la MISMA institución que consulta, o
+// existe pero está inactivo (ya trasladado / nunca perteneció a otra
+// institución activa), la respuesta es "no encontrado" — no se distingue
+// el motivo exacto en la respuesta pública, para no revelar de más (ej. no
+// se informa "existe pero está inactivo", que filtraría que ese documento
+// SÍ es un NUIP real y activo en el sistema en algún momento).
+app.get('/api/red/buscar-estudiante-nuip', async (req, res) => {
+  try {
+    const auth = _exigirJWTAdmin(req) /* RONDA 44 — Dimensión 11.b: JWT obligatorio */;
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const nuip = String(req.query.nuip || '').trim();
+    const skConsultante = String(req.query.sk || '').trim();
+    if (!nuip || !skConsultante) return res.status(400).json({ ok: false, error: 'Faltan datos (nuip o sk).' });
+    await _asegurarSchemaRed();
+    const filas = await db.select().from(estudiantesIndiceRed).where(eq(estudiantesIndiceRed.nuip, nuip));
+    const fila = filas[0];
+    if (!fila || !fila.activo || fila.sk === skConsultante) {
+      return res.json({ ok: true, encontrado: false });
+    }
+    return res.json({
+      ok: true,
+      encontrado: true,
+      nombreCompleto: fila.nombreCompleto,
+      institucionOrigenNombre: fila.institucionNombre,
+      skOrigen: fila.sk,
+      grado: fila.grado,
+    });
+  } catch (e) {
+    console.error('GET /api/red/buscar-estudiante-nuip', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al buscar en la red.' });
+  }
+});
+
+// POST /api/red/solicitudes/crear — la institución DESTINO (que quiere
+// RECIBIR al estudiante) crea la solicitud tras confirmar el resultado de
+// la búsqueda de arriba.
+app.post('/api/red/solicitudes/crear', async (req, res) => {
+  try {
+    const auth = _exigirJWTAdmin(req); // RONDA 44 — Dimensión 11.b: JWT obligatorio
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const { nuip, skOrigen, skDestino, gradoDestino, nombreEstudiante } = (req.body || {}) as { nuip?: string; skOrigen?: string; skDestino?: string; gradoDestino?: string; nombreEstudiante?: string };
+    if (!nuip || !skOrigen || !skDestino || !gradoDestino) return res.status(400).json({ ok: false, error: 'Faltan datos (nuip, skOrigen, skDestino o gradoDestino).' });
+    if (skOrigen === skDestino) return res.status(400).json({ ok: false, error: 'La institución de origen y destino no pueden ser la misma.' });
+    await _asegurarSchemaRed();
+    // No se permite abrir 2 solicitudes PENDING para el mismo estudiante al mismo tiempo.
+    const yaHayPendiente = await db.select().from(solicitudesTraslado).where(and(eq(solicitudesTraslado.nuip, nuip), eq(solicitudesTraslado.estado, 'PENDING')));
+    if (yaHayPendiente.length) return res.status(409).json({ ok: false, error: 'Ya existe una solicitud pendiente para este estudiante.' });
+    const institucionOrigenNombre = await _obtenerNombreInstitucion(skOrigen);
+    const institucionDestinoNombre = await _obtenerNombreInstitucion(skDestino);
+    const insertado = await db.insert(solicitudesTraslado).values({
+      nuip, skOrigen, institucionOrigenNombre, skDestino, institucionDestinoNombre, gradoDestino,
+      nombreEstudiante: nombreEstudiante || '', estado: 'PENDING', actorSolicitante: auth.actorNombre,
+    }).returning();
+    return res.json({ ok: true, solicitud: insertado[0] });
+  } catch (e) {
+    console.error('POST /api/red/solicitudes/crear', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al crear la solicitud.' });
+  }
+});
+
+// GET /api/red/solicitudes/pendientes?sk=... — bandeja del Rector de ORIGEN:
+// solicitudes PENDING donde su institución es la que debe aprobar/rechazar.
+app.get('/api/red/solicitudes/pendientes', async (req, res) => {
+  try {
+    const auth = _exigirJWTAdmin(req) /* RONDA 44 — Dimensión 11.b: JWT obligatorio */;
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const sk = String(req.query.sk || '').trim();
+    if (!sk) return res.status(400).json({ ok: false, error: 'Falta sk.' });
+    await _asegurarSchemaRed();
+    const filas = await db.select().from(solicitudesTraslado).where(and(eq(solicitudesTraslado.skOrigen, sk), eq(solicitudesTraslado.estado, 'PENDING')));
+    return res.json({ ok: true, solicitudes: filas });
+  } catch (e) {
+    console.error('GET /api/red/solicitudes/pendientes', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al listar solicitudes.' });
+  }
+});
+
+// POST /api/red/solicitudes/:id/aprobar — MIGRACIÓN DIRECTA SERVER-SIDE.
+// Es la versión SÍNCRONA/online del mismo motor de exportar+importar de
+// las Rondas 41-42 (_construirPaqueteExportacionEstudiante +
+// _aplicarImportacionEstudianteADestino): en una sola petición, sin pasar
+// por el paso manual de copiar/pegar JSON, se lee el blob de origen, se
+// construye el paquete, se marca al estudiante inactivo en origen, se
+// aplica la importación en destino, y se persisten ambos blobs.
+//
+// RONDA 44 — DIMENSIÓN 11.a (CERRADA): las 3 escrituras (blob de origen,
+// blob de destino, estado de la solicitud) ahora viajan dentro de
+// `db.transaction(async (tx) => {...})` — una transacción SQL real con
+// BEGIN al entrar y COMMIT al salir sin errores; si CUALQUIER escritura
+// falla (ej. la institución destino desaparece a mitad de camino), Postgres
+// hace ROLLBACK automático de TODO el bloque — el estudiante NUNCA queda
+// marcado inactivo en origen sin haberse creado en destino, y viceversa.
+// Se usa `tx` (no `db`) en cada sentencia dentro del callback para que
+// TODAS compartan el mismo cliente/transacción del pool.
+app.post('/api/red/solicitudes/:id/aprobar', async (req, res) => {
+  try {
+    // RONDA 44 — DIMENSIÓN 11.b (CERRADA): JWT OBLIGATORIO en este endpoint
+    // (a diferencia de /api/traslado/* y guardar-fila, que siguen en modo
+    // retrocompatible) — es de los 5 endpoints /api/red/* más sensibles
+    // (mueve un expediente completo entre instituciones).
+    const auth = _exigirJWTAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ ok: false, error: 'id de solicitud inválido.' });
+    if (!DOC_SIGN_SECRET) return res.status(503).json({ ok: false, error: 'La firma de paquetes de traslado no está configurada en el servidor (falta DOC_SIGN_SECRET).' });
+    await _asegurarSchemaRed();
+    const filas = await db.select().from(solicitudesTraslado).where(eq(solicitudesTraslado.id, id));
+    const sol = filas[0];
+    if (!sol) return res.status(404).json({ ok: false, error: 'Solicitud no encontrada.' });
+    if (sol.estado !== 'PENDING') return res.status(409).json({ ok: false, error: `Esta solicitud ya fue resuelta (estado: ${sol.estado}).` });
+    const { skActor } = (req.body || {}) as { skActor?: string };
+    if (skActor !== sol.skOrigen) return res.status(403).json({ ok: false, error: 'Solo el Rector de la institución de ORIGEN puede aprobar esta solicitud.' });
+
+    let eOrigenResultado: any = null;
+    let blobDestinoResultado: any = null;
+    let nuevoIdResultado: string | number = '';
+
+    await db.transaction(async (tx) => {
+      const rowsOrigen = await tx.select().from(kvStore).where(eq(kvStore.key, sol.skOrigen));
+      if (!rowsOrigen.length) throw new Error('Institución de origen no encontrada.');
+      const blobOrigen: any = rowsOrigen[0].value;
+      const eOrigen = (blobOrigen.ests || []).find((x: any) => String(x.numDoc || '') === sol.nuip);
+      if (!eOrigen) throw new Error('El estudiante ya no existe en la institución de origen.');
+
+      const construido = _construirPaqueteExportacionEstudiante(blobOrigen, sol.skOrigen, eOrigen.id);
+      if (!construido) throw new Error('No se pudo construir el paquete de exportación.');
+      const { datos } = construido;
+      _marcarEstudianteInactivoPorTraslado(eOrigen);
+      blobOrigen.logMatricula = blobOrigen.logMatricula || [];
+      blobOrigen.logMatricula.push({
+        id: 'lm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        fecha: new Date().toISOString(), usuario: auth.actorUsuario, usuarioNombre: auth.actorNombre,
+        estId: eOrigen.id, estNombre: eOrigen.n || '',
+        tipo: 'traslado_interinstitucional_export_estudiante',
+        detalle: `Solicitud #${id} APROBADA: migración directa server-side (transacción SQL) hacia "${sol.institucionDestinoNombre}". Estudiante marcado 'Inactivo por Traslado'.`,
+      });
+      const nowTsO = new Date();
+      await tx.update(kvStore).set({ value: blobOrigen, updatedAt: nowTsO }).where(eq(kvStore.key, sol.skOrigen));
+
+      const rowsDestino = await tx.select().from(kvStore).where(eq(kvStore.key, sol.skDestino));
+      if (!rowsDestino.length) throw new Error('Institución de destino no encontrada.');
+      const blobDestino: any = rowsDestino[0].value;
+      const nuevoId = _aplicarImportacionEstudianteADestino(blobDestino, datos, sol.gradoDestino);
+      blobDestino.logMatricula = blobDestino.logMatricula || [];
+      blobDestino.logMatricula.push({
+        id: 'lm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        fecha: new Date().toISOString(), usuario: auth.actorUsuario, usuarioNombre: auth.actorNombre,
+        estId: nuevoId, estNombre: eOrigen.n || '',
+        tipo: 'traslado_interinstitucional_import_estudiante',
+        detalle: `Solicitud #${id} APROBADA: expediente migrado directamente desde "${sol.institucionOrigenNombre}" al grado ${sol.gradoDestino} (transacción SQL).`,
+      });
+      const nowTsD = new Date();
+      await tx.update(kvStore).set({ value: blobDestino, updatedAt: nowTsD }).where(eq(kvStore.key, sol.skDestino));
+
+      await tx.update(solicitudesTraslado).set({ estado: 'APROBADA', actorResolutor: auth.actorNombre, estIdDestino: String(nuevoId), resolvedAt: new Date() }).where(eq(solicitudesTraslado.id, id));
+
+      eOrigenResultado = eOrigen;
+      blobDestinoResultado = blobDestino;
+      nuevoIdResultado = nuevoId;
+      // Las cachés/broadcast se refrescan DESPUÉS del commit (fuera de este
+      // callback) — no tiene sentido notificar a otros clientes de un dato
+      // que todavía podría revertirse si una sentencia posterior del mismo
+      // callback fallara.
+    });
+
+    invalidarDbCache(sol.skOrigen);
+    invalidarDbCache(sol.skDestino);
+    broadcastChange(sol.skOrigen);
+    broadcastChange(sol.skDestino);
+
+    // RONDA 44 — DIMENSIÓN 11.c (CERRADA): reindexación INCREMENTAL — solo
+    // la fila del estudiante afectado en cada institución, no toda la
+    // institución (a diferencia de lo que hacía el hook de
+    // POST /api/inetis/db, que sigue resincronizando completo porque no
+    // sabe cuál fila cambió — aquí SÍ lo sabemos exactamente).
+    await _sincronizarIndiceRedEstudiante(sol.skOrigen, eOrigenResultado);
+    const eNuevo = (blobDestinoResultado.ests || []).find((x: any) => x.id === nuevoIdResultado);
+    if (eNuevo) await _sincronizarIndiceRedEstudiante(sol.skDestino, eNuevo);
+
+    return res.json({ ok: true, estIdDestino: nuevoIdResultado });
+  } catch (e: any) {
+    console.error('POST /api/red/solicitudes/:id/aprobar', e);
+    // Un throw dentro de db.transaction() ya hizo ROLLBACK automático —
+    // aquí solo se traduce el mensaje a una respuesta HTTP legible.
+    const msg = (e && e.message) || 'Error interno al aprobar la solicitud.';
+    const esConocido = ['Institución de origen no encontrada.', 'El estudiante ya no existe en la institución de origen.', 'No se pudo construir el paquete de exportación.', 'Institución de destino no encontrada.'].includes(msg);
+    return res.status(esConocido ? 404 : 500).json({ ok: false, error: msg });
+  }
+});
+
+// POST /api/red/solicitudes/:id/rechazar
+app.post('/api/red/solicitudes/:id/rechazar', async (req, res) => {
+  try {
+    const auth = _exigirJWTAdmin(req); // RONDA 44 — DIMENSIÓN 11.b: JWT obligatorio
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ ok: false, error: 'id de solicitud inválido.' });
+    await _asegurarSchemaRed();
+    const filas = await db.select().from(solicitudesTraslado).where(eq(solicitudesTraslado.id, id));
+    const sol = filas[0];
+    if (!sol) return res.status(404).json({ ok: false, error: 'Solicitud no encontrada.' });
+    if (sol.estado !== 'PENDING') return res.status(409).json({ ok: false, error: `Esta solicitud ya fue resuelta (estado: ${sol.estado}).` });
+    const { skActor, motivo } = (req.body || {}) as { skActor?: string; motivo?: string };
+    if (skActor !== sol.skOrigen) return res.status(403).json({ ok: false, error: 'Solo el Rector de la institución de ORIGEN puede rechazar esta solicitud.' });
+    await db.update(solicitudesTraslado).set({ estado: 'RECHAZADA', actorResolutor: auth.actorNombre, motivoRechazo: motivo || '', resolvedAt: new Date() }).where(eq(solicitudesTraslado.id, id));
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/red/solicitudes/:id/rechazar', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al rechazar la solicitud.' });
   }
 });
 
@@ -3351,6 +4041,49 @@ app.post('/api/inetis/upload', uploadMemoria.single('archivo'), async (req, res)
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 44 — DIMENSIÓN 7: CRUD básico de `ai_subscriptions` (base SaaS, sin
+// cobros reales activados). No se enlaza todavía a ningún cobro/webhook —
+// es infraestructura de datos, consultable/editable por un Súper Admin
+// desde un futuro panel. Usa SQL crudo (`db.execute(sql\`...\`)`) porque la
+// tabla no tiene (aún) una definición Drizzle propia en schema.ts — decisión
+// deliberada para no tocar ese archivo compartido por muchas otras rondas
+// en esta pasada; si en el futuro se necesita más que CRUD simple, conviene
+// promoverla a una tabla Drizzle formal.
+// ════════════════════════════════════════════════════════════════════════════
+app.get('/api/ai-subscriptions/:sk', async (req, res) => {
+  try {
+    const sk = req.params.sk;
+    const r = await db.execute(sql`SELECT * FROM ai_subscriptions WHERE sk = ${sk} LIMIT 1`);
+    const fila = (r as any).rows?.[0] || null;
+    if (!fila) {
+      return res.json({ ok: true, subscription: { sk, proveedor: 'gemini', plan: 'gratuito', estado: 'activa', limiteMensual: 0, usoMesActual: 0 } });
+    }
+    return res.json({ ok: true, subscription: fila });
+  } catch (e: any) {
+    console.error('GET /api/ai-subscriptions/:sk', e);
+    return res.status(500).json({ ok: false, error: 'Error interno.' });
+  }
+});
+
+app.post('/api/ai-subscriptions/:sk', async (req, res) => {
+  try {
+    const auth = _exigirJWTAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+    const sk = req.params.sk;
+    const { proveedor = 'gemini', plan = 'gratuito', estado = 'activa', limiteMensual = 0 } = (req.body || {}) as any;
+    await db.execute(sql`
+      INSERT INTO ai_subscriptions (sk, proveedor, plan, estado, limite_mensual, updated_at)
+      VALUES (${sk}, ${proveedor}, ${plan}, ${estado}, ${limiteMensual}, NOW())
+      ON CONFLICT (sk) DO UPDATE SET proveedor = ${proveedor}, plan = ${plan}, estado = ${estado}, limite_mensual = ${limiteMensual}, updated_at = NOW()
+    `);
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('POST /api/ai-subscriptions/:sk', e);
+    return res.status(500).json({ ok: false, error: 'Error interno.' });
+  }
+});
+
 // ============================================================
 // A06 · RUTAS — ASISTENTE IA ADÁN (GEMINI)
 // ============================================================
@@ -3371,23 +4104,20 @@ app.get('/api/inetis/ai/status', async (req, res) => {
       return res.json({ ok: false, keyConfigured: false, message: 'No se pudo inicializar la librería GoogleGenAI' });
     }
 
+    // RONDA 48: diagnóstico migrado al wrapper central de resiliencia —
+    // ya no reintenta manualmente ni declara su propia lista de modelos.
     let activeModel = '';
     let lastError = '';
 
-    for (const m of CANDIDATE_MODELS) {
-      try {
-        const testRes = await genAI.models.generateContent({
-          model: m,
-          contents: 'Hola',
-          config: { maxOutputTokens: 10 }
-        });
-        if (testRes && (testRes.text || testRes.candidates)) {
-          activeModel = m;
-          break;
-        }
-      } catch (err: any) {
-        lastError = err?.message || String(err);
-      }
+    const diag = await generarContenidoConResiliencia(genAI, {
+      contents: 'Hola',
+      config: { maxOutputTokens: 10 },
+    }, { etiqueta: 'Adán diagnóstico' });
+
+    if (diag.ok && diag.resultado && (diag.resultado.text || diag.resultado.candidates)) {
+      activeModel = diag.modeloUsado || '';
+    } else {
+      lastError = diag.error?.message || String(diag.error || 'Error desconocido');
     }
 
     if (activeModel) {
@@ -3476,71 +4206,44 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       m.content && m.content.includes('planeación de clase COMPLETA')
     );
 
-    let stream = null;
-    let streamModel = '';
-    let lastError: any = null;
+    // RONDA 48: migrado al wrapper central de resiliencia
+    // (llamarGeminiConResiliencia) — reintenta el MISMO modelo con backoff
+    // exponencial ante 429/503, y solo cambia de modelo ante 404 o backoff
+    // agotado. Se conserva exactamente el mismo comportamiento de streaming
+    // de antes (chat.create + sendMessageStream), solo se centralizó el
+    // bucle de reintento/cambio de modelo.
+    const intento = await llamarGeminiConResiliencia(async (candidateModel) => {
+      const chat = genAI.chats.create({
+        model: candidateModel,
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.7,
+          maxOutputTokens: isPlanear ? 4096 : 2048, // Permite respuestas largas sin cortar la idea
+        },
+        history: history.slice(-6), // Mantiene un contexto de conversación equilibrado
+      });
 
-   /* for (const candidateModel of CANDIDATE_MODELS) {
-      try {
-        const chat = genAI.chats.create({
-          model: candidateModel,
-          config: {
-            systemInstruction: systemPrompt,
-            temperature: 0.8,
-            maxOutputTokens: isPlanear ? 8192 : 4096,
-          },
-          history,
+      if (imagePart && imagePart.data) {
+        return chat.sendMessageStream({
+          message: [
+            { text: userText || 'Analiza esta imagen.' },
+            { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
+          ],
         });
-
-        if (imagePart && imagePart.data) {
-          stream = await chat.sendMessageStream({
-            message: [
-              { text: userText || 'Analiza esta imagen y describe lo que ves.' },
-              { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
-            ],
-          });
-        } else {
-          stream = await chat.sendMessageStream({ message: userText });
-        }
-        streamModel = candidateModel;
-        break;
-      } catch (err: any) {
-        lastError = err;
-        console.warn(`⚠️ Intento fallido con modelo IA ${candidateModel}:`, err?.message || err);
       }
-    }
-*/
-for (const candidateModel of CANDIDATE_MODELS) {
-      try {
-        const chat = genAI.chats.create({
-          model: candidateModel,
-          config: {
-            systemInstruction: systemPrompt,
-            temperature: 0.7,
-            maxOutputTokens: isPlanear ? 4096 : 2048, // Permite respuestas largas sin cortar la idea
-          },
-          history: history.slice(-6), // Mantiene un contexto de conversación equilibrado
-        });
+      return chat.sendMessageStream({ message: userText });
+    }, { etiqueta: 'Adán chat' });
 
-        if (imagePart && imagePart.data) {
-          stream = await chat.sendMessageStream({
-            message: [
-              { text: userText || 'Analiza esta imagen.' },
-              { inlineData: { mimeType: imagePart.mimeType || 'image/jpeg', data: imagePart.data } },
-            ],
-          });
-        } else {
-          stream = await chat.sendMessageStream({ message: userText });
-        }
-        break;
-      } catch (err: any) {
-        lastError = err;
-        console.warn(`⚠️ Intento fallido con modelo ${candidateModel}:`, err?.message || err);
-      }
-    }
+    const stream = intento.ok ? intento.resultado : null;
     if (!stream) {
-      const errMsg = lastError?.message || 'No se pudo establecer conexión con los modelos Gemini de Google.';
-      res.write(`data: ${JSON.stringify({ content: `⚠️ Error de conexión con Gemini: ${errMsg}` })}\n\n`);
+      // RONDA 50 — se detectó que aquí se filtraba el `.message` crudo del
+      // SDK de Google (incluyendo JSON técnico en 429/RESOURCE_EXHAUSTED)
+      // directo al chat del usuario final. Ahora se usa siempre un mensaje
+      // amigable clasificado por tipo de error (429/503/404/otro), NUNCA el
+      // objeto de error original. El detalle técnico completo sigue yendo a
+      // los logs del servidor vía console.error más abajo si aplica.
+      console.error(`[Adán chat] Fallaron todos los modelos (${intento.modelosIntentados.join(', ')}):`, intento.error);
+      res.write(`data: ${JSON.stringify({ content: mensajeAmigablePorError(intento) })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
       return;
@@ -3556,15 +4259,17 @@ for (const candidateModel of CANDIDATE_MODELS) {
     res.end();
     return;
   } catch (e: unknown) {
+    // RONDA 50 — mismo criterio: el catch-all también pasaba `e.message`
+    // crudo al usuario (por ejemplo, si el error ocurre antes de llegar al
+    // wrapper de resiliencia). Se sanea igual con mensajeAmigablePorError.
     console.error('POST /api/inetis/ai/chat error:', e);
-    const msg = e instanceof Error ? e.message : 'Error interno de comunicación con la IA';
     if (!res.headersSent) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
     }
     try {
-      res.write(`data: ${JSON.stringify({ content: `⚠️ Error: ${msg}` })}\n\n`);
+      res.write(`data: ${JSON.stringify({ content: mensajeAmigablePorError(e) })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
     } catch {}
@@ -3609,43 +4314,42 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
     if (!userText) return res.status(400).json({ ok: false, error: 'Texto vacío', content: '' });
 
-    let resultText = '';
-    let lastError: any = null;
+    // RONDA 48: migrado al wrapper central de resiliencia.
+    const intentoGeneral = await generarContenidoConResiliencia(genAI, {
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.7,
+        maxOutputTokens: 2048,
+      },
+      contents: userText,
+    }, { etiqueta: 'Adán general' });
 
-    for (const candidateModel of CANDIDATE_MODELS) {
-      try {
-        const result = await genAI.models.generateContent({
-          model: candidateModel,
-          config: {
-            systemInstruction: systemPrompt,
-            temperature: 0.7,
-            maxOutputTokens: 2048,
-          },
-          contents: userText,
-        });
-        if (result && result.text) {
-          resultText = result.text;
-          break;
-        }
-      } catch (err: any) {
-        lastError = err;
-        console.warn(`⚠️ Error en ai/general con modelo ${candidateModel}:`, err?.message || err);
-      }
-    }
+    const resultText = intentoGeneral.ok ? (intentoGeneral.resultado?.text || '') : '';
 
-    if (!resultText && lastError) {
+    if (!resultText && !intentoGeneral.ok) {
+      // RONDA 50 — se detectó que aquí se filtraba `lastError?.message` (JSON
+      // técnico del SDK de Google en 429/RESOURCE_EXHAUSTED, etc.) tanto en
+      // `error` como en `content`. IMPORTANTE: varios puntos del frontend
+      // (gestor-academico/dist/modules/03-app-core.js, ej.
+      // generarDescDesdeArchivoIA y la generación de observador) hacen
+      // `throw new Error(data.error)` y muestran ese `err.message` tal cual
+      // en un customAlert — por eso `error` también debe llevar el mensaje
+      // amigable ya sanitizado (nunca un código técnico ni el objeto crudo),
+      // igual que `content`.
+      console.error(`[Adán general] Fallaron todos los modelos (${intentoGeneral.modelosIntentados.join(', ')}):`, intentoGeneral.error);
+      const mensajeAmigable = mensajeAmigablePorError(intentoGeneral);
       return res.json({
         ok: false,
-        error: lastError?.message || 'Error en consulta Gemini',
-        content: `⚠️ No se pudo generar la respuesta con Gemini: ${lastError?.message || 'Error desconocido'}`
+        error: mensajeAmigable,
+        content: mensajeAmigable
       });
     }
 
     return res.json({ ok: true, content: resultText || '' });
   } catch (e: unknown) {
     console.error('POST /api/inetis/ai/general', e);
-    const msg = e instanceof Error ? e.message : 'Error interno';
-    return res.json({ ok: false, error: msg, content: `⚠️ Error al procesar solicitud de IA: ${msg}` });
+    const mensajeAmigable = mensajeAmigablePorError(e);
+    return res.json({ ok: false, error: mensajeAmigable, content: mensajeAmigable });
   }
 });
 
@@ -3691,31 +4395,32 @@ Proporciona:
 3. Recomendaciones y compromisos recomendados para docentes y acudientes.
 `;
 
-    let resultText = '';
-    for (const candidateModel of CANDIDATE_MODELS) {
-      try {
-        const result = await genAI.models.generateContent({
-          model: candidateModel,
-          config: {
-            systemInstruction: buildSystemPrompt(context || {}),
-            temperature: 0.7,
-            maxOutputTokens: 4096,
-          },
-          contents: promptText,
-        });
-        if (result && result.text) {
-          resultText = result.text;
-          break;
-        }
-      } catch (err) {
-        console.warn(`Error con modelo ${candidateModel}:`, err);
-      }
+    // RONDA 48: migrado al wrapper central de resiliencia.
+    const intentoPsico = await generarContenidoConResiliencia(genAI, {
+      config: {
+        systemInstruction: buildSystemPrompt(context || {}),
+        temperature: 0.7,
+        maxOutputTokens: 4096,
+      },
+      contents: promptText,
+    }, { etiqueta: 'Adán psicopedagógico' });
+
+    // RONDA 50 — antes, si TODOS los modelos fallaban, este endpoint
+    // devolvía `ok:true` con `report:''` (falla silenciosa, sin avisar al
+    // usuario). Ahora se detecta ese caso explícitamente y se responde con
+    // el mismo mensaje amigable clasificado, nunca el error crudo.
+    if (!intentoPsico.ok) {
+      console.error(`[Adán psicopedagógico] Fallaron todos los modelos (${intentoPsico.modelosIntentados.join(', ')}):`, intentoPsico.error);
+      return res.json({ ok: false, error: intentoPsico.tipoError || 'ERROR_GEMINI', report: mensajeAmigablePorError(intentoPsico) });
     }
 
+    const resultText = intentoPsico.resultado?.text || '';
     return res.json({ ok: true, report: resultText });
   } catch (e: any) {
+    // RONDA 50 — se detectó que aquí se filtraba `e?.message` crudo. Se sanea
+    // igual que en los otros 3 endpoints.
     console.error('Error en /api/inetis/ai/psicopedagogico:', e);
-    return res.status(500).json({ ok: false, error: e?.message || 'Error interno' });
+    return res.status(500).json({ ok: false, error: 'ERROR_INTERNO', report: mensajeAmigablePorError(e) });
   }
 });
 
@@ -3730,6 +4435,48 @@ app.use('/api/lms', lmsRouter);
 // exige sesión de institución: lo usa el Súper Admin desde su panel, y el
 // cron interno lo llama directamente sin pasar por HTTP).
 app.use('/api/agent', agentRouter);
+
+// ============================================================
+// RONDA 49 — MONITOREO DE INFRAESTRUCTURA Y TELEMETRÍA DEL SERVIDOR
+// ------------------------------------------------------------------------------
+// Control de acceso: mismo patrón ya usado en el resto del panel del
+// Súper Admin para acciones sensibles de servidor — el token de rescate
+// firmado (`_tieneRescateValido`, HMAC, ver el bloque "ACCESO DE RESCATE
+// DEL SÚPER ADMIN" más arriba en este archivo), que YA se emite de forma
+// transparente en cuanto el Súper Admin inicia sesión normalmente (no le
+// pide nada aparte) y viaja solo. Se prefirió sobre exigir {u,p} en cada
+// GET (como hacen activar-modulo-etc/universidades) porque este endpoint
+// se sondea repetidamente desde el panel (botón "Recargar Telemetría",
+// carga inicial de la pestaña) y pedir la contraseña en cada sondeo sería
+// mala experiencia — el token de rescate ya es, en esencia, el "JWT de
+// sesión de Súper Admin" que este proyecto usa (firmado, con expiración de
+// 12h), así que reutilizarlo aquí es exactamente el "JWT si aplica" que
+// pidió esta ronda. Se extendió `_envolverFetchParaRescate` en
+// 03-app-core.js para que el token viaje automáticamente también hacia
+// esta URL (antes solo viajaba hacia /api/inetis/db).
+// ============================================================
+app.get('/api/admin/infrastructure-status', async (req, res) => {
+  if (!_tieneRescateValido(req)) {
+    return res.status(401).json({ ok: false, error: 'NO_AUTORIZADO', mensaje: 'Esta ruta requiere una sesión válida de Súper Admin.' });
+  }
+  try {
+    // IMPORTANTE: esta ruta se sondea a demanda (carga de la pestaña, botón
+    // "Recargar Telemetría") — a propósito solo LEE la telemetría y evalúa
+    // los umbrales para mostrarlos (`infraTelemetry.evaluarAlertas`), sin
+    // llamar a `procesarAlertas()` (eso escribiría en agent_audit_logs y
+    // podría disparar un correo en CADA clic del botón, rompiendo el
+    // anti-spam pensado para el job programado). El job de cada 15 minutos
+    // (`ejecutarCicloMonitoreo`, ver iniciarMonitoreoInfraestructura más
+    // abajo) es el único que registra notificaciones/envía correos.
+    const telemetria = await infraTelemetry.obtenerTelemetria();
+    const alertas = infraTelemetry.evaluarAlertas(telemetria);
+    return res.json({ ok: true, telemetria, alertas });
+  } catch (e: any) {
+    console.error('GET /api/admin/infrastructure-status', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al recolectar la telemetría del servidor.' });
+  }
+});
+
 // Ronda 20: bitácora de conflictos de sincronización — ver
 // src/routes/sync-log.js. Reutiliza agent_audit_logs (categoría
 // "Sincronizacion"), por eso las filas aparecen solas en el mismo panel
@@ -4134,6 +4881,15 @@ function iniciarTareasAutonomasProgramadas() {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API Server escuchando en puerto ${PORT}`);
+  // RONDA 45 — DIMENSIÓN 4: auto-seeding server-side del Súper Admin por
+  // defecto si la base de datos está recién creada/limpia (ver
+  // autoSeedSuperAdmin() en src/db/index.ts para el diseño completo:
+  // idempotente, nunca sobreescribe, contraseña nunca hardcodeada). Se
+  // llama aquí (al terminar de escuchar, no antes) para no demorar el
+  // "server listo" si la consulta a Neon tardara; es "mejor esfuerzo" —
+  // si falla, el servidor sigue funcionando con normalidad (ver try/catch
+  // interno de la propia función).
+  autoSeedSuperAdmin(GESTOR_SK).catch(() => {});
   const key = getGeminiApiKey();
   if (!key) {
     console.warn('⚠️  GEMINI_API_KEY no configurada — IA no disponible');
@@ -4155,4 +4911,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('🕵️  [EcosystemAgent] Auditoría global programada: todos los domingos a las 2:00 a.m. (hora de Colombia). Disparo manual disponible en POST /api/agent/run-full-audit.');
   iniciarKeepAliveInteligente();
   console.log('💓 Keep-Alive Inteligente activo — GET /api/health se autopingea cada 15–30 min si hubo actividad reciente, y espacia el intervalo hasta 2 horas en ventanas de inactividad prolongada (madrugada sin uso).');
+  infraTelemetry.iniciarMonitoreoInfraestructura();
+  console.log('🖥️  Monitoreo de Infraestructura activo — RAM/Disco/Conexiones de BD evaluados cada 15 minutos, con alerta preventiva (>80%) y crítica (>90%). GET /api/admin/infrastructure-status disponible en el panel de Súper Admin.');
 });

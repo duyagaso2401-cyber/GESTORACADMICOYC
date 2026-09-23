@@ -1103,3 +1103,143 @@ export const universidadDocentesEstudiantes = pgTable('universidad_docentes_estu
   index('universidad_docestud_persona_idx').on(t.personaCedula),
   index('universidad_docestud_programa_idx').on(t.programaId),
 ]);
+
+// ── RONDA 43 — Interconexión directa entre instituciones de la plataforma ──
+// Índice RELACIONAL de solo correlación (nunca el expediente completo) que
+// permite responder "¿este NUIP existe en OTRA institución de la red, y
+// está activo ahí?" sin recorrer los blobs JSON de todas las instituciones
+// en cada búsqueda (que sería O(n) sobre instituciones y, a escala, lento e
+// ineficiente — ver CHECKLIST_DESPLIEGUE.md, Ronda 43, para la comparación
+// de las 2 alternativas evaluadas). Se mantiene sincronizado por un HOOK en
+// los puntos donde ya se guarda el blob completo de una institución
+// (POST /api/inetis/db) y en los endpoints de traslado — nunca por un
+// proceso batch aparte, para que nunca quede desactualizado por mucho
+// tiempo. Expone DELIBERADAMENTE el mínimo de datos (nombre + institución +
+// grado + si está activo) — nunca notas, observador, ficha ni ningún dato
+// sensible — precisamente porque esta tabla SÍ es consultable por
+// instituciones que no son dueñas de ese estudiante (ver el endpoint
+// GET/POST /api/red/buscar-estudiante-nuip).
+export const estudiantesIndiceRed = pgTable('estudiantes_indice_red', {
+  nuip:             text('nuip').primaryKey(),
+  sk:               text('sk').notNull(),
+  nombreCompleto:   text('nombre_completo').notNull().default(''),
+  institucionNombre:text('institucion_nombre').notNull().default(''),
+  grado:            text('grado').notNull().default(''),
+  activo:           boolean('activo').notNull().default(true),
+  updatedAt:        timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('estudiantes_indice_red_sk_idx').on(t.sk),
+  index('estudiantes_indice_red_activo_idx').on(t.activo),
+]);
+
+// ── RONDA 43 — Buzón de Solicitudes de Traslado Inter-Institucional ──
+// Tabla relacional (no un blob por institución) porque cada solicitud
+// involucra a DOS instituciones distintas (origen y destino) que deben
+// poder consultarla de forma consistente sin depender de que ambas hayan
+// sincronizado su propio blob — el estado (PENDING/APROBADA/RECHAZADA) es
+// la única fuente de verdad compartida entre ambas partes.
+export const solicitudesTraslado = pgTable('solicitudes_traslado', {
+  id:                       serial('id').primaryKey(),
+  nuip:                     text('nuip').notNull(),
+  estIdOrigen:              text('est_id_origen').notNull().default(''),
+  nombreEstudiante:         text('nombre_estudiante').notNull().default(''),
+  skOrigen:                 text('sk_origen').notNull(),
+  institucionOrigenNombre:  text('institucion_origen_nombre').notNull().default(''),
+  skDestino:                text('sk_destino').notNull(),
+  institucionDestinoNombre: text('institucion_destino_nombre').notNull().default(''),
+  gradoDestino:             text('grado_destino').notNull().default(''),
+  estado:                   text('estado').notNull().default('PENDING'), // 'PENDING' | 'APROBADA' | 'RECHAZADA'
+  actorSolicitante:         text('actor_solicitante').notNull().default(''),
+  actorResolutor:           text('actor_resolutor').notNull().default(''),
+  motivoRechazo:            text('motivo_rechazo').notNull().default(''),
+  estIdDestino:             text('est_id_destino').notNull().default(''), // se llena al aprobar
+  createdAt:                timestamp('created_at', { withTimezone: true }).defaultNow(),
+  resolvedAt:               timestamp('resolved_at', { withTimezone: true }),
+}, (t) => [
+  index('solicitudes_traslado_sk_origen_idx').on(t.skOrigen),
+  index('solicitudes_traslado_sk_destino_idx').on(t.skDestino),
+  index('solicitudes_traslado_estado_idx').on(t.estado),
+]);
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 45 — DIMENSIÓN 1: FASE 1 (DUAL-WRITE / STRANGLER FIG) de la
+// migración de "un blob JSON por institución" a un esquema relacional
+// normalizado para notas. Ver el comentario extenso junto a
+// `ensureSchemaRelacionalNotas()` en src/db/index.ts y
+// `scripts/migrar-notas-a-relacional.ts` para la explicación completa de
+// la estrategia. RESUMEN: el blob JSON sigue siendo la ÚNICA fuente de
+// verdad autoritativa en esta fase — estas 3 tablas se llenan en paralelo
+// (dual-write, best-effort) y se leen PRIMERO como optimización, con
+// fallback transparente al blob si no hay datos migrados todavía.
+//
+// `estudiantesRel` — una fila por estudiante×institución. La clave natural
+// es (sk, est_id_origen) porque `est_id_origen` es el id que YA usa el
+// blob JSON (`e.id`, un string generado en el cliente) — se conserva tal
+// cual para poder cruzar de vuelta con el blob sin ambigüedad mientras
+// ambas fuentes convivan.
+export const estudiantesRel = pgTable('estudiantes_rel', {
+  id:         serial('id').primaryKey(),
+  sk:         text('sk').notNull(),
+  estIdOrigen:text('est_id_origen').notNull(), // e.id del blob JSON (clave de correlación, NO se regenera)
+  nombre:     text('nombre').notNull().default(''),
+  numDoc:     text('num_doc').notNull().default(''),
+  grado:      text('grado').notNull().default(''),
+  estadoMatricula: text('estado_matricula').notNull().default('activo'),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex('estudiantes_rel_sk_est_idx').on(t.sk, t.estIdOrigen),
+  index('estudiantes_rel_sk_grado_idx').on(t.sk, t.grado),
+]);
+
+// `materiasRel` — una fila por materia/carga (`cId` del blob) × grado ×
+// institución. `cIdOrigen` es la clave de carga que ya usa el blob
+// (`e.nts[cId]`), conservada igual por la misma razón que estIdOrigen.
+export const materiasRel = pgTable('materias_rel', {
+  id:        serial('id').primaryKey(),
+  sk:        text('sk').notNull(),
+  cIdOrigen: text('c_id_origen').notNull(),
+  nombre:    text('nombre').notNull().default(''),
+  grado:     text('grado').notNull().default(''),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex('materias_rel_sk_cid_idx').on(t.sk, t.cIdOrigen),
+  index('materias_rel_sk_grado_idx').on(t.sk, t.grado),
+]);
+
+// `calificacionesRel` — la tabla por nota propiamente dicha. Clave de
+// UPSERT real: (sk, est_id_origen, c_id_origen, periodo) — exactamente el
+// mismo grano que ya usa `e.nts[cId][per]` en el blob, para que el
+// dual-write pueda hacer `INSERT ... ON CONFLICT (...) DO UPDATE` de forma
+// directa y sin ambigüedad.
+export const calificacionesRel = pgTable('calificaciones_rel', {
+  id:          serial('id').primaryKey(),
+  sk:          text('sk').notNull(),
+  estIdOrigen: text('est_id_origen').notNull(),
+  cIdOrigen:   text('c_id_origen').notNull(),
+  periodo:     text('periodo').notNull(),
+  notas:       jsonb('notas').default({}), // el objeto de notas del periodo tal cual (n1, n2, inasistencias, etc.)
+  updatedAt:   timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex('calificaciones_rel_grano_idx').on(t.sk, t.estIdOrigen, t.cIdOrigen, t.periodo),
+  index('calificaciones_rel_sk_est_idx').on(t.sk, t.estIdOrigen),
+]);
+
+// `migracionRelacionalNotas` — el "interruptor" de institución migrada.
+// El dual-write de arriba llena las 3 tablas de forma INCREMENTAL (solo
+// para los estudiantes/materias que alguien de hecho guarda una nota
+// nueva después de esta ronda) — eso por sí solo NO garantiza cobertura
+// completa: una institución podría tener notas relacionales de 10
+// estudiantes de un grado de 30, y devolver esos 10 como si fueran "todo"
+// sería un bug de datos incompletos, no una optimización. Esta tabla es
+// el marcador explícito de "esta institución (sk) ya pasó por el backfill
+// completo" (ver scripts/migrar-notas-a-relacional.ts) — los 3 endpoints
+// /api/grados* SOLO leen de las tablas relacionales cuando existe una fila
+// aquí para ese sk; si no existe, usan el blob JSON completo (fallback
+// seguro), sin importar cuántas filas relacionales parciales ya haya por
+// el dual-write incremental.
+export const migracionRelacionalNotas = pgTable('migracion_relacional_notas', {
+  sk:                 text('sk').primaryKey(),
+  migradoEn:          timestamp('migrado_en', { withTimezone: true }).defaultNow(),
+  totalEstudiantes:   integer('total_estudiantes').notNull().default(0),
+  totalCalificaciones:integer('total_calificaciones').notNull().default(0),
+});

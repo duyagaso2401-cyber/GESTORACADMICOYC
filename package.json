@@ -9,7 +9,8 @@
    
    "start": "NODE_OPTIONS='--max-http-header-size=32768' tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "migrate-db": "tsx scripts/migrate-db.ts"
+    "migrate-db": "tsx scripts/migrate-db.ts",
+    "migrar-notas-relacional": "tsx scripts/migrar-notas-a-relacional.ts"
   },
   "dependencies": {
     "@google/genai": "^2.12.0",

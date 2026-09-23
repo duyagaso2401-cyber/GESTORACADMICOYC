@@ -1,0 +1,112 @@
+# ════════════════════════════════════════════════════════════════════════════
+# RONDA 44 — DIMENSIÓN 10: docker-compose.yml (backend + postgres + nginx).
+#
+# LIMITACIÓN DECLARADA: este entorno de trabajo no puede ejecutar
+# `docker compose up` de verdad (no hay Docker Engine ni una base Postgres
+# real de prueba disponibles aquí). Este archivo se validó solo por su
+# ESTRUCTURA/sintaxis YAML (ver test_ronda44_*.mjs — parseo YAML manual +
+# comprobación de claves esperadas), no por ejecución real. Antes de usarlo
+# en producción, pruébese en un entorno con Docker disponible.
+#
+# El proyecto YA usa Neon (Postgres administrado) en producción — el
+# servicio `postgres` de aquí es opcional, pensado para desarrollo local o
+# para instalaciones on-premise que NO quieran depender de Neon (ver
+# DIMENSIÓN 9 / independencia de proveedor de BD, documentada en
+# CHECKLIST_DESPLIEGUE.md — DATABASE_URL apunta a cualquier Postgres).
+# ════════════════════════════════════════════════════════════════════════════
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    image: gestor-academico-yc:latest
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # Si se usa el servicio `postgres` de abajo en vez de Neon, sobrescribir
+      # DATABASE_URL del .env con este valor apuntando al contenedor.
+      # RONDA 49: se agregó "?sslmode=disable" — el Postgres del contenedor
+      # de abajo (imagen oficial postgres:16-alpine) NO trae TLS configurado
+      # por defecto, y src/db/index.ts ahora respeta este parámetro (ver
+      # src/lib/db-ssl.ts) para no intentar SSL contra un servidor que no lo
+      # soporta (antes de esta ronda, esa combinación fallaba con el error
+      # real de pg "The server does not support SSL connections"). La
+      # comunicación va por la red interna de Docker (`gestor-net`), nunca
+      # sale a Internet, así que no ir cifrado ahí es una práctica normal.
+      DATABASE_URL: ${DATABASE_URL:-postgres://gestor:gestor@postgres:5432/gestor_academico?sslmode=disable}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "5000"
+    networks:
+      - gestor-net
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gestor
+      POSTGRES_PASSWORD: gestor
+      POSTGRES_DB: gestor_academico
+    volumes:
+      - gestor-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gestor -d gestor_academico"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gestor-net
+    # Comentar/eliminar este servicio por completo si se prefiere seguir
+    # usando Neon (recomendado en producción) — basta con dejar DATABASE_URL
+    # apuntando a Neon en el .env y quitar `depends_on` del backend.
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # RONDA 49 — dominio y SSL gratuito (ver infra/README.md, sección 3):
+      # `certbot-www` es la carpeta que Let's Encrypt usa para verificar que
+      # el dominio es suyo (HTTP-01 challenge — nginx.conf ya sirve esta
+      # ruta bajo /.well-known/acme-challenge/); `certbot-etc` es donde
+      # quedan guardados los certificados una vez emitidos. Ambos volúmenes
+      # están vacíos y no hacen nada hasta que se sigue el procedimiento del
+      # README — no cambian el comportamiento HTTP-only por defecto.
+      - certbot-etc:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    depends_on:
+      - backend
+    networks:
+      - gestor-net
+
+  # RONDA 49 — emisión/renovación del certificado SSL gratuito (Let's
+  # Encrypt). Imagen oficial `certbot/certbot`, sin dependencias nuevas de
+  # npm. Este servicio NO corre solo — se invoca puntualmente con
+  # `docker compose -f infra/docker-compose.yml run --rm certbot ...` (ver
+  # infra/README.md, sección 3, para el comando exacto la primera vez y
+  # para la renovación periódica). Comparte los mismos volúmenes que nginx
+  # de arriba para que el certificado quede donde nginx lo puede leer.
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    networks:
+      - gestor-net
+
+networks:
+  gestor-net:
+    driver: bridge
+
+volumes:
+  gestor-pgdata:
+  certbot-etc:
+  certbot-www:

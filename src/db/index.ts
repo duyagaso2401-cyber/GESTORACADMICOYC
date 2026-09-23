@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import * as schema from './schema.js';
+import { resolverSslPg } from '../lib/db-ssl.js';
 
 const { Pool } = pg;
 
@@ -11,12 +12,30 @@ if (!connectionString) {
   throw new Error('DATABASE_URL environment variable is required');
 }
 
-const pool = new Pool({ 
-  connectionString, 
-  ssl: { rejectUnauthorized: false } 
+// RONDA 49: SSL agnóstico — antes era `{ rejectUnauthorized: false }` fijo
+// (funciona con Neon, pero rompe la conexión contra un Postgres propio sin
+// TLS, como el servicio `postgres` de `infra/docker-compose.yml`). Ver
+// src/lib/db-ssl.ts para el detalle completo. Comportamiento histórico
+// (SSL activado) intacto para quien no configure nada nuevo.
+const pool = new Pool({
+  connectionString,
+  ssl: resolverSslPg(connectionString),
 });
 
+// RONDA 49: se exporta el pool crudo (además de `db`) para que
+// src/services/infraTelemetry.ts pueda leer sus contadores en tiempo real
+// (totalCount/idleCount/waitingCount/options.max) sin depender de la forma
+// interna de drizzle-orm, que no expone el pool de manera pública/estable.
+export { pool };
 export const db = drizzle(pool, { schema });
+// RONDA 44 — DIMENSIÓN 11.a: se usa `db.transaction(async (tx) => {...})`
+// (soportado nativamente por drizzle-orm/node-postgres desde 0.30.x, ya
+// declarado en package.json) para envolver la Migración Directa
+// Server-Side en un BEGIN/COMMIT/ROLLBACK SQL real — internamente pide un
+// cliente dedicado del `pool` y ejecuta las sentencias sobre ese mismo
+// cliente, con ROLLBACK automático si el callback lanza una excepción. Ver
+// el bloque `await db.transaction(async (tx) => {...})` dentro del handler
+// `app.post('/api/red/solicitudes/:id/aprobar', ...)` en src/index.ts.
 
 // --- CREACIÓN AUTOMÁTICA DE TABLAS ---
 async function initDb() {
@@ -528,6 +547,29 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS agent_audit_logs_timestamp_idx ON agent_audit_logs(timestamp);
       CREATE INDEX IF NOT EXISTS agent_audit_logs_category_idx ON agent_audit_logs(category);
       CREATE INDEX IF NOT EXISTS agent_audit_logs_status_idx ON agent_audit_logs(status);
+
+      -- ════════════════════════════════════════════════════════════════
+      -- RONDA 44 — DIMENSIÓN 7: base SaaS para IA (SOLO esquema + CRUD
+      -- básico, sin activar cobros reales — así lo pidió explícitamente el
+      -- criterio conservador de esta ronda). Registra, por institución
+      -- (sk), qué proveedor de IA usa y bajo qué plan/estado, de forma
+      -- independiente de 'fin_suscripciones' (que es la suscripción
+      -- general de la plataforma) — permite en el futuro cobrar el uso de
+      -- IA por separado sin tocar ese esquema existente.
+      -- ════════════════════════════════════════════════════════════════
+      CREATE TABLE IF NOT EXISTS ai_subscriptions (
+        id SERIAL PRIMARY KEY,
+        sk TEXT NOT NULL UNIQUE,
+        proveedor TEXT NOT NULL DEFAULT 'gemini',
+        plan TEXT NOT NULL DEFAULT 'gratuito',
+        estado TEXT NOT NULL DEFAULT 'activa',
+        limite_mensual INTEGER NOT NULL DEFAULT 0,
+        uso_mes_actual INTEGER NOT NULL DEFAULT 0,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ai_subscriptions_estado_idx ON ai_subscriptions(estado);
     `);
     console.log("✅ Tablas verificadas/creadas en Neon exitosamente.");
   } catch (err) {
@@ -853,6 +895,204 @@ export async function ensureSchemaCertificados(): Promise<void> {
     CREATE INDEX IF NOT EXISTS certificados_emitidos_sk_idx ON certificados_emitidos(sk);
   `);
   console.log('✅ [Ronda 37/38] Esquema del Módulo de Verificación Digital (Hash/QR) creado/verificado en Neon.');
+}
+
+// ── RONDA 43 — Índice cruzado entre instituciones + Buzón de Solicitudes ──
+export async function ensureSchemaRedInterinstitucional(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS estudiantes_indice_red (
+      nuip TEXT PRIMARY KEY,
+      sk TEXT NOT NULL,
+      nombre_completo TEXT NOT NULL DEFAULT '',
+      institucion_nombre TEXT NOT NULL DEFAULT '',
+      grado TEXT NOT NULL DEFAULT '',
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS estudiantes_indice_red_sk_idx ON estudiantes_indice_red(sk);
+    CREATE INDEX IF NOT EXISTS estudiantes_indice_red_activo_idx ON estudiantes_indice_red(activo);
+
+    CREATE TABLE IF NOT EXISTS solicitudes_traslado (
+      id SERIAL PRIMARY KEY,
+      nuip TEXT NOT NULL,
+      est_id_origen TEXT NOT NULL DEFAULT '',
+      nombre_estudiante TEXT NOT NULL DEFAULT '',
+      sk_origen TEXT NOT NULL,
+      institucion_origen_nombre TEXT NOT NULL DEFAULT '',
+      sk_destino TEXT NOT NULL,
+      institucion_destino_nombre TEXT NOT NULL DEFAULT '',
+      grado_destino TEXT NOT NULL DEFAULT '',
+      estado TEXT NOT NULL DEFAULT 'PENDING',
+      actor_solicitante TEXT NOT NULL DEFAULT '',
+      actor_resolutor TEXT NOT NULL DEFAULT '',
+      motivo_rechazo TEXT NOT NULL DEFAULT '',
+      est_id_destino TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      resolved_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS solicitudes_traslado_sk_origen_idx ON solicitudes_traslado(sk_origen);
+    CREATE INDEX IF NOT EXISTS solicitudes_traslado_sk_destino_idx ON solicitudes_traslado(sk_destino);
+    CREATE INDEX IF NOT EXISTS solicitudes_traslado_estado_idx ON solicitudes_traslado(estado);
+  `);
+  console.log('✅ [Ronda 43] Esquema de Interconexión Directa (índice de red + buzón de solicitudes) creado/verificado en Neon.');
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 45 — DIMENSIÓN 1, FASE 1 (DUAL-WRITE / STRANGLER FIG PATTERN)
+// ------------------------------------------------------------------------------
+// DECISIÓN DE ARQUITECTURA (léase antes de tocar esto): el blob JSON por
+// institución (`kv_store`) SIGUE SIENDO la fuente de verdad autoritativa
+// del sistema — esto NO se depreca ni se apaga en esta ronda. Lo que se
+// agrega es una capa PARALELA de 3 tablas relacionales normalizadas
+// (estudiantes_rel, materias_rel, calificaciones_rel — ver src/db/schema.ts
+// para su diseño detallado) que se alimenta en paralelo (dual-write,
+// best-effort, sin bloquear ni poder fallar el guardado real) cada vez que
+// se guarda una fila de notas, y que los 3 endpoints modulares de la Ronda
+// 44 (/api/grados*) intentan leer PRIMERO por ser más rápidos (SQL
+// indexado, sin cargar el blob de 3 MB completo) — con fallback transparente
+// al blob si esa institución todavía no tiene datos migrados.
+//
+// Por qué NO se hizo un corte total esta ronda (y por qué sería
+// irresponsable hacerlo): (1) no hay forma de probar el backfill contra
+// datos de producción reales ni concurrencia real en este entorno; (2) un
+// corte total exige reescribir TODOS los puntos que hoy leen/escriben el
+// blob completo (ficha, observador, asistencia, matrícula — no solo
+// notas), lo que excede por mucho el alcance de "cerrar la migración de
+// notas" que pidió esta ronda; (3) mantener el blob como fuente de verdad
+// significa que, si algo sale mal en la capa relacional (una tabla
+// corrupta, una migración a medias), el sistema sigue funcionando
+// exactamente igual que antes de esta ronda — el "peor caso" de esta fase
+// es "la optimización no ayudó todavía en esa institución", nunca "se
+// perdieron datos".
+//
+// FASE 2 (futura, NO implementada aquí, requiere pedido explícito): una
+// vez que haya evidencia real de estabilidad en producción (Render +
+// datos reales durante un tiempo razonable), se podría invertir la
+// prioridad — relacional como fuente de verdad, blob como respaldo/export
+// — y eventualmente dejar de escribir en el blob. Esa inversión NO se hizo
+// aquí porque este entorno no puede dar esa evidencia; hacerlo sin ella
+// sería el mismo "big bang" que la Ronda 44 ya rechazó, solo que con
+// menos pasos intermedios.
+//
+// Llamada de forma PEREZOSA (lazy, on-demand) la primera vez que se
+// necesita — nunca dentro de initDb() — para no arriesgar el arranque de
+// producción con una creación de esquema adicional en cada boot. Se
+// invoca desde _ejecutarGuardarFilaNotas() (dual-write) y desde los 3
+// endpoints /api/grados* (lectura), y también puede invocarse directamente
+// desde scripts/migrar-notas-a-relacional.ts para el backfill manual.
+export async function ensureSchemaRelacionalNotas(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS estudiantes_rel (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      est_id_origen TEXT NOT NULL,
+      nombre TEXT NOT NULL DEFAULT '',
+      num_doc TEXT NOT NULL DEFAULT '',
+      grado TEXT NOT NULL DEFAULT '',
+      estado_matricula TEXT NOT NULL DEFAULT 'activo',
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS estudiantes_rel_sk_est_idx ON estudiantes_rel(sk, est_id_origen);
+    CREATE INDEX IF NOT EXISTS estudiantes_rel_sk_grado_idx ON estudiantes_rel(sk, grado);
+
+    CREATE TABLE IF NOT EXISTS materias_rel (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      c_id_origen TEXT NOT NULL,
+      nombre TEXT NOT NULL DEFAULT '',
+      grado TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS materias_rel_sk_cid_idx ON materias_rel(sk, c_id_origen);
+    CREATE INDEX IF NOT EXISTS materias_rel_sk_grado_idx ON materias_rel(sk, grado);
+
+    CREATE TABLE IF NOT EXISTS calificaciones_rel (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      est_id_origen TEXT NOT NULL,
+      c_id_origen TEXT NOT NULL,
+      periodo TEXT NOT NULL,
+      notas JSONB DEFAULT '{}',
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS calificaciones_rel_grano_idx ON calificaciones_rel(sk, est_id_origen, c_id_origen, periodo);
+    CREATE INDEX IF NOT EXISTS calificaciones_rel_sk_est_idx ON calificaciones_rel(sk, est_id_origen);
+
+    CREATE TABLE IF NOT EXISTS migracion_relacional_notas (
+      sk TEXT PRIMARY KEY,
+      migrado_en TIMESTAMPTZ DEFAULT NOW(),
+      total_estudiantes INTEGER NOT NULL DEFAULT 0,
+      total_calificaciones INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  console.log('✅ [Ronda 45 — Fase 1] Esquema relacional de notas (dual-write) creado/verificado en Neon.');
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 45 — DIMENSIÓN 4: AUTO-SEEDING SERVER-SIDE de un Súper Admin por
+// defecto cuando la base de datos está recién creada/limpia.
+// ------------------------------------------------------------------------------
+// Hasta esta ronda, el registro `gestorDB` (guardado en kv_store bajo la
+// clave GESTOR_SK, ver src/index.ts) solo se creaba del lado del CLIENTE
+// (objeto GESTOR_DEFAULT en 03-app-core.js, enviado al servidor la primera
+// vez que alguien abre el panel del Gestor en un navegador). Eso deja una
+// ventana real: un backend recién desplegado contra una base de datos
+// limpia, sin que nadie haya abierto el navegador todavía, no tiene NINGÚN
+// Súper Admin con quien iniciar sesión del lado del servidor (los
+// endpoints que verifican `gestorDB.superAdmin` fallarían porque la fila
+// no existe). Esta función cierra esa ventana.
+//
+// IDEMPOTENCIA: solo actúa si la fila `GESTOR_SK` en `kv_store` NO EXISTE
+// todavía — si ya existe (con cualquier contenido, incluso vacío o
+// parcial), esta función NO LA TOCA ni la sobreescribe. Nunca se ejecuta
+// dos veces con efecto (la segunda vez, la fila ya existe y se sale de
+// inmediato).
+//
+// CONTRASEÑA: NUNCA hardcodeada. Si la variable de entorno
+// `SUPERADMIN_SEED_PASSWORD` está configurada, se usa esa (permite a un
+// despliegue automatizado fijarla como secreto de antemano). Si no está
+// configurada, se genera aleatoriamente con `crypto.randomBytes` (128 bits
+// de entropía, codificados en base64url) y se imprime UNA SOLA VEZ en los
+// logs de arranque del servidor — nunca se guarda en texto plano en
+// ningún archivo ni tabla; se guarda ya cifrada con el mismo esquema
+// PBKDF2 que usa el resto del sistema para el Súper Admin
+// (`_verificarPasswordSuperAdminServidor` en src/index.ts).
+export async function autoSeedSuperAdmin(gestorSk: string): Promise<void> {
+  try {
+    const existente = await db.select().from(schema.kvStore).where(sql`key = ${gestorSk}`);
+    if (existente.length) return; // ya existe — nunca se sobreescribe (idempotente)
+
+    const crypto = await import('node:crypto');
+    const passwordSemilla = (process.env.SUPERADMIN_SEED_PASSWORD || '').trim() || crypto.randomBytes(16).toString('base64url');
+    const salt = crypto.randomBytes(16);
+    const hash = crypto.pbkdf2Sync(passwordSemilla, salt, 100000, 32, 'sha256').toString('hex');
+    const passwordCifrada = `pbkdf2$${salt.toString('hex')}$${hash}`;
+
+    const gestorSeed = {
+      superAdmin: { u: 'gestor', p: passwordCifrada, nombre: 'Súper Administrador' },
+      wsp1: '', wsp2: '',
+      sugerencias: [],
+      featureFlags: { ENABLE_ETC_CONTRACTING_MODULE: false, ENABLE_UNIVERSITIES_MODULE: false },
+      platforms: [],
+    };
+    await db.insert(schema.kvStore).values({ key: gestorSk, value: gestorSeed as any, updatedAt: new Date() });
+
+    console.log('════════════════════════════════════════════════════════════════');
+    console.log('🌱 [Ronda 45] AUTO-SEEDING: se creó un Súper Admin por defecto porque');
+    console.log('   la base de datos no tenía ningún registro de Gestor Académico YC.');
+    console.log('   Usuario: gestor');
+    if (process.env.SUPERADMIN_SEED_PASSWORD) {
+      console.log('   Contraseña: la definida en la variable de entorno SUPERADMIN_SEED_PASSWORD.');
+    } else {
+      console.log('   Contraseña (generada aleatoriamente, GUÁRDELA — no se repetirá en los logs):');
+      console.log('   ' + passwordSemilla);
+    }
+    console.log('   Cámbiela cuanto antes desde el panel del Súper Admin una vez ingrese.');
+    console.log('════════════════════════════════════════════════════════════════');
+  } catch (err) {
+    // No debe impedir el arranque del servidor bajo ninguna circunstancia.
+    console.error('⚠️ [Ronda 45] auto-seeding de Súper Admin falló (el servidor sigue arrancando normalmente):', err);
+  }
 }
 
 // Exportar las tablas declaradas en el esquema

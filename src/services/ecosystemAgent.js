@@ -54,11 +54,12 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { GoogleGenAI, Type } from '@google/genai';
-import { eq, and, gt, ne, desc, sql as sqlOp } from 'drizzle-orm';
+import { eq, and, gt, ne, asc, desc, sql as sqlOp } from 'drizzle-orm';
 import { db, kvStore, agentAuditLogs, notifications } from '../db/index.js';
 import { broadcastChange, contarClientesSse } from '../lib/sync-bus.js';
 import { invalidarDbCache } from '../lib/db-cache.js';
 import { checkAiAuditorEnabled, checkAiNeonEnabled } from '../lib/feature-flags.js';
+import { MODEL_FALLBACKS, DEFAULT_PRIMARY_MODEL, llamarGeminiConResiliencia, TIMEOUT_GEMINI_FUNCTION_CALLING_MS } from '../lib/gemini-config.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // 1) CONFIGURACIÓN Y CONEXIÓN A GEMINI (con degradación elegante)
@@ -67,7 +68,36 @@ import { checkAiAuditorEnabled, checkAiNeonEnabled } from '../lib/feature-flags.
 const GESTOR_SK = '__gestor_academico_yc__';
 const AGENT_STATE_SK = '__agent_ecosistema_state__'; // cursor "última auditoría" — vive en kv_store como cualquier otro blob, NUNCA como columna física nueva
 
-export const AGENT_MODEL = (process.env.GEMINI_AGENT_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '').trim();
+// RONDA 52 — LÍMITE EXPLÍCITO DE LA CONSULTA INCREMENTAL A NEON.
+// La consulta de runFullAudit() ya era incremental (updated_at > cursor,
+// solo 3 columnas — ver comentario ahí), pero NO tenía un LIMIT: si pasa
+// mucho tiempo sin correr una auditoría (el agente estuvo apagado, o es el
+// primer arranque tras el despliegue), "cursor" puede ser muy antiguo y la
+// consulta puede traer decenas o cientos de instituciones cambiadas de una
+// sola vez. El bucle de abajo procesa cada institución EN SERIE, y cada una
+// puede disparar su propia llamada de Function Calling a Gemini (con sus
+// propios reintentos/backoff del wrapper central) — con muchas
+// instituciones en una sola corrida, la duración total se acumula y el
+// usuario percibe "lentitud" o incluso un timeout de la petición HTTP que
+// disparó la auditoría manual (POST /api/agent/run-full-audit).
+// Con este LIMIT, cada ciclo procesa como máximo N instituciones (ordenadas
+// por updated_at ASC, las más antiguas primero — ni una institución se
+// "salta" ni queda huérfana: ver el cálculo del nuevo cursor más abajo, que
+// avanza solo hasta la última fila REALMENTE procesada en este ciclo, nunca
+// hasta "ahora", cuando el LIMIT recortó el resultado). Si quedan más
+// instituciones pendientes, el próximo ciclo (programado cada semana, o un
+// disparo manual inmediato) las recoge automáticamente desde ese punto —
+// no se pierde ningún cambio, solo se reparte en más de un ciclo.
+const LIMITE_INSTITUCIONES_POR_CICLO = 20;
+
+// RONDA 48: el Agente Auditor conserva su propia variable de entorno
+// GEMINI_AGENT_MODEL (puede querer un modelo distinto al de Adán/asistente
+// de chat), pero ya NO declara su propia lista de fallback dispersa — usa
+// MODEL_FALLBACKS de la configuración central (src/lib/gemini-config.ts)
+// como red de seguridad, para no repetir/desincronizar nombres de modelo
+// en dos archivos.
+export const AGENT_MODEL = (process.env.GEMINI_AGENT_MODEL || process.env.GEMINI_MODEL || DEFAULT_PRIMARY_MODEL).replace(/^models\//, '').trim();
+const AGENT_CANDIDATE_MODELS = [AGENT_MODEL, ...MODEL_FALLBACKS].filter((m, i, self) => Boolean(m) && self.indexOf(m) === i);
 
 let _avisoSinClaveMostrado = false;
 
@@ -522,15 +552,23 @@ function auditarFlagsSincronizacion(gestorBlob) {
 export async function runFullAudit({ trigger } = {}) {
   const inicio = Date.now();
   const cursor = await leerCursorUltimaAuditoria();
-  const ahora = new Date();
+  const ahora = new Date(); // usado como cursor SOLO cuando este ciclo procesó TODO lo pendiente (ver más abajo)
 
   // ── OPTIMIZACIÓN DE RED: consulta incremental — NUNCA "SELECT *" de Neon.
-  // Solo se traen las columnas necesarias (key, value, updated_at) y SOLO
-  // de las filas de kv_store modificadas desde el último ciclo. ──────────
+  // Solo se traen las columnas necesarias (key, value, updated_at), SOLO de
+  // las filas de kv_store modificadas desde el último ciclo, ordenadas por
+  // updated_at ASC (las más antiguas primero) y acotadas con LIMIT
+  // explícito (RONDA 52 — ver comentario junto a
+  // LIMITE_INSTITUCIONES_POR_CICLO más arriba: sin este LIMIT, un cursor
+  // muy antiguo podía traer cientos de instituciones y disparar cientos de
+  // llamadas seriadas a Gemini en un solo ciclo, causando la lentitud/
+  // timeout reportados). ──────────────────────────────────────────────
   const filasCambiadas = await db
     .select({ key: kvStore.key, value: kvStore.value, updatedAt: kvStore.updatedAt })
     .from(kvStore)
-    .where(and(gt(kvStore.updatedAt, cursor), ne(kvStore.key, AGENT_STATE_SK)));
+    .where(and(gt(kvStore.updatedAt, cursor), ne(kvStore.key, AGENT_STATE_SK)))
+    .orderBy(asc(kvStore.updatedAt))
+    .limit(LIMITE_INSTITUCIONES_POR_CICLO);
 
   if (!filasCambiadas.length) {
     // "Silencio en Inactividad": cero llamadas adicionales a Neon o a
@@ -545,6 +583,31 @@ export async function runFullAudit({ trigger } = {}) {
   filasCambiadas.forEach((f) => {
     if (f.key === GESTOR_SK) { gestorBlob = f.value; return; }
     institucionesCambiadas.push(f);
+  });
+
+  // RONDA 53 — PRIORIZACIÓN POR INSTITUCIONES ACTIVAS EN ESTE MOMENTO.
+  // IMPORTANTE: esto NO es lo mismo que el chat conversacional de Adán
+  // (/api/inetis/ai/chat) — ver la investigación documentada en
+  // CHECKLIST_DESPLIEGUE.md, Ronda 53: el chat ya estaba (y sigue estando)
+  // completamente separado de este ciclo de auditoría, con su propio cliente
+  // GoogleGenAI por petición y sin ninguna cola compartida ni espera cruzada.
+  // Este cambio es una mejora real y acotada al barrido de fondo en sí
+  // (periódico o manual, con el LIMIT de Ronda 52): dentro del lote ya
+  // capado, se reordena (orden ESTABLE, no se altera el criterio de avance
+  // del cursor — eso sigue usando `filasCambiadas`, no este arreglo
+  // reordenado) para procesar PRIMERO las instituciones que tienen al menos
+  // un dispositivo con una sesión en vivo conectada por SSE ahora mismo
+  // (`contarClientesSse`, ya usado por triggerSystemSync) — así, si hay 2 o
+  // 3 colegios con gente usando el sistema en este instante mientras otros
+  // quedaron con cambios pendientes de auditar pero sin nadie conectado, los
+  // primeros reciben su reparación/aviso de sincronización antes que los
+  // segundos, sin cambiar CUÁNTAS instituciones se procesan por ciclo (sigue
+  // siendo como máximo LIMITE_INSTITUCIONES_POR_CICLO) ni el criterio de
+  // avance del cursor (que sigue siendo seguro y determinista, ver arriba).
+  institucionesCambiadas.sort((a, b) => {
+    const activaA = contarClientesSse(a.key) > 0 ? 1 : 0;
+    const activaB = contarClientesSse(b.key) > 0 ? 1 : 0;
+    return activaB - activaA; // activas (1) primero, inactivas (0) después; Array.prototype.sort es estable en Node/V8 moderno, así que dentro de cada grupo se conserva el orden ASC original por updated_at
   });
 
   const logsAcumulados = []; // CONSOLIDACIÓN EN MEMORIA — se escriben todos juntos en un solo batch insert al final
@@ -592,15 +655,26 @@ export async function runFullAudit({ trigger } = {}) {
         const idsValidosAcademicos = new Set(hallazgosAcademicos.map((h) => h.studentId));
         const promptHallazgos = `Institución auditada (sk): ${sk}\n\nHallazgos técnicos de esta institución:\n${JSON.stringify(hallazgosTecnicos)}\n\nHallazgos académicos de esta institución:\n${JSON.stringify(hallazgosAcademicos.map((h) => ({ studentId: h.studentId, reason: h.reason, level: h.level })))}\n\nPara cada hallazgo técnico invoca repairDataIntegrity con su targetId exacto. Para cada hallazgo académico invoca flagAcademicAlert con su studentId exacto, el "reason" dado y el "level" dado. Al final invoca notifySuperadmin con el resumen ejecutivo de esta institución.`;
 
-        const respuesta = await genAI.models.generateContent({
-          model: AGENT_MODEL,
+        // RONDA 48: migrado al wrapper central de resiliencia — reintenta
+        // el mismo modelo con backoff ante 429/503 y cambia de modelo ante
+        // 404, antes de caer al motor determinista (catch de abajo).
+        // RONDA 52: httpOptions.timeout explícito (ver comentario junto a
+        // TIMEOUT_GEMINI_FUNCTION_CALLING_MS en gemini-config.ts) — sin
+        // esto, un intento colgado podía consumir tiempo indefinido antes
+        // de que el wrapper de resiliencia entrara a decidir el siguiente
+        // paso, causando la lentitud/timeout reportados.
+        const intentoFC = await llamarGeminiConResiliencia((modelo) => genAI.models.generateContent({
+          model: modelo,
           contents: promptHallazgos,
           config: {
             systemInstruction: SYSTEM_PROMPT,
             temperature: 0.2, // baja: esto ejecuta acciones reales, no conversa
             tools: TOOLS_DECLARATION,
+            httpOptions: { timeout: TIMEOUT_GEMINI_FUNCTION_CALLING_MS },
           },
-        });
+        }), { modelos: AGENT_CANDIDATE_MODELS, etiqueta: 'Agente Auditor' });
+        if (!intentoFC.ok) throw intentoFC.error || new Error('Ningún modelo Gemini disponible para Function Calling.');
+        const respuesta = intentoFC.resultado;
 
         const llamadas = respuesta.functionCalls || [];
         usoGenAI = true;
@@ -693,11 +767,29 @@ export async function runFullAudit({ trigger } = {}) {
     })));
   }
 
-  await guardarCursorUltimaAuditoria(ahora, {
+  // RONDA 52 — el cursor NUNCA debe avanzar hasta "ahora" cuando el LIMIT
+  // recortó el resultado (filasCambiadas.length === LIMITE_INSTITUCIONES_POR_CICLO
+  // significa "puede haber más filas pendientes que no vimos en este
+  // ciclo"): si avanzara hasta "ahora", esas filas restantes (con
+  // updated_at menor a "ahora" pero mayor al cursor viejo) quedarían
+  // huérfanas para siempre, porque la próxima consulta usa `gt(cursor)`.
+  // En cambio, se avanza solo hasta el updated_at de la ÚLTIMA fila
+  // REALMENTE procesada en este ciclo (filasCambiadas está ordenada ASC,
+  // así que es la más reciente del lote) — el próximo ciclo retoma
+  // exactamente donde este se quedó, sin perder ni repetir ninguna fila.
+  // Cuando NO se llegó al límite (se procesó todo lo pendiente), se sigue
+  // usando "ahora" como antes, igual que en Rondas previas.
+  const hayMasInstitucionesPendientes = filasCambiadas.length === LIMITE_INSTITUCIONES_POR_CICLO;
+  const nuevoCursor = hayMasInstitucionesPendientes
+    ? filasCambiadas[filasCambiadas.length - 1].updatedAt
+    : ahora;
+
+  await guardarCursorUltimaAuditoria(nuevoCursor, {
     institucionesRevisadas: institucionesCambiadas.length,
     hallazgosTecnicos: totalHallazgosTecnicos,
     hallazgosAcademicos: totalHallazgosAcademicos,
     usoRazonamientoGenerativoAlguno,
+    hayMasInstitucionesPendientes,
   });
 
   return {
@@ -709,6 +801,7 @@ export async function runFullAudit({ trigger } = {}) {
     hallazgosAcademicos: totalHallazgosAcademicos,
     reparacionesAplicadas: totalReparaciones,
     usoRazonamientoGenerativo: usoRazonamientoGenerativoAlguno,
+    hayMasInstitucionesPendientes,
     logsEscritos: logsAcumulados.length,
     durationMs: Date.now() - inicio,
   };
@@ -776,15 +869,18 @@ export async function processVoiceGrades({ transcript, listaEstudiantes }) {
     : '';
   const prompt = `Un docente colombiano dictó de corrido una lista de notas de sus estudiantes (escala 0.0 a 5.0) para varias personas seguidas, por ejemplo: "Ana María cuatro punto cinco, Carlos tres, Beatriz cinco". Extrae cada pareja (estudiante, nota) del siguiente dictado transcrito. ${nombresConocidos}\n\nDictado transcrito:\n"""${String(transcript || '').slice(0, 4000)}"""`;
   try {
-    const respuesta = await genAI.models.generateContent({
-      model: AGENT_MODEL,
+    // RONDA 48: migrado al wrapper central de resiliencia.
+    const intentoVoz = await llamarGeminiConResiliencia((modelo) => genAI.models.generateContent({
+      model: modelo,
       contents: prompt,
       config: {
         temperature: 0.1,
         responseMimeType: 'application/json',
         responseSchema: VOICE_GRADES_SCHEMA,
       },
-    });
+    }), { modelos: AGENT_CANDIDATE_MODELS, etiqueta: 'Agente Auditor (voz a notas)' });
+    if (!intentoVoz.ok) throw intentoVoz.error || new Error('Ningún modelo Gemini disponible.');
+    const respuesta = intentoVoz.resultado;
     const texto = respuesta.text || '{"notas":[]}';
     const parsed = JSON.parse(texto);
     const notas = (parsed.notas || []).map((n) => ({
