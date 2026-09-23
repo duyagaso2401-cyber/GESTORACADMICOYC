@@ -811,18 +811,30 @@ export async function runFullAudit({ trigger } = {}) {
 // 9) CONSULTA DE LOGS PARA EL PANEL /ADMIN
 // ────────────────────────────────────────────────────────────────────────────
 
-export async function listarLogsAuditoria({ status, category, limit } = {}) {
+// RONDA 55 — paginación real por página (page/limit), pedida explícitamente
+// por el coordinador para "logs de auditoría". Antes solo existía `limit`
+// (tope simple, sin forma de pedir la SIGUIENTE tanda) — se agrega `page`
+// (1-based) y `offset` calculado, manteniendo el mismo tope máximo de 300
+// por página (documentado, ya existía) y el mismo default de 100. Se pide
+// `limit+1` filas para saber si hay más sin una segunda consulta COUNT(*)
+// aparte contra Neon.
+export async function listarLogsAuditoria({ status, category, limit, page } = {}) {
   const condiciones = [
     status ? eq(agentAuditLogs.status, status) : undefined,
     category ? eq(agentAuditLogs.category, category) : undefined,
   ].filter(Boolean);
+  const limiteReal = Math.min(parseInt(limit || '100', 10) || 100, 300);
+  const paginaReal = Math.max(parseInt(page || '1', 10) || 1, 1);
+  const offset = (paginaReal - 1) * limiteReal;
   const filas = await db
     .select()
     .from(agentAuditLogs)
     .where(condiciones.length ? and(...condiciones) : undefined)
     .orderBy(desc(agentAuditLogs.timestamp))
-    .limit(Math.min(parseInt(limit || '100', 10) || 100, 300));
-  return filas;
+    .limit(limiteReal + 1)
+    .offset(offset);
+  const hasMore = filas.length > limiteReal;
+  return { filas: hasMore ? filas.slice(0, limiteReal) : filas, page: paginaReal, limit: limiteReal, hasMore };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

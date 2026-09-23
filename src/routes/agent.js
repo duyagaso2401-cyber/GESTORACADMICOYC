@@ -52,13 +52,19 @@ router.get('/status', (_req, res) => {
 
 router.get('/logs', async (req, res) => {
   try {
-    const { status, category, limit } = req.query;
-    const filas = await listarLogsAuditoria({
+    const { status, category, limit, page } = req.query;
+    // RONDA 55 — Cache-Control explícito también aquí: los logs cambian
+    // seguido (cada corrida del Auditor), así que se usa el mismo `no-cache`
+    // (revalidar siempre) que el resto de endpoints de lectura — nunca sirve
+    // una página vieja sin preguntarle al servidor primero.
+    res.setHeader('Cache-Control', 'no-cache');
+    const resultado = await listarLogsAuditoria({
       status: status ? String(status) : undefined,
       category: category ? String(category) : undefined,
       limit: limit ? String(limit) : undefined,
+      page: page ? String(page) : undefined,
     });
-    return res.json({ ok: true, logs: filas });
+    return res.json({ ok: true, logs: resultado.filas, page: resultado.page, limit: resultado.limit, hasMore: resultado.hasMore });
   } catch (e) {
     console.error('GET /api/agent/logs', e);
     return res.status(500).json({ ok: false, error: 'Error interno al leer la bitácora.' });

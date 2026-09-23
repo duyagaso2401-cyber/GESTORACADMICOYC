@@ -425,7 +425,12 @@ function cambiarTabAsist(tab){
 }
 window.cambiarTabAsist = cambiarTabAsist;
 
-function actualizarAsignaturasReg(gradoSel){
+// RONDA 57 — ambas se vuelven async: al cambiar grado/asignatura, se
+// refresca por el camino granular (GET /api/asistencia) ANTES de pintar,
+// con el mismo fallback explícito a _pullDB() si el fetch granular falla.
+// Convertirlas en "async function" es seguro: se invocan desde onchange="..."
+// en el HTML, que no espera su promesa (fire-and-forget), igual que antes.
+async function actualizarAsignaturasReg(gradoSel){
   asistGrado = gradoSel || '';
   var isAdmin = sesion.r === 'admin';
   var misCargas = isAdmin ? db.carga : db.carga.filter(function(c){ return c.d === sesion.u; });
@@ -442,12 +447,15 @@ function actualizarAsignaturasReg(gradoSel){
     }).join('');
     sel.innerHTML = opts || '<option value="">Sin asignaturas asignadas</option>';
   }
-  actualizarEstadosAsist();
-  renderApp();
+  if(!isAdmin && sesion && sesion.r==='docente'){
+    var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
+    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+  }
+  await actualizarEstadosAsist();
 }
 window.actualizarAsignaturasReg = actualizarAsignaturasReg;
 
-function actualizarEstadosAsist(){
+async function actualizarEstadosAsist(){
   var cIdSel = document.getElementById('asistCIdSel');
   if(cIdSel && cIdSel.value){
     asistCId = String(cIdSel.value);
@@ -463,6 +471,10 @@ function actualizarEstadosAsist(){
   var pSel = document.getElementById('asistPeriodoSel');
   if(pSel && pSel.value){
     asistPeriodo = pSel.value;
+  }
+  if(sesion && sesion.r==='docente'){
+    var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
+    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
   }
 
   renderApp();
@@ -2961,7 +2973,13 @@ function descargarPlantillaCSV(){
            '6°1,R.C.,1099887766,GARCÍA LÓPEZ,LUISA,2013-03-22,3009998888,PEDRO GARCÍA,C.C.,12345678,\n';
   const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(ej);a.download='PLANTILLA_ESTUDIANTES_INETIS.csv';a.click();
 }
-function exportarEstudiantesXLSX(){
+// RONDA 60 — misma red de seguridad (window._dbGranularSolamente, Ronda
+// 58) que pdfListaGrado()/pdfListaTodos() en 03-app-core.js: esta función
+// exporta TODOS los grados de la institución desde "db.ests", que puede
+// haber quedado parcial (una sola página de un solo grado) si el
+// Directivo llegó por el camino granular nuevo de esta ronda.
+async function exportarEstudiantesXLSX(){
+  if(window._dbGranularSolamente){ try{ const ok=await _pullDB(); if(ok) window._dbGranularSolamente=false; }catch(e){} }
   if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
   const ests=[...db.ests].sort((a,b)=>{
     const gc=String(a.g).localeCompare(String(b.g),undefined,{numeric:true});
@@ -4161,6 +4179,23 @@ function pdfTablero(){
 // ============================================================
 // COMUNICADO GENERAL — RECTOR A PADRES Y ESTUDIANTES
 // ============================================================
+// RONDA 63 — INVESTIGACIÓN REAL (Módulo de Comunicación/Tablón,
+// pedida por el coordinador): esta es la única vista de "Comunicación"
+// exclusiva del rol Admin/Rector (el "Tablón de Anuncios" del Docente,
+// pag==='aviso-docente', es un módulo distinto, del rol Docente, fuera de
+// alcance de esta ronda). NO HAY NADA QUE MIGRAR COMO LECTURA GRANULAR
+// AQUÍ, y se documenta por qué, con la misma honestidad que en la Ronda 58
+// (Planes de Nivelación) — no se inventó trabajo: los comunicados NUNCA se
+// guardan en el blob JSON (`db`) de la institución — se registran del
+// lado del servidor vía POST /api/inetis/notify (un sistema de
+// notificaciones completamente aparte, consumido por el portal de
+// acudientes/estudiantes) y el "Historial" que se ve en esta misma
+// pantalla ("📋 Comunicados enviados") es un arreglo puramente de sesión
+// (`_comHistorial`, JS en memoria del navegador, nunca leído de `db` ni
+// del servidor) — no existe, pues, ningún endpoint de LECTURA de blob que
+// construir para esta pantalla. La ÚNICA dependencia real de `db` es
+// `db.ests` (para el envío opcional por correo a acudientes) — ver el
+// hallazgo y el guardarraíl añadido dentro de enviarComunicadoGeneral().
 function htmlComunicadoGeneral(){
   const grados=(db.grados||[]).map(g=>g.n);
   const gradOpts='<option value="">— Todos los grados —</option>'+grados.map(g=>`<option value="${g}">${g}</option>`).join('');
@@ -4270,6 +4305,18 @@ async function enviarComunicadoGeneral(){
   } catch(e){log('❌ Error de red al registrar: '+e.message);}
   barra.style.width='40%';
   if(envEmail&&ok){
+    // RONDA 63 — HALLAZGO REAL: cuando se envía "a Todos los grados" (sin
+    // filtro), este paso recorre "db.ests" institución completa. La
+    // navegación hacia esta pantalla (comunicado-general no tiene su
+    // propio adaptador granular — no hay ninguna colección de "historial
+    // de publicaciones" que migrar, ver el comentario de investigación al
+    // inicio de htmlComunicadoGeneral()) ya fuerza un _pullDB() completo
+    // ANTES de renderizar si "db" venía parcial (red de seguridad de la
+    // Ronda 58/60) — esta segunda comprobación es una defensa adicional
+    // para el único escenario borde en que ese pull previo pudo fallar por
+    // red y dejar "db" parcial de todos modos (mismo criterio ya aplicado
+    // en pdfListaGrado()/_asignarCredTodos()).
+    if(window._dbGranularSolamente){ try{ const ok2=await _pullDB(); if(ok2) window._dbGranularSolamente=false; }catch(e){} }
     log('📧 Enviando correos a acudientes con email registrado...');
     const ests=grado?db.ests.filter(e=>e.g===grado):db.ests;
     const conEmail=ests.filter(e=>e.email&&e.email.trim());
@@ -5924,10 +5971,19 @@ function generarDiplomaPDF(id){
 // ============================================================
 // VER CREDENCIALES (ADMIN / RECTOR)
 // ============================================================
+// RONDA 62 — grado seleccionado/página vigente para el bloque de
+// "Estudiantes y Acudientes" de esta misma pantalla (ver
+// _cargarCredencialesAdminGranular(), 03-app-core.js, y el comentario ahí
+// mismo sobre por qué se pasó de un listado plano de TODA la institución a
+// uno filtrado por grado y paginado en el servidor — el plan de la ronda
+// pedía explícitamente "paginadas o filtradas por rol/grado").
+let _credEstGrado=null;
+let _credEstPagina=1;
 function htmlVerCredenciales(){
   const admins=db.users.filter(u=>u.r==='admin');
   const docentes=db.users.filter(u=>u.r==='docente');
-  const ests=(db.ests||[]).slice().sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
+  const isAdmin=sesion&&sesion.r==='admin';
+  const gradOptsCred=(db.grados||[]).map(g=>`<option value="${g.n}"${g.n===_credEstGrado?' selected':''}>${g.n}</option>`).join('');
   const rowsAdmin=admins.map(u=>`<tr>
     <td style="text-align:left">${u.n||'—'}${u.soloLectura?' <span style="font-size:0.7rem;color:#888">(solo lectura)</span>':''}</td><td>${u.u}</td>
     <td><button class="btn-sm" style="background:#7d3c98;font-size:0.72rem" onclick="_resetPassDocente('${u.u.replace(/'/g,"\\'")}')" title="Por seguridad, la contraseña actual está cifrada y no se puede mostrar. Puede definir una nueva.">🔑 Restablecer</button></td>
@@ -5939,8 +5995,39 @@ function htmlVerCredenciales(){
     <td><button class="btn-sm" style="background:#7d3c98;font-size:0.72rem" onclick="_resetPassDocente('${u.u.replace(/'/g,"\\'")}')" title="Por seguridad, la contraseña actual está cifrada y no se puede mostrar. Puede definir una nueva.">🔑 Restablecer</button></td>
     <td>${u.email||'—'}</td><td>${u.telefono||'—'}</td>
   </tr>`).join('');
-  const sinCred=ests.filter(e=>!e.numDoc&&!e.u);
-  const rowsEst=ests.map(e=>{
+  return `<h3 class="sec-title">🔑 Credenciales del Sistema</h3>
+  <div class="warn-box">⚠️ Esta información es confidencial. Solo el administrador, rector y súper administrador (por continuidad del servicio) pueden verla.</div>
+  <div class="card">
+    <h4 class="card-title">🎓 Administrador(es) / Rector(a) (${admins.length})</h4>
+    ${admins.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Contraseña</th><th>Email</th><th>Teléfono</th><th>2FA</th></tr></thead><tbody>${rowsAdmin}</tbody></table></div>
+    <p style="font-size:0.75rem;color:#888;margin-top:6px">🔒 Igual que con los docentes: la contraseña del administrador/rector está cifrada y no puede mostrarse en texto — use "🔑 Restablecer" para definir una nueva.</p>`:_htmlEstadoVacio('🎓','Sin administradores registrados.')}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">👨‍🏫 Docentes (${docentes.length})</h4>
+    ${docentes.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Contraseña</th><th>Email</th><th>Teléfono</th></tr></thead><tbody>${rowsDoc}</tbody></table></div>
+    <p style="font-size:0.75rem;color:#888;margin-top:6px">🔒 Por seguridad, las contraseñas de docentes se guardan cifradas y ya no pueden mostrarse en texto — use "🔑 Restablecer" para definir una nueva si el docente la olvidó.</p>`:_htmlEstadoVacio('👨‍🏫','Sin docentes registrados.')}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">👥 Estudiantes y Acudientes / Padres de Familia</h4>
+    <div class="info-box" style="margin-bottom:10px">📋 El usuario del <b>estudiante</b> y contraseña inicial es su <b>Nº de documento</b>. El <b>acudiente</b> usa su propio Nº de documento como usuario y el Nº del estudiante como contraseña. Use el botón <b>🔑 Credenciales</b> para asignar o cambiar credenciales de forma manual.
+    <button class="btn-sm" style="background:#e67e22;margin-left:8px" onclick="_asignarCredTodos()">⚡ Generar para todos los que tengan doc.</button></div>
+    ${isAdmin&&(db.grados||[]).length?`<div style="margin-bottom:10px"><label class="lbl">Filtrar Grado</label><select id="credFiltroGrado" onchange="_credEstGrado=this.value;_credEstPagina=1;renderCredEstudiantes()">${gradOptsCred}</select></div>`:''}
+    <div id="credEstudiantesWrap">${htmlCredEstudiantesTabla(_credEstGrado||(db.grados||[])[0]?.n||'')}</div>
+  </div>`;
+}
+// RONDA 62 — separado de htmlVerCredenciales() para poder refrescarse solo
+// (sin reconstruir Administradores/Docentes) al cambiar de grado o página,
+// mismo patrón que htmlEstTabla()/renderEstTabla() (Ronda 60).
+function htmlCredEstudiantesTabla(grado){
+  const todosCrudos=(db.ests||[]).filter(e=>!grado||e.g===grado);
+  const ests=todosCrudos.slice().sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
+  const _infoGranular=window._credEstPagInfo&&window._credEstPagInfo.grado===grado&&window._credEstPagInfo.pagina===_credEstPagina?window._credEstPagInfo:null;
+  const _pagCred=_infoGranular
+    ?{items:ests,pagina:_infoGranular.pagina,porPagina:_infoGranular.limit,total:_infoGranular.total,totalPaginas:Math.max(1,Math.ceil(_infoGranular.total/_infoGranular.limit))}
+    :_paginar(ests,_credEstPagina,30);
+  const estsPag=_pagCred.items;
+  const sinCred=estsPag.filter(e=>!e.numDoc&&!e.u);
+  const rowsEst=estsPag.map(e=>{
     const tieneUser=!!(e.numDoc||e.u);
     const userEst=e.u||e.numDoc||'—';
     const passEst=e.p||e.numDoc||'—';
@@ -5967,27 +6054,26 @@ function htmlVerCredenciales(){
       </td>
     </tr>`;
   }).join('');
-  return `<h3 class="sec-title">🔑 Credenciales del Sistema</h3>
-  <div class="warn-box">⚠️ Esta información es confidencial. Solo el administrador, rector y súper administrador (por continuidad del servicio) pueden verla.</div>
-  ${sinCred.length?`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:7px;padding:10px 14px;margin-bottom:12px;font-size:0.84rem;color:#1a1a2e">
-    ⚠️ <b>${sinCred.length}</b> estudiante(s) no tienen número de documento asignado. Use el botón <b>🔑 Credenciales</b> para asignarles acceso manual.
-    <button class="btn-sm" style="background:#e67e22;margin-left:8px" onclick="_asignarCredTodos()">⚡ Generar para todos los que tengan doc.</button>
+  return `${sinCred.length?`<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:7px;padding:8px 12px;margin-bottom:10px;font-size:0.82rem;color:#1a1a2e">
+    ⚠️ <b>${sinCred.length}</b> estudiante(s) de esta página no tienen número de documento asignado.
   </div>`:''}
-  <div class="card">
-    <h4 class="card-title">🎓 Administrador(es) / Rector(a) (${admins.length})</h4>
-    ${admins.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Contraseña</th><th>Email</th><th>Teléfono</th><th>2FA</th></tr></thead><tbody>${rowsAdmin}</tbody></table></div>
-    <p style="font-size:0.75rem;color:#888;margin-top:6px">🔒 Igual que con los docentes: la contraseña del administrador/rector está cifrada y no puede mostrarse en texto — use "🔑 Restablecer" para definir una nueva.</p>`:_htmlEstadoVacio('🎓','Sin administradores registrados.')}
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h4 class="card-title">👨‍🏫 Docentes (${docentes.length})</h4>
-    ${docentes.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Contraseña</th><th>Email</th><th>Teléfono</th></tr></thead><tbody>${rowsDoc}</tbody></table></div>
-    <p style="font-size:0.75rem;color:#888;margin-top:6px">🔒 Por seguridad, las contraseñas de docentes se guardan cifradas y ya no pueden mostrarse en texto — use "🔑 Restablecer" para definir una nueva si el docente la olvidó.</p>`:_htmlEstadoVacio('👨‍🏫','Sin docentes registrados.')}
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h4 class="card-title">👥 Estudiantes y Acudientes / Padres de Familia (${ests.length})</h4>
-    <div class="info-box" style="margin-bottom:10px">📋 El usuario del <b>estudiante</b> y contraseña inicial es su <b>Nº de documento</b>. El <b>acudiente</b> usa su propio Nº de documento como usuario y el Nº del estudiante como contraseña. Use el botón <b>🔑 Credenciales</b> para asignar o cambiar credenciales de forma manual.</div>
-    ${ests.length?`<div class="over" style="max-height:500px;overflow-y:auto"><table><thead><tr><th>Estudiante</th><th>Grado</th><th>Acudiente</th><th>Usuario Est.</th><th>Contraseña Est.</th><th>Usuario Acud./Padre</th><th>Contraseña Acud./Padre</th><th>Acción</th></tr></thead><tbody>${rowsEst}</tbody></table></div>`:_htmlEstadoVacio('🎓','Sin estudiantes registrados.')}
-  </div>`;
+  <p style="color:#666;font-size:0.82rem;margin-bottom:6px">Total: <b>${_pagCred.total}</b> estudiante(s)${grado?' en <b>'+grado+'</b>':''}</p>
+  ${estsPag.length?`<div class="over"><table><thead><tr><th>Estudiante</th><th>Grado</th><th>Acudiente</th><th>Usuario Est.</th><th>Contraseña Est.</th><th>Usuario Acud./Padre</th><th>Contraseña Acud./Padre</th><th>Acción</th></tr></thead><tbody>${rowsEst}</tbody></table></div>
+  ${_htmlPaginacion(_pagCred.pagina,_pagCred.totalPaginas,_pagCred.total,'_cambiarPaginaCredEstudiantes')}`:_htmlEstadoVacio('🎓','Sin estudiantes registrados.')}`;
+}
+async function _cambiarPaginaCredEstudiantes(p){ _credEstPagina=p; await renderCredEstudiantes(); }
+async function renderCredEstudiantes(){
+  const g=document.getElementById('credFiltroGrado')?.value||_credEstGrado||(db.grados||[])[0]?.n||'';
+  // Mismo patrón de fallback real que renderEstTabla() (Ronda 60): camino
+  // granular SOLO para admin; si falla por cualquier motivo (red, o la
+  // institución todavía vive en el esquema relacional sin columnas de
+  // credenciales — ver el comentario del endpoint en src/index.ts), se cae
+  // a _pullDB() completo antes de pintar.
+  if(sesion&&sesion.r==='admin'){
+    let ok=false; try{ ok=await _cargarCredencialesAdminGranular(g,_credEstPagina); }catch(e){}
+    if(!ok){ try{ await _pullDB(); }catch(e){} }
+  }
+  const wrap=document.getElementById('credEstudiantesWrap');if(wrap) wrap.innerHTML=htmlCredEstudiantesTabla(g);
 }
 async function _resetPassDocente(u){
   const nueva=await customPrompt('Nueva contraseña para el usuario "'+u+'":\n\n(Por seguridad, el sistema ya no puede mostrar la contraseña actual — solo permite definir una nueva y comunicársela al docente.)');
@@ -6071,6 +6157,17 @@ function _guardarCred(estId){
   navTo('ver-credenciales');
 }
 async function _asignarCredTodos(){
+  // RONDA 62 — HALLAZGO REAL: esta función recorre "db.ests" institución
+  // completa (todos los grados a la vez) para asignar credenciales a
+  // quien le falten — si "db" quedó parcial por el nuevo camino granular
+  // de esta misma pantalla (un grado a la vez), ejecutarla así dejaría
+  // SIN credenciales, en silencio, a todos los estudiantes de los demás
+  // grados — reportando igual un mensaje de "✅ éxito". Se engancha a la
+  // misma red de seguridad de la Ronda 58 (window._dbGranularSolamente)
+  // que ya protege pdfListaGrado()/pdfListaTodos()/exportarEstudiantesXLSX()
+  // (Ronda 60): fuerza un _pullDB() completo ANTES de tocar ni un solo
+  // estudiante si "db" pudiera estar incompleto.
+  if(window._dbGranularSolamente){ try{ const ok=await _pullDB(); if(ok) window._dbGranularSolamente=false; }catch(e){} }
   if(!await customConfirm('¿Asignar automáticamente las credenciales a todos los estudiantes que tengan número de documento registrado?\n\nSolo se actualizarán quienes tengan número de documento.')) return;
   let count=0;
   updDB(db=>{

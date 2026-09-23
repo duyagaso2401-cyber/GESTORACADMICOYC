@@ -964,8 +964,671 @@ async function _pullDB(){
       db=_migrateDB(j.data);
       window._dbVersion=j.version||null;
       window._dbBaseSnapshot=_clonarDB(db);
+      // RONDA 58 — _pullDB() siempre trae el blob COMPLETO: a partir de aquí
+      // "db" deja de ser parcial, sin importar qué camino granular se haya
+      // usado antes. Ver _dbGranularSolamente más abajo.
+      window._dbGranularSolamente=false;
       try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}return true;}}
   }catch(e){}return false;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 56 — ADAPTADOR GRANULAR DE PLANILLA (Fase 1 del plan aprobado por
+// el usuario). ÚNICO objetivo: alimentar exactamente las mismas claves de
+// "db" que hoy llena _pullDB() (db.carga, db.ests -de un grado-, db.config,
+// db.periodosActivos) pero usando los 2 endpoints NUEVOS de la Ronda 56
+// (GET /api/carga-docente, GET /api/grados/:id/notas-completas) más los ya
+// existentes desde la Ronda 44/45 — NUNCA GET /api/inetis/db. Se diseñó
+// para que las funciones de renderizado/cálculo YA EXISTENTES de Planilla
+// (htmlPlanilla, calcAreasPerd, calcNotaDef, calcPromedioEstPer, etc. —
+// NINGUNA de ellas se modifica en esta ronda) sigan leyendo "db" exactamente
+// igual que siempre, sin enterarse de que el dato llegó por otro camino.
+//
+// ALCANCE DELIBERADAMENTE ANGOSTO (documentado con transparencia):
+//  - Solo corre para sesion.r==='docente' — el Súper Admin/Administrador
+//    viendo Planilla de OTRO docente sigue usando el camino de siempre
+//    (su "carga" abarca TODOS los docentes de la institución, un caso que
+//    este adaptador no intentó cubrir esta ronda, para no ampliar el
+//    riesgo de una migración que el usuario pidió explícitamente empezar
+//    "única y exclusivamente" por Docente).
+//  - Solo reemplaza los datos de UN grado a la vez (el de la asignatura
+//    seleccionada) — igual que ya hacía _pullDB() con Planilla en la
+//    práctica (aunque técnicamente descargaba TODOS los grados, Planilla
+//    solo pintaba uno a la vez).
+//  - NUNCA borra otras claves de "db" que otra vista haya podido cargar
+//    antes (asistencia, observador, etc.) — solo fusiona/reemplaza carga,
+//    ests (solo los del grado objetivo), config y periodosActivos.
+// RONDA 57 — helper COMPARTIDO por los 4 adaptadores granulares (Planilla,
+// Notas de Actividades, Asistencia, Observador): fusiona estudiantes nuevos
+// de UN grado en db.ests por "id", SIN pisar campos que otro adaptador ya
+// hubiera cargado antes para el MISMO estudiante (ej. si Asistencia ya trajo
+// a un estudiante con sus campos básicos y luego el docente entra a
+// Observador, que trae "observaciones", el estudiante termina con AMBOS
+// conjuntos de campos en vez de perder los de Asistencia). Sí reemplaza por
+// completo la lista de estudiantes de ESE grado (si alguno ya no aparece en
+// "estudiantesNuevos" —ej. se dio de baja— desaparece de "db.ests", igual
+// que pasaría con un _pullDB() fresco) — nunca toca estudiantes de OTROS
+// grados.
+function _fusionarEstudiantesEnDB(grado,estudiantesNuevos){
+  if(!db||typeof db!=='object') db={};
+  if(!Array.isArray(db.ests)) db.ests=[];
+  const previosDelGrado=new Map(db.ests.filter(e=>e.g===grado).map(e=>[String(e.id),e]));
+  const otros=db.ests.filter(e=>e.g!==grado);
+  const fusionados=(estudiantesNuevos||[]).map(nuevo=>{
+    const previo=previosDelGrado.get(String(nuevo.id));
+    return previo?Object.assign({},previo,nuevo):Object.assign({},nuevo);
+  });
+  db.ests=[...otros,...fusionados];
+}
+// RONDA 57 — helper compartido: fusiona un arreglo de "cargas" (asignaturas)
+// nuevas en db.carga por "id", sin duplicar ni perder las que ya había.
+function _fusionarCargaEnDB(cargasNuevas){
+  if(!db||typeof db!=='object') db={};
+  const mapaCarga=new Map((db.carga||[]).map(c=>[String(c.id),c]));
+  (cargasNuevas||[]).forEach(c=>mapaCarga.set(String(c.id),c));
+  db.carga=Array.from(mapaCarga.values());
+}
+async function _cargarPlanillaGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion) return false;
+    // RONDA 61 — Front 2: además de Docente (sesion.r==='docente', consulta
+    // SU PROPIA carga), ahora también Admin/Rector (sesion.r==='admin'),
+    // que ya podía elegir la carga de CUALQUIER docente en el mismo
+    // <select> (ver htmlPlanilla(): `db.carga.filter(x=>sesion.r==='admin'
+    // ||x.d===sesion.u)`). Para Admin se pide TODA la carga de la
+    // institución (sin "&docente=", ya que un Admin no tiene carga propia)
+    // — el filtro de institución ("sk") sigue siendo obligatorio siempre.
+    const _esAdminVista=sesion.r==='admin';
+    if(!_esAdminVista&&sesion.r!=='docente') return false;
+    const rCarga=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+(_esAdminVista?'':'&docente='+encodeURIComponent(sesion.u)));
+    if(!rCarga.ok) return false;
+    const jCarga=await rCarga.json();
+    const cargaDocente=jCarga.carga||[];
+    if(!cargaDocente.length) return false; // docente sin asignaturas todavía -> se deja que el llamador decida el fallback
+    let cargaObjetivo=planCId?cargaDocente.find(c=>String(c.id)===String(planCId)):null;
+    if(!cargaObjetivo) cargaObjetivo=cargaDocente[0];
+    if(!cargaObjetivo) return false;
+    const grado=cargaObjetivo.g;
+    const rGrado=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(grado)+'/notas-completas?sk='+encodeURIComponent(_sk));
+    if(!rGrado.ok) return false;
+    const jGrado=await rGrado.json();
+    _fusionarCargaEnDB(cargaDocente);
+    _fusionarCargaEnDB(jGrado.cargasDelGrado||[]);
+    _fusionarEstudiantesEnDB(grado,jGrado.estudiantes||[]);
+    db.config=jGrado.config||db.config||{};
+    db.periodosActivos=jGrado.periodosActivos||db.periodosActivos;
+    if(!planCId) planCId=String(cargaObjetivo.id);
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 57 — 3 adaptadores granulares NUEVOS más (mismo patrón exacto de
+// _cargarPlanillaGranular): Notas de Actividades, Observador, Asistencia.
+// Los 3 comparten: alcance angosto a sesion.r==='docente' (igual que
+// Planilla), fusión segura vía los helpers de arriba (nunca reemplazan
+// "db" completo ni pisan campos de otros adaptadores), y retorno limpio
+// "false" ante cualquier fallo de red — el llamador decide el fallback a
+// _pullDB().
+// ════════════════════════════════════════════════════════════════════════
+
+// Notas de Actividades: a diferencia de Planilla, la estructura de datos es
+// GLOBAL y plana (db.notasAct/db.notasActColumnas/db.notasActAsignadas —
+// ver el comentario de investigación en GET /api/notas-actividades,
+// src/index.ts) — así que este adaptador NUNCA reemplaza esas 3 claves por
+// completo (perdería las notas de otras materias/periodos ya cargadas en
+// esta misma sesión): fusiona SOLO las entradas correspondientes al
+// cId_per solicitado.
+async function _cargarNotasActividadesGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion) return false;
+    // RONDA 61 — Front 2: ver el comentario equivalente en
+    // _cargarPlanillaGranular(), mismo criterio exacto (htmlNotasActividades()
+    // también deja a un Admin elegir cualquier carga en su <select>).
+    const _esAdminVista=sesion.r==='admin';
+    if(!_esAdminVista&&sesion.r!=='docente') return false;
+    const rCarga=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+(_esAdminVista?'':'&docente='+encodeURIComponent(sesion.u)));
+    if(!rCarga.ok) return false;
+    const jCarga=await rCarga.json();
+    const cargaDocente=jCarga.carga||[];
+    if(!cargaDocente.length) return false;
+    let cargaObjetivo=notaActCId?cargaDocente.find(c=>String(c.id)===String(notaActCId)):null;
+    if(!cargaObjetivo) cargaObjetivo=cargaDocente[0];
+    if(!cargaObjetivo) return false;
+    if(!notaActCId) notaActCId=String(cargaObjetivo.id);
+    const cId=notaActCId,per=notaActPer||'1';
+    const rNac=await fetch(API_BASE+'/api/notas-actividades?sk='+encodeURIComponent(_sk)+'&cId='+encodeURIComponent(cId)+'&per='+encodeURIComponent(per));
+    if(!rNac.ok) return false;
+    const jNac=await rNac.json();
+    _fusionarCargaEnDB(cargaDocente);
+    _fusionarEstudiantesEnDB(cargaObjetivo.g,jNac.estudiantes||[]);
+    db.notasActColumnas=db.notasActColumnas||[];
+    const idsExistentes=new Set(db.notasActColumnas.map(c=>c.id));
+    (jNac.columnas||[]).forEach(c=>{ if(!idsExistentes.has(c.id)){ db.notasActColumnas.push(c); idsExistentes.add(c.id); } else { const idx=db.notasActColumnas.findIndex(x=>x.id===c.id); db.notasActColumnas[idx]=c; } });
+    db.notasActAsignadas=Object.assign({},db.notasActAsignadas,jNac.notasActAsignadas||{});
+    db.notasAct=Object.assign({},db.notasAct,jNac.notasAct||{});
+    return true;
+  }catch(e){ return false; }
+}
+
+// Observador: sin dependencias cruzadas de otras materias/grados (a
+// diferencia de Planilla) — e.observaciones ya vive anidado en cada
+// estudiante, igual que e.nts, así que el filtrado por tipo_anotacion
+// (Ronda 40, Tutor PTA) sigue aplicándose del lado del cliente exactamente
+// igual, sobre el mismo arreglo, sin tocar esa lógica.
+async function _cargarObservadorGranular(grado){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='docente'||!grado) return false;
+    const rObs=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(grado)+'/observador?sk='+encodeURIComponent(_sk));
+    if(!rObs.ok) return false;
+    const jObs=await rObs.json();
+    _fusionarEstudiantesEnDB(grado,jObs.estudiantes||[]);
+    return true;
+  }catch(e){ return false; }
+}
+
+// Asistencia: registros de UN grado+asignatura (db.asistencia es un
+// arreglo GLOBAL plano, igual patrón que notasAct) — se fusiona SOLO ese
+// subconjunto (grado+cargaId), preservando cualquier registro de otro
+// grado/asignatura ya cargado en memoria por una consulta anterior.
+function _fusionarAsistenciaEnDB(grado,cargaId,registrosNuevos){
+  if(!db||typeof db!=='object') db={};
+  const otros=(db.asistencia||[]).filter(a=>!(a.grado===grado&&(!cargaId||String(a.cargaId)===String(cargaId))));
+  db.asistencia=[...otros,...(registrosNuevos||[])];
+}
+async function _cargarAsistenciaGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='docente') return false;
+    const rCarga=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
+    if(!rCarga.ok) return false;
+    const jCarga=await rCarga.json();
+    const cargaDocente=jCarga.carga||[];
+    if(!cargaDocente.length) return false;
+    if(!asistGrado){ const gradosDisp=[...new Set(cargaDocente.map(c=>c.g))].sort(); asistGrado=gradosDisp[0]||''; }
+    if(!asistGrado) return false;
+    const cargasGrado=cargaDocente.filter(c=>c.g===asistGrado);
+    let cargaObjetivo=asistCId?cargasGrado.find(c=>String(c.id)===String(asistCId)):null;
+    if(!cargaObjetivo) cargaObjetivo=cargasGrado[0]||null;
+    if(cargaObjetivo) asistCId=String(cargaObjetivo.id);
+    const rAsist=await fetch(API_BASE+'/api/asistencia?sk='+encodeURIComponent(_sk)+'&grado='+encodeURIComponent(asistGrado)+(asistCId?'&cargaId='+encodeURIComponent(asistCId):''));
+    if(!rAsist.ok) return false;
+    const jAsist=await rAsist.json();
+    _fusionarCargaEnDB(cargaDocente);
+    _fusionarEstudiantesEnDB(asistGrado,jAsist.estudiantes||[]);
+    _fusionarAsistenciaEnDB(asistGrado,asistCId,jAsist.registros||[]);
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 59 — 2 adaptadores granulares MÁS (mismo patrón exacto de los 4
+// anteriores): Actividades/Tareas/Leccionario/Planeaciones, y Permisos
+// (Ausentismo/H03.03.F01). El usuario pidió explícitamente que estos 2
+// módulos NO queden cubiertos solo por la red de seguridad de la Ronda 58
+// (esa red sigue existiendo y sigue protegiendo el resto del catálogo no
+// migrado, pero para estos 2 se construyó una migración real y directa).
+//
+// Helper genérico de fusión "reemplazar-el-subconjunto-devuelto,-conservar-
+// el-resto" — la misma idea de _fusionarEstudiantesEnDB/_fusionarAsistenciaEnDB
+// pero parametrizado por predicado, para no repetir la lógica 4 veces.
+function _fusionarColeccionPorFiltro(clave,filtroDeReemplazo,itemsNuevos){
+  if(!db||typeof db!=='object') db={};
+  const otros=(db[clave]||[]).filter(x=>!filtroDeReemplazo(x));
+  db[clave]=[...otros,...(itemsNuevos||[])];
+}
+// Actividades: investigación real (htmlDocenteActividades(),
+// 06-documentos-y-resto.js) confirma que la LISTA de actividades que ve un
+// Docente se filtra por "en qué grados dicta clase"
+// (gradosDelDocente(sesion.u)), NO por "quién la creó" — un Docente ve
+// actividades de otras asignaturas/otros docentes para el MISMO grado
+// (misma clase de dependencia cruzada que Planilla en la Ronda 56). El
+// endpoint backend (GET /api/actividades-docente) replica exactamente ese
+// filtro, así que el adaptador puede reemplazar con seguridad todo lo que
+// el endpoint devuelve.
+async function _cargarActividadesDocenteGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='docente') return false;
+    const r=await fetch(API_BASE+'/api/actividades-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
+    if(!r.ok) return false;
+    const j=await r.json();
+    const gradosDoc=typeof gradosDelDocente==='function'?gradosDelDocente(sesion.u):[];
+    _fusionarColeccionPorFiltro('actividades',a=>gradosDoc.includes(a.grado),j.actividades||[]);
+    const idsAct=new Set((j.actividades||[]).map(a=>String(a.id)));
+    _fusionarColeccionPorFiltro('actEntregas',e=>idsAct.has(String(e.actId)),j.actEntregas||[]);
+    _fusionarColeccionPorFiltro('leccionario',l=>l.docente===sesion.u,j.leccionario||[]);
+    _fusionarColeccionPorFiltro('planeacionesIA',p=>p.docente===sesion.u||!p.docente,j.planeacionesIA||[]);
+    return true;
+  }catch(e){ return false; }
+}
+// Permisos/Ausentismo (H03.03.F01): investigación real (htmlAusentismo(),
+// 06-documentos-y-resto.js) confirma que "db.ausentismos" se filtra
+// estrictamente por "s.doc===sesion.u" — sin ninguna dependencia cruzada.
+async function _cargarPermisosDocenteGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='docente') return false;
+    const r=await fetch(API_BASE+'/api/permisos-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
+    if(!r.ok) return false;
+    const j=await r.json();
+    _fusionarColeccionPorFiltro('ausentismos',s=>s.doc===sesion.u,j.ausentismos||[]);
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 60 — PRIMER ADAPTADOR GRANULAR DEL ROL DIRECTIVO/RECTOR (piloto,
+// aprobado explícitamente por el usuario). Vista elegida con criterio de
+// ingeniería: "Listado de Estudiantes" (dentro de "👥 Estudiantes",
+// pag==='adm-est') — es la vista de consulta institucional de mayor tráfico
+// real (el Rector la abre para buscar/editar/trasladar estudiantes de
+// cualquier grado en cualquier momento), y su lectura YA estaba acotada por
+// grado en el propio código (htmlEstTabla(grado)) y YA usaba paginación
+// CLIENTE (_paginar(), 30 por página) sobre el arreglo completo que
+// _pullDB() había descargado — es decir, ya tenía la forma correcta para
+// una migración granular, solo hacía falta mover esa paginación al
+// servidor. Se descartó "Consolidado General por Grado" (el otro ejemplo
+// del usuario) como piloto porque sus funciones (verConsolidadoGeneral/
+// pdfConsolidadoGeneral) son generadores de PDF 100% cliente — la misma
+// categoría ya investigada y dejada fuera de alcance en la Ronda 58/59
+// (requeriría poder verificar un PDF real, imposible en este sandbox).
+//
+// Reutiliza GET /api/grados/:id/estudiantes (Ronda 55, sin consumidor real
+// hasta ahora) con el nuevo parámetro aditivo "full=1" (más campos), y
+// GET /api/grados (existe desde antes de la Ronda 55, también sin
+// consumidor real hasta ahora) para la lista de nombres de grado que
+// necesitan los <select> de esta misma pantalla.
+function _fusionarGradosEnDB(gradosNuevos){
+  if(!db||typeof db!=='object') db={};
+  if(!Array.isArray(db.grados)) db.grados=[];
+  const mapa=new Map(db.grados.map(g=>[g.n,g]));
+  (gradosNuevos||[]).forEach(g=>{
+    const previo=mapa.get(g.n);
+    // Solo se fusiona el nombre — nunca se pisan campos como "d" (director
+    // de grupo) o "link" que otra pantalla (ej. "🏫 Institución") ya haya
+    // cargado antes en esta misma sesión y que este endpoint liviano no
+    // trae, para no dejarlos "en blanco" si el Directivo visita ambas
+    // pantallas sin un _pullDB() completo de por medio.
+    mapa.set(g.n, previo?Object.assign({},previo,{n:g.n}):{n:g.n});
+  });
+  db.grados=Array.from(mapa.values());
+}
+window._admEstPagInfo=null;
+// "grado" es opcional: si se omite (ej. F5 en frío directo, cuando aún no
+// se sabe qué grado tenía seleccionado el Directivo — esa selección vive
+// en un <select> del DOM, no en una variable global restaurable), se
+// resuelve al primer grado de la institución (mismo criterio por defecto
+// que ya usaba "fgrado=db.grados[0]?.n" en el código original de
+// htmlEstudiantes()) — sin necesitar el blob completo para saberlo, ya que
+// GET /api/grados es liviano y se consulta primero en ambos casos.
+async function _cargarEstudiantesAdminGranular(grado,pagina){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='admin') return false;
+    const rGrados=await fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk));
+    if(!rGrados.ok) return false;
+    const jGrados=await rGrados.json();
+    _fusionarGradosEnDB(jGrados.grados||[]);
+    const gradoObjetivo=grado||(jGrados.grados||[])[0]?.n;
+    if(!gradoObjetivo) return false;
+    const rEst=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(gradoObjetivo)+'/estudiantes?sk='+encodeURIComponent(_sk)+'&full=1&page='+encodeURIComponent(pagina||1)+'&limit=30');
+    if(!rEst.ok) return false;
+    const jEst=await rEst.json();
+    _fusionarEstudiantesEnDB(gradoObjetivo,jEst.estudiantes||[]);
+    window._admEstPagInfo={grado:gradoObjetivo,pagina:jEst.page||1,limit:jEst.limit||30,total:jEst.total||0};
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 61 — Front 1: Carga Académica y Docentes (adm-carga). INVESTIGACIÓN
+// REAL (pedida por el coordinador): a diferencia de "Listado de
+// Estudiantes" (adm-est, Ronda 60), htmlCarga() NO estaba acotada por
+// grado/sede en absoluto — muestra de una sola vez TODA la carga de la
+// institución (db.carga.map(...), sin filtro) y TODOS los docentes
+// (db.users.filter(u=>u.r==='docente'), sin paginar) porque el Rector
+// necesita ver la matriz completa docente↔grado↔materia de un vistazo, no
+// grado por grado. Por eso la migración NO sigue el patrón "un grado a la
+// vez" de adm-est: se trae la institución completa en una sola llamada
+// (igual de liviana que lo que ya hacía _pullDB() para estos 2 campos
+// puntuales, pero sin traer el resto del blob — notas, asistencia,
+// observador, actas, etc.).
+//
+// ESCRITURA (guardarCarga/editarCarga/eliminarCarga/guardarDocente/
+// editarDocente/eliminarDocente, 03-app-core.js): se investigaron los 3
+// primeros con lupa buscando validación de duplicados o conflictos de
+// horario contra el blob completo — NO EXISTE tal validación hoy (ver el
+// código de guardarCarga(): solo hace `db.carga.push(...)`, sin ningún
+// `.find()`/`.some()` previo que compare contra cargas existentes). Por lo
+// tanto no hay ninguna dependencia oculta de "necesito el blob completo
+// para detectar colisiones" que migrar seguiría — se mantiene, igual que en
+// toda ronda anterior, el criterio de NO TOCAR la escritura salvo
+// necesidad estricta, y aquí no la hay: los 6 escritores siguen operando
+// exactamente igual sobre "db" en memoria, que esta migración deja
+// poblado con EXACTAMENTE los mismos 2 campos (db.carga completo,
+// db.users con los docentes + coordinadores de solo lectura) que antes
+// poblaba un _pullDB() completo para esta pantalla en particular.
+//
+// Un hallazgo real que sí exigió un ajuste (ver el comentario del
+// endpoint GET /api/carga-docente en src/index.ts): _guardarEdicionDocente
+// preserva la contraseña de un docente leyendo `d.users[idx].p` cuando el
+// admin deja el campo de contraseña en blanco — por eso el "personal" que
+// este adaptador trae SÍ incluye el campo `p` (hash), igual que ya lo
+// traía un _pullDB() completo para esta misma pantalla.
+function _fusionarPersonalDocenteEnDB(personalNuevo){
+  if(!db||typeof db!=='object') db={};
+  if(!Array.isArray(db.users)) db.users=[];
+  const otros=db.users.filter(u=>!(u.r==='docente'||(u.r==='admin'&&u.soloLectura)));
+  db.users=[...otros,...(personalNuevo||[])];
+}
+async function _cargarCargaAcademicaAdminGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='admin') return false;
+    const r=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&incluirPersonal=1');
+    if(!r.ok) return false;
+    const j=await r.json();
+    // Reemplazo completo (no fusión parcial): este endpoint, sin filtro de
+    // "docente", ya devuelve TODA la carga de la institución de una sola
+    // vez — es exactamente el mismo universo que un _pullDB() completo
+    // habría puesto en db.carga para esta pantalla, así que no hay riesgo
+    // de perder registros de "otro grado" que sí existiría si se tratara
+    // de un fragmento parcial (a diferencia de _fusionarCargaEnDB, pensado
+    // para fragmentos de UN grado/docente a la vez, Ronda 56/57).
+    db.carga=j.carga||[];
+    _fusionarPersonalDocenteEnDB(j.personal||[]);
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 61 — Front 2: vista directiva sobre Planilla/Notas de Actividades
+// de un docente específico. AMPLIACIÓN de los adaptadores de las Rondas
+// 56/57 (_cargarPlanillaGranular/_cargarNotasActividadesGranular), no
+// reconstrucción: htmlPlanilla()/htmlNotasActividades() YA dejaban que un
+// Admin eligiera, en el mismo <select> que usa el Docente, CUALQUIER carga
+// de CUALQUIER docente de la institución (`db.carga.filter(x=>sesion.r
+// ==='admin'||x.d===sesion.u)`, confirmado leyendo ambas funciones) — el
+// Admin ya tenía ese nivel de acceso de solo lectura hoy mismo vía el blob
+// completo; esta ronda solo cambia el CAMINO por el que llegan esos datos,
+// nunca el permiso. Y GET /api/carga-docente NUNCA validó del lado del
+// servidor que "docente" coincidiera con ningún token — ya aceptaba
+// cualquier valor para el mismo "sk" desde la Ronda 56 — así que no hizo
+// falta ningún cambio de backend adicional para este frente: alcanza con
+// relajar el guard de rol en el frontend y, para Admin, pedir TODA la
+// carga (sin filtrar por docente) en vez de la carga de "sesion.u" (que
+// para un Admin no existe).
+// ════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 62 — 3 módulos más del rol Directivo/Admin: Credenciales,
+// Información Institucional, y Horarios.
+// ════════════════════════════════════════════════════════════════════════
+
+// Front "Información Institucional" (adm-base): fragmento escalar liviano
+// (ver GET /api/institucion en src/index.ts) + reutiliza GET /api/grados
+// (Ronda 60) y GET /api/carga-docente?incluirPersonal=1 (Ronda 61) para la
+// tabla de grados y el <select> de directores de grupo — nada de esto se
+// reconstruye, solo se reutiliza tal cual.
+function _fusionarInfoInstitucionEnDB(info){
+  if(!db||typeof db!=='object') db={};
+  Object.assign(db,info||{});
+}
+async function _cargarInstitucionAdminGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='admin') return false;
+    const [rInfo,rGrados,rCarga]=await Promise.all([
+      fetch(API_BASE+'/api/institucion?sk='+encodeURIComponent(_sk)),
+      fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk)),
+      fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&incluirPersonal=1'),
+    ]);
+    if(!rInfo.ok||!rGrados.ok||!rCarga.ok) return false;
+    const [jInfo,jGrados,jCarga]=await Promise.all([rInfo.json(),rGrados.json(),rCarga.json()]);
+    _fusionarInfoInstitucionEnDB(jInfo);
+    _fusionarGradosEnDB(jGrados.grados||[]);
+    _fusionarPersonalDocenteEnDB(jCarga.personal||[]);
+    return true;
+  }catch(e){ return false; }
+}
+
+// Front "Credenciales del Sistema" (ver-credenciales): administradores y
+// docentes (listas pequeñas, sin paginar — mismo criterio que "personal"
+// en Carga Académica, Ronda 61) + estudiantes/acudientes, paginados POR
+// GRADO (mismo patrón probado de adm-est, Ronda 60) en vez del listado
+// plano de TODA la institución que mostraba la pantalla original —
+// decisión de ingeniería explícita: el plan de esta ronda pedía
+// "consultas... paginadas o filtradas por rol/grado", y no existía ningún
+// recorte seguro para paginar un listado plano ordenado alfabéticamente
+// sobre TODOS los grados a la vez sin poder verificar aquí ese orden
+// exacto contra un navegador real. htmlVerCredenciales() se adaptó para
+// incluir un selector de grado (ver más abajo) — el resto de la pantalla
+// (Administradores, Docentes) queda visualmente igual.
+//
+// GET /api/usuarios-credenciales NO incluye el hash de contraseña de
+// administradores/docentes (a diferencia del hallazgo de la Ronda 61 con
+// Carga Académica): se investigó _resetPassDocente() y SIEMPRE genera un
+// hash nuevo, nunca depende del anterior — por eso no hace falta
+// transmitirlo aquí.
+function _fusionarUsuariosPorRolEnDB(esDelRol,usuariosNuevos){
+  if(!db||typeof db!=='object') db={};
+  if(!Array.isArray(db.users)) db.users=[];
+  const otros=db.users.filter(u=>!esDelRol(u));
+  db.users=[...otros,...(usuariosNuevos||[])];
+}
+window._credEstPagInfo=null;
+async function _cargarCredencialesAdminGranular(grado,pagina){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='admin') return false;
+    const rUsu=await fetch(API_BASE+'/api/usuarios-credenciales?sk='+encodeURIComponent(_sk));
+    if(!rUsu.ok) return false;
+    const jUsu=await rUsu.json();
+    const rGrados=await fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk));
+    if(!rGrados.ok) return false;
+    const jGrados=await rGrados.json();
+    _fusionarGradosEnDB(jGrados.grados||[]);
+    const gradoObjetivo=grado||(jGrados.grados||[])[0]?.n;
+    if(!gradoObjetivo) return false;
+    const rEst=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(gradoObjetivo)+'/estudiantes?sk='+encodeURIComponent(_sk)+'&credenciales=1&page='+encodeURIComponent(pagina||1)+'&limit=30');
+    if(!rEst.ok) return false;
+    const jEst=await rEst.json();
+    // El esquema relacional (Ronda 45) todavía no tiene columnas de
+    // credenciales de estudiante/acudiente — si el fragmento viene de ahí
+    // ("fuente: relacional"), no hay forma honesta de mostrar credenciales
+    // completas por este camino: se reporta "false" para que el llamador
+    // caiga al _pullDB() de siempre, en vez de mostrar campos vacíos como
+    // si el estudiante no tuviera credenciales asignadas.
+    if(jEst.fuente==='relacional') return false;
+    _fusionarUsuariosPorRolEnDB(u=>u.r==='admin'||u.r==='docente',[...(jUsu.administradores||[]),...(jUsu.docentes||[])]);
+    _fusionarEstudiantesEnDB(gradoObjetivo,jEst.estudiantes||[]);
+    window._credEstPagInfo={grado:gradoObjetivo,pagina:jEst.page||1,limit:jEst.limit||30,total:jEst.total||0};
+    return true;
+  }catch(e){ return false; }
+}
+
+// Front "Horarios" (horarios, sección admin): `blob.horarios` es GLOBAL —
+// la vista "Por Docente" recorre TODOS los grados buscando las celdas de
+// un docente concreto (dependencia cruzada real, confirmada en
+// renderHorario()), así que se trae la institución completa en una sola
+// llamada (mismo criterio que Carga Académica, Ronda 61), reutilizando
+// GET /api/grados y GET /api/carga-docente sin filtrar por docente (ya
+// existentes) para los <select> de grado/docente y las materias de cada
+// celda.
+function _fusionarHorariosEnDB(horariosNuevos,horConfigNuevo){
+  if(!db||typeof db!=='object') db={};
+  db.horarios=horariosNuevos||{};
+  if(horConfigNuevo) db.horConfig=horConfigNuevo;
+}
+async function _cargarHorariosAdminGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='admin') return false;
+    const [rHor,rGrados,rCarga]=await Promise.all([
+      fetch(API_BASE+'/api/horarios?sk='+encodeURIComponent(_sk)),
+      fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk)),
+      fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)),
+    ]);
+    if(!rHor.ok||!rGrados.ok||!rCarga.ok) return false;
+    const [jHor,jGrados,jCarga]=await Promise.all([rHor.json(),rGrados.json(),rCarga.json()]);
+    _fusionarHorariosEnDB(jHor.horarios||{},jHor.horConfig);
+    _fusionarGradosEnDB(jGrados.grados||[]);
+    db.carga=jCarga.carga||db.carga||[];
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 63 — barrido final de sellado del rol Directivo/Admin. "Quick win"
+// #4 (config ligera y de bajo riesgo, autorizado por el coordinador si se
+// encontraba durante el barrido): Cronograma de Notas (`cronograma-notas`).
+// Investigación real de escritura: guardarCronograma()/
+// togglePeriodoCronograma()/aplicarCronogramaAuto() solo asignan
+// d.cronograma/d.periodosActivos directamente — sin ninguna validación
+// contra otras colecciones del blob — igual de seguro que Información
+// Institucional (Ronda 62).
+function _fusionarCronogramaEnDB(cronogramaNuevo,periodosActivosNuevo,numPeriodos){
+  if(!db||typeof db!=='object') db={};
+  db.cronograma=cronogramaNuevo||{};
+  if(periodosActivosNuevo) db.periodosActivos=periodosActivosNuevo;
+  // htmlCronogramaNotas() (y sus 3 escritores) leen "db.config.numPeriodos"
+  // — se fusiona SOLO ese campo dentro de "db.config" (preservando
+  // cualquier otro campo de config que ya estuviera en memoria, ej. por
+  // Planilla, Ronda 56/61), en vez de reemplazar "db.config" completo.
+  db.config=Object.assign({},db.config||{},{numPeriodos});
+}
+async function _cargarCronogramaAdminGranular(){
+  try{
+    const _sk=window._currentPlatSK||SK||GESTOR_SK;
+    if(!_sk||!sesion||sesion.r!=='admin') return false;
+    const r=await fetch(API_BASE+'/api/cronograma?sk='+encodeURIComponent(_sk));
+    if(!r.ok) return false;
+    const j=await r.json();
+    _fusionarCronogramaEnDB(j.cronograma||{},j.periodosActivos,j.numPeriodos||4);
+    return true;
+  }catch(e){ return false; }
+}
+// ════════════════════════════════════════════════════════════════════════
+// Envoltorio usado por navTo()/_mostrarSkeletonYNavegar(): SOLO para
+// Docente entrando a Planilla, refresca por el camino granular antes de
+// pintar; para cualquier otra página o rol, es exactamente lo mismo que
+// llamar a renderApp() directamente (comportamiento sin cambios).
+// RONDA 58 — RED DE SEGURIDAD contra datos incompletos en reportes/consolidados.
+// Investigando el punto 3 de esta ronda (PDFs/consolidados) se encontró que
+// TODA la generación de PDF (jsPDF) corre 100% en el navegador, leyendo
+// directamente de "db" ya cargado en memoria — no hace sus propias consultas
+// al servidor. Eso significa que, si un Docente entró a la app por un camino
+// 100% granular (ej. F5 en frío directo a Planilla o a Notas de Actividades,
+// Ronda 56/58) y JAMÁS se ejecutó un _pullDB() completo en esa sesión, "db"
+// solo contiene los estudiantes/carga del grado que esa vista angosta pidió
+// — y si ese Docente navega después a una vista NO cubierta por un adaptador
+// granular (ej. "📊 Consolidados", que puede necesitar TODOS los grados que
+// dicta el Docente, no solo uno), el reporte/PDF resultante podría verse
+// incompleto sin que nada lo avise.
+// Este flag rastrea si "db" quedó parcial por un camino granular todavía sin
+// un _pullDB() completo de respaldo: se enciende cuando un adaptador
+// granular tiene éxito, y se apaga en cuanto _pullDB() corre con éxito (ver
+// _pullDB() arriba). Mientras esté encendido, cualquier navegación a una
+// página que esta ronda NO adaptó a su propio endpoint granular fuerza un
+// _pullDB() completo ANTES de renderizar, para que ningún reporte/PDF/
+// consolidado del Docente se genere jamás con datos incompletos.
+window._dbGranularSolamente=window._dbGranularSolamente||false;
+async function _navegarConCargaGranularSiAplica(){
+  // RONDA 57 — se agregan aquí mismo las 2 vistas nuevas migradas
+  // (Notas de Actividades, Asistencia) que SÍ tienen un punto de entrada
+  // por menú/navTo() (Observador no lo tiene: su carga es 100% bajo demanda
+  // vía cargarListaObservador(), ver más abajo). Las 3 comparten ahora el
+  // mismo patrón de FALLBACK EXPLÍCITO a _pullDB() si el camino granular
+  // falla por cualquier motivo (red caída, etc.) — pedido explícitamente
+  // por el usuario en esta ronda.
+  if(sesion&&sesion.r==='docente'){
+    if(pag==='planilla'){
+      let ok=false; try{ ok=await _cargarPlanillaGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='notas-actividades'){
+      let ok=false; try{ ok=await _cargarNotasActividadesGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='asistencia'){
+      let ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='actividades-docente'){
+      // RONDA 59 — migración real (no red de seguridad) del módulo de
+      // Actividades/Tareas/Leccionario/Planeaciones.
+      let ok=false; try{ ok=await _cargarActividadesDocenteGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='ausentismo'){
+      // RONDA 59 — migración real (no red de seguridad) del módulo de
+      // Permisos (H03.03.F01).
+      let ok=false; try{ ok=await _cargarPermisosDocenteGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(window._dbGranularSolamente){
+      // RONDA 58 — red de seguridad: cualquier otra página (Consolidados,
+      // Documentos/Actas, Estado Notas, etc.) mientras "db" siga marcado
+      // como parcial. Best-effort: si este pull falla por red, se deja
+      // como estaba (peor caso: el reporte queda con datos parciales,
+      // exactamente igual que ANTES de esta red de seguridad — nunca peor).
+      try{ const okFull=await _pullDB(); if(okFull) window._dbGranularSolamente=false; }catch(e){}
+    }
+  } else if(sesion&&sesion.r==='admin'){
+    // RONDA 60 — primer caso del rol Directivo/Rector. Se replica el mismo
+    // patrón exacto (adaptador granular con fallback real, y la misma red
+    // de seguridad de la Ronda 58 para el resto del catálogo Directivo aún
+    // no migrado, para no dejar ese catálogo con un riesgo de datos
+    // parciales sin ninguna protección — igual honestidad que se aplicó al
+    // extender la red de seguridad para el rol Docente).
+    if(pag==='adm-est'){
+      const gInicial=document.getElementById('estFiltroGrado')?.value||null;
+      let ok=false; try{ ok=await _cargarEstudiantesAdminGranular(gInicial,_estTablaPagina); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='adm-carga'){
+      // RONDA 61 — Front 1.
+      let ok=false; try{ ok=await _cargarCargaAcademicaAdminGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='planilla'){
+      // RONDA 61 — Front 2: Admin consultando la Planilla de un docente
+      // específico (elegido en el mismo <select> que ya usaba, ver
+      // htmlPlanilla()). Mismo fallback real a _pullDB() que el resto.
+      let ok=false; try{ ok=await _cargarPlanillaGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='notas-actividades'){
+      // RONDA 61 — Front 2, análogo para Notas de Actividades.
+      let ok=false; try{ ok=await _cargarNotasActividadesGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='ver-credenciales'){
+      // RONDA 62 — Front 1 (Credenciales), un grado a la vez.
+      const gInicialCred=document.getElementById('credFiltroGrado')?.value||_credEstGrado||null;
+      let ok=false; try{ ok=await _cargarCredencialesAdminGranular(gInicialCred,_credEstPagina); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='adm-base'){
+      // RONDA 62 — Front 2 (Información Institucional).
+      let ok=false; try{ ok=await _cargarInstitucionAdminGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='horarios'){
+      // RONDA 62 — Front 3 (Horarios), institución completa (ver el
+      // comentario de GET /api/horarios en src/index.ts sobre la
+      // dependencia cruzada real de la vista "Por Docente").
+      let ok=false; try{ ok=await _cargarHorariosAdminGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(pag==='cronograma-notas'){
+      // RONDA 63 — "quick win" #4 (barrido final).
+      let ok=false; try{ ok=await _cargarCronogramaAdminGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    } else if(window._dbGranularSolamente){
+      try{ const okFull=await _pullDB(); if(okFull) window._dbGranularSolamente=false; }catch(e){}
+    }
+  }
+  renderApp();
+}
+// Reemplaza el patrón "pag='planilla';planCId=X;planPer=Y;renderApp()" usado
+// por botones de otras vistas (ej. "Ir a Planilla P{periodo}" en Consolidados)
+// para que también entren por el camino granular en vez de asumir que "db"
+// ya tiene todo cargado.
+async function irAPlanillaGranular(cId,per){
+  planCId=String(cId);
+  if(per!==undefined&&per!==null) planPer=String(per);
+  planPagina=1;
+  pag='planilla';
+  if(sesion&&sesion.r==='docente'){
+    try{ await _cargarPlanillaGranular(); }catch(e){}
+  }
+  renderApp();
 }
 function updDB(fn){
   if(sesion&&sesion.soloLectura){
@@ -2506,6 +3169,17 @@ async function _finalizarSesionInstitucional(plat,sesionData,platDB,pagTarget){
     return;
   }
   db=platDB;
+  // RONDA 66 — barrido de cierre: esta asignación siempre trae el blob
+  // COMPLETO de la institución (igual que _pullDB()), así que "db" deja
+  // de ser parcial aquí también, sin importar qué hubiera dejado una
+  // sesión anterior en esta misma pestaña. Antes solo _pullDB() restauraba
+  // este invariante; se agrega aquí para que la bandera nunca quede
+  // "true" de forma obsoleta después de un login fresco por este camino
+  // (Smart Auth). Sin este ajuste no había ningún riesgo real para
+  // Estudiante/Acudiente/Elecciones (ver CHECKLIST_DESPLIEGUE.md, Ronda
+  // 66, para la verificación completa) — es una corrección de higiene del
+  // invariante, no un fix de un bug de datos parciales expuestos.
+  window._dbGranularSolamente=false;
   window._currentPlatSK=plat.sk;
   window._currentPlatId=plat.id;
   window._sbSearchQuery='';
@@ -2754,8 +3428,15 @@ function renderGestorAdmin(){
   // entra a esta pantalla con la intención de darle "Entrar" a una
   // institución de inmediato, tiene margen de sobra para hacerlo antes
   // de que este refresco (más pesado) empiece a competir por la red.
-  if(_gestorPag==='plataformas') setTimeout(function(){ if(!_entrandoAPlataforma) _refrescarStatsPlataformasReal(); },1200);
-  if(_gestorPag==='salud') setTimeout(_refrescarSaludSistema,150);
+  // RONDA 64: se llama a la versión granular (un solo fetch liviano
+  // server-side) en vez de la N-blobs-completos de siempre; esa versión
+  // vieja se conserva intacta como su propio fallback interno.
+  if(_gestorPag==='plataformas') setTimeout(function(){ if(!_entrandoAPlataforma) _refrescarStatsPlataformasGranular(); },1200);
+  // RONDA 65: se llama a la versión granular (un solo fetch liviano
+  // server-side, extendiendo el endpoint de la Ronda 64 con
+  // incluirPapelera=1) en vez de la N-blobs-completos de siempre; esa
+  // versión vieja se conserva intacta como su propio fallback interno.
+  if(_gestorPag==='salud') setTimeout(_refrescarSaludSistemaGranular,150);
   if(_gestorPag==='agenteia'){ setTimeout(_refrescarAgenteIA,150); if(_controlProcesosCargado===null) setTimeout(_refrescarControlProcesosIA,150); }
   if(_gestorPag==='infraestructura') setTimeout(_refrescarInfraestructura,150);
   if(_gestorPag==='etc'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE){ setTimeout(_refrescarEtcEntidades,120); if(_smsGlobalHabilitado===null) setTimeout(_refrescarEstadoSms,120); }
@@ -3858,6 +4539,16 @@ function copiarEnlaceDirectoInstitucion(platId){
 //     que es exactamente lo que causaba la demora reportada).
 //  2) Es SECUENCIAL (una institución a la vez), no en paralelo — reduce
 //     la carga máxima simultánea sobre el servidor.
+// RONDA 64 -- arranque del ROL SUPER ADMIN, vista piloto "Gestion / Listado
+// de Instituciones" (_gestorPag==='plataformas'). Esta funcion original
+// descargaba, UNA POR UNA y en serie, el blob COMPLETO de CADA institucion
+// (mismo endpoint que _pullDB() usa para una sola institucion) solo para
+// leer 3 numeros -- el peor caso de "blob masivo" encontrado hasta ahora,
+// porque se multiplica por el total de instituciones de toda la
+// plataforma. Se conserva tal cual, como FALLBACK real (no decorativo): si
+// el nuevo endpoint granular (mas abajo) falla por cualquier motivo, esta
+// funcion sigue produciendo el mismo resultado correcto que producia
+// antes de esta ronda.
 async function _refrescarStatsPlataformasReal(){
   const plats=(gestorDB.platforms||[]).slice();
   for(const plat of plats){
@@ -3873,21 +4564,62 @@ async function _refrescarStatsPlataformasReal(){
       const nEsts=platDB.ests?platDB.ests.length:0;
       const nDocs=platDB.users?platDB.users.filter(u=>u.r==='docente').length:0;
       const adminU=platDB.users&&platDB.users.find(x=>x.r==='admin');
-      const spEsts=document.getElementById('platStatEsts_'+plat.id);
-      if(spEsts) spEsts.innerHTML='👥 <b>'+nEsts+'</b> estudiantes';
-      const spDocs=document.getElementById('platStatDocs_'+plat.id);
-      if(spDocs) spDocs.innerHTML='👨\u200d🏫 <b>'+nDocs+'</b> docentes';
-      const spAdmin=document.getElementById('platStatAdmin_'+plat.id);
-      if(spAdmin){
-        if(adminU){ spAdmin.innerHTML='🔑 Admin: <b>'+adminU.u+'</b>'; spAdmin.style.display=''; }
-        else { spAdmin.style.display='none'; }
-      }
-      const cargando=document.getElementById('platStatsCargando_'+plat.id);
-      if(cargando) cargando.remove();
+      _aplicarStatsPlataformaEnDOM(plat.id,nEsts,nDocs,adminU?adminU.u:null);
     }catch(e){
       const cargando=document.getElementById('platStatsCargando_'+plat.id);
       if(cargando) cargando.remove();
     }
+  }
+}
+// Helper compartido de pintado en pantalla -- usado tanto por el fallback
+// de arriba (N blobs completos) como por la ruta granular nueva (un solo
+// fetch liviano) de abajo, garantizando que ambos caminos actualizan el
+// DOM exactamente igual (equivalencia estructural verificada por diseno:
+// es literalmente el mismo codigo de pintado, extraido a un solo lugar).
+function _aplicarStatsPlataformaEnDOM(platId,nEsts,nDocs,adminUsername){
+  const spEsts=document.getElementById('platStatEsts_'+platId);
+  if(spEsts) spEsts.innerHTML='👥 <b>'+nEsts+'</b> estudiantes';
+  const spDocs=document.getElementById('platStatDocs_'+platId);
+  if(spDocs) spDocs.innerHTML='👨‍🏫 <b>'+nDocs+'</b> docentes';
+  const spAdmin=document.getElementById('platStatAdmin_'+platId);
+  if(spAdmin){
+    if(adminUsername){ spAdmin.innerHTML='🔑 Admin: <b>'+adminUsername+'</b>'; spAdmin.style.display=''; }
+    else { spAdmin.style.display='none'; }
+  }
+  const cargando=document.getElementById('platStatsCargando_'+platId);
+  if(cargando) cargando.remove();
+}
+// RONDA 64 -- vista piloto granular real: UNA sola peticion HTTP liviana
+// (GET /api/gestor/plataformas-stats?sks=sk1,sk2,...) que calcula los 3
+// numeros por institucion del lado del SERVIDOR, en vez de que el
+// navegador descargue y migre el blob completo de cada institucion. La
+// lista de `sk` sale de gestorDB.platforms, que el Super Admin YA tiene en
+// memoria (sin costo de red adicional). Si la peticion falla por
+// cualquier razon (red caida, endpoint no disponible, respuesta
+// inesperada), se hace fallback REAL a _refrescarStatsPlataformasReal()
+// (el camino N-blobs-completos de siempre) -- nunca se deja al usuario sin
+// stats por un fallo transitorio de esta optimizacion.
+async function _refrescarStatsPlataformasGranular(){
+  const plats=(gestorDB.platforms||[]).slice();
+  if(!plats.length) return;
+  try{
+    const sks=plats.map(p=>p.sk).filter(Boolean);
+    if(!sks.length) throw new Error('sin sks');
+    const r=await fetch(API_BASE+'/api/gestor/plataformas-stats?sks='+encodeURIComponent(sks.join(',')));
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    if(!j||!Array.isArray(j.stats)) throw new Error('respuesta inesperada');
+    if(_entrandoAPlataforma) return;
+    const porSk={};
+    j.stats.forEach(function(s){ if(s&&s.sk) porSk[s.sk]=s; });
+    for(const plat of plats){
+      const s=porSk[plat.sk];
+      if(!s){ const cargando=document.getElementById('platStatsCargando_'+plat.id); if(cargando) cargando.remove(); continue; }
+      _aplicarStatsPlataformaEnDOM(plat.id,s.nEsts||0,s.nDocs||0,s.adminU||null);
+    }
+  }catch(e){
+    // Fallback real y completo -- nunca decorativo.
+    await _refrescarStatsPlataformasReal();
   }
 }
 // ============================================================
@@ -4049,26 +4781,19 @@ function htmlGestorSalud(){
   <p style="font-size:0.83rem;color:#666;margin-bottom:16px">Detecta instituciones con guardados fallando repetidamente o con la papelera creciendo sin control, para poder revisarlas antes de que un rector reporte el problema.</p>
   <div id="saludSistemaResultado"><div class="card"><p class="empty" style="padding:30px">⏳ Analizando todas las instituciones...</p></div></div>`;
 }
-async function _refrescarSaludSistema(){
+// RONDA 65 -- se conserva INTACTA como fallback real (no decorativo) del
+// nuevo camino granular de abajo. Sigue siendo el mismo defecto
+// estructural que tenia "Plataformas" antes de la Ronda 64 (Promise.all
+// descargando el blob COMPLETO de cada institucion), documentado y
+// mantenido a proposito para que, si la ruta granular fallara por
+// cualquier motivo, esta vista siga funcionando exactamente igual que
+// antes de esta ronda.
+async function _refrescarSaludSistemaReal(){
   const cont=document.getElementById('saludSistemaResultado');
   if(!cont) return;
   const plats=(gestorDB.platforms||[]).slice();
 
-  let eventosSalud=[];
-  try{
-    const r=await fetch(API_BASE+'/api/inetis/notifications?kind=salud-guardado&limit=200');
-    if(r.ok){
-      const j=await r.json();
-      const limiteFecha=Date.now()-7*24*60*60*1000;
-      eventosSalud=(j.notifications||[]).filter(function(n){ return new Date(n.createdAt).getTime()>=limiteFecha; });
-    }
-  }catch(e){}
-  const fallosPorSk={};
-  eventosSalud.forEach(function(n){
-    if(!n.sk) return;
-    if(!fallosPorSk[n.sk]) fallosPorSk[n.sk]=[];
-    fallosPorSk[n.sk].push(n);
-  });
+  const fallosPorSk=await _obtenerFallosSaludPorSk();
 
   const papeleraPorSk={};
   await Promise.all(plats.map(async function(plat){
@@ -4087,6 +4812,38 @@ async function _refrescarSaludSistema(){
     }catch(e){}
   }));
 
+  _pintarSaludSistema(cont,plats,fallosPorSk,papeleraPorSk);
+}
+// Helper compartido: obtiene los eventos de "guardado fallido" de los
+// últimos 7 días, agrupados por sk. Esta parte NUNCA fue un blob masivo
+// (siempre fue 1 sola petición a /api/inetis/notifications) -- se extrae
+// a su propio helper solo para que el camino granular y el fallback la
+// reutilicen sin duplicar código, no porque tuviera un problema de
+// rendimiento que resolver.
+async function _obtenerFallosSaludPorSk(){
+  let eventosSalud=[];
+  try{
+    const r=await fetch(API_BASE+'/api/inetis/notifications?kind=salud-guardado&limit=200');
+    if(r.ok){
+      const j=await r.json();
+      const limiteFecha=Date.now()-7*24*60*60*1000;
+      eventosSalud=(j.notifications||[]).filter(function(n){ return new Date(n.createdAt).getTime()>=limiteFecha; });
+    }
+  }catch(e){}
+  const fallosPorSk={};
+  eventosSalud.forEach(function(n){
+    if(!n.sk) return;
+    if(!fallosPorSk[n.sk]) fallosPorSk[n.sk]=[];
+    fallosPorSk[n.sk].push(n);
+  });
+  return fallosPorSk;
+}
+// Helper compartido de pintado en pantalla -- usado tanto por el fallback
+// de arriba (N blobs completos) como por la ruta granular nueva (un solo
+// fetch liviano) de abajo, garantizando equivalencia estructural real:
+// es literalmente el mismo codigo de calculo de "problemas" y de pintado,
+// extraido a un solo lugar, sin ninguna diferencia entre los 2 caminos.
+function _pintarSaludSistema(cont,plats,fallosPorSk,papeleraPorSk){
   const problemas=[];
   plats.forEach(function(plat){
     const fallos=fallosPorSk[plat.sk]||[];
@@ -4116,6 +4873,37 @@ async function _refrescarSaludSistema(){
     </tr>`;
   }).join('')}</tbody></table></div></div>`;
 }
+// RONDA 65 -- vista piloto granular real para "Salud del Sistema": UNA
+// sola peticion HTTP liviana al mismo endpoint creado en la Ronda 64
+// (GET /api/gestor/plataformas-stats), ahora con el parametro ADITIVO
+// `incluirPapelera=1` (mismo patron ya usado en `credenciales=1`,
+// Ronda 62, o `incluirPersonal=1`, Ronda 61) para que el servidor calcule
+// tambien el tamano de la papelera por institucion, del MISMO blob que ya
+// estaba leyendo -- sin crear un endpoint paralelo duplicado. Si la
+// peticion falla por cualquier razon, cae a un fallback REAL:
+// _refrescarSaludSistemaReal() completa, no un simple mensaje de error.
+async function _refrescarSaludSistemaGranular(){
+  const cont=document.getElementById('saludSistemaResultado');
+  if(!cont) return;
+  const plats=(gestorDB.platforms||[]).slice();
+  if(!plats.length){ _pintarSaludSistema(cont,plats,{},{}); return; }
+  try{
+    const fallosPorSk=await _obtenerFallosSaludPorSk();
+    const sks=plats.map(p=>p.sk).filter(Boolean);
+    if(!sks.length) throw new Error('sin sks');
+    const r=await fetch(API_BASE+'/api/gestor/plataformas-stats?incluirPapelera=1&sks='+encodeURIComponent(sks.join(',')));
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    if(!j||!Array.isArray(j.stats)) throw new Error('respuesta inesperada');
+    const papeleraPorSk={};
+    j.stats.forEach(function(s){ if(s&&s.sk) papeleraPorSk[s.sk]=s.papelera||0; });
+    _pintarSaludSistema(cont,plats,fallosPorSk,papeleraPorSk);
+  }catch(e){
+    // Fallback real y completo -- nunca decorativo.
+    await _refrescarSaludSistemaReal();
+  }
+}
+
 
 // ── 🤖 AUDITORÍA IA / AGENTE — panel del Agente Administrador y Auditor
 // Supremo del Ecosistema (src/services/ecosystemAgent.js). Mismo patrón
@@ -4165,6 +4953,27 @@ async function _toggleControlProceso(flag,endpoint,etiqueta){
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.ok){ _showToast('❌ '+(j.error||'No se pudo cambiar el interruptor.'),'error',5000); return; }
     _controlProcesosCargado[flag]=activar;
+    // RONDA 54 — FIX BUG DE PERSISTENCIA: este switch guarda su estado en el
+    // servidor mediante un endpoint DEDICADO (establecerFlagSimpleEnGestorDB,
+    // ver src/lib/feature-flags.ts), que escribe DIRECTAMENTE sobre el blob
+    // GESTOR_SK en la base de datos. Pero el objeto `gestorDB` que este mismo
+    // navegador tiene en memoria (cargado al iniciar sesión / con
+    // _pullGestorDB()) NO se actualizaba con este cambio — quedaba con el
+    // valor VIEJO de featureFlags[flag]. Como updGestorDB()/saveGestorDB()
+    // (usadas por casi cualquier otra acción del panel: editar una
+    // institución, bloquear/desbloquear, cambiar un plan, etc.) hacen un
+    // POST /api/inetis/gestordb que SOBRESCRIBE el blob COMPLETO con ese
+    // `gestorDB` en memoria, la primera vez que el Súper Admin tocaba
+    // cualquier otra cosa del panel después de activar este switch, se
+    // volvía a pisar el flag recién activado con el valor viejo (false) —
+    // eso es lo que se veía como "el switch se desactiva solo al
+    // reingresar". La corrección: sincronizar también `gestorDB.featureFlags`
+    // en memoria (y su copia en localStorage) al momento del toggle, para
+    // que cualquier guardado posterior del blob completo ya cargue el valor
+    // correcto en vez de uno desactualizado.
+    gestorDB.featureFlags=gestorDB.featureFlags||{};
+    gestorDB.featureFlags[flag]=activar;
+    try{localStorage.setItem(GESTOR_SK,JSON.stringify(gestorDB));}catch(e){}
     _showToast(activar?('✅ '+etiqueta+' — activado.'):('✅ '+etiqueta+' — desactivado.'),'success',4500);
     renderGestorAdmin();
   }catch(e){ _showToast('❌ Error de red.','error',4000); }
@@ -5723,12 +6532,136 @@ function render(){
 // debe ser reemplazada cuando esta sincronización en segundo plano
 // termine de cargar — de lo contrario, la persona vería el formulario un
 // instante y luego "saltaría" al portal normal antes de poder usarlo.
-(async()=>{try{const ok=await _pullDB();if(pag==='restablecer-password')return;
+(async()=>{try{
+  if(pag==='restablecer-password')return;
   // Ronda 35 — rehidratar sesión/vista guardadas (ver _restaurarSesionDesdeStorage)
-  // justo después de que "db"/"SK" ya están cargados (para poder comparar el sk),
-  // y ANTES de decidir qué pantalla mostrar: si hay una sesión guardada válida,
+  // ANTES de decidir qué pantalla mostrar: si hay una sesión guardada válida,
   // un F5 debe reabrir la misma vista en la que la persona estaba, no la landing.
+  // RONDA 56 — se adelanta esta rehidratación a ANTES del pull (antes corría
+  // después): _restaurarSesionDesdeStorage() no toca la red (solo lee
+  // sessionStorage) y _skActual()/SK tampoco dependen de que "db" ya esté
+  // cargado, así que es seguro conocer sesión+página objetivo primero. Esto
+  // permite decidir, en el único caso angosto de abajo, si conviene evitar
+  // el pull del blob completo.
   const _seRestauro=!sesion&&!window._adminPortalMode&&_restaurarSesionDesdeStorage();
+  // RONDA 56 — PILOTO DE MIGRACIÓN GRANULAR (Fase 2, aprobada por el
+  // usuario): si un Docente reabre la app (F5) y su última pantalla
+  // guardada era Planilla, se usa el mismo adaptador granular que ya usa la
+  // navegación en caliente (_cargarPlanillaGranular(), ver más arriba) en
+  // vez de _pullDB(). Para CUALQUIER otro rol, página, o si no hay sesión
+  // guardada para restaurar, el comportamiento es EXACTAMENTE el mismo de
+  // siempre — _pullDB() se sigue llamando igual, sin ningún cambio.
+  const _esDocenteFrio=_seRestauro&&sesion&&sesion.r==='docente';
+  // RONDA 60 — mismo patrón, para el primer piloto del rol Directivo/Rector
+  // (Listado de Estudiantes, pag==='adm-est'). A diferencia de Planilla, no
+  // hace falta que un grado/página haya quedado restaurado: el adaptador
+  // (_cargarEstudiantesAdminGranular) resuelve el primer grado por su
+  // cuenta con GET /api/grados si no se le pasa uno — así que este camino
+  // directo aplica siempre que la última pantalla guardada del Directivo
+  // era "adm-est", sin ninguna condición adicional.
+  const _esAdminFrio=_seRestauro&&sesion&&sesion.r==='admin';
+  const _esAdminEstudiantesDirecto=_esAdminFrio&&pag==='adm-est';
+  const _esDocentePlanillaDirecta=_esDocenteFrio&&pag==='planilla';
+  // RONDA 58 — se cierra el pendiente explícito de la Ronda 57 (F5 en frío
+  // para Notas de Actividades/Asistencia): mismo patrón exacto que Planilla
+  // (Ronda 56), ahora también para estas 2 vistas. notaActCId/notaActPer y
+  // asistGrado/asistCId ya quedaron restaurados de forma SÍNCRONA arriba
+  // por _restaurarSesionDesdeStorage() (no dependen del DOM), así que es
+  // seguro decidir esto en el mismo punto que Planilla, antes del primer
+  // render.
+  const _esDocenteNotasActDirecto=_esDocenteFrio&&pag==='notas-actividades';
+  const _esDocenteAsistenciaDirecta=_esDocenteFrio&&pag==='asistencia';
+  // Observador es distinto: su grado/periodo NO viven en variables globales
+  // (viven en un <select> del DOM — ver _restaurarSesionDesdeStorage()),
+  // así que solo se conocen de forma síncrona a través de
+  // window._ronda36ObsPendiente (guardado por esa misma función). Si no hay
+  // un grado pendiente que restaurar (ej. el docente nunca llegó a elegir
+  // uno antes del F5), no hay nada concreto que pedirle al endpoint
+  // granular — se deja el camino de siempre (_pullDB()) sin cambios, tal
+  // como ya hacía Planilla cuando no aplicaba su caso angosto.
+  const _esDocenteObservadorDirecto=_esDocenteFrio&&pag==='observador'&&!!(window._ronda36ObsPendiente&&window._ronda36ObsPendiente.grado);
+  // RONDA 59 — cierre del F5 en frío para los 2 módulos nuevos de esta
+  // ronda (Actividades/Tareas y Permisos). Ninguno de los 2 depende de un
+  // submódulo restaurado (grado/materia): la lectura solo depende de
+  // "sesion.u", que ya está disponible de forma síncrona en este punto.
+  const _esDocenteActividadesDirecto=_esDocenteFrio&&pag==='actividades-docente';
+  const _esDocentePermisosDirecto=_esDocenteFrio&&pag==='ausentismo';
+  // RONDA 61 — F5 en frío para los 3 frentes nuevos del rol Admin/Rector.
+  // Carga Académica no depende de ningún submódulo restaurado (siempre
+  // trae la institución completa). Planilla/Notas de Actividades para
+  // Admin reutilizan exactamente los mismos "planCId"/"notaActCId"
+  // restaurados de forma síncrona que ya usaba el caso Docente — el
+  // adaptador ya sabe elegir la primera carga disponible si no hay ninguna
+  // restaurada (mismo comportamiento que el Docente sin carga previa).
+  const _esAdminCargaDirecto=_esAdminFrio&&pag==='adm-carga';
+  const _esAdminPlanillaDirecta=_esAdminFrio&&pag==='planilla';
+  const _esAdminNotasActDirecto=_esAdminFrio&&pag==='notas-actividades';
+  // RONDA 62 — F5 en frío para los 3 módulos nuevos de esta ronda.
+  // Credenciales reutiliza "_credEstGrado"/"_credEstPagina" (mismas
+  // variables globales que la navegación en caliente, restauradas de forma
+  // síncrona si el grado quedó guardado; si no, el adaptador resuelve el
+  // primer grado por su cuenta, igual que adm-est en la Ronda 60).
+  const _esAdminCredDirecto=_esAdminFrio&&pag==='ver-credenciales';
+  const _esAdminInstitucionDirecto=_esAdminFrio&&pag==='adm-base';
+  const _esAdminHorariosDirecto=_esAdminFrio&&pag==='horarios';
+  // RONDA 63 — "quick win" #4 (barrido final).
+  const _esAdminCronogramaDirecto=_esAdminFrio&&pag==='cronograma-notas';
+  let ok;
+  // RONDA 58 — cada vez que uno de estos 4 caminos angostos tiene éxito SIN
+  // haber pasado por _pullDB(), "db" queda marcado como parcial
+  // (window._dbGranularSolamente=true) para que la red de seguridad de
+  // _navegarConCargaGranularSiAplica() (ver arriba) fuerce un _pullDB()
+  // completo antes de dejar entrar al Docente a cualquier otra vista
+  // (Consolidados, PDFs, etc.) que no tenga su propio endpoint granular.
+  if(_esDocentePlanillaDirecta){
+    ok=await _cargarPlanillaGranular();
+    // Salvaguarda: si el camino granular no puede completarse por cualquier
+    // motivo (institución sin cargas todavía, error de red, etc.), se cae de
+    // vuelta al camino de siempre — nunca se deja al Docente sin poder
+    // entrar a su Planilla por un fallo de esta optimización.
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esDocenteNotasActDirecto){
+    ok=await _cargarNotasActividadesGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esDocenteAsistenciaDirecta){
+    ok=await _cargarAsistenciaGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esDocenteObservadorDirecto){
+    ok=await _cargarObservadorGranular(window._ronda36ObsPendiente.grado);
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esDocenteActividadesDirecto){
+    ok=await _cargarActividadesDocenteGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esDocentePermisosDirecto){
+    ok=await _cargarPermisosDocenteGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminEstudiantesDirecto){
+    ok=await _cargarEstudiantesAdminGranular(null,1);
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminCargaDirecto){
+    ok=await _cargarCargaAcademicaAdminGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminPlanillaDirecta){
+    ok=await _cargarPlanillaGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminNotasActDirecto){
+    ok=await _cargarNotasActividadesGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminCredDirecto){
+    ok=await _cargarCredencialesAdminGranular(_credEstGrado,_credEstPagina);
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminInstitucionDirecto){
+    ok=await _cargarInstitucionAdminGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminHorariosDirecto){
+    ok=await _cargarHorariosAdminGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else if(_esAdminCronogramaDirecto){
+    ok=await _cargarCronogramaAdminGranular();
+    if(ok) window._dbGranularSolamente=true; else ok=await _pullDB();
+  } else {
+    ok=await _pullDB();
+  }
   if(ok){if(sesion){renderApp();if(_seRestauro) setTimeout(_rehidratarSubmoduloPostRender,60);}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
 
 // ============================================================
@@ -7185,9 +8118,14 @@ function _mostrarSkeletonYNavegar(){
   if(cont){
     cont.setAttribute('aria-busy','true');
     cont.innerHTML = _htmlSkeletonContenido();
-    requestAnimationFrame(function(){ setTimeout(renderApp, 0); });
+    // RONDA 56 — antes llamaba a renderApp() directamente; ahora pasa por
+    // _navegarConCargaGranularSiAplica(), que SOLO agrega un paso adicional
+    // (refresco granular) cuando pag==='planilla' y el rol es Docente — para
+    // cualquier otra página/rol, termina llamando a renderApp() exactamente
+    // igual que antes, sin ningún cambio de comportamiento.
+    requestAnimationFrame(function(){ setTimeout(_navegarConCargaGranularSiAplica, 0); });
   } else {
-    renderApp();
+    _navegarConCargaGranularSiAplica();
   }
 }
 
@@ -9873,7 +10811,22 @@ function htmlEstTabla(grado){
   if(grado!==_estTablaGradoPrevio){ _estTablaPagina=1; _estTablaGradoPrevio=grado; }
   const todosEsts=db.ests.filter(x=>x.g===grado).sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
   if(!todosEsts.length) return `'+_htmlEstadoVacio('🎓','No hay estudiantes. Registre estudiantes usando el formulario de arriba.')}`;
-  const _pagEst=_paginar(todosEsts,_estTablaPagina,30);
+  // RONDA 60 — si esta página YA fue traída por el camino granular
+  // (_cargarEstudiantesAdminGranular(), invocado ANTES de renderApp() por
+  // el mismo patrón de Rondas 56-59), "db.ests" para este grado ya
+  // contiene EXACTAMENTE los 30 estudiantes de esta página — no hace falta
+  // volver a paginar del lado del cliente sobre un arreglo que ya viene
+  // recortado, y el TOTAL real (para "Total: N estudiante(s)" y la barra
+  // de paginación) hay que tomarlo del servidor, no de todosEsts.length
+  // (que en ese caso solo mediría el tamaño de la página actual). Cuando
+  // NO hay información granular vigente para este grado+página (ej. tras
+  // un _pullDB() completo, o en un fallback), se preserva exactamente el
+  // comportamiento de siempre: paginación 100% en el cliente sobre el
+  // arreglo completo ya descargado.
+  const _infoGranular=window._admEstPagInfo&&window._admEstPagInfo.grado===grado&&window._admEstPagInfo.pagina===_estTablaPagina?window._admEstPagInfo:null;
+  const _pagEst=_infoGranular
+    ?{items:todosEsts,pagina:_infoGranular.pagina,porPagina:_infoGranular.limit,total:_infoGranular.total,totalPaginas:Math.max(1,Math.ceil(_infoGranular.total/_infoGranular.limit))}
+    :_paginar(todosEsts,_estTablaPagina,30);
   const ests=_pagEst.items;
   const _privT=_getPlatTipo()==='privada';
   const rows=ests.map((e,i)=>`<tr>
@@ -9901,13 +10854,22 @@ function htmlEstTabla(grado){
     ${_privT?`<button class="btn-sm" style="background:${(() => {const ps=_getPazSalvoEst(e);return ps.ok?'#27ae60':'#c0392b';})()}" title="Paz y Salvo" onclick="abrirPazSalvoModal('${String(e.id)}')">⚖️</button>`:''}
     <button class="btn-sm" style="background:#c0392b" title="Eliminar" onclick="eliminarEst('${String(e.id)}')">🗑</button>
     </td></tr>`).join('');
-  return `<p style="color:#666;font-size:0.85rem;margin-bottom:8px">Total: <b>${todosEsts.length}</b> estudiante(s) en <b>${grado}</b>${_privT?' · <span style="font-size:0.8rem;color:#8e44ad">🏢 Institución Privada</span>':''} · <span style="font-size:0.8rem;color:#555">Orden: Apellido Apellido Nombre Nombre</span></p>
+  return `<p style="color:#666;font-size:0.85rem;margin-bottom:8px">Total: <b>${_pagEst.total}</b> estudiante(s) en <b>${grado}</b>${_privT?' · <span style="font-size:0.8rem;color:#8e44ad">🏢 Institución Privada</span>':''} · <span style="font-size:0.8rem;color:#555">Orden: Apellido Apellido Nombre Nombre</span></p>
   <div class="over"><table><thead><tr><th>#</th><th style="text-align:left">Nombre Completo</th><th>Grado</th>${_privT?'<th>Pensión</th>':''}<th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>
   ${_htmlPaginacion(_pagEst.pagina,_pagEst.totalPaginas,_pagEst.total,'_cambiarPaginaEstudiantes')}`;
 }
-function _cambiarPaginaEstudiantes(p){ _estTablaPagina=p; renderEstTabla(); }
-function renderEstTabla(){
+async function _cambiarPaginaEstudiantes(p){ _estTablaPagina=p; await renderEstTabla(); }
+async function renderEstTabla(){
   const g=document.getElementById('estFiltroGrado')?.value||db.grados[0]?.n||'';
+  // RONDA 60 — mismo patrón de fallback real de Rondas 56-59: se intenta
+  // el camino granular (SOLO para sesion.r==='admin', el piloto de esta
+  // ronda); si falla por cualquier motivo, se cae a _pullDB() completo
+  // antes de pintar, nunca se deja la tabla desactualizada o vacía por un
+  // fallo de la optimización.
+  if(sesion&&sesion.r==='admin'){
+    let ok=false; try{ ok=await _cargarEstudiantesAdminGranular(g,_estTablaPagina); }catch(e){}
+    if(!ok){ try{ await _pullDB(); }catch(e){} }
+  }
   const wrap=document.getElementById('estTablaWrap');if(wrap) wrap.innerHTML=htmlEstTabla(g);
 }
 // Formatea nombre del estudiante como: APELLIDO1 APELLIDO2 NOMBRE1 NOMBRE2
@@ -12639,7 +13601,7 @@ function htmlPanelDocente(){
       <td style="text-align:left">${it.carga.m}</td>
       <td>${it.carga.g}</td>
       <td style="color:#c0392b;font-weight:bold">${it.faltantes}/${it.total}</td>
-      <td><button class="btn-sm" style="background:#1a5276" onclick="planCId='${it.carga.id}';planPer='${grupo.periodo}';pag='planilla';renderApp()">Ir a Planilla P${grupo.periodo}</button></td>
+      <td><button class="btn-sm" style="background:#1a5276" onclick="irAPlanillaGranular('${it.carga.id}','${grupo.periodo}')">Ir a Planilla P${grupo.periodo}</button></td>
     </tr>`;}).join('')}
     </tbody></table></div>`;
   }).join(''):`<div class="info-box" style="border-left-color:#1e8449">🎉 ¡Todas sus planillas hasta el Período ${perActual} están completas!</div>`;
@@ -14387,8 +15349,28 @@ function htmlNotasActividades(){
     </div>
   </div>`;
 }
-function cambiarNotaActPer(v){notaActPer=v;renderApp();}
-function cambiarNotaActCId(v){notaActCId=v;renderApp();}
+// RONDA 57 — ambas se vuelven async: al cambiar periodo/asignatura, se
+// refresca por el camino granular (GET /api/notas-actividades) ANTES de
+// pintar, en vez de asumir que "db.notasAct" ya tiene todo — con fallback
+// explícito a _pullDB() si el fetch granular falla. Convertirlas en
+// "async function" es seguro: siguen invocándose igual desde el HTML
+// (onchange="cambiarNotaActPer(this.value)"), que no espera su promesa.
+async function cambiarNotaActPer(v){
+  notaActPer=v;
+  if(sesion&&sesion.r==='docente'){
+    let ok=false; try{ ok=await _cargarNotasActividadesGranular(); }catch(e){}
+    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+  }
+  renderApp();
+}
+async function cambiarNotaActCId(v){
+  notaActCId=v;
+  if(sesion&&sesion.r==='docente'){
+    let ok=false; try{ ok=await _cargarNotasActividadesGranular(); }catch(e){}
+    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+  }
+  renderApp();
+}
 
 // ── Modal: agregar columna ──────────────────────────────────────────────────
 // Ronda 27 — se eliminó por completo la opción de "reutilizar" una columna
@@ -18043,9 +19025,20 @@ function htmlObservador(){
   </div>`;
 }
 
-function cargarListaObservador(){
+// RONDA 57 — se vuelve async: antes de leer db.ests, refresca por el
+// camino granular (GET /api/grados/:id/observador) para el grado
+// seleccionado — con el mismo fallback explícito a _pullDB() si el fetch
+// granular falla. Convertirla en "async function" es segura: se invoca
+// desde onclick/onchange="cargarListaObservador()" en el HTML, que no
+// espera su promesa (fire-and-forget), y desde _rehidratarSubmoduloPostRender()
+// (Ronda 35/36), que tampoco la esperaba antes.
+async function cargarListaObservador(){
   const grado=document.getElementById('obsEstGrado')?.value||'';
   const per=document.getElementById('obsEstPer')?.value||'1';
+  if(grado&&sesion&&sesion.r==='docente'){
+    let ok=false; try{ ok=await _cargarObservadorGranular(grado); }catch(e){}
+    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+  }
   const esTutorPTA=_esTutorPTA();
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const wrap=document.getElementById('listaObservador');if(!wrap) return;
@@ -18283,7 +19276,19 @@ function pdfObservador(estId){
 // ============================================================
 // PDF LISTAS
 // ============================================================
-function pdfListaGrado(){
+// RONDA 60 — HALLAZGO REAL durante la migración del piloto: esta función
+// (y pdfListaTodos()/exportarEstudiantesXLSX(), ver abajo) leen "db.ests"
+// directamente asumiendo que SIEMPRE contiene TODO el grado (o toda la
+// institución) — un supuesto que ya no es automáticamente cierto una vez
+// que "adm-est" puede quedar cargado por el camino granular (una sola
+// página de 30 estudiantes por grado, no el grado completo). Se reutiliza
+// la MISMA red de seguridad de la Ronda 58 (window._dbGranularSolamente)
+// para forzar un _pullDB() completo ANTES de generar cualquiera de estos 3
+// reportes cuando "db" pueda estar parcial — exactamente el mismo patrón
+// ya usado para Consolidados/PDFs del rol Docente, aplicado aquí a su
+// primer caso real en el rol Directivo.
+async function pdfListaGrado(){
+  if(window._dbGranularSolamente){ try{ const ok=await _pullDB(); if(ok) window._dbGranularSolamente=false; }catch(e){} }
   const grado=document.getElementById('estFiltroGrado')?.value||db.grados[0]?.n||'';
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
   const infoG=db.grados.find(x=>x.n===grado)||{d:'',n:grado};
@@ -18302,7 +19307,8 @@ function pdfListaGrado(){
   doc.text('RECTOR(A)',52,fy+10,{align:'center'});doc.text('DIRECTOR(A)',158,fy+10,{align:'center'});
   addFooterPDF(doc);doc.save(`Lista_${grado.replace(/\s+/g,'_')}_${db.anio}.pdf`);
 }
-function pdfListaTodos(){
+async function pdfListaTodos(){
+  if(window._dbGranularSolamente){ try{ const ok=await _pullDB(); if(ok) window._dbGranularSolamente=false; }catch(e){} }
   const doc=getPDF();let first=true;
   db.grados.forEach(g=>{
     const ests=db.ests.filter(x=>x.g===g.n).sort((a,b)=>a.n.localeCompare(b.n));if(!ests.length) return;
@@ -20979,6 +21985,11 @@ function renderPortalInstitucion(platId,rolPre){
       return;
     }
     db=platDB;
+    // RONDA 66 — mismo ajuste de higiene aplicado en
+    // _finalizarSesionInstitucional() (ver su comentario): este login
+    // también trae siempre el blob COMPLETO, así que restaura el
+    // invariante de la bandera aquí también.
+    window._dbGranularSolamente=false;
     window._currentPlatSK=p.sk;
     window._currentPlatId=platId;
     window._sbSearchQuery=''; // por si quedó algo escrito de una sesión anterior en este mismo navegador

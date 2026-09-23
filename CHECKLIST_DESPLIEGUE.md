@@ -3565,3 +3565,2633 @@ inactivas mezcladas).
 
 Suite completa re-ejecutada: **54 archivos, 100% verde** — ningún test
 previamente congelado modificado ni roto en esta ronda.
+
+## Ronda 54 — Auditoría de rendimiento del frontend del docente (diagnóstico) + corrección del bug de persistencia del switch de IA en Súper Admin
+
+Ronda con dos frentes de naturaleza distinta pedidos explícitamente por el
+usuario: el **Frente 1 es diagnóstico puro** (no se pidió corrección, solo
+confirmar el estado real) y el **Frente 2 sí pidió diagnóstico y corrección
+real de un bug**. Se documentan por separado.
+
+### FRENTE 1 — Diagnóstico de rendimiento/payload en el frontend del docente (SIN cambios de código, por instrucción explícita)
+
+Se auditaron minuciosamente los componentes/servicios que usa el docente
+(Planilla, Notas de Actividades, Asistencia, Observador) para responder las
+4 preguntas exactas del usuario. Hallazgos, cada uno marcado como
+**CONFIRMADO CON EVIDENCIA DE CÓDIGO** o **ESTIMACIÓN SIN EJECUCIÓN CONTRA
+RENDER/NEON REAL**:
+
+1. **¿Sigue existiendo una descarga del JSON monolítico de ~3 MB?**
+   CONFIRMADO: sí, pero no es un resto "legacy olvidado" sino la
+   arquitectura de LECTURA actual e intencional, documentada así desde la
+   Ronda 44. Las 4 vistas del docente (Planilla, Notas, Asistencia,
+   Observador) leen sus datos a través de `_pullDB()`/`GET /api/inetis/db`
+   (`src/index.ts`, líneas 791-833), que siempre devuelve el blob COMPLETO
+   de la institución (todo `ests[]`, con notas, asistencia y observador de
+   todos los estudiantes) — nunca un fragmento por grado/grupo/materia. Se
+   confirmó por grep exhaustivo en TODO `gestor-academico/dist/**/*.js` que
+   **ninguna vista hace `fetch('/api/grados...')`** (los 3 endpoints
+   granulares de lectura por grado/estudiante/materia que sí existen en el
+   backend desde la Ronda 44/45 — `GET /api/grados`, `GET
+   /api/grados/:id/estudiantes`, `GET
+   /api/grados/:id/materias/:materiaId/notas`, en `src/index.ts` — están
+   construidos y funcionan, pero **siguen sin ningún consumidor real en el
+   frontend**, tal como el propio código ya admite explícitamente en un
+   comentario de la Ronda 45 dentro de `gestor-academico/dist/modules/08-outbox-notas.js`). Esto NO es un hallazgo
+   nuevo de esta ronda: es una decisión de ingeniería ya tomada y
+   documentada (mantener el blob único por conservadurismo, dejando la
+   infraestructura granular lista pero sin migrar el frontend a ella).
+2. **¿Cada vista consulta quirúrgicamente solo grado/grupo/materia/estudiante?**
+   CONFIRMADO EN SENTIDO PARCIAL — depende de si es LECTURA o ESCRITURA:
+   - **Lectura**: NO. Las 4 vistas comparten la misma carga de blob completo
+     descrita en el punto 1 (vía la sincronización periódica de
+     `_pullDB()`), no una consulta por grado/grupo/materia/estudiante.
+   - **Escritura**: SÍ, y esto ya se corrigió en rondas previas (36 y 44),
+     no en esta. `POST /api/inetis/notas/guardar-fila` (ruta original,
+     Ronda 36) y su alias `POST /api/notas/actualizar` (Ronda 44), ambos
+     ejecutando la misma función `_ejecutarGuardarFilaNotas()` (`src/index.ts`,
+     línea ~1191), reciben SOLO los campos de una fila/celda puntual
+     (`sk, tipo, estId, cId, per, notas` o `colId, valor, fecha, hora, obs`)
+     y hacen lectura-modificación-escritura quirúrgica sobre esa única
+     posición del blob (`e.nts[cId][per] = {...(e.nts[cId][per]||{}), ...notas}`),
+     sin comparar ni reenviar la planilla completa. El request típico de un
+     autoguardado de nota mide, medido con datos de ejemplo reales del
+     formato exacto de este endpoint, bien por debajo de 1 KB (ver test
+     B.5 abajo) — muy por debajo del umbral de 50 KB pedido.
+   - No se encontró un endpoint de escritura dedicado y distinto para
+     Asistencia u Observador: ambos, junto con Planilla, dependen del mismo
+     ciclo de sincronización de blob completo (`POST /api/inetis/db`) salvo
+     para las notas específicas (que sí usan el camino granular anterior).
+     Esto no se investigó exhaustivamente registro por registro en esta
+     ronda por estar fuera del alcance estricto pedido (que se centró en
+     "descarga de payload", no en cada ruta de escritura una por una);
+     se reporta como un límite honesto de esta auditoría, no como un hallazgo cerrado.
+3. **`compression()`**: CONFIRMADO activo y correctamente configurado —
+   `app.use(compression({ threshold: 1024 }))` en `src/index.ts` (línea 289),
+   aplicado globalmente a todas las respuestas, incluida `GET /api/inetis/db`.
+4. **ETag / Cache-Control**: CONFIRMADO parcialmente.
+   - `GET /api/inetis/db` (y los 3 endpoints granulares no usados) SÍ
+     implementan `ETag`/`If-None-Match` con respuesta `304 Not Modified`
+     quirúrgica (basada en `updatedAt` de la fila en `kv_store`, ver
+     `src/index.ts` líneas 791-833) — confirmado en código, funcional.
+   - Cabecera `Cache-Control` explícita: **CONFIRMADO AUSENTE** en
+     `GET /api/inetis/db`. No es un blocker funcional (el mecanismo real de
+     ahorro de red es el ETag/304, que sí existe y sí evita retransmitir el
+     JSON completo cuando nada cambió), pero es un hallazgo honesto y
+     preciso: no hay ninguna cabecera `Cache-Control` en esa respuesta hoy.
+     Por instrucción explícita del coordinador, **NO se corrige en esta
+     ronda** — queda reportado para que el usuario decida si autoriza
+     agregarla en una ronda futura.
+
+**Tamaño real estimado (ESTIMACIÓN, no medición contra Render/Neon real)**:
+usando blobs sintéticos con la misma forma que el blob real (estudiantes ×
+grados × materias × periodos × asistencia, generados y medidos con
+`JSON.stringify(...).length` / `zlib.gzipSync(...).length`):
+- Colegio pequeño (150 est., 6 grados): 382 KB sin comprimir → **17.5 KB** con gzip.
+- Colegio mediano (500 est., 11 grados): 1.32 MB sin comprimir → **52.9 KB** con gzip.
+- Colegio grande (1200 est., 11 grados, escala "~3 MB" que describe el usuario): 3.13 MB sin comprimir → **105.4 KB** con gzip.
+
+Conclusión honesta: `compression()` reduce el payload real en ~97%, pero
+para instituciones grandes el resultado comprimido (~105 KB) sigue por
+encima del umbral de <50 KB pedido por el usuario — y ese costo lo paga
+TODA vista del docente por igual (Planilla, Notas, Asistencia, Observador),
+porque las 4 comparten la misma carga de blob completo, no uno recortado
+por vista. El ETag/304 mitiga esto en sincronizaciones periódicas sin
+cambios reales, pero no en la carga inicial ni cuando sí hubo cambios. Esta
+es información para que el usuario decida, junto con el coordinador, si
+autoriza una migración real del frontend a los 3 endpoints granulares ya
+construidos (Rondas 44/45) en una ronda futura — **no se tocó nada de esto
+en esta ronda**, tal como se pidió.
+
+### FRENTE 2 — Bug de persistencia del switch de IA en Súper Admin (diagnóstico Y corrección real)
+
+**Causa raíz exacta, encontrada con evidencia de código (no supuesta)**:
+el switch "🗄️ Agente IA - Consultas Base de Datos Neon" (`ENABLE_AI_NEON_QUERIES`)
+SÍ se guarda correctamente en el servidor al activarlo — vía el endpoint
+dedicado `POST /api/superadmin/activar-ai-neon-queries` → `establecerFlagSimpleEnGestorDB()`
+(`src/lib/feature-flags.ts`), que escribe correctamente bajo `GESTOR_SK`
+(se descartó con evidencia la hipótesis de que se estuviera guardando bajo
+el `sk` de una institución). El **GET** de lectura
+(`GET /api/superadmin/modulos-estado` → `checkAiNeonEnabled()` →
+`flagSimpleHabilitadoPorDefecto(FLAG_AI_NEON_QUERIES)`) lee exactamente la
+MISMA fuente (`gestorDB.featureFlags`, cacheada 8s vía `obtenerGestorDBCacheado()`
+e invalidada de inmediato tras cada escritura) — se descartó también la
+hipótesis de que el GET y el PUT leyeran/escribieran fuentes distintas.
+
+El bug real está en el **NAVEGADOR**, en `gestor-academico/dist/modules/03-app-core.js`:
+el panel de Súper Admin mantiene una copia local en memoria de TODO el
+estado de la plataforma en la variable global `gestorDB` (cargada al iniciar
+sesión, y reutilizada por prácticamente cualquier acción del panel —
+bloquear una institución, activar/desactivar, editar un plan, etc. — a
+través de `updGestorDB(fn)` → `saveGestorDB()`, línea ~1255-1263). `saveGestorDB()`
+hace un `POST /api/inetis/gestordb` que **SOBRESCRIBE EL BLOB COMPLETO**
+de `GESTOR_SK` con esa copia local (`src/index.ts`, líneas 2232-2241: `insert
+... onConflictDoUpdate` con `value: data` tal cual, sin fusionar nada).
+
+El switch de IA, en cambio, se activa con una función SEPARADA
+(`_toggleControlProceso()`, línea ~4155) que llama al endpoint dedicado de
+arriba y — antes de esta corrección — **solo actualizaba una variable local
+distinta** (`_controlProcesosCargado[flag]`), sin tocar nunca
+`gestorDB.featureFlags`. Resultado: el servidor quedaba con el flag en
+`true`, pero la copia `gestorDB` en memoria del navegador seguía con el
+valor viejo (`false`). La PRIMERA vez que el Súper Admin hacía cualquier
+otra acción normal del panel (que dispara `updGestorDB()`/`saveGestorDB()`),
+esa copia vieja se volvía a escribir completa sobre el servidor,
+**revirtiendo el flag a `false` sin que nadie lo tocara directamente** — eso
+es exactamente lo que el usuario percibía como "el switch se desactiva solo
+al reingresar".
+
+**Corrección aplicada** (`gestor-academico/dist/modules/03-app-core.js`,
+dentro de `_toggleControlProceso()`, inmediatamente después de confirmar que
+el servidor aceptó el cambio): se sincroniza también `gestorDB.featureFlags[flag]`
+en memoria (y su copia en `localStorage`) con el valor recién confirmado, para
+que cualquier guardado posterior del blob completo ya cargue el valor
+correcto en vez de uno desactualizado. Aplica a los 4 switches que comparten
+este mismo mecanismo (`ENABLE_AI_NEON_QUERIES`, `ENABLE_AI_ECOSYSTEM_AUDITOR`,
+`ENABLE_RENDER_KEEPALIVE_PING`, `ENABLE_SIMAT_ETC_MODULE`), no solo el de IA.
+
+**Confirmación con ejecución real** (test nuevo, ver abajo): se simuló el
+ciclo completo — activar el switch → el servidor confirma `true` →
+disparar OTRA acción cualquiera del panel (equivalente a `updGestorDB()`) →
+"salir y reingresar" (lectura fresca) — usando una réplica fiel y ejecutada
+de verdad del algoritmo real de `saveGestorDB()`/`updGestorDB()`/`_toggleControlProceso()`/
+`establecerFlagSimpleEnGestorDB()`/`POST /api/inetis/gestordb`. Sin el fix,
+el flag vuelve a `false` tras la otra acción (bug reproducido con ejecución
+real, no solo con lectura de código). Con el fix, el flag permanece en
+`true` en el servidor durante todo el ciclo, incluyendo tras "reingresar".
+
+**Confirmación de que el permiso ya es respetado en Planilla/Observador y
+cualquier otro módulo**: investigación con evidencia de código (ya
+documentada desde las Rondas 34/35, reverificada en esta ronda) confirma que
+el Asistente Adán en los 3 endpoints de chat normales (`/api/inetis/ai/chat`,
+`/api/inetis/ai/general`, `/api/inetis/ai/psicopedagogico`) **no hace ninguna
+consulta SQL/Function Calling en vivo contra Neon** — responde solo con el
+contexto que el frontend ya le envía calculado (notas, asistencia, etc. de
+la institución activa) —, así que no hay, hoy, ninguna "herramienta de IA en
+Planilla/Observador" que dependa de este flag de forma distinta a como ya
+se documentó. El **único componente real** con Function Calling contra Neon
+es el Auditor del Ecosistema (`runFullAudit()` en `src/services/ecosystemAgent.js`,
+línea 649: `const neonViaIaHabilitado = await checkAiNeonEnabled();`), que
+consulta el flag **en vivo, del lado del servidor, en cada ciclo** — código
+totalmente ajeno al bug del navegador corregido arriba, y que ahora, con el
+switch persistiendo correctamente, reflejará de forma fiable la decisión
+real del Súper Admin. El único otro gate existente (`_esConsultaDeAuditoriaGlobal()`,
+`context.gestorMode === true`) aplica solo al chat del propio Súper Admin en
+modo "Gestor Multi-Plataforma", nunca a una conversación normal de un
+docente dentro de su institución.
+
+**Archivos modificados**:
+- `gestor-academico/dist/modules/03-app-core.js` — fix de sincronización
+  descrito arriba dentro de `_toggleControlProceso()` (única función
+  modificada).
+
+**Test nuevo**: `test_ronda54_switch_ia_persistencia_y_payload_docente.mjs`
+(35 aserciones): Parte A (7 grupos) — reproducción real del bug sin el fix,
+confirmación real de la persistencia con el fix (ciclo completo
+activar→otra acción→reingresar, y también el ciclo inverso de
+desactivación), verificación de que el fix aplicado en el código real es
+exactamente el descrito, y descarte con evidencia de las hipótesis (a)/(c)
+del coordinador. Parte B (5 grupos) — verificación de los hallazgos de
+diagnóstico del Frente 1 por inspección de código (compression, ETag/ausencia
+de Cache-Control, endpoints granulares sin consumidor, escritura granular de
+notas, estimación de tamaño de payload de escritura).
+
+Ningún test previamente congelado fue modificado en esta ronda.
+Suite completa re-ejecutada: **55 archivos, 100% verde**.
+
+Verificación de sintaxis: `03-app-core.js` es JS plano de navegador (sin
+`import`/`export` de módulos ES, usa `window`/`document` globales) — se
+verificó importándolo dinámicamente con Node: se ejecuta completo hasta
+fallar únicamente con `ReferenceError: window is not defined` (comportamiento
+esperado fuera de un navegador), confirmando que el archivo no tiene ningún
+error de sintaxis. `src/index.ts` y `src/lib/feature-flags.ts` **no se
+modificaron** en esta ronda (solo se leyeron para el diagnóstico), por lo
+que no requieren nueva verificación de sintaxis.
+
+## Ronda 55 — Migración granular al ecosistema completo: alcance real logrado vs. alcance pedido (decisión de riesgo explícita) + endurecimiento de backend (Cache-Control, paginación real)
+
+El usuario pidió, textualmente, migrar TODAS las vistas de TODOS los roles
+(Docente, Directivo/Rector/Coordinador, Súper Admin/Administrativo,
+Estudiante/Acudiente) fuera de `_pullDB()`/`GET /api/inetis/db` en esta
+misma ronda. Esta sección documenta, con la misma honestidad exigida en
+rondas anteriores, **exactamente cuánto de eso se hizo y se verificó con
+ejecución real, y por qué no se hizo el resto** — nunca se reporta como
+"100% migrado" algo que no se verificó.
+
+### DECISIÓN DE INGENIERÍA (explícita, con el mismo criterio de riesgo de la Ronda 44)
+
+La Ronda 44 identificó esta migración completa como "el ask de mayor riesgo
+de toda la sesión" y decidió explícitamente NO intentarla de un solo golpe,
+por trabajar en un sandbox sin: registro npm para instalar nada nuevo, sin
+Neon/Postgres real contra el cual probar, sin navegador real para verificar
+renderizado, sin forma de probar concurrencia real ni Render real. Esa
+misma restricción de entorno sigue vigente, sin cambios, en esta Ronda 55.
+
+Re-cablear el CONSUMIDOR del frontend de Planilla/Notas/Asistencia/
+Observador (y, con más razón, los paneles de Directivo/Rector, Súper Admin
+y Estudiante/Acudiente, que ni siquiera se auditaron a nivel de detalle
+todavía) para que dejen de usar `_pullDB()` y usen los 3 endpoints
+granulares en su lugar, **no es un cambio aislado y de bajo riesgo**: el
+archivo monolítico `gestor-academico/dist/modules/03-app-core.js` (más de
+19.000 líneas) mantiene un único objeto de estado compartido en memoria
+(`db`/`ests`/`grados`, poblado por `_pullDB()`) del que dependen, de forma
+cruzada, decenas de funciones de renderizado dentro de la MISMA vista
+(selectores de grado/grupo, comparación entre estudiantes, validaciones,
+exportaciones, el propio Observador citando datos de otras materias, etc.).
+Reemplazar la fuente de datos de una sola vista sin poder ejecutar esa vista
+en un navegador real para confirmar que sigue renderizando correctamente
+en TODOS sus casos de uso es, precisamente, el tipo de cambio "no
+verificable con ejecución real" que esta sesión se comprometió a no hacer
+a ciegas. Por eso, **esta ronda NO modifica ningún consumidor del
+frontend** (ni Docente ni ningún otro rol) — se prioriza, en cambio, el
+endurecimiento del BACKEND, que sí es 100% verificable en este sandbox
+(inspección de código + ejecución real de la lógica pura + reconstrucción
+del build), y se deja un plan concreto de fases para que el coordinador y
+el usuario decidan cómo continuar con una verificación real (ideealmente
+contra un staging con Neon y navegador reales) en una Ronda 56+.
+
+### QUÉ SÍ SE HIZO Y SE VERIFICÓ CON EJECUCIÓN REAL ESTA RONDA (backend, 100% del alcance backend pedido en los puntos 2 y 3 del pedido)
+
+1. **Cache-Control explícito** (punto 2 del pedido, cierra el hallazgo que
+   había quedado pendiente en la Ronda 54): se agregó la cabecera
+   `Cache-Control: no-cache` (revalidación forzada, NUNCA un `max-age`
+   positivo que dejaría al navegador servir una copia vieja sin preguntar —
+   eso anularía el propio ETag que ya existía) a:
+   - `_responderConETag()` (`src/index.ts`) — usada por los 3 endpoints
+     granulares (`/api/grados`, `/api/grados/:id/estudiantes`,
+     `/api/grados/:id/materias/:materiaId/notas`).
+   - `GET /api/inetis/db` (`src/index.ts`) — el endpoint del blob completo,
+     para que al menos sus recargas periódicas (sync en segundo plano)
+     también revaliden correctamente vía ETag en vez de no cachear nada.
+   - `GET /api/agent/logs` (`src/routes/agent.js`).
+2. **Paginación real** (punto 2 del pedido):
+   - `GET /api/grados/:id/estudiantes`: nueva función `_paginar()`
+     (`src/index.ts`) con parámetros `?page=&limit=` (1-based), límite por
+     defecto **100**, límite máximo **500** (documentados como constantes
+     `LIMITE_ESTUDIANTES_POR_PAGINA_DEFECTO`/`_MAXIMO`), devuelve
+     `{estudiantes, page, limit, total, hasMore}`. Aplica sobre el
+     fragmento YA filtrado por grado (nunca sobre la institución completa).
+   - `GET /api/agent/logs` (bitácora del Auditor): `listarLogsAuditoria()`
+     (`src/services/ecosystemAgent.js`) ahora acepta también `page` (además
+     del `limit` que ya existía, tope 300 sin cambios), calcula el
+     `offset` real y pide `limit+1` filas para saber si hay más sin una
+     consulta `COUNT(*)` aparte. `src/routes/agent.js` expone
+     `page`/`limit`/`hasMore` en la respuesta, preservando el campo `logs`
+     que el frontend ya consumía (sin romper compatibilidad — confirmado
+     por grep: el frontend solo lee `j.logs`, nunca la forma completa del
+     objeto).
+   - `/api/grados` (lista de grados) y `/api/grados/:id/materias/:materiaId/notas`
+     NO se paginaron: la primera devuelve, típicamente, menos de 15
+     elementos (grados de una institución); la segunda ya viene acotada a
+     UNA sola materia/grado (no toda la institución) y su volumen es
+     equivalente al de estudiantes por grado, ya cubierto por el mismo
+     límite razonable — se documenta esta decisión para que quede explícita
+     y no como un olvido.
+
+**Verificación con ejecución real** (no solo inspección): test nuevo
+`test_ronda55_endurecimiento_backend_y_alcance_migracion.mjs` (27
+aserciones) — Parte A ejecuta réplicas EXACTAS (extraídas línea por línea
+del código real) de `_paginar()` y de la nueva lógica de
+`listarLogsAuditoria()` con datos concretos (250 estudiantes repartidos en
+3 páginas, 730 logs repartidos en 8 páginas, límites por defecto y
+topeados), confirmando fronteras de página, `hasMore` correcto en el
+último tramo, y el tope máximo de seguridad. Parte B confirma en el código
+real que las 4 respuestas de lectura mencionadas fijan `Cache-Control` y
+que ninguna usa un `max-age` que rompería la revalidación por ETag. Parte
+C deja, de forma honesta y verificable por grep, constancia de que
+`_pullDB()` sigue siendo el mecanismo de carga real del frontend y que
+ningún `fetch` real usa todavía `/api/grados*` — el estado exacto que esta
+ronda decidió no tocar.
+
+**Test previamente congelado actualizado con autorización explícita**:
+`test_ronda54_switch_ia_persistencia_y_payload_docente.mjs`, aserción B.2 —
+antes afirmaba (correctamente, en su momento) que `GET /api/inetis/db` NO
+enviaba `Cache-Control`; el propio coordinador pidió en esta Ronda 55 cerrar
+exactamente ese hallazgo, así que la aserción se actualizó para reflejar el
+nuevo comportamiento real (ahora SÍ lo envía), documentado en el propio
+archivo de test con un comentario explicando el cambio y la ronda que lo
+autorizó.
+
+### QUÉ NO SE HIZO ESTA RONDA (honesto, con la razón exacta) — puntos 1 y 4 del pedido (migración del CONSUMIDOR de todas las vistas de todos los roles)
+
+- **Ningún rol fue migrado a nivel de frontend**: ni Docente (Planilla,
+  Notas, Asistencia, Observador, descriptores, logros, evaluaciones, tareas,
+  comunicados), ni Directivo/Rector/Coordinador (dashboard, consolidados,
+  reportes por sede/jornada, estadísticas, citas, gestión de personal), ni
+  Súper Admin/Administrativo (gestión de instituciones, logs — el backend
+  de logs SÍ se endureció, ver arriba —, usuarios, respaldos, soporte), ni
+  Estudiante/Acudiente (boletines, observador personal, tareas,
+  citaciones). Todas estas vistas, en todos los roles, **siguen dependiendo
+  de `_pullDB()`/`GET /api/inetis/db`** exactamente igual que antes de esta
+  ronda — confirmado por grep real (ver test, Parte C).
+- **No se auditaron todavía**, ni siquiera a nivel de lectura de código, los
+  paneles de Directivo/Rector, Súper Admin (más allá de logs) ni Estudiante/
+  Acudiente — el alcance de esta ronda, dado el tiempo y el riesgo
+  disponibles, se limitó a NO reintroducir cambios de frontend no
+  verificables, y a cerrar la parte de backend que sí era 100% segura y
+  verificable.
+- El endpoint `_ejecutarGuardarFilaNotas()` (escritura granular) y los 3
+  endpoints granulares de LECTURA existentes desde la Ronda 44/45 **no se
+  extendieron con nuevos campos ni se les cambió su contrato** más allá de
+  agregar Cache-Control/paginación — su forma de respuesta para quien ya
+  los llamara (nadie en el frontend, hoy) es retrocompatible.
+
+### PLAN CONCRETO PARA LA RONDA 56 (para que el coordinador y el usuario decidan cómo continuar)
+
+Siguiendo el mismo patrón que Ronda 44 → Ronda 45 (avanzar por fases
+verificables, nunca todo de un salto):
+
+1. **Fase de preparación (bajo riesgo, sin tocar el frontend real)**:
+   construir, en un archivo NUEVO y aislado del frontend (no dentro de
+   `03-app-core.js`), un adaptador delgado que envuelva los 3 endpoints
+   granulares y exponga la MISMA forma de datos que hoy usa Planilla
+   internamente (para minimizar el radio de cambio real en las funciones de
+   renderizado existentes). Esto se puede escribir y probar con ejecución
+   real en este mismo sandbox (sin navegador), igual que se hizo con
+   `_paginar()` esta ronda.
+2. **Fase de migración real, UNA vista a la vez, empezando por la de menor
+   acoplamiento** (probablemente Notas de Actividades, que ya depende del
+   endpoint granular de escritura por fila desde la Ronda 36/44, antes que
+   Planilla completa, que tiene más referencias cruzadas). Cada vista
+   migrada debe probarse con un navegador real (o al menos un entorno de
+   staging con Neon real) ANTES de considerarse completada — no en este
+   sandbox.
+3. **Solo después de confirmar Docente completo y estable en producción**,
+   extender el mismo patrón a Directivo/Rector (que reutiliza mucha lógica
+   de Docente) y, por último, a Súper Admin y Estudiante/Acudiente (los de
+   menor tráfico y, por eso mismo, menor urgencia real de optimización de
+   payload).
+4. Mantener el criterio de esta sesión: cada fase con su propio test de
+   ejecución real, su propia entrada en el checklist, y nunca reportar como
+   "migrado" una vista que no se pudo verificar de extremo a extremo.
+
+**Archivos modificados en esta ronda**: `src/index.ts` (Cache-Control
+centralizado + `_paginar()` + paginación en `/api/grados/:id/estudiantes`),
+`src/services/ecosystemAgent.js` (paginación real en `listarLogsAuditoria()`),
+`src/routes/agent.js` (Cache-Control + exposición de `page`/`limit`/`hasMore`
+en `GET /api/agent/logs`).
+
+**Test nuevo**: `test_ronda55_endurecimiento_backend_y_alcance_migracion.mjs`
+(27 aserciones, 100% real: ejecución de la lógica de paginación replicada +
+inspección de código + diagnóstico honesto del alcance NO migrado).
+
+Suite completa re-ejecutada: **56 archivos, 100% verde**. Un test
+previamente congelado (Ronda 54, aserción B.2) se actualizó con
+autorización explícita del coordinador, documentada arriba.
+
+Verificación de sintaxis: los 3 archivos modificados (`src/index.ts`,
+`src/services/ecosystemAgent.js`, `src/routes/agent.js`) se verificaron con
+el método de importación dinámica establecido desde la Ronda 53 — los tres
+fallan únicamente con `Cannot find package '...'` (dotenv/@google/genai/
+express, respectivamente), confirmando que no tienen ningún error de
+sintaxis y que la falla es solo de resolución de módulos (esperado en este
+sandbox sin `node_modules`).
+
+## Ronda 56 — Migración incremental y segura del frontend: Fase 1 (adaptador de estado) + Fase 2 (vista piloto: Planilla de Calificaciones del Docente)
+
+El usuario autorizó explícitamente el plan de fases propuesto al cierre de
+la Ronda 55. Esta ronda ejecuta las Fases 1 y 2 de ese plan, migrando
+**UNA sola vista** (la más madura y de menor riesgo) del rol Docente.
+
+### IDENTIFICACIÓN EXACTA DE LA VISTA (pedida explícitamente por el coordinador)
+
+El menú del Docente tiene DOS entradas distintas para calificaciones,
+confirmadas por inspección de código:
+- **`pag==='planilla'`** → label "📊 Planilla de Calificaciones" →
+  `htmlPlanilla()` (`gestor-academico/dist/modules/03-app-core.js`, línea
+  ~12683). Guarda las notas periódicas en `e.nts[cId][per]` (tipo interno
+  `'planilla'`) — la misma "Planilla de Notas" tocada en las Rondas
+  36/45/51.
+- **`pag==='notas-actividades'`** → label "📝 Notas de Actividades" →
+  `htmlNotasActividades()` (línea ~14336). Guarda notas de actividades de
+  clase en `blob.notasAct[cId_per_colId_estId]` (tipo interno `'actividad'`)
+  — una estructura de datos DISTINTA.
+
+Los endpoints granulares de la Ronda 44/45 (`GET /api/grados/:id/materias/
+:materiaId/notas`) devuelven notas con la forma exacta `e.nts[materiaId][per]`
+— coincide con `'planilla'`, NO con `'notas-actividades'` (que necesitaría un
+endpoint nuevo y distinto, no construido esta ronda, porque su estructura de
+datos es otra). Por eso esta ronda migra **`pag==='planilla'` /
+`htmlPlanilla()`** — "Planilla de Calificaciones" — y **NO** toca
+"Notas de Actividades" (queda para una ronda futura, si el usuario lo pide).
+
+### HALLAZGO CRÍTICO DURANTE LA INVESTIGACIÓN (más complicado de lo previsto, reportado con honestidad tal como pidió el coordinador)
+
+Al leer `htmlPlanilla()` en detalle se encontraron 2 dependencias de datos
+que los 3 endpoints granulares existentes NO cubrían:
+1. El selector "Asignatura" (`mats=db.carga.filter(x=>sesion.r==='admin'
+   ||x.d===sesion.u)`) necesita la lista de **TODAS** las asignaturas del
+   docente — que puede abarcar **más de un grado** — no solo el grado que
+   se está viendo.
+2. `calcAreasPerd()`/`getAreasPerdidas()` (`_areasPorGrado()`, ya existentes,
+   NO se modificaron) calculan "áreas perdidas" comparando las notas de
+   **TODAS las materias del mismo grado** (no solo la materia
+   seleccionada) — incluidas materias de OTROS docentes del mismo grado.
+   El endpoint `GET /api/grados/:id/materias/:materiaId/notas` (Ronda
+   44/45), al traer notas de UNA sola materia, es insuficiente para que
+   esta función sin modificar siguiera funcionando correctamente.
+
+Siguiendo la instrucción explícita del coordinador ("extiende el endpoint
+si es de bajo riesgo, o documenta la limitación") se decidió **extender**:
+se construyeron 2 endpoints NUEVOS, de solo lectura, aditivos, con el mismo
+patrón conservador de la Ronda 44/45 (leen el fragmento ya cacheado del
+blob, `Cache-Control`/ETag centralizados desde la Ronda 55):
+
+- **`GET /api/carga-docente?sk=&docente=`** (`src/index.ts`): lista LIVIANA
+  de asignaturas de un docente (o de toda la institución sin el parámetro
+  `docente`, uso reservado a un futuro consumidor admin).
+- **`GET /api/grados/:id/notas-completas?sk=`** (`src/index.ts`): el
+  fragmento COMPLETO de UN grado — estudiantes con TODAS sus notas de TODAS
+  las materias del grado (`e.nts` sin filtrar) + `cargasDelGrado` (todas las
+  asignaturas del grado, de cualquier docente) + `config` + `periodosActivos`.
+  Sigue siendo MUCHO más chico que el blob institucional completo (nunca
+  incluye asistencia, observador, otros grados, ni otros módulos).
+
+**Trade-off honesto sobre tamaño** (Parte E del test): como este endpoint
+necesita TODAS las materias del grado (no una sola) para que
+`calcAreasPerd()` siga funcionando sin modificarse, su peso crece con el
+número de materias × periodos del grado. Con datos sintéticos: un grado
+típico de primaria (30 est., 6 materias, 4 periodos) pesa ~30-40 KB en
+crudo (por debajo de 50 KB); un grado grande de secundaria con muchas
+materias (40 est., 8 materias, 4 periodos) puede acercarse o superar los
+50 KB en crudo — `compression()` (activo desde la Ronda 44, confirmado en
+la Ronda 54) sigue aplicando igual que en cualquier otro endpoint, y en
+cualquier caso sigue siendo órdenes de magnitud menor que el blob completo
+de la institución (que incluye TODOS los grados, asistencia, observador,
+etc.). Se documenta este trade-off en vez de forzar un umbral artificial.
+
+### FASE 1 — ADAPTADOR DE ESTADO (`_cargarPlanillaGranular()`, `gestor-academico/dist/modules/03-app-core.js`)
+
+Nueva función aislada, junto a `_pullDB()`. Llama a los 2 endpoints nuevos
+de arriba y escribe el resultado en las MISMAS claves de `db` que hoy llena
+`_pullDB()` (`db.carga`, `db.ests` —solo del grado objetivo—, `db.config`,
+`db.periodosActivos`) — **NUNCA reemplaza `db` completo** (evita borrar
+datos de otros módulos que otra vista ya haya cargado), y **NUNCA** llama a
+`_pullDB()`/`GET /api/inetis/db`. Alcance deliberadamente angosto:
+- Solo corre para `sesion.r==='docente'` (Súper Admin/Administrador viendo
+  Planilla de otro docente sigue el camino de siempre — su "carga" abarca
+  TODOS los docentes de la institución, un caso más amplio no cubierto esta
+  ronda).
+- Si el docente no tiene ninguna asignatura todavía, o cualquier fetch
+  falla, retorna `false` limpiamente — el llamador decide el fallback
+  (nunca deja a `db` en un estado a medias).
+
+Ninguna función de renderizado/cálculo YA EXISTENTE de Planilla
+(`htmlPlanilla`, `calcAreasPerd`, `calcNotaDef`, `calcPromedioEstPer`, etc.)
+se modificó — el adaptador las "engaña" alimentando `db` con la misma forma
+de siempre.
+
+### FASE 2 — VISTA PILOTO: 3 puntos de entrada migrados
+
+1. **Navegación desde el menú** (`navTo()` → `_mostrarSkeletonYNavegar()`):
+   se agregó el envoltorio `_navegarConCargaGranularSiAplica()` — SOLO
+   cuando `pag==='planilla'` y el rol es Docente, refresca por el camino
+   granular antes de pintar; para cualquier otra página o rol, termina
+   llamando a `renderApp()` exactamente igual que siempre (cero cambio de
+   comportamiento fuera de Planilla+Docente).
+2. **Botón "Ir a Planilla P{periodo}"** (vista de Consolidados, línea
+   ~12748): reemplazado el salto directo `pag='planilla';renderApp()` por
+   la nueva función `irAPlanillaGranular(cId, per)`, que hace lo mismo pero
+   pasando primero por el adaptador.
+3. **Bootstrap de la aplicación** (F5 / apertura de pestaña, la IIFE
+   principal de `03-app-core.js`): reestructurado para que
+   `_restaurarSesionDesdeStorage()` (que solo lee `sessionStorage`, sin red)
+   corra ANTES de decidir si hace falta el pull completo — así, en el caso
+   angosto de que un Docente reabra la app y su última pantalla guardada
+   fuera Planilla, se usa el adaptador granular en vez de `_pullDB()`. Con
+   salvaguarda: si el camino granular falla por cualquier motivo, cae de
+   vuelta a `_pullDB()` — nunca deja al Docente sin poder entrar. **Para
+   CUALQUIER otro rol, página, o sesión no restaurable, el bootstrap sigue
+   llamando a `_pullDB()` exactamente igual que antes** (cambio
+   deliberadamente angosto, ver la sección de alcance NO migrado abajo).
+
+### VERIFICACIÓN CON EJECUCIÓN REAL (no solo inspección)
+
+Test nuevo `test_ronda56_migracion_granular_planilla_docente.mjs` (50
+aserciones):
+- **Parte A** (7 casos): ejecuta una réplica EXACTA de
+  `_cargarPlanillaGranular()` contra un "servidor" mock de los 2 endpoints
+  nuevos, con datos realistas (un docente con 3 asignaturas en 2 grados
+  distintos, otro docente con una materia en uno de esos grados). Confirma
+  EQUIVALENCIA ESTRUCTURAL con lo que produce `_migrateDB()`: mismas claves
+  (`id` como string, `n`, `g`, `nts`, `foto`, `numDoc`), `nts` con las notas
+  de las 3 materias del grado (no solo la seleccionada, condición necesaria
+  para `calcAreasPerd()`), `db.carga` incluyendo correctamente también la
+  materia de OTRO docente del mismo grado (necesaria para el cálculo de
+  áreas), estudiantes de OTRO grado ya cargados en `db` NUNCA borrados,
+  fallo limpio (`ok:false`) cuando el docente no tiene asignaturas o el rol
+  no es docente.
+- **Parte B** (4 grupos): confirma en el CÓDIGO REAL que la implementación
+  coincide con lo probado en A, que `_cargarPlanillaGranular()` nunca
+  referencia `_pullDB()`/`GET /api/inetis/db`, y que los 3 puntos de entrada
+  de la Fase 2 están correctamente cableados.
+- **Parte C** (2 grupos) — CERO REGRESIÓN: `guardarPlanilla()` y los
+  endpoints de guardado por fila (`/api/inetis/notas/guardar-fila`,
+  `/api/notas/actualizar`, Rondas 36/44) no fueron tocados; el adaptador
+  granular se invoca EXACTAMENTE en los 3 puntos documentados (contado por
+  líneas de código real, excluyendo menciones en comentarios) — nunca se
+  coló en Asistencia u Observador, que siguen dependiendo de `_pullDB()`
+  sin ningún cambio.
+- **Parte D** (2 grupos): confirma que los 2 endpoints nuevos del backend
+  tienen la forma exacta que el adaptador espera y usan `_responderConETag()`
+  (ETag + Cache-Control, Ronda 55).
+- **Parte E** (3 aserciones): estimación honesta de tamaño (ver trade-off
+  arriba).
+
+**Tests previamente congelados actualizados con autorización explícita**
+(las 3 son consecuencia directa y esperada de que esta ronda, por primera
+vez, conecta un consumidor real a los endpoints granulares — cada una se
+documentó en el propio archivo de test con el motivo y la ronda):
+- `test_ronda41_f5_bug_y_portabilidad.mjs`: la aserción que confirmaba que
+  `_mostrarSkeletonYNavegar()` llamaba a `renderApp` directamente se
+  actualizó para reflejar que ahora pasa por `_navegarConCargaGranularSiAplica()`
+  — se agregó una aserción adicional que confirma que ese envoltorio, a su
+  vez, SIGUE terminando en `renderApp()` (nunca en `render()`), preservando
+  intacta la garantía original de esa prueba (Ronda 41: un F5 nunca debe
+  saltarse el guardado cayendo en `render()`).
+- `test_ronda54_switch_ia_persistencia_y_payload_docente.mjs` (aserción
+  B.3) y `test_ronda55_endurecimiento_backend_y_alcance_migracion.mjs`
+  (aserción C.1): ambas afirmaban, correctamente en su momento, que ningún
+  archivo del frontend hacía `fetch(.../api/grados...)`. Ahora sí lo hace
+  (el piloto de Planilla) — se actualizaron para confirmar lo contrario,
+  señalando a este test como la verificación completa.
+
+### QUÉ NO SE MIGRÓ ESTA RONDA (honesto, con la razón exacta)
+
+- **"Notas de Actividades"** (`pag==='notas-actividades'`) — estructura de
+  datos distinta (`blob.notasAct`), necesitaría su propio endpoint granular
+  nuevo, no construido esta ronda (ver identificación de la vista arriba).
+- **Asistencia y Observador** — NO se tocaron, siguen dependiendo por
+  completo de `_pullDB()`, exactamente igual que antes de esta ronda
+  (confirmado por test, Parte C).
+- **Planilla vista por Súper Admin/Administrador** (viendo la planilla de
+  CUALQUIER docente) — el adaptador explícitamente no corre para ese rol;
+  sigue usando el camino de siempre.
+- **El bootstrap en frío para un login INTERACTIVO nuevo** (no una sesión
+  restaurada): se descubrió, investigando el código real, una restricción
+  arquitectónica más profunda de lo previsto — `doLogin()` valida
+  credenciales de Estudiante/Acudiente comparando contra `db.ests`/`db.users`
+  **del lado del cliente**, lo que exige que el blob (al menos
+  `users`/`ests`) ya esté descargado ANTES de que la pantalla de login sea
+  funcional. Esto significa que, en la arquitectura ACTUAL, un login
+  interactivo fresco (no restaurado desde `sessionStorage`) paga el costo
+  del blob completo de todas formas, sin importar a qué vista aterrice
+  después — eliminarlo de raíz requeriría mover la validación de login al
+  servidor, un cambio de arquitectura mayor y **fuera del alcance de esta
+  ronda** (que se pidió explícitamente como un piloto de una sola vista).
+  Se documenta como el hallazgo más significativo de "esto resultó más
+  complicado de lo previsto", tal como pidió el coordinador que se
+  reportara con honestidad.
+
+### ARCHIVOS MODIFICADOS EN ESTA RONDA (para desplegar y probar en Render)
+
+- **`src/index.ts`** — 2 endpoints nuevos: `GET /api/carga-docente`,
+  `GET /api/grados/:id/notas-completas`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — adaptador
+  `_cargarPlanillaGranular()`, envoltorio `_navegarConCargaGranularSiAplica()`,
+  función `irAPlanillaGranular()`, cableado en `_mostrarSkeletonYNavegar()`,
+  en el botón "Ir a Planilla P{periodo}" y en el bootstrap principal (F5).
+
+Ningún otro archivo se tocó esta ronda.
+
+Suite completa re-ejecutada: **57 archivos, 100% verde**. 3 tests
+previamente congelados actualizados con autorización explícita
+(documentado arriba, consecuencia directa y esperada de conectar el primer
+consumidor real a los endpoints granulares).
+
+Verificación de sintaxis: `src/index.ts` y `03-app-core.js` verificados con
+los métodos ya establecidos (importación dinámica para `.ts`, ejecución
+directa para el JS de navegador) — ambos parsean sin errores (el primero
+falla solo en `Cannot find package 'dotenv'`, resolución de módulos; el
+segundo se ejecuta completo hasta `ReferenceError: window is not defined`,
+comportamiento esperado fuera de un navegador).
+
+## Ronda 57 — Migración granular: Notas de Actividades + Descriptores, Asistencia y Observador (jornada diaria del docente)
+
+El usuario autorizó continuar la migración incremental (piloto de la Ronda
+56 sobre Planilla) a los 3 módulos restantes de uso diario del docente:
+"📝 Notas de Actividades" (con sus Descriptores/Logros/Indicadores),
+"🗓️ Asistencia" y el "👁️ Observador del Estudiante". Se exigió
+explícitamente mantener activo el fallback a `_pullDB()` ante cualquier
+fallo de red, y el mismo nivel de rigor de verificación que la Ronda 56.
+
+### 1) Investigación real de las 3 estructuras de datos (con evidencia de código)
+
+- **Notas de Actividades — `blob.notasAct`**: a diferencia de Planilla
+  (anidado por estudiante en `e.nts[cId][per]`), esta es una estructura
+  **GLOBAL Y PLANA** de toda la institución:
+  - `db.notasAct` — mapa plano `{ "cId_per_colId_estId": valor, ... }`
+    (confirmado en `_ejecutarGuardarFilaNotas()`, rama `tipo==='actividad'`,
+    `src/index.ts`).
+  - `db.notasActColumnas` — catálogo GLOBAL (array) de TODAS las
+    columnas/Descriptores/Logros/Indicadores de TODA la institución, sin
+    distinguir materia/grado en su propia forma (cada columna referencia
+    su `cId`/`per` como atributos).
+  - `db.notasActAsignadas` — mapa GLOBAL `{ "cId_per": [colId, colId, ...] }`
+    que dice qué columnas están activas para cada combinación
+    materia+periodo.
+  - Consecuencia directa: un endpoint granular para esta vista **no puede
+    limitarse a filtrar por estudiante o por grado** como Planilla — debe
+    filtrar por **prefijo de clave** (`cId_per_`) sobre `notasAct` y por
+    clave exacta (`cId_per`) sobre `notasActAsignadas`/`notasActColumnas`,
+    y **nunca debe reemplazar esas 3 claves globales por completo** en el
+    cliente (perdería las notas de otras materias/periodos ya cargadas en
+    la misma sesión si el docente navega entre materias).
+- **Observador — `e.observaciones`**: anidado por estudiante, MISMO patrón
+  que `e.nts` de Planilla — pero **sin la dependencia cruzada** que tenía
+  Planilla (no existe un equivalente de `calcAreasPerd()`/
+  `getAreasPerdidas()` que necesite datos de OTRAS materias del mismo
+  grado). El filtrado cliente por `tipo_anotacion` (Ronda 40,
+  `_tipoAnotacionEfectivo()`/`_TIPOS_ANOTACION_VISIBLES_TUTOR_PTA`) opera
+  enteramente sobre el array `observaciones` ya cargado, sin tocar el
+  endpoint — así que el endpoint granular puede devolver el array completo
+  sin filtrar por tipo, exactamente igual que lo haría `_pullDB()`.
+- **Asistencia — `db.asistencia`**: **GLOBAL Y PLANA**, un ARRAY (no un
+  mapa) de registros de clase completos:
+  `{id,fecha,hora,horaFin,periodo,grado,cargaId,docente,actividad,
+  presentes[],ausentes[],justificados[],deletedAt}`. Se filtra por
+  `grado` + `cargaId` (igual criterio que usa `actualizarEstadosAsist()`
+  del lado cliente hoy).
+
+### 2) Endpoints backend nuevos (aditivos, `src/index.ts`, patrón de Ronda 44/55/56: `_leerBlobInstitucionParaFragmento()` + `_responderConETag()`, con ETag/304/`Cache-Control: no-cache`)
+
+- **`GET /api/notas-actividades?sk=&cId=&per=`** — filtra `notasActAsignadas`
+  por la clave exacta `cId_per`, `notasActColumnas` por los ids resultantes,
+  y `notasAct` por prefijo `cId_per_`; además resuelve el `grado` de esa
+  `cId` vía `blob.carga` y devuelve la lista mínima de estudiantes de ese
+  grado (`{id,n,g}`). Responde
+  `{ estudiantes, columnas, notasAct, notasActAsignadas }`.
+- **`GET /api/grados/:id/observador?sk=`** — estudiantes del grado con su
+  array `observaciones` completo, sin filtrar por tipo (ese filtrado sigue
+  siendo responsabilidad del cliente, como siempre). Responde
+  `{ estudiantes }`.
+- **`GET /api/asistencia?sk=&grado=&cargaId=`** — estudiantes activos del
+  grado (`{id,n,g}`) + registros de `db.asistencia` filtrados por
+  `grado`+`cargaId` (si se pasa), ordenados por fecha/hora descendente y
+  acotados a `LIMITE_ASISTENCIA_REGISTROS = 200` (paginación defensiva,
+  mismo espíritu que la Ronda 55 — un grupo con años de historial de
+  asistencia no debería descargarse completo en una sola vista). Responde
+  `{ estudiantes, registros }`.
+
+Los 3 endpoints reutilizan `GET /api/carga-docente` (Ronda 56) para
+resolver la carga del docente cuando hace falta (Notas de Actividades y
+Asistencia necesitan saber a qué grado/materia pertenece la `cId`
+seleccionada, o cuáles son las materias/grados del docente para poblar los
+selectores).
+
+### 3) Adaptadores y helpers de fusión nuevos (`03-app-core.js`)
+
+- **Helpers compartidos nuevos** (usados ahora por los 4 adaptadores,
+  incluyendo Planilla de la Ronda 56, que se migró a este mismo patrón más
+  seguro):
+  - `_fusionarEstudiantesEnDB(grado, estudiantesNuevos)` — reemplaza SOLO
+    los estudiantes de ese grado en `db.ests`, pero fusiona (vía
+    `Object.assign`) cualquier campo que un estudiante ya tuviera cargado
+    por OTRO adaptador (ej. si Asistencia ya cargó a un estudiante y luego
+    Observador carga el mismo grado, ninguno pisa los campos del otro).
+  - `_fusionarCargaEnDB(cargasNuevas)` — fusiona asignaciones
+    docente-materia-grado en `db.carga` por id, sin duplicar.
+  - `_fusionarAsistenciaEnDB(grado, cargaId, registrosNuevos)` — reemplaza
+    solo los registros de esa combinación grado+cargaId en
+    `db.asistencia`, preservando los de otras combinaciones ya cargadas.
+- **`_cargarNotasActividadesGranular()`** — resuelve la `cId`/`per`
+  objetivo vía `GET /api/carga-docente`, llama a
+  `GET /api/notas-actividades`, y fusiona el resultado en
+  `db.notasActColumnas` (upsert por id, sin duplicar ni perder columnas de
+  otras materias), `db.notasActAsignadas` (merge superficial) y
+  `db.notasAct` (merge superficial) — nunca reemplaza esas 3 claves
+  globales por completo.
+- **`_cargarObservadorGranular(grado)`** — llama a
+  `GET /api/grados/:id/observador` y fusiona con
+  `_fusionarEstudiantesEnDB()`.
+- **`_cargarAsistenciaGranular()`** — resuelve grado/`cargaId` objetivo vía
+  `GET /api/carga-docente`, llama a `GET /api/asistencia`, y fusiona carga
+  + estudiantes + registros con los 3 helpers de arriba.
+- Los 3 adaptadores nuevos siguen exactamente el mismo contrato que
+  `_cargarPlanillaGranular()` (Ronda 56): alcance angosto a
+  `sesion.r==='docente'`, `try/catch` que retorna `false` limpio ante
+  cualquier fallo (nunca lanza), y **nunca referencian `_pullDB()` ni
+  `/api/inetis/db`** internamente — la decisión de caer al blob completo
+  es siempre del llamador, nunca del adaptador.
+
+### 4) Cableado — fallback a `_pullDB()` activo en los 6 puntos de entrada tocados
+
+| Punto de entrada | Archivo | Vista(s) |
+|---|---|---|
+| `_navegarConCargaGranularSiAplica()` (envoltorio de navTo(), ampliado) | `03-app-core.js` | Notas de Actividades, Asistencia (entrada por menú) |
+| `cambiarNotaActPer(v)` (ahora `async`) | `03-app-core.js` | Notas de Actividades (cambio de periodo) |
+| `cambiarNotaActCId(v)` (ahora `async`) | `03-app-core.js` | Notas de Actividades (cambio de materia) |
+| `cargarListaObservador()` (ahora `async`) | `03-app-core.js` | Observador (única entrada — es 100% bajo demanda, sin punto de entrada por menú/navTo) |
+| `actualizarAsignaturasReg(gradoSel)` (ahora `async`) | `06-documentos-y-resto.js` | Asistencia (cambio de grado) |
+| `actualizarEstadosAsist()` (ahora `async`) | `06-documentos-y-resto.js` | Asistencia (cambio de materia/fecha/periodo) |
+
+En los 6 puntos el patrón es idéntico y explícito:
+```js
+let ok=false; try{ ok=await _cargarXGranular(); }catch(e){}
+if(!ok){ try{ await _pullDB(); }catch(e){} }
+```
+confirmado con evidencia de código real (no solo inferencia) en la Parte C
+del nuevo test de esta ronda.
+
+### 5) Qué se verificó con ejecución real vs. qué es inferencia razonable
+
+**Verificado con ejecución real** (réplicas fieles de la lógica de los 3
+adaptadores nuevos corridas contra un backend simulado con datos
+multi-materia/multi-grado realistas, en
+`test_ronda57_migracion_granular_notasact_asistencia_observador.mjs`,
+Parte B):
+- Notas de Actividades: al cargar la materia/periodo seleccionado, SOLO se
+  traen las columnas/notas de ESE `cId_per` (nunca las de otra materia ya
+  cargada), y cambiar de materia preserva en memoria las notas de la
+  materia anterior (no las borra) — la fusión superficial funciona como
+  se diseñó.
+- Observador: los estudiantes de un grado ya migrado se enriquecen
+  correctamente con su array `observaciones`; estudiantes de OTROS grados
+  ya presentes en `db.ests` (por ejemplo, cargados antes por Planilla o
+  Asistencia) permanecen intactos.
+- Asistencia: al seleccionar grado+materia, solo se traen los registros de
+  ESA combinación; registros de otra `cargaId` ya cargados en la sesión no
+  se pierden.
+- Los 3 adaptadores retornan `false` de forma limpia (sin lanzar) cuando
+  no hay sesión de docente activa.
+- Un caso adicional (Parte D.6) confirma que dos adaptadores distintos
+  (ej. Asistencia y Observador) cargando el MISMO estudiante en momentos
+  distintos de la sesión NO se pisan los campos entre sí — se preservan
+  ambos aportes gracias a `_fusionarEstudiantesEnDB()`.
+
+**Inferencia razonable, no ejecutable en este sandbox** (no hay navegador
+real ni Neon disponible aquí): el comportamiento del DOM real (selects,
+`document.getElementById`) en `actualizarAsignaturasReg`/
+`actualizarEstadosAsist`, y la latencia/orden real de las peticiones fetch
+concurrentes en un navegador real. Se verificó en su lugar, con lectura de
+código real, que la estructura async/await y el orden de las llamadas es
+correcto y que ninguna ruta queda sin el `await` explícito antes de
+`renderApp()`.
+
+### 6) Cero regresión confirmada
+
+- **Guardado de Notas de Actividades** (`_guardarNotaAct()`, autoguardado
+  granular por celda de la Ronda 36/44 vía `_marcarFilaEnEdicion` +
+  `POST /api/notas/actualizar`): **sin cambios**, no referencia ningún
+  adaptador nuevo de esta ronda — el adaptador solo migra la LECTURA
+  inicial de la vista, nunca su escritura.
+- **Registro de asistencia** (`guardarAsistencia()`, vía `updDB()` /
+  `POST /api/inetis/db`): **sin cambios**, sigue en el camino de escritura
+  de blob completo de siempre — fuera de alcance de esta ronda (solo se
+  migró la lectura).
+- **Registro/edición/eliminación de observaciones** (`agregarObservacion()`
+  / `editarObservacion()` / `eliminarObservacion()`, también vía
+  `updDB()`): **sin cambios**, mismo razonamiento que Asistencia.
+- **Planilla (piloto de la Ronda 56)**: no afectada — su adaptador
+  `_cargarPlanillaGranular()` se refactorizó internamente para usar los 2
+  helpers de fusión compartidos (`_fusionarCargaEnDB`/
+  `_fusionarEstudiantesEnDB`) en vez de su lógica inline anterior, pero es
+  un cambio de implementación equivalente, no de comportamiento — reverificado
+  con la suite completa de `test_ronda56_migracion_granular_planilla_docente.mjs`
+  (50/50 verde tras 2 actualizaciones de ventana de búsqueda de texto,
+  ver abajo).
+
+### 7) Alcance NO cubierto esta ronda (declarado explícitamente, mismo espíritu de honestidad que Rondas 55/56)
+
+- **Bootstrap en frío (F5/reapertura de pestaña) directo a Notas de
+  Actividades o Asistencia**: la optimización que la Ronda 56 sí construyó
+  para Planilla (rama `_esDocentePlanillaDirecta` en el IIFE de arranque)
+  **no se extendió** a estas 2 vistas en esta ronda — un F5 estando en
+  Notas de Actividades o Asistencia sigue cayendo en el camino de
+  `_pullDB()` completo del bootstrap; solo la navegación DENTRO de la
+  sesión ya abierta (menú, cambio de materia/periodo/grado) usa el camino
+  granular. Se declara así para no sobre-representar el alcance: extender
+  el bootstrap directo a estas 2 vistas es candidato natural para una
+  ronda futura, siguiendo el mismo patrón ya probado con Planilla.
+- **Observador no tiene punto de entrada por bootstrap** en absoluto (ni
+  antes ni después de esta ronda) — su carga siempre fue 100% bajo demanda
+  vía `cargarListaObservador()`, así que no aplica la limitación anterior
+  a esta vista.
+- La restricción arquitectónica de login interactivo fresco (documentada
+  en la Ronda 56 — `doLogin()` valida contra `db.ests`/`db.users` del lado
+  del cliente) sigue vigente y sin cambios; no se intentó resolverla esta
+  ronda tampoco.
+
+### ARCHIVOS MODIFICADOS EN ESTA RONDA (para desplegar y probar en Render)
+
+- **`src/index.ts`** — 3 endpoints nuevos: `GET /api/notas-actividades`,
+  `GET /api/grados/:id/observador`, `GET /api/asistencia`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — 2 helpers de fusión
+  nuevos (`_fusionarEstudiantesEnDB`, `_fusionarCargaEnDB`, reutilizados
+  desde Planilla), 1 helper adicional (`_fusionarAsistenciaEnDB`), 3
+  adaptadores nuevos (`_cargarNotasActividadesGranular`,
+  `_cargarObservadorGranular`, `_cargarAsistenciaGranular`), ampliación de
+  `_navegarConCargaGranularSiAplica()` con 2 ramas nuevas, y conversión a
+  `async` de `cambiarNotaActPer`, `cambiarNotaActCId` y
+  `cargarListaObservador` (cada una con su fallback a `_pullDB()`).
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  conversión a `async` de `actualizarAsignaturasReg` y
+  `actualizarEstadosAsist` (cada una con su fallback a `_pullDB()`).
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún otro archivo se tocó esta ronda.
+
+Suite completa re-ejecutada: **58 archivos, 100% verde** (1 test nuevo,
+`test_ronda57_migracion_granular_notasact_asistencia_observador.mjs`,
+64/64 asersiones). 2 tests previamente congelados actualizados con
+autorización explícita, consecuencia directa y esperada de ampliar el
+mismo envoltorio que la Ronda 56 ya había puesto bajo prueba:
+- `test_ronda41_f5_bug_y_portabilidad.mjs` — se amplió la ventana de
+  búsqueda de texto (de 400 a 1400 caracteres) para seguir alcanzando el
+  `renderApp()` final de `_navegarConCargaGranularSiAplica()` ahora que su
+  cuerpo creció con las 2 ramas nuevas; la garantía verificada (termina en
+  `renderApp()`, nunca en `render()`) no cambió.
+- `test_ronda56_migracion_granular_planilla_docente.mjs` — 2 ajustes de
+  ventana de búsqueda por el mismo motivo (un comentario nuevo de la
+  Ronda 57 quedaba dentro de la ventana anterior y mencionaba `_pullDB()`
+  en prosa, generando un falso positivo); se acotó la ventana al cierre
+  real de la función en un caso, y se amplió en el otro. Se aprovechó
+  también para corregir el enunciado de una aserción que ya no era exacto
+  ("cualquier otra combinación llama a renderApp() sin ningún paso
+  extra" — ya no es cierto porque Notas de Actividades/Asistencia también
+  tienen ahora su propio desvío), sin debilitar la garantía verificada.
+
+Verificación de sintaxis: `src/index.ts` (los 3 endpoints nuevos),
+`03-app-core.js` y `06-documentos-y-resto.js` verificados con los métodos
+ya establecidos (importación dinámica para `.ts`, ejecución directa para
+el JS de navegador) — los 3 parsean sin errores (el primero falla solo en
+`Cannot find package 'dotenv'`, resolución de módulos; los otros 2 se
+ejecutan completos hasta `ReferenceError: window is not defined`,
+comportamiento esperado fuera de un navegador).
+
+## Ronda 58 — Cierre del 100% del rol Docente (auditoría + F5 en frío + red de seguridad para reportes)
+
+El usuario ordenó explícitamente DETENER el avance a Súper Admin/Directivos
+hasta auditar y cerrar el rol Docente en su totalidad. Esta ronda entrega:
+(1) el inventario exhaustivo pedido, (2) el cierre del F5 en frío para las 3
+vistas de la Ronda 57, (3) la investigación de "ponderaciones/porcentajes,
+descriptores/indicadores y planes de nivelación/recuperación", y (4) la
+investigación de reportes/PDF con una decisión de riesgo/beneficio
+documentada.
+
+### 1) INVENTARIO EXHAUSTIVO DEL ROL DOCENTE (evidencia real de grep/lectura de código, `03-app-core.js` líneas ~7880-7975 — construcción del menú)
+
+| Vista/módulo del Docente | Página (`pag`) | Estado ANTES de Ronda 58 | Estado DESPUÉS de Ronda 58 |
+|---|---|---|---|
+| 🎯 Mi Panel | `panel-docente` | Blob completo (`_pullDB()`) | Sin cambios — fuera de alcance (panel de resumen, lee de varias fuentes agregadas; no se tocó) |
+| 📊 Planilla | `planilla` | **Granular** (lectura, Ronda 56) + F5 en frío granular (Ronda 56) | Sin cambios — ya cerrado |
+| 📝 Notas de Actividades (+ Descriptores/Logros/Indicadores) | `notas-actividades` | **Granular** (lectura, Ronda 57), F5 en frío = blob completo | **Granular** + **F5 en frío granular cerrado esta ronda** |
+| 📅 Asistencia | `asistencia` | **Granular** (lectura, Ronda 57), F5 en frío = blob completo | **Granular** + **F5 en frío granular cerrado esta ronda** |
+| 👁️ Observador | `observador` | **Granular** (lectura, Ronda 57, solo bajo demanda), F5 en frío = blob completo | **Granular** + **F5 en frío granular cerrado esta ronda (cuando hay grado restaurado)** |
+| 🔍 Estado Notas | `estado-notas` | Blob completo | Sin migrar — cubierto por la **red de seguridad** nueva (ver sección 4) si se llega con "db" parcial |
+| 📊 Consolidados (`adm-rep`, rótulo Docente) | `adm-rep` | Blob completo (multi-grado/multi-materia) | Sin migrar (ver sección 4 — riesgo/beneficio) — cubierto por la **red de seguridad** |
+| 📋 Documentos/Actas | `actas` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 🏅 Menciones Honor | `menciones-honor` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📋 Permiso Ausencia | `ausentismo` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📝 Actividades | `actividades-docente` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 🧩 Quiz/Evaluaciones | `quizzes-docente` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📅 Calendario Académico | `calendario-academico` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 🕐 Mi Horario | `horarios` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📢 Tablón de Anuncios | `aviso-docente` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📓 Obs. de Aula | `obs-aula` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📮 Buzón de Sugerencias | `buzon-sugerencias` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 💬 Contacto Rector(a) | `contacto` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| 📁 Eval. Desempeño Docente | `seguimiento-eval-docente` | Blob completo | Sin migrar — cubierto por la red de seguridad |
+| Roles especiales (Orientador/Tutor PTA): Alertas Académicas, Atenciones Psicopedagógicas, Comité de Convivencia, Centros de Interés | varios | Blob completo | Sin migrar — fuera del alcance de esta ronda (son variantes del rol Docente con vistas propias no incluidas en el pedido explícito de la Ronda 57/58) |
+| 🗂️ Repositorio Recursos | externo (`href`) | N/A — enlace externo, no consume "db" | Sin cambios |
+| Reportes/PDF (Planilla impresa, Consolidados, Boletines) | funciones `pdf*()` | 100% cliente (jsPDF) sobre "db" en memoria | Investigado (sección 3); NO migrado — decisión de riesgo/beneficio documentada, cubierto por la red de seguridad para evitar datos incompletos |
+
+**Resumen honesto:** de las 4 vistas de "jornada diaria" con volumen real de
+datos (Planilla, Notas de Actividades, Asistencia, Observador), las 4 tienen
+ahora lectura granular Y F5 en frío granular — el pedido explícito y
+prioritario del usuario queda 100% cerrado. El resto del catálogo del rol
+Docente (paneles informativos, configuración liviana, formularios) sigue
+usando `_pullDB()` como siempre, pero desde esta ronda **nunca puede quedar
+con datos incompletos**, gracias a la red de seguridad de la sección 4 —
+así que aunque no estén "migrados" en el sentido de tener su propio
+endpoint granular, tampoco están en riesgo de mostrar información parcial.
+
+### 2) F5 EN FRÍO — cierre del pendiente explícito de la Ronda 57
+
+Mismo patrón exacto que Planilla (Ronda 56), extendido a las 3 vistas
+nuevas, en el bootstrap principal (`03-app-core.js`, IIFE de arranque):
+
+- `_esDocenteFrio` — nueva variable compartida (`_seRestauro&&sesion&&sesion.r==='docente'`), de la que ahora derivan las 4 condiciones angostas (incluida la de Planilla, que se refactorizó para reusarla — mismo valor final, sin cambio de comportamiento).
+- `_esDocenteNotasActDirecto` — `_esDocenteFrio&&pag==='notas-actividades'`. `notaActCId`/`notaActPer` ya están restaurados de forma SÍNCRONA por `_restaurarSesionDesdeStorage()` (Ronda 35), igual que `planCId`/`planPer`.
+- `_esDocenteAsistenciaDirecta` — `_esDocenteFrio&&pag==='asistencia'`. `asistGrado`/`asistCId` ya están restaurados de la misma forma síncrona.
+- `_esDocenteObservadorDirecto` — `_esDocenteFrio&&pag==='observador'&&` hay un grado pendiente restaurado (`window._ronda36ObsPendiente.grado`). A diferencia de las otras 3 vistas, el grado/periodo de Observador vive en un `<select>` del DOM, no en una variable global — solo se conoce de forma síncrona a través de ese objeto pendiente (guardado por `_restaurarSesionDesdeStorage()`, Ronda 36). **Si no hay grado pendiente** (el Docente nunca llegó a elegir uno antes del F5), se declara honestamente que no hay nada concreto que pedirle al endpoint granular — se deja el camino de siempre (`_pullDB()`), igual que ya hacía Planilla cuando su caso angosto no aplicaba.
+- Cada una de las 4 ramas: adaptador granular → si tiene éxito, se marca `window._dbGranularSolamente=true` (ver sección 4); si falla, cae a `_pullDB()` exactamente como las demás.
+
+### 3) INVESTIGACIÓN DEL PUNTO 2b — con evidencia real de código
+
+- **Descriptores/Logros/Indicadores**: confirmado que SON la misma
+  estructura que "Notas de Actividades" (`db.notasActColumnas`), tal como
+  se documentó en la Ronda 57 — **no es una configuración separada**. Ya
+  quedaron cubiertos por el endpoint `GET /api/notas-actividades` de esa
+  ronda (que filtra y devuelve exactamente las columnas de la materia/
+  periodo seleccionado). No se necesitó ningún endpoint nuevo para esto.
+- **Ponderaciones/porcentajes**: investigación real (`htmlConfigEvalPedagogica()`,
+  `db.config.pctSer/pctSaber/pctHacer/columnasExtra/pesosPeriodos`) confirma
+  que es **configuración institucional editable ÚNICAMENTE por el Admin**
+  (pantalla `adm-base`, exige `isAdmin`). El Docente NUNCA la escribe — solo
+  la lee de forma indirecta, y esa lectura YA es granular desde la Ronda 56:
+  el endpoint `GET /api/grados/:id/notas-completas` que alimenta a
+  `_cargarPlanillaGranular()` ya incluye el fragmento `config` completo. No
+  hace falta ningún cambio adicional.
+- **Planes de Nivelación/Recuperación**: investigación real (grep
+  exhaustivo sobre ambos módulos frontend) confirma que **no existe como
+  módulo o estructura de datos propia**. Lo único que existe con ese nombre
+  son 2 interruptores booleanos dentro de la MISMA pantalla de
+  configuración institucional del Admin ("Habilitar recuperaciones
+  periódicas (por período)", "Permitir nivelaciones pendientes al año
+  siguiente") — no hay ningún flujo donde el Docente cree, edite o consulte
+  un "plan" individual de nivelación/recuperación. Se reporta con
+  honestidad: **no había nada que migrar aquí**, porque la funcionalidad
+  descrita en el pedido no existe como un módulo separado en el código
+  real; inventar uno estaría fuera del alcance de una ronda de migración de
+  arquitectura.
+
+### 4) INVESTIGACIÓN DEL PUNTO 3 (Reportes/PDF) — decisión de riesgo/beneficio documentada
+
+Investigación real confirma, con evidencia directa en el propio código
+(`src/index.ts`, línea ~3576): **toda la generación de PDF del sistema
+ocurre 100% en el navegador con jsPDF**, nunca en el servidor — el propio
+proyecto documenta esta decisión explícitamente ("no se genera el PDF en el
+servidor... el proyecto no trae ninguna librería de PDF server-side —
+decisión consciente de no agregar una dependencia nueva — pdfkit/puppeteer
+— sin que el usuario la pida explícitamente"). Confirmado en 6+ funciones
+(`pdfPlanillaGrado`, `pdfConsolidadoGeneral`, `pdfConsolidadoDir`,
+`pdfConsolidado`, `pdfConsolidadoCompletoEstudiante`,
+`pdfConsolidadoCompletoMasivo`, entre otras): todas construyen el documento
+con `jsPDF` (directo o vía el helper compartido `getPDF()`) a partir de
+`db` ya cargado en memoria — **no hacen su propia consulta de red**.
+
+**Decisión tomada esta ronda (documentada, no forzada):** NO se adaptó cada
+generador de PDF a los endpoints granulares. Motivos:
+1. Requeriría poder generar y **abrir visualmente** un PDF real para
+   verificar que el layout no se rompió — imposible en este sandbox (sin
+   navegador real, sin Canvas/DOM).
+2. Son funciones que ya leen de `db` de forma genérica (no tienen su propio
+   fetch) — cualquier adaptación tocaría 6+ funciones con lógica de
+   maquetación compleja (jsPDF), un riesgo de regresión visual alto para un
+   beneficio de red pequeño (un reporte se genera ocasionalmente, no en
+   cada interacción).
+3. **En su lugar, se construyó una salvaguarda estructural que resuelve el
+   riesgo real** (que un PDF/reporte salga con datos incompletos si "db"
+   quedó parcial por una vista granular) sin tocar ninguna función de PDF:
+   la **red de seguridad `window._dbGranularSolamente`**.
+
+**Cómo funciona la red de seguridad** (`03-app-core.js`):
+- Se enciende (`window._dbGranularSolamente=true`) cada vez que CUALQUIERA
+  de los 4 adaptadores granulares (Planilla, Notas de Actividades,
+  Asistencia, Observador) tiene éxito SIN que se haya ejecutado un
+  `_pullDB()` completo en esa sesión — en los 8 puntos donde esto puede
+  ocurrir (4 en el bootstrap F5 + 4 en navegación/cambio en caliente:
+  `_navegarConCargaGranularSiAplica`, `cambiarNotaActPer`,
+  `cambiarNotaActCId`, `cargarListaObservador`, `actualizarAsignaturasReg`,
+  `actualizarEstadosAsist` — 6 puntos de navegación en caliente más 4 del
+  bootstrap, con solapamiento entre Planilla/NotasAct/Asistencia).
+- Se apaga (`window._dbGranularSolamente=false`) en cuanto `_pullDB()`
+  corre con éxito (se agregó una sola línea dentro de `_pullDB()` mismo).
+- **La salvaguarda real**: dentro de `_navegarConCargaGranularSiAplica()`
+  (el envoltorio que corre en TODA navegación por menú/`navTo()`), si el
+  Docente navega a cualquier página que NO sea una de las 3 con adaptador
+  propio (Planilla/Notas de Actividades/Asistencia) mientras
+  `window._dbGranularSolamente` siga encendido, se fuerza un `_pullDB()`
+  completo ANTES de renderizar esa página — así, por ejemplo, si un
+  Docente entra por F5 en frío directo a Planilla (granular) y luego
+  navega a "📊 Consolidados" (que sí puede necesitar TODOS sus grados), el
+  sistema garantiza que "db" ya esté completo antes de que el reporte se
+  genere, sin haber tocado ni una línea de `pdfConsolidado*()`.
+- Costo: en el caso normal (Docente que entra por F5 normal, sin el atajo
+  granular), la red de seguridad no agrega ningún pull extra — costo cero.
+  Solo se paga el pull adicional en el caso específico donde antes no
+  existía ninguna garantía de datos completos para reportes multi-grado.
+
+### 5) Cero regresión confirmada
+
+- Los 3 caminos de escritura (`_guardarNotaAct()`, `guardarAsistencia()`,
+  `agregarObservacion()`/`editarObservacion()`/`eliminarObservacion()`)
+  **sin cambios**, no referencian `_dbGranularSolamente` ni ningún
+  adaptador — se confirmó con lectura de código real que siguen siendo
+  mecanismos completamente independientes de la red de seguridad de
+  lectura.
+- Planilla (Ronda 56) no se ve afectada: su condición en el bootstrap
+  ahora se deriva de `_esDocenteFrio` (antes repetía la expresión completa)
+  — mismo valor final, cambio puramente de forma; su rama en el envoltorio
+  ahora también marca `_dbGranularSolamente`, un agregado aditivo sobre la
+  misma llamada y el mismo fallback de siempre.
+- Los 3 adaptadores de lectura de la Ronda 57 (Notas de Actividades,
+  Asistencia, Observador) no cambiaron su lógica interna — solo se
+  agregó, en sus 6 puntos de navegación en caliente y en las 3 ramas
+  nuevas del bootstrap, la línea que marca la red de seguridad en su
+  éxito.
+
+### ARCHIVOS MODIFICADOS EN ESTA RONDA (para desplegar y probar en Render)
+
+- **`gestor-academico/dist/modules/03-app-core.js`** — 3 ramas nuevas en el
+  bootstrap F5 en frío (Notas de Actividades, Asistencia, Observador),
+  refactor de la condición de Planilla para reusar `_esDocenteFrio`, red de
+  seguridad `window._dbGranularSolamente` (inicialización, marcado en los
+  4 adaptadores granulares × 8 puntos de invocación, apagado en
+  `_pullDB()`, y la rama de salvaguarda en `_navegarConCargaGranularSiAplica()`).
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** — marcado de
+  la red de seguridad en `actualizarAsignaturasReg()` y
+  `actualizarEstadosAsist()` (mismo patrón aditivo).
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún otro archivo se tocó esta ronda. En particular, **no se tocó**
+`src/index.ts` (no se necesitó ningún endpoint backend nuevo esta ronda —
+los 4 endpoints granulares de las Rondas 56-57 ya cubren todo lo que se
+migró) ni ningún generador de PDF.
+
+Suite completa re-ejecutada: **59 archivos, 100% verde** (1 test nuevo,
+`test_ronda58_f5_frio_completo_y_red_seguridad_reportes.mjs`, 80/80
+aserciones). 2 tests previamente congelados actualizados con autorización
+explícita, consecuencia directa y esperada de ampliar el mismo bootstrap y
+el mismo envoltorio que las Rondas 56-57 ya habían puesto bajo prueba:
+- `test_ronda41_f5_bug_y_portabilidad.mjs` — se amplió la ventana de
+  búsqueda de texto (de 1400 a 2200 caracteres) para seguir alcanzando el
+  `renderApp()` final de `_navegarConCargaGranularSiAplica()` ahora que su
+  cuerpo creció con la red de seguridad; la garantía verificada (termina en
+  `renderApp()`, nunca en `render()`) no cambió.
+- `test_ronda56_migracion_granular_planilla_docente.mjs` — se actualizaron
+  2 fragmentos de texto exacto en la Parte B.4 (la condición de Planilla
+  ahora se deriva de `_esDocenteFrio`, y su rama de éxito ahora agrega el
+  marcado de la red de seguridad antes del fallback) y se amplió la
+  ventana de búsqueda; la garantía verificada (camino angosto usa el
+  adaptador con fallback, cualquier otro caso sigue en `_pullDB()`)
+  permanece intacta.
+
+Verificación de sintaxis: `03-app-core.js` y `06-documentos-y-resto.js`
+verificados con el método ya establecido (ejecución directa vía
+importación dinámica) — ambos se ejecutan completos hasta
+`ReferenceError: window is not defined`, comportamiento esperado fuera de
+un navegador, confirmando ausencia de errores de sintaxis.
+
+## Ronda 59 — Migración REAL (no solo "red de seguridad") de Actividades/Tareas y Permisos; cierre de investigación de Repositorio/Guías y Atención a Padres/Citaciones
+
+El usuario insistió en que el rol Docente quede 100% granularizado SIN
+excepciones cubiertas solo por la red de seguridad de la Ronda 58. Esta
+ronda migra 2 módulos con endpoints y adaptadores reales, e investiga (con
+evidencia de código) por qué los otros 2 puntos del pedido no requerían
+código nuevo.
+
+### 1) MÓDULO DE ACTIVIDADES/TAREAS/TALLERES (+ Leccionario + Planeaciones) — MIGRADO
+
+Investigación real (`htmlDocenteActividades()`, `06-documentos-y-resto.js`)
+confirma una **dependencia cruzada real**, de la misma clase que la
+encontrada en Planilla (Ronda 56): la lista de Actividades que ve un
+Docente se filtra por `gradosDelDocente(sesion.u)` (grados que DICTA), no
+por "quién la creó" — un Docente ve actividades publicadas por OTROS
+docentes para el mismo grado. El endpoint nuevo replica exactamente ese
+filtro, en vez de asumir "solo mis propias actividades" (que hubiera sido
+incorrecto y hubiera ocultado actividades de otras asignaturas del mismo
+grado).
+
+- **`GET /api/actividades-docente?sk=&docente=`** (nuevo, `src/index.ts`):
+  calcula `gradosDoc` igual que `gradosDelDocente()` del frontend, filtra
+  `actividades` por esos grados, filtra `actEntregas` por los `actId` ya
+  filtrados (nunca expone entregas de actividades que el Docente no puede
+  ver), y filtra `leccionario`/`planeacionesIA` estrictamente por
+  `docente===sesion.u` (más las planeaciones sin dueño asignado, replicando
+  `p.docente===sesion.u||!p.docente`).
+- **`_cargarActividadesDocenteGranular()`** (nuevo, `03-app-core.js`):
+  fusiona los 4 resultados en `db.actividades`/`db.actEntregas`/
+  `db.leccionario`/`db.planeacionesIA` con el helper genérico nuevo
+  `_fusionarColeccionPorFiltro(clave, filtroDeReemplazo, itemsNuevos)`
+  (reemplaza solo el subconjunto que el endpoint devuelve, conserva el
+  resto — mismo principio que `_fusionarEstudiantesEnDB`/
+  `_fusionarAsistenciaEnDB` de rondas anteriores, generalizado para no
+  repetir la lógica 4 veces).
+
+### 2) MÓDULO DE PERMISOS/JUSTIFICANTES (H03.03.F01 — Ausentismo) — MIGRADO
+
+Investigación real (`htmlAusentismo()`) confirma un filtrado simple, SIN
+dependencia cruzada: `db.ausentismos` (array global) se filtra
+estrictamente por `s.doc===sesion.u` — un Docente nunca ve el permiso de
+otro.
+
+- **`GET /api/permisos-docente?sk=&docente=`** (nuevo, `src/index.ts`):
+  filtra `ausentismos` por `s.doc===docente`.
+- **`_cargarPermisosDocenteGranular()`** (nuevo, `03-app-core.js`): fusiona
+  el resultado en `db.ausentismos` con el mismo helper genérico.
+
+### 3) MÓDULO DE REPOSITORIO/GUÍAS — INVESTIGADO, SIN CÓDIGO NUEVO NECESARIO
+
+Investigación real confirma que este punto del pedido ya está resuelto por
+2 caminos distintos, ninguno construido en esta migración:
+
+- **"🗂️ Repositorio Recursos"** (el ítem de menú visible para TODOS los
+  roles, incluido Docente): es un **enlace EXTERNO**
+  (`menu.push({id:'repositorio',...,href:'/repositorio?...',external:true})`)
+  — nunca consume `db`/`_pullDB()` en este SPA. Ya es "granular" en el
+  sentido más fuerte posible: no toca el blob para nada.
+- **"💻 Aula Virtual"** (Módulos de Aprendizaje/guías por asignatura, solo
+  para instituciones `nivelEducativo==='UNIVERSIDAD'`): tiene su **propio
+  backend LMS dedicado, pre-existente** (`src/routes/lms.ts`,
+  `GET /api/lms/aula/:grupoId`) y su propio adaptador frontend
+  (`_lmsCargarAula()`), que nunca llama a `_pullDB()` — esta
+  infraestructura ya era granular ANTES de que esta migración empezara
+  (Rondas 56-59), simplemente no formaba parte del "blob completo" que las
+  demás vistas sí compartían.
+
+Se reporta con honestidad: no se necesitó ningún endpoint ni adaptador
+nuevo para este punto — inventar trabajo aquí hubiera sido contraproducente.
+
+### 4) MÓDULOS DE ATENCIÓN A PADRES/CITACIONES Y PLANEACIÓN CURRICULAR — INVESTIGADO, SIN CÓDIGO NUEVO NECESARIO
+
+- **"Atención a Padres/Citaciones"**: investigación real confirma que NO
+  existe como módulo o estructura de datos propia del Docente regular.
+  "Citación a Padres / Cuidador(a)" es uno de los 10 **tipos de acta/PDF**
+  disponibles dentro del catálogo general de Documentos/Actas
+  (`pdfActaCitacion()`), generado 100% en el navegador con jsPDF — la misma
+  categoría de "reportes/PDF client-side" ya investigada a fondo en la
+  Ronda 58, y ya protegida por la red de seguridad `_dbGranularSolamente`
+  de esa ronda (fuera de alcance tocar generadores de PDF en esta ronda,
+  como confirmó el propio pedido del usuario). No hay ningún flujo separado
+  de "registrar una atención a acudiente" para el Docente regular (eso sí
+  existe, pero para el rol Orientador — `htmlAtencionesPsico()`, ya
+  auditado en la Ronda 58 como una vista de un rol especial, fuera del
+  alcance del Docente estándar).
+- **"Planeación curricular"**: SÍ existe, y es exactamente el Leccionario
+  Digital / Planificador de Aula + las Planeaciones IA — ambos **dentro
+  del mismo módulo de Actividades** migrado en el punto 1 de esta ronda,
+  no un módulo aparte. No se necesitó ningún trabajo adicional más allá de
+  lo ya hecho en el punto 1.
+
+### 5) CERO DEPENDENCIAS RESIDUALES DE `_pullDB()` — barrido de verificación
+
+Se hizo un grep exhaustivo de TODAS las llamadas a `_pullDB()` en ambos
+archivos frontend. Fuera de los patrones ya conocidos (fallback explícito
+tras un intento granular fallido, y la rama de la red de seguridad de la
+Ronda 58), quedan exactamente **4 llamadas incondicionales**
+(`06-documentos-y-resto.js`, funciones `_tiConfirmarImportEstudiante`,
+`_tiConfirmarImportDocente`, `_tiAprobarSolicitud`) — las 3 viven
+exclusivamente dentro del módulo **"Traslado Inter-Institucional"**, cuyo
+único punto de entrada en el menú es
+`if(isAdmin) menu.push({id:'traslado-institucional',...})` — **nunca
+accesible por el rol Docente**. Se confirma con evidencia real que no
+queda ninguna opción de menú o botón alcanzable por el Docente que dispare
+el blob completo fuera de: (a) las 6 ramas ya migradas con su propio
+fallback (Planilla, Notas de Actividades, Asistencia, Observador,
+Actividades, Permisos), y (b) la red de seguridad de reportes de la Ronda
+58 (explícitamente fuera de alcance de esta ronda, y explícitamente
+autorizada a seguir existiendo).
+
+### 6) Cero regresión confirmada
+
+- Los 2 caminos de escritura de esta ronda (`guardarActividad()`,
+  `guardarLeccion()`, `enviarAusentismo()`, `eliminarActividad()`,
+  `eliminarLeccion()`) **sin cambios**, siguen usando `updDB()` (escritura
+  full-blob) exactamente igual que antes — confirmado con lectura de
+  código real que no referencian ningún adaptador nuevo.
+- Los 4 módulos migrados en Rondas 56-58 (Planilla, Notas de Actividades,
+  Asistencia, Observador) no se ven afectados: sus adaptadores y sus ramas
+  en el envoltorio/bootstrap siguen presentes sin cambios de lógica, solo
+  se agregaron 2 ramas nuevas después de las suyas.
+- La red de seguridad de la Ronda 58 (`window._dbGranularSolamente`) sigue
+  intacta y activa para el resto del catálogo no migrado (Consolidados,
+  reportes/PDF, etc.) — no se tocó ni se debilitó.
+
+### ARCHIVOS MODIFICADOS EN ESTA RONDA (para desplegar y probar en Render)
+
+- **`src/index.ts`** — 2 endpoints nuevos: `GET /api/actividades-docente`,
+  `GET /api/permisos-docente`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — helper genérico
+  `_fusionarColeccionPorFiltro()`, 2 adaptadores nuevos
+  (`_cargarActividadesDocenteGranular`, `_cargarPermisosDocenteGranular`),
+  2 ramas nuevas en `_navegarConCargaGranularSiAplica()` (navegación en
+  caliente) y 2 ramas nuevas en el bootstrap F5 en frío
+  (`_esDocenteActividadesDirecto`, `_esDocentePermisosDirecto`).
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún otro archivo se tocó esta ronda. En particular, **no se tocó**
+`06-documentos-y-resto.js` (las funciones de escritura de estos 2 módulos
+ya vivían ahí y no necesitaron ningún cambio) ni `src/routes/lms.ts`
+(el Aula Virtual ya era granular, se investigó pero no se modificó).
+
+Suite completa re-ejecutada: **60 archivos, 100% verde** (1 test nuevo,
+`test_ronda59_cierre_actividades_permisos_repositorio_atencion.mjs`, 55/55
+aserciones). 3 tests previamente congelados actualizados con autorización
+explícita, consecuencia directa y esperada de ampliar (por 3ra vez) el
+mismo envoltorio y el mismo bootstrap que las Rondas 56-58 ya habían
+puesto bajo prueba — en los 3 casos solo se ensanchó la ventana de
+búsqueda de texto para seguir alcanzando el mismo fragmento verificado de
+siempre, sin debilitar ninguna garantía:
+- `test_ronda41_f5_bug_y_portabilidad.mjs` (ventana de 2200 a 2900
+  caracteres).
+- `test_ronda56_migracion_granular_planilla_docente.mjs` (ventana de 4300
+  a 5300 caracteres, Parte B.4).
+- `test_ronda58_f5_frio_completo_y_red_seguridad_reportes.mjs` (ventanas
+  de 3200→3900 y 1800→2600 caracteres, Parte C.1 y C.3).
+
+Verificación de sintaxis: `src/index.ts` (los 2 endpoints nuevos) y
+`03-app-core.js` verificados con los métodos ya establecidos (importación
+dinámica para `.ts`, ejecución directa para el JS de navegador) — ambos
+parsean sin errores (el primero falla solo en `Cannot find package
+'dotenv'`, resolución de módulos; el segundo se ejecuta completo hasta
+`ReferenceError: window is not defined`, comportamiento esperado fuera de
+un navegador).
+
+## Ronda 60 — Arranque del rol Directivo/Rector: inventario completo + piloto "Listado de Estudiantes"
+
+El usuario confirmó el cierre del rol Docente y autorizó arrancar
+formalmente el rol Directivo/Rector con el mismo rigor metodológico
+(inventario primero, un piloto de alto impacto/bajo riesgo, misma
+verificación con ejecución real).
+
+### 1) El rol "Directivo/Rector" en el código real
+
+Investigación real confirma que NO existe un rol `'directivo'` o
+`'rector'` separado en el frontend: la etiqueta de la interfaz es
+**"🏫 Admin / Rector"**, y el gate que controla TODO el menú administrativo
+es `const isAdmin=sesion.r==='admin';` — es decir, el rol Directivo/Rector
+de este pedido ES el rol `admin` del código. (El backend sí acepta
+`'directivo'`/`'rector'` como valores históricos/alternativos en
+`rolesValidos` de `src/index.ts`, pero el frontend entero se organiza
+alrededor de `sesion.r==='admin'`.)
+
+### 2) INVENTARIO Y BARRIDO COMPLETO — tabla de la estructura real del menú Directivo
+
+Construida con evidencia real de grep/lectura sobre la construcción del
+menú (`03-app-core.js`, bloque `if(isAdmin){...}` y los ítems compartidos
+con Docente que también exigen `isAdmin`):
+
+| Módulo/submódulo | `pag` | Función de render | Depende hoy de `_pullDB()` | Estado tras Ronda 60 |
+|---|---|---|---|---|
+| 📊 Tablero | `tablero` | `htmlTablero()` | Sí | Sin cambios |
+| 📢 Enviar Comunicado | `comunicado-general` | `htmlComunicadoGeneral()` | Sí | Sin cambios |
+| 🏫 Institución | `adm-base` | `htmlConfigBase()` | Sí | Sin cambios |
+| 🎓 Planes de Estudio (solo Universidad) | `planes-estudio` | — | Sí | Sin cambios |
+| 📚 Carga Académica | `adm-carga` | `htmlCarga()` | Sí | Sin cambios |
+| **👥 Estudiantes** | **`adm-est`** | **`htmlEstudiantes()`/`htmlEstTabla()`** | **Antes: sí — Ahora: NO para el Listado de Estudiantes** | **MIGRADO (piloto de esta ronda)** |
+| 🕐 Horarios | `horarios` | `htmlHorarios()` | Sí | Sin cambios |
+| 📅 Cronograma Notas | `cronograma-notas` | `htmlCronogramaNotas()` | Sí | Sin cambios |
+| 🔍 Estado Notas | `estado-notas` | `htmlEstadoNotas()` | Sí | Sin cambios |
+| 🔑 Credenciales | `ver-credenciales` | `htmlVerCredenciales()` | Sí | Sin cambios |
+| 📋 Recepción Permisos | `recepcion-permisos` | — | Sí | Sin cambios |
+| 📊 Control Permisos | `control-permisos` | — | Sí | Sin cambios |
+| 📋 Seguimiento Observador | `seguimiento-observador` | `htmlSeguimientoObservador()` | Sí | Sin cambios |
+| 📅 Histórico Años | `historico-anios` | `htmlHistoricoAnios()` | Sí | Sin cambios |
+| 📈 Panel de Tendencias | `panel-tendencias` | `htmlPanelTendencias()` | Sí | Sin cambios |
+| 📅 Calendario Académico | `calendario-academico` | — | Sí | Sin cambios |
+| ⭐ Evaluación Docentes | `eval-docente-admin` | `htmlEvalDocenteAdmin()` | Sí | Sin cambios |
+| 📊 Consolidados (rótulo Admin: "📄 Informes") | `adm-rep` | `verConsolidadoGeneral()`/`pdfConsolidadoGeneral()` | Sí (100% PDF cliente) | Investigado, descartado como piloto (ver 3) |
+| 📋 Documentos/Actas | `actas` | — | Sí | Sin cambios |
+| 📜 Historial de Notas | `log-notas` | — | Sí (backend ya pagina, `ecosystemAgent.js`, Ronda 55) | Sin cambios en el frontend |
+| 🔄 Traslado Inter-Institucional | `traslado-institucional` | — | Parcial (tiene su propio flujo por API, ver Ronda 59 punto 5) | Sin cambios |
+| 📁 Eval. Desempeño Docente (vista Admin) | `seguimiento-eval-docente` | `htmlSeguimientoEvalDocenteAdmin()` | Sí | Sin cambios |
+| Planilla/Notas de Actividades/Asistencia/Observador (viendo la de OTRO docente) | varios | mismas funciones que el Docente | Sí — el Admin NO usa los adaptadores del Docente (alcance angosto a `sesion.r==='docente'`, ver Rondas 56-59) | Sin cambios — declarado explícitamente fuera de alcance (ver 5) |
+
+**Nota de honestidad**: la tabla anterior lista los módulos EXCLUSIVOS de
+`isAdmin` más los compartidos donde el Admin ve una versión distinta a la
+del Docente. No se re-audita aquí el catálogo completo línea por línea con
+el mismo detalle exhaustivo de la Ronda 58 (eso llevaría un volumen de
+trabajo comparable a TODAS las rondas 56-59 juntas, para un solo rol) — se
+identifican los módulos reales con evidencia de código, se elige un
+piloto con criterio, y se deja el resto explícitamente declarado como
+pendiente para rondas futuras, exactamente como autorizó el usuario.
+
+### 3) Por qué "Listado de Estudiantes" (dentro de `adm-est`) y no "Consolidado General"
+
+Investigación real de ambos candidatos:
+- **Consolidado General por Grado** (`verConsolidadoGeneral()`/
+  `pdfConsolidadoGeneral()`): es un generador de PDF **100% cliente**
+  (jsPDF), la misma categoría que la Ronda 58 ya investigó a fondo y dejó
+  fuera de alcance por no poder verificar un PDF real en este sandbox sin
+  navegador. Migrarlo hoy hubiera repetido ese mismo riesgo sin poder
+  verificarlo con más rigor que entonces.
+- **Listado de Estudiantes** (`htmlEstTabla(grado)`, dentro de "👥
+  Estudiantes"): YA estaba estructurado exactamente en la forma correcta
+  para una migración granular — ya filtraba por UN grado a la vez, y ya
+  paginaba del lado del CLIENTE (`_paginar(todosEsts,_estTablaPagina,30)`)
+  sobre el arreglo completo que `_pullDB()` había descargado. Solo hacía
+  falta mover esa paginación al servidor — exactamente el mismo tipo de
+  "forma ya correcta, solo falta la fuente" que hizo de Planilla el piloto
+  ideal del rol Docente en la Ronda 56.
+
+### 4) Migración del piloto
+
+- **`GET /api/grados/:id/estudiantes`** (Ronda 55, sin consumidor real
+  hasta esta ronda) — se le agregó el parámetro opcional **`full=1`**
+  (aditivo, 100% retrocompatible: sin él responde exactamente igual que
+  antes): con `full=1` devuelve también `apellido1/apellido2/nombre1/
+  nombre2/foto/tipoDoc/modalidad/pensionAlDia/g` — los campos que
+  `htmlEstTabla()` realmente necesita para pintar la tabla, no solo los
+  mínimos del único caso de uso que tenía antes.
+- **`GET /api/grados`** (existía desde antes de la Ronda 55, también sin
+  consumidor real hasta esta ronda) — se reutiliza tal cual para la lista
+  de nombres de grado que necesitan los `<select>` de esta pantalla, sin
+  descargar el blob completo para saberlo.
+- **`_cargarEstudiantesAdminGranular(grado, pagina)`** (nuevo,
+  `03-app-core.js`) — fusiona grados (`_fusionarGradosEnDB()`, nuevo
+  helper que preserva campos como el director de grupo que este endpoint
+  liviano no trae) y estudiantes de la página pedida
+  (`_fusionarEstudiantesEnDB()`, reutilizado de Rondas 56-59) en `db`.
+  Si no se le pasa un grado (F5 en frío directo, cuando aún no se sabe
+  cuál tenía seleccionado el Directivo), resuelve al primero de la
+  institución — sin necesitar el blob completo para saberlo.
+- **`htmlEstTabla(grado)`** se adaptó para usar la información de
+  paginación real del servidor (`window._admEstPagInfo`) cuando está
+  vigente para el grado+página exactos que se van a pintar, y caer al
+  cálculo de siempre (paginación 100% cliente) en cualquier otro caso —
+  incluyendo el "Total: N estudiante(s)" mostrado, que antes leía
+  `todosEsts.length` (incorrecto en modo granular, donde solo mediría la
+  página actual) y ahora lee `_pagEst.total` (correcto en ambos modos).
+- **Cableado**: `renderEstTabla()`/`_cambiarPaginaEstudiantes()` ahora son
+  `async` e invocan el adaptador con fallback real a `_pullDB()` antes de
+  pintar (navegación en caliente / cambio de página / cambio de filtro de
+  grado); el envoltorio `_navegarConCargaGranularSiAplica()` gana una
+  rama nueva para `sesion.r==='admin'` (antes solo existía para Docente);
+  el bootstrap F5 en frío gana `_esAdminFrio`/`_esAdminEstudiantesDirecto`,
+  mismo patrón exacto que las 6 ramas del Docente.
+- **Red de seguridad extendida al rol Admin**: la rama admin del
+  envoltorio también marca/consulta `window._dbGranularSolamente` (Ronda
+  58) — el resto del catálogo Directivo no migrado (tabla de la sección 2)
+  queda protegido contra datos parciales exactamente igual que el
+  catálogo no migrado del Docente, en vez de dejarlo sin ninguna red de
+  seguridad por ser un rol nuevo.
+
+### 5) HALLAZGO REAL durante la migración (mismo espíritu de honestidad que Rondas 57/58)
+
+Al investigar TODO lo que consume `db.ests` dentro de la misma pantalla
+(`adm-est`) antes de dar la migración por cerrada, se encontraron 3
+funciones de reporte/exportación que leen `db.ests` crudo asumiendo que
+SIEMPRE contiene el grado (o la institución) completos — un supuesto que
+la paginación granular nueva rompe si no se corrige:
+- `pdfListaGrado()` — lista imprimible de UN grado.
+- `pdfListaTodos()` — lista imprimible de TODOS los grados en un solo PDF.
+- `exportarEstudiantesXLSX()` (`06-documentos-y-resto.js`) — exportación a
+  Excel de TODOS los grados.
+
+Las 3 se convirtieron a `async` y ahora verifican
+`window._dbGranularSolamente` **antes** de generar el reporte, forzando un
+`_pullDB()` completo si hace falta — la MISMA red de seguridad de la
+Ronda 58, aplicada aquí a su primer caso real dentro del rol Directivo.
+Sin este hallazgo y su corrección, estos 3 reportes hubieran podido
+generarse silenciosamente incompletos (sin ningún error visible) para un
+Directivo que llegó a "Estudiantes" por el camino granular nuevo y luego
+generó un reporte sin haber navegado a otra pantalla primero (el único
+caso que la rama de salvaguarda del envoltorio, por sí sola, no cubre,
+porque estos 3 botones no navegan — solo generan un archivo en el lugar).
+
+### 6) Qué quedó explícitamente FUERA de alcance esta ronda (honestidad, mismo patrón que Rondas 55/56)
+
+- El resto del catálogo Directivo de la tabla de la sección 2 (Tablero,
+  Institución, Carga Académica, Estado Notas, Credenciales, Consolidados,
+  etc.) — protegido por la red de seguridad extendida, pero NO migrado a
+  endpoints propios. Candidatos naturales para rondas futuras, empezando
+  por los de mayor tráfico real (a criterio de una futura ronda, con el
+  mismo rigor de inventario).
+- El registro/edición/eliminación/traslado de un estudiante desde "👥
+  Estudiantes" — sigue usando `updDB()` (escritura full-blob) sin cambios,
+  exactamente igual que todas las escrituras del rol Docente en Rondas
+  56-59. Solo se migró LECTURA.
+- Un Admin viendo la Planilla/Notas de Actividades/Asistencia/Observador
+  de un docente específico sigue usando el camino de siempre — los 6
+  adaptadores del rol Docente tienen alcance angosto a
+  `sesion.r==='docente'` desde su diseño original (Ronda 56), y esta
+  ronda no lo amplió (ampliar esos adaptadores a "Admin viendo la
+  Planilla de CUALQUIER docente" es una migración distinta, con su propia
+  dependencia cruzada — todos los docentes de la institución a la vez —
+  que merece su propia investigación en una ronda futura, no una
+  extensión apresurada de esta).
+- No se audita en esta ronda con el mismo detalle exhaustivo de la Ronda
+  58 cada botón/función del resto del catálogo Directivo que lea
+  `db.ests`/`db.carga` crudo — se investigó específicamente lo que la
+  MISMA pantalla del piloto necesitaba (el hallazgo de la sección 5), no
+  el catálogo completo del rol.
+
+### 7) Cero regresión confirmada (rol Docente)
+
+Confirmado con lectura de código real: los 6 adaptadores del rol Docente
+(Rondas 56-59) siguen existiendo sin cambios de firma; las 5 ramas del
+envoltorio de navegación en caliente para `sesion.r==='docente'` siguen
+presentes, sin alterar su orden ni su lógica, antes de la rama nueva
+`sesion.r==='admin'`; la inicialización de la red de seguridad
+(`window._dbGranularSolamente=window._dbGranularSolamente||false;`) no
+cambió; las escrituras del rol Docente (`guardarActividad()`,
+`enviarAusentismo()`, etc.) no se tocaron.
+
+### ARCHIVOS MODIFICADOS EN ESTA RONDA (para desplegar y probar en Render)
+
+- **`src/index.ts`** — parámetro opcional `full=1` agregado a
+  `GET /api/grados/:id/estudiantes` (ningún endpoint nuevo — se reutilizan
+  2 ya existentes desde antes de la Ronda 55/56, ambos sin consumidor real
+  hasta ahora).
+- **`gestor-academico/dist/modules/03-app-core.js`** — helper
+  `_fusionarGradosEnDB()`, adaptador `_cargarEstudiantesAdminGranular()`,
+  modificación de `htmlEstTabla()` (usa info granular cuando aplica,
+  corrige el cálculo del total), `renderEstTabla()`/
+  `_cambiarPaginaEstudiantes()` ahora `async` con fallback real, rama
+  nueva `sesion.r==='admin'` en `_navegarConCargaGranularSiAplica()`,
+  ramas `_esAdminFrio`/`_esAdminEstudiantesDirecto` en el bootstrap F5 en
+  frío, y conversión a `async` + verificación de la red de seguridad en
+  `pdfListaGrado()`/`pdfListaTodos()` (hallazgo de la sección 5).
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  conversión a `async` + verificación de la red de seguridad en
+  `exportarEstudiantesXLSX()` (mismo hallazgo).
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún otro archivo se tocó esta ronda.
+
+Suite completa re-ejecutada: **61 archivos, 100% verde** (1 test nuevo,
+`test_ronda60_piloto_directivo_listado_estudiantes.mjs`, 75/75
+aserciones). 3 tests previamente congelados actualizados con autorización
+explícita, consecuencia directa y esperada de ampliar (por 4ta vez) el
+mismo envoltorio y el mismo bootstrap que las Rondas 56-59 ya habían
+puesto bajo prueba — en los 3 casos solo se ensanchó la ventana de
+búsqueda de texto para seguir alcanzando el mismo fragmento verificado de
+siempre, sin debilitar ninguna garantía:
+- `test_ronda41_f5_bug_y_portabilidad.mjs` (ventana de 2900 a 3600
+  caracteres).
+- `test_ronda56_migracion_granular_planilla_docente.mjs` (ventana de 5300
+  a 6000 caracteres, Parte B.4).
+- `test_ronda58_f5_frio_completo_y_red_seguridad_reportes.mjs` (ventana de
+  3900 a 4700 caracteres, Parte C.1).
+
+Verificación de sintaxis: `src/index.ts` (el parámetro nuevo),
+`03-app-core.js` y `06-documentos-y-resto.js` verificados con los métodos
+ya establecidos (importación dinámica para `.ts`, ejecución directa para
+el JS de navegador) — los 3 parsean sin errores (el primero falla solo en
+`Cannot find package 'dotenv'`, resolución de módulos; los otros 2 se
+ejecutan completos hasta `ReferenceError: window is not defined`,
+comportamiento esperado fuera de un navegador).
+
+## Ronda 61 — 3 frentes del rol Directivo/Admin: Carga Académica, vista
+## directiva sobre Planilla/Notas de un docente, y Tablero (investigado y
+## dejado, con criterio honesto, cubierto por la red de seguridad)
+
+El coordinador autorizó 3 frentes para seguir cerrando el rol
+Directivo/Rector (`sesion.r==='admin'`), con la instrucción explícita de
+priorizar con juicio de ingeniería real y ser honesto si algún frente
+resultaba más complejo/riesgoso de lo esperado. Resultado: **2 frentes
+migrados con ejecución real (lectura), 1 frente investigado y dejado
+deliberadamente fuera de alcance esta ronda**, con la razón documentada
+abajo. Cero cambios de escritura en ningún frente (se investigó primero,
+en los 3 casos, si la escritura dependía del blob completo — solo en el
+Frente 1 hacía falta esa investigación, y la respuesta fue "no").
+
+### Frente 1 — Carga Académica y Docentes (`adm-carga`) — MIGRADO (lectura)
+
+**Investigación real** (`htmlCarga()`, `03-app-core.js`): a diferencia de
+"Listado de Estudiantes" (`adm-est`, Ronda 60), esta pantalla NO estaba
+acotada por grado en absoluto — muestra de una sola vez **toda** la carga
+de la institución (`db.carga.map(...)`, sin filtro) y **todos** los
+docentes (`db.users.filter(u=>u.r==='docente')`, sin paginar), porque el
+Rector necesita ver la matriz completa docente↔grado↔materia de un
+vistazo. Por eso la migración no sigue el patrón "un grado a la vez" de
+`adm-est`: trae la institución completa en una sola llamada — el mismo
+universo de datos que ya traía un `_pullDB()` completo para esta pantalla
+en particular, sin el resto del blob (notas, asistencia, observador,
+actas, etc.).
+
+**Investigación de escritura** (pedida explícitamente por el coordinador
+antes de decidir si tocarla): se leyeron con lupa `guardarCarga()`,
+`editarCarga()`/`_guardarEditCarga()` y `eliminarCarga()` buscando
+validación de duplicados o conflictos de horario contra el blob completo.
+**No existe tal validación** — `guardarCarga()` hace exactamente
+`db.carga.push({id:Date.now(),d,dn,g,m,a:a||'',ih})`, sin ningún
+`.find()`/`.some()` previo; `eliminarCarga()` es un `filter()` simple. Por
+lo tanto no había ninguna dependencia oculta de "necesito el blob completo
+para detectar colisiones" — se mantuvo, igual que en toda ronda anterior,
+el criterio de no tocar la escritura salvo necesidad estricta, y aquí no
+la hubo.
+
+**Hallazgo real que sí exigió un ajuste** (no estaba en el plan original,
+se descubrió al investigar): `_guardarEdicionDocente()` preserva la
+contraseña de un docente leyendo `d.users[idx].p` (el hash YA en memoria)
+cuando el admin deja el campo de contraseña en blanco al editar. Si el
+adaptador granular hubiera traído los docentes sin el campo `p`, cualquier
+edición de un docente con el password en blanco le habría borrado la
+contraseña silenciosamente. Se corrigió incluyendo `p` en la respuesta del
+endpoint — no es una exposición nueva: un Admin ya recibía ese mismo hash
+de cada docente de su institución al hacer un `_pullDB()` completo para
+esta misma pantalla, hoy mismo, antes de esta ronda.
+
+- **Backend (`src/index.ts`)**: `GET /api/carga-docente` extendido con un
+  parámetro aditivo opcional `incluirPersonal=1` (sin él, el endpoint
+  responde exactamente igual que en la Ronda 56 — retrocompatible). Con
+  él, agrega `personal`: los docentes (`r==='docente'`) MÁS los
+  coordinadores de solo lectura (`r==='admin'&&soloLectura`) — exactamente
+  el universo que gestiona esta pantalla, sin incluir al Rector real (que
+  no se administra desde aquí). `docente` sigue siendo un parámetro
+  opcional del lado del servidor — nunca validó contra ningún token, así
+  que Admin simplemente lo omite para traer toda la carga institucional.
+- **Frontend (`03-app-core.js`)**: helper `_fusionarPersonalDocenteEnDB()`
+  (reemplaza el subconjunto docente+coordinadores, preserva el resto de
+  `db.users` intacto) y adaptador `_cargarCargaAcademicaAdminGranular()`
+  (reemplazo completo de `db.carga`, ya que el endpoint sin filtro de
+  docente ya trae la institución entera — no hace falta la fusión
+  incremental por fragmento que usan Planilla/Notas de Actividades).
+- **Cableado**: rama `pag==='adm-carga'` en
+  `_navegarConCargaGranularSiAplica()` (navegación en caliente) y
+  `_esAdminCargaDirecto` en el bootstrap (F5 en frío), ambos con el mismo
+  fallback real a `_pullDB()` de siempre si el camino granular falla.
+
+### Frente 2 — Vista directiva sobre Planilla/Notas de Actividades de un
+### docente específico — MIGRADO (ampliación de adaptadores existentes)
+
+**Investigación real**: `htmlPlanilla()` y `htmlNotasActividades()` YA
+dejaban que un Admin eligiera, en el mismo `<select>` que usa el Docente,
+la carga de **cualquier** docente de la institución
+(`db.carga.filter(x=>sesion.r==='admin'||x.d===sesion.u)`, confirmado
+leyendo ambas funciones) — el Admin ya tenía ese nivel de acceso de solo
+lectura hoy mismo vía el blob completo. Y `GET /api/carga-docente` (Ronda
+56) nunca validó del lado del servidor que `docente` coincidiera con
+ningún token — ya aceptaba cualquier valor para el mismo `sk` desde que se
+creó. Es decir: **no hizo falta ningún cambio de backend para este
+frente** — la ampliación de acceso ya existía en el código, solo faltaba
+que el adaptador granular (Rondas 56/57) supiera usarla.
+
+- **Frontend (`03-app-core.js`)**: `_cargarPlanillaGranular()` y
+  `_cargarNotasActividadesGranular()` extendidos — su guarda de rol pasó
+  de `sesion.r!=='docente'` (rechaza todo lo demás) a aceptar también
+  `sesion.r==='admin'`. Para Admin, la llamada a
+  `/api/carga-docente` omite `&docente=...` (pide TODA la carga
+  institucional en vez de la de `sesion.u`, que para un Admin no existe);
+  el resto de la lógica (elegir `cargaObjetivo` según `planCId`/
+  `notaActCId` ya seleccionado, o el primero disponible) queda intacta,
+  sin duplicar código.
+- **Permisos**: sin cambios — mismo nivel de acceso de solo lectura que
+  Admin ya tenía vía `_pullDB()`, solo cambia el camino por el que llegan
+  los datos. El filtro de institución (`sk`) sigue siendo obligatorio en
+  el endpoint, como siempre.
+- **Cableado**: 2 ramas nuevas (`pag==='planilla'`, `pag==='notas-
+  actividades'`) en la sección `admin` de
+  `_navegarConCargaGranularSiAplica()`, y `_esAdminPlanillaDirecta`/
+  `_esAdminNotasActDirecto` en el bootstrap (F5 en frío) — mismo patrón
+  exacto (adaptador con fallback real a `_pullDB()`) que toda rama
+  anterior.
+
+### Frente 3 — Tablero (`pag==='tablero'`) — INVESTIGADO, DEJADO FUERA DE
+### ALCANCE ESTA RONDA (decisión honesta, no "migrado parcialmente")
+
+**Aclaración de nomenclatura**: el plan de la Ronda 61 se refería a este
+frente como "`adm-base`", pero al investigar el código real se confirmó
+que `adm-base` (`htmlConfigBase()`) es la pantalla de configuración de la
+Institución, una cosa distinta — los contadores/KPIs que describe el plan
+("total de estudiantes, docentes, promedio institucional, alertas") viven
+en `htmlTablero()` (`pag==='tablero'`, `06-documentos-y-resto.js`), que es
+la pantalla que realmente se investigó.
+
+**Por qué se descarta la migración directa esta ronda** (con evidencia
+real, no suposición): `htmlTablero()` recorre **todos** los estudiantes de
+**todos** los grados de la institución (`const estStats=ests.map(...)`) y
+calcula, para cada uno, su promedio con las mismas funciones de negocio ya
+existentes (`calcPromedioEst(e.id,e.g)`, `calcNotaDef(e.nts,m.id,p)`) que
+leen la estructura anidada `e.nts` completa (notas de TODAS las materias y
+TODOS los periodos de ese estudiante) — no es un conteo simple. Además
+agrupa esos mismos resultados **por grado** (`const porGrado=grados.map
+(...)`) y por periodo (evolución institucional), para toda la institución
+a la vez — no hay ningún recorte natural "un grado a la vez" como en
+`adm-est`/`adm-carga`.
+
+Migrar esto de verdad a una agregación en el backend (SQL directo a Neon,
+como sugería el plan) exigiría portar toda la lógica de cálculo de notas
+(`calcNotaDef`, `_baseNota`, las fórmulas ponderadas configurables por
+institución vía `db.config`) al servidor, en TypeScript o SQL — una tarea
+grande, con alto riesgo de una diferencia sutil de comportamiento frente al
+cálculo del cliente (ej. redondeos, el caso de recuperación/nivelación) que
+**no se puede verificar de forma confiable en este sandbox sin un
+navegador real ni una base de datos real para comparar el resultado antes
+y después**. Se decidió, con el mismo criterio ya aplicado a los
+generadores de PDF en la Ronda 58, no migrarlo esta ronda.
+
+**Qué lo protege mientras tanto**: `pag==='tablero'` no tiene rama propia
+en `_navegarConCargaGranularSiAplica()` — cae en la rama `else
+if(window._dbGranularSolamente)` (red de seguridad de la Ronda 58, ya
+extendida a la sección `admin` desde la Ronda 60), que fuerza un
+`_pullDB()` completo antes de renderizar el Tablero si "db" quedó parcial
+por cualquier otro camino granular de esta sesión. En el peor caso (fallo
+de red durante ese pull de respaldo), el comportamiento es exactamente el
+mismo que existía ANTES de toda esta migración — nunca peor.
+
+### Prueba nueva y suite completa
+
+- `test_ronda61_carga_academica_planilla_admin_tablero.mjs` — 53
+  aserciones (Parte A: investigación/evidencia de Front 1 y de la ausencia
+  de validación de duplicados en escritura; Parte B: ejecución real del
+  endpoint+adaptador de Carga Académica Admin, incluida la preservación
+  del hash de password; Parte C: ejecución real del adaptador de Planilla
+  extendido, verificando que Docente sigue viendo solo su propia carga y
+  que Admin puede consultar la de cualquier docente específico; Parte D:
+  verificación contra el código fuente real de los 4 puntos de cableado;
+  Parte E: investigación honesta de por qué el Tablero queda fuera de
+  alcance; Parte F: cero regresión de las 5 vistas del rol Docente).
+
+Suite completa re-ejecutada: **62 archivos, 100% verde**. 3 tests
+previamente congelados actualizados con autorización explícita,
+consecuencia directa y esperada de ampliar (por 5ta vez) el mismo
+envoltorio/bootstrap que las Rondas 56-60 ya habían puesto bajo prueba —
+en los 3 casos solo se ensanchó la ventana de búsqueda de texto o se
+actualizó un conteo esperado, sin debilitar ninguna garantía:
+- `test_ronda41_f5_bug_y_portabilidad.mjs` (ventana de 3600 a 4300
+  caracteres).
+- `test_ronda56_migracion_granular_planilla_docente.mjs` (ventana de
+  bootstrap de 6000 a 7000 caracteres; conteo de invocaciones reales de
+  `_cargarPlanillaGranular()` actualizado de 3 a 5 — las 2 nuevas son,
+  verificablemente, la rama Admin de Front 2, no una fuga hacia otra
+  vista).
+- `test_ronda58_f5_frio_completo_y_red_seguridad_reportes.mjs` (ventana de
+  4700 a 5600 caracteres, Parte C.1).
+
+Verificación de sintaxis: `src/index.ts` (el endpoint extendido),
+`03-app-core.js` verificados con los métodos ya establecidos —ambos
+parsean sin errores (el primero falla solo en `Cannot find package
+'dotenv'`, resolución de módulos; el segundo se ejecuta completo hasta
+`ReferenceError: window is not defined`, comportamiento esperado fuera de
+un navegador).
+
+### Archivos modificados esta ronda
+
+- **`src/index.ts`** — `GET /api/carga-docente` extendido con el
+  parámetro aditivo `incluirPersonal=1` (retrocompatible).
+- **`gestor-academico/dist/modules/03-app-core.js`** — adaptador
+  `_cargarCargaAcademicaAdminGranular()` + helper
+  `_fusionarPersonalDocenteEnDB()` (nuevos); `_cargarPlanillaGranular()` y
+  `_cargarNotasActividadesGranular()` extendidos para admin; 3 ramas
+  nuevas en `_navegarConCargaGranularSiAplica()` (`adm-carga`, `planilla`,
+  `notas-actividades` en la sección admin); 3 variables + 3 ramas nuevas
+  en el bootstrap F5 en frío (`_esAdminCargaDirecto`,
+  `_esAdminPlanillaDirecta`, `_esAdminNotasActDirecto`).
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún otro archivo se tocó esta ronda — en particular,
+`06-documentos-y-resto.js` (donde vive `htmlTablero()`) no se tocó: el
+Frente 3 quedó como investigación documentada, no como código.
+
+### Rol Docente (Rondas 56-59): confirmado intacto
+
+Las 5 ramas del rol Docente en `_navegarConCargaGranularSiAplica()`
+(`planilla`, `notas-actividades`, `asistencia`, `actividades-docente`,
+`ausentismo`) y sus 6 adaptadores correspondientes siguen exactamente
+igual — ningún guard de rol ni ninguna condición de esas ramas se tocó
+esta ronda, solo se agregó código NUEVO en la sección `admin`, que es un
+bloque `else if` totalmente separado. Verificado con la Parte F del test
+nuevo y con la suite completa (62/62 archivos en verde, incluidos los 4
+tests dedicados al rol Docente de las Rondas 56-59).
+
+## Ronda 62 — 3 módulos más del rol Directivo/Admin: Credenciales,
+## Información Institucional y Horarios
+
+El coordinador autorizó 3 frentes más para el rol Directivo/Admin
+(`sesion.r==='admin'`). **Aclaración de nomenclatura** (igual que con el
+Tablero en la Ronda 61): el plan usaba los ids `adm-credenciales`/
+`adm-usuarios`, `adm-institucion` y `adm-horarios`/`adm-calendario`, pero
+ninguno existe en el código real — las páginas reales son `ver-
+credenciales` (`htmlVerCredenciales()`), `adm-base` (`htmlConfigBase()`,
+ya identificada como "Configuración Institucional" en la Ronda 61) y
+`horarios` (`htmlHorarios()`, compartida con el rol Docente). Los 3 se
+migraron con ejecución real (lectura). Cero cambios de escritura salvo un
+guardarraíl de seguridad (ver más abajo).
+
+### Módulo 1 — Credenciales del Sistema (`ver-credenciales`) — MIGRADO
+
+**Investigación real de estructura**: no existe `db.docs`/`db.acud` como
+colecciones separadas — las credenciales viven repartidas en `db.users`
+(administradores y docentes, contraseña **cifrada** en `u.p`) y en
+`db.ests` (estudiantes y sus acudientes, contraseña **en texto plano** en
+`e.p`/`e.numDoc` — confirmado leyendo el propio `htmlVerCredenciales()`
+original, que ya mostraba `e.p` sin cifrar; este endpoint no crea ninguna
+exposición nueva, solo entrega el mismo dato por un camino más angosto).
+
+**Investigación de escritura, con el mismo rigor pedido explícitamente**
+(recordando el hallazgo de la Ronda 61 con `_guardarEdicionDocente()`):
+se leyó `_resetPassDocente()` — a diferencia de aquel caso, **siempre
+genera un hash nuevo** (`_hashPassword(nueva.trim())`) y **nunca** lee ni
+depende del hash anterior (`d.users[idx].p=hash`, sin ningún `||
+d.users[idx].p` de por medio). Conclusión verificada: `GET /api/usuarios-
+credenciales` **no necesita transmitir el hash** de administradores ni
+docentes — se omite por completo, reduciendo la exposición respecto a lo
+que ya entregaba un `_pullDB()` completo para esta misma pantalla.
+
+**Hallazgo real que sí exigió un guardarraíl**: `_asignarCredTodos()`
+("⚡ Generar para todos los que tengan doc.") recorre `db.ests`
+**institución completa** (todos los grados) asignando credenciales a
+quien le falten. Bajo el nuevo camino granular (un grado a la vez), esa
+función habría dejado, en silencio, sin credenciales a los estudiantes de
+los demás grados — mientras reportaba igual un "✅ éxito". Se enganchó a
+la misma red de seguridad de la Ronda 58 (`window._dbGranularSolamente`):
+fuerza un `_pullDB()` completo antes de tocar un solo estudiante si "db"
+pudiera estar incompleto.
+
+**Decisión de diseño explícita**: la tabla de Estudiantes/Acudientes
+pasó de un listado plano de TODA la institución (ordenado alfabéticamente,
+sin paginar) a un listado **filtrado por grado y paginado en el
+servidor** — mismo patrón probado de "Listado de Estudiantes" (`adm-est`,
+Ronda 60). Se optó por esto porque el plan de la ronda pedía
+explícitamente "paginadas o filtradas por rol/grado", y no había forma
+verificable en este sandbox de paginar de forma segura un listado plano
+ordenado por nombre sobre TODOS los grados a la vez. Las secciones de
+Administradores y Docentes (listas pequeñas) se dejaron sin paginar,
+igual que "personal" en Carga Académica (Ronda 61).
+
+- **Backend (`src/index.ts`)**: `GET /api/grados/:id/estudiantes`
+  extendido con un parámetro aditivo `credenciales=1` (independiente de
+  `full=1`, Ronda 60 — nunca combinados, para que "Listado de
+  Estudiantes" NUNCA reciba estos campos sensibles de más). Nuevo `GET
+  /api/usuarios-credenciales` (administradores + docentes, sin el campo
+  `p`). Si la institución ya vive en el esquema relacional (Ronda 45), que
+  todavía no tiene columnas de credenciales de estudiante/acudiente, el
+  endpoint responde `fuente: 'relacional'` (sin esos campos) y el
+  adaptador del frontend lo detecta y cae a `_pullDB()` en vez de mostrar
+  credenciales incompletas como si no existieran.
+- **Frontend**: adaptador `_cargarCredencialesAdminGranular(grado,
+  pagina)`, helper genérico `_fusionarUsuariosPorRolEnDB(esDelRol,
+  usuariosNuevos)` (reemplaza el subconjunto admin+docente, preserva el
+  resto de `db.users`). `htmlVerCredenciales()` se separó en dos:
+  Administradores/Docentes (igual que siempre) y una nueva
+  `htmlCredEstudiantesTabla(grado)` con selector de grado y paginación
+  (`_htmlPaginacion()`, reutilizada de Ronda 60), con `renderCredEstudiantes()`
+  siguiendo el mismo patrón granular-con-fallback de `renderEstTabla()`.
+- **Cableado**: rama `pag==='ver-credenciales'` en
+  `_navegarConCargaGranularSiAplica()` y `_esAdminCredDirecto` en el
+  bootstrap F5 en frío.
+
+### Módulo 2 — Información Institucional (`adm-base`) — MIGRADO
+
+**Investigación real**: `htmlConfigBase()` es, en su mayoría, un conjunto
+de campos ESCALARES a nivel de institución (nombre, rector(a), año
+lectivo, DANE, NIT, municipio, "Corregimiento / Sede" — **no existe un
+concepto de sedes múltiples**, es un único campo de texto libre pese a que
+el plan hablaba de "sedes" en plural —, departamento, teléfono/email
+institucional, resolución, encabezados/pies de página de documentos,
+firma del rector, logo/escudo) más la tabla de Grados (ya cubierta por
+`GET /api/grados`, Ronda 60) y el `<select>` de directores de grupo (ya
+cubierto por `GET /api/carga-docente?incluirPersonal=1`, Ronda 61). No se
+encontró ningún "config granular" preexistente reutilizable para estos
+campos específicos (el fragmento `config` mencionado en el contexto de
+esta ronda es el de calificación — `pctSer`/`pctSaber`/`pctHacer`, Ronda
+56/61 —, una cosa distinta), así que se construyó uno nuevo, pero mínimo.
+
+**Investigación de escritura**: `guardarInfoInst()` es una asignación
+directa campo por campo (`d.nombre=...`, etc.), sin ninguna validación
+contra el resto del blob — no se tocó.
+
+- **Backend**: nuevo `GET /api/institucion?sk=` — SOLO los campos
+  escalares listados arriba, más `nivelEducativo` (necesario para que la
+  pantalla distinga Colegio/Universidad; no vivía en ningún otro
+  fragmento granular existente). Nunca incluye `carga`, `grados` ni
+  `users` — eso se sigue trayendo de los endpoints ya reutilizados.
+- **Frontend**: adaptador `_cargarInstitucionAdminGranular()` (3
+  peticiones en paralelo: institución + grados + personal) y helper
+  `_fusionarInfoInstitucionEnDB(info)` (`Object.assign(db, info)`).
+- **Cableado**: rama `pag==='adm-base'` en
+  `_navegarConCargaGranularSiAplica()` y `_esAdminInstitucionDirecto` en
+  el bootstrap F5 en frío.
+
+### Módulo 3 — Horarios (`horarios`, sección admin) — MIGRADO
+
+**Investigación real de la relación con Carga Académica** (pedida
+explícitamente por el coordinador): `db.horarios` es un objeto GLOBAL
+keyeado por grado (`db.horarios[grado][dia+franja]={mat,dn,docU,cId,...}`),
+relacionado con `db.carga` solo a través de `cId` en cada celda — no
+comparte estructura con `db.carga` en sí, así que no se pudo reutilizar
+`GET /api/carga-docente` como fuente de horarios, aunque sí se reutiliza
+tal cual para poblar los `<select>` de materia/docente de cada celda.
+
+**Hallazgo real que definió el diseño**: la vista "Por Docente"
+(`horarioPag==='docente'`, dentro de `renderHorario()`) recorre **TODOS**
+los grados buscando las celdas de un docente concreto
+(`db.grados.forEach(g=>{ const v=((db.horarios||{})[g.n]||{})[...]; if
+(v&&v.docU===docU) found={...}; })`) — una dependencia cruzada real,
+análoga a la de Carga Académica en la Ronda 61. Por eso se optó,
+igual que en aquel caso, por traer `db.horarios` **completo** en una sola
+llamada (institución entera, sin el resto del blob) en vez de intentar un
+recorte "un grado a la vez" que habría dejado rota la vista "Por Docente".
+
+- **Backend**: nuevo `GET /api/horarios?sk=` — `blob.horarios` completo +
+  `blob.horConfig` (configuración de franjas horarias). Nada más.
+- **Frontend**: adaptador `_cargarHorariosAdminGranular()` (horarios +
+  grados + carga institucional, en paralelo) y helper
+  `_fusionarHorariosEnDB(horariosNuevos, horConfigNuevo)` (reemplazo
+  completo, igual criterio que Carga Académica: el endpoint ya trae la
+  institución entera).
+- **Cableado**: rama `pag==='horarios'` en la sección `admin` de
+  `_navegarConCargaGranularSiAplica()` y `_esAdminHorariosDirecto` en el
+  bootstrap F5 en frío. El rol Docente sigue exactamente igual (su acceso
+  a "Mi Horario" no se tocó — sigue bajo la red de seguridad de la Ronda
+  58, comportamiento sin cambios).
+
+### Prueba nueva y suite completa
+
+- `test_ronda62_credenciales_institucion_horarios_admin.mjs` — 63
+  aserciones (Parte A: nombres de página reales vs. los del plan +
+  dependencia cruzada real de Horarios; Parte B: hallazgos reales de
+  escritura — `_resetPassDocente()` no necesita el hash,
+  `_asignarCredTodos()` sí necesitaba el guardarraíl; Parte C: ejecución
+  real de los 3 endpoints+adaptadores nuevos, incluida la paginación por
+  grado de Credenciales y la resolución correcta de "Por Docente" en
+  Horarios con la institución completa en memoria; Parte D: verificación
+  contra el código fuente real de los 4 puntos de cableado por módulo;
+  Parte E: cero regresión del rol Docente y de los adaptadores de Rondas
+  60-61).
+
+Suite completa re-ejecutada: **63 archivos, 100% verde**. 4 tests
+previamente congelados actualizados con autorización explícita — 3 por el
+mismo patrón recurrente de ensanchar la ventana de búsqueda de texto tras
+ampliar (por 6ta vez) el mismo envoltorio/bootstrap, y 1 por la misma
+razón sobre un endpoint que creció con un parámetro nuevo:
+- `test_ronda41_f5_bug_y_portabilidad.mjs` (ventana de 4300 a 5400
+  caracteres).
+- `test_ronda56_migracion_granular_planilla_docente.mjs` (ventana de
+  bootstrap de 7000 a 8200 caracteres, Parte B.4).
+- `test_ronda59_cierre_actividades_permisos_repositorio_atencion.mjs`
+  (ventana de bootstrap de 5200 a 6200 caracteres, Parte C.3).
+- `test_ronda45_dimensiones.mjs` (ventana de `GET /api/grados/:id/
+  estudiantes` de 1400 a 1700 caracteres — creció por el nuevo parámetro
+  `credenciales=1` y su comentario de investigación).
+
+Verificación de sintaxis: `src/index.ts` (3 endpoints nuevos/extendidos),
+`03-app-core.js` y `06-documentos-y-resto.js` verificados con los métodos
+ya establecidos — los 3 parsean sin errores (el primero falla solo en
+`Cannot find package 'dotenv'`, resolución de módulos; los otros 2 se
+ejecutan completos hasta `ReferenceError: window is not defined`,
+comportamiento esperado fuera de un navegador).
+
+### Archivos modificados esta ronda
+
+- **`src/index.ts`** — `GET /api/grados/:id/estudiantes` extendido con
+  `credenciales=1` (retrocompatible); nuevos `GET /api/usuarios-
+  credenciales`, `GET /api/institucion`, `GET /api/horarios`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — 3 adaptadores
+  nuevos (`_cargarCredencialesAdminGranular`,
+  `_cargarInstitucionAdminGranular`, `_cargarHorariosAdminGranular`) + 3
+  helpers de fusión (`_fusionarUsuariosPorRolEnDB`,
+  `_fusionarInfoInstitucionEnDB`, `_fusionarHorariosEnDB`); 3 ramas nuevas
+  en `_navegarConCargaGranularSiAplica()`; 3 variables + 3 ramas nuevas en
+  el bootstrap F5 en frío.
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  `htmlVerCredenciales()` reestructurada (selector de grado + tabla
+  separada `htmlCredEstudiantesTabla()` + `renderCredEstudiantes()`);
+  guardarraíl de la red de seguridad agregado a `_asignarCredTodos()`.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+### Rol Docente: confirmado intacto
+
+Ninguna rama ni guard del rol Docente (Rondas 56-59) se tocó esta ronda —
+todo el código nuevo vive dentro del bloque `else if(sesion&&sesion.r
+==='admin')`, ya existente desde la Ronda 60. El acceso de Docente a "Mi
+Horario" tampoco se tocó: sigue exactamente igual que antes (protegido
+por la red de seguridad de la Ronda 58, sin una migración granular
+dedicada, igual que antes de esta ronda). Verificado con la Parte E del
+test nuevo y con la suite completa (63/63 archivos en verde, incluidos
+los 4 tests dedicados al rol Docente de las Rondas 56-59).
+
+## Ronda 63 — Barrido final para cerrar/sellar el rol Directivo/Admin:
+## Comunicación, auditoría de Traslado Inter-Institucional, y "quick win"
+## de Cronograma de Notas
+
+El coordinador autorizó un barrido de cierre del rol Directivo/Admin, con
+la meta explícita de **sellar**, no solo seguir agregando módulos: (1)
+investigar el módulo de Comunicación/Tablón del perfil Admin; (2) auditar
+formalmente Traslado Inter-Institucional y tomar una decisión explícita y
+documentada; (3) repasar los ~30 submódulos accesibles por Admin y
+confirmar que ninguno queda en un estado ambiguo, sin red de seguridad; (4)
+si aparecía alguna vista de configuración ligera adicional, de bajo
+riesgo, migrarla. Resultado: **1 migración nueva ("quick win"), 1 hallazgo
+real corregido con un guardarraíl, 1 decisión formal documentada, y una
+confirmación exhaustiva de que la red de seguridad cubre el resto del
+catálogo sin huecos.**
+
+### Módulo 1 — Comunicación/Tablón (`comunicado-general`) — INVESTIGADO,
+### SIN LECTURA DE BLOB QUE MIGRAR (honesto, sin inventar trabajo)
+
+**Investigación real**: `pag==='comunicado-general'` (exclusivo de
+`isAdmin`) es la única vista de comunicación del perfil Admin — el
+"Tablón de Anuncios" (`aviso-docente`) es un módulo **distinto**, exclusivo
+del rol Docente, fuera de alcance de esta ronda (el coordinador pidió
+explícitamente no tocar nada del rol Docente).
+
+Se confirmó, leyendo el código real, que **no existe ninguna colección de
+publicaciones/historial en el blob `db` que migrar**: los comunicados se
+registran del lado del servidor vía `POST /api/inetis/notify` (un sistema
+de notificaciones aparte, consumido por el portal de acudientes/
+estudiantes, que nunca pasa por `_pullDB()`), y el "📋 Comunicados
+enviados (esta sesión)" que se ve en la misma pantalla es un arreglo
+puramente de sesión (`_comHistorial`, JS en memoria del navegador) —
+nunca se lee de `db` ni del servidor. Es decir: no hay ningún endpoint de
+LECTURA granular que construir aquí, igual honestidad que con "Planes de
+Nivelación" en la Ronda 58.
+
+**Hallazgo real que sí exigió un guardarraíl**: la ÚNICA dependencia real
+de `db` en todo el módulo es `db.ests`, usada exclusivamente en el paso
+opcional "Enviar también por correo electrónico a acudientes" —
+`enviarComunicadoGeneral()` hace `grado?db.ests.filter(e=>e.g===grado):
+db.ests`, una dependencia cruzada real de TODA la institución cuando no
+se filtra por grado. Como `comunicado-general` no tiene su propio
+adaptador granular, la red de seguridad (Ronda 58/60) ya fuerza un
+`_pullDB()` completo ANTES de renderizar esta pantalla si `db` venía
+parcial — pero, por si ese pull previo fallara por red (el único
+escenario borde posible, "best-effort" desde su diseño original), se
+agregó una segunda comprobación DEFENSA-EN-PROFUNDIDAD justo antes de
+leer `db.ests` para el envío de correos, mismo criterio ya aplicado en
+`pdfListaGrado()` (Ronda 60) y `_asignarCredTodos()` (Ronda 62).
+
+### Módulo 2 — Traslado Inter-Institucional — AUDITORÍA FORMAL, DECISIÓN
+### EXPLÍCITA: PERMANECE BAJO LA RED DE SEGURIDAD, DE FORMA PERMANENTE
+
+**Auditoría real** (ampliando lo ya confirmado en la Ronda 59): se leyeron
+las 3 funciones de escritura principales —
+`_tiExportarEstudiante()`, `_tiConfirmarImportEstudiante()`,
+`_tiConfirmarImportDocente()`/`_tiAprobarSolicitud()` — y se confirmó que
+**ninguna arma el paquete de traslado leyendo `db` del lado del cliente**:
+cada una llama a un endpoint DEDICADO del servidor
+(`POST /api/traslado/exportar-estudiante`, `/importar-estudiante`,
+`/exportar-docente`, etc.) que arma, firma y valida el paquete **100% del
+lado del servidor**, directamente contra el blob almacenado — el frontend
+nunca necesita el mapa completo de la institución para poder EJECUTAR la
+operación en sí.
+
+Los 4 `_pullDB()` incondicionales (confirmados ya en la Ronda 59) se
+ejecutan **DESPUÉS** de que el servidor ya confirmó la escritura (ej. en
+`_tiExportarEstudiante()`, después de recibir `j.estadoMatricula` con el
+nuevo estado del estudiante ya actualizado en el servidor) — son
+**refrescos de la copia local tras un cambio de estado ya consumado**, no
+lecturas previas necesarias para que la operación pueda ejecutarse. Esta
+es una categoría distinta de todas las migradas hasta ahora (que evitaban
+una descarga previa innecesaria); aquí la descarga posterior sí tiene un
+propósito real y correcto: mantener la copia local consistente después de
+que el traslado cambió el grado/estado/matrícula de un estudiante, sin
+tener que replicar esa misma lógica de sincronización en el cliente.
+
+**Decisión explícita**: se deja esta pantalla **permanentemente** bajo la
+red de seguridad general (no se construye ningún endpoint granular ni
+adaptador para ella), por 3 razones técnicas documentadas: (1) el módulo
+es exclusivo de `isAdmin`, nunca alcanzable por Docente; (2) es una
+operación infrecuente y deliberada (un traslado real entre
+instituciones), no parte de la navegación diaria — el costo de un
+`_pullDB()` aquí no es un problema de rendimiento real; (3) su naturaleza
+(dossier completo de un estudiante/docente) ya se resuelve correctamente
+server-side, así que forzar una arquitectura granular en el cliente no
+aportaría ninguna mejora real, solo complejidad. Esta decisión sigue
+exactamente el criterio que el propio coordinador validó para este caso.
+
+### Módulo 3 — Barrido final de sellado: inventario y "quick win" #4
+
+**Inventario**: se repasaron los ~30 ids de página accesibles por Admin
+(menú `if(isAdmin){...}` completo). Categorías confirmadas con evidencia
+real:
+- **(a) Migrados con adaptador propio (Rondas 60-63)**: `adm-est`,
+  `adm-carga`, `planilla`, `notas-actividades` (vía Admin), `ver-
+  credenciales`, `adm-base`, `horarios`, y ahora `cronograma-notas`.
+- **(b) Protegidos explícitamente con justificación documentada**:
+  `tablero` (Ronda 61, cálculo de promedios institucionales no
+  verificable sin navegador real), todos los generadores de PDF/reportes
+  (Ronda 58, 100% client-side jsPDF), `traslado-institucional` (esta
+  ronda, ver Módulo 2), `comunicado-general` (esta ronda, ver Módulo 1).
+- **(c) Resto del catálogo** (`estado-notas`, `recepcion-permisos`,
+  `control-permisos`, `seguimiento-observador`, `historico-anios`,
+  `panel-tendencias`, `calendario-academico`, `eval-docente-admin`,
+  `log-notas`, `adm-rep`, `actas`, `observador`, `asistencia`,
+  `contacto`, `centros-interes`, `elecciones-admin`, `pre-matricula-
+  admin`, `actividades-docente`, `quizzes-docente`, `atenciones-psico`,
+  `comite-convivencia`, `seguimiento-eval-docente`, `menciones-honor`,
+  `descriptores`, `planes-estudio`, `alerta-temprana`): se verificó con
+  evidencia de código que **NINGUNO** queda fuera del catch-all de la red
+  de seguridad — la rama `admin` de `_navegarConCargaGranularSiAplica()`
+  siempre termina en `else if(window._dbGranularSolamente){...}` para
+  cualquier `pag` no listada explícitamente, y ese catch-all está
+  garantizado por construcción (no hay ningún `return`/salida intermedia
+  en esa cadena de `if/else if`). Se revisó además, específicamente, si
+  alguna de estas páginas tiene un botón de acción que lea una colección
+  completa SIN pasar por el catch-all (el patrón de bug real encontrado en
+  Rondas 60/62): se hizo un grep dirigido de `db.ests.forEach`/`.map`/
+  `.filter` sin filtro de grado en ambos archivos — el único hallazgo NO
+  guardado todavía era exactamente el de `enviarComunicadoGeneral()`
+  (Módulo 1, ya corregido esta ronda). `htmlMencionesHonor()`
+  (`db.ests.map`, dropdown de estudiantes) SÍ lee la institución completa,
+  pero solo dentro de su propio render — protegido correctamente por el
+  catch-all de navegación, sin ningún botón de acción posterior que lo
+  reutilice fuera de ese render. Se descubrió también que
+  `htmlBuzonSugerencias()` lee `gestorDB.sugerencias` (no `db.sugerencias`)
+  — una estructura del nivel **Gestor/Súper-Admin** (`GESTOR_SK`), fuera
+  por completo del alcance de esta migración por institución.
+
+**"Quick win" #4 — Cronograma de Notas (`cronograma-notas`)**: vista de
+configuración ligera y de bajo riesgo, misma categoría que Información
+Institucional (Ronda 62). Investigación de escritura:
+`guardarCronograma()`/`togglePeriodoCronograma()`/`aplicarCronogramaAuto()`
+solo asignan `d.cronograma`/`d.periodosActivos` directamente, sin ninguna
+validación contra otras colecciones — seguro de migrar solo la lectura.
+
+- **Backend**: nuevo `GET /api/cronograma?sk=` — `blob.cronograma` +
+  `blob.periodosActivos` + `numPeriodos` (solo ese campo de `config`, no
+  `config` completo).
+- **Frontend**: adaptador `_cargarCronogramaAdminGranular()` + helper
+  `_fusionarCronogramaEnDB(cronogramaNuevo, periodosActivosNuevo,
+  numPeriodos)` — fusiona `numPeriodos` DENTRO de `db.config` preservando
+  cualquier otro campo de `config` ya cargado en memoria (ej. por
+  Planilla, Rondas 56/61), en vez de reemplazar `db.config` completo.
+- **Cableado**: rama `pag==='cronograma-notas'` en
+  `_navegarConCargaGranularSiAplica()` y `_esAdminCronogramaDirecto` en el
+  bootstrap F5 en frío.
+
+### Prueba nueva y suite completa
+
+- `test_ronda63_sellado_comunicacion_traslado_cronograma.mjs` — 41
+  aserciones (Parte A: investigación real de Comunicación/Tablón y el
+  guardarraíl agregado; Parte B: auditoría formal de Traslado Inter-
+  Institucional con evidencia de que sus `_pullDB()` son refrescos post-
+  escritura, no lecturas previas; Parte C: ejecución real del endpoint +
+  adaptador de Cronograma, incluida la preservación de otros campos de
+  `config`; Parte D: verificación contra el código fuente real del
+  cableado; Parte E: barrido estructural confirmando que la rama admin de
+  `_navegarConCargaGranularSiAplica()` no deja ningún `pag` sin cobertura).
+
+Suite completa re-ejecutada: **64 archivos, 100% verde**. 2 tests
+previamente congelados actualizados con autorización explícita (mismo
+patrón recurrente, 7ma ampliación del mismo envoltorio/bootstrap):
+- `test_ronda41_f5_bug_y_portabilidad.mjs` (ventana de 5400 a 5700
+  caracteres).
+- `test_ronda56_migracion_granular_planilla_docente.mjs` (ventana de
+  bootstrap de 8200 a 8500 caracteres, Parte B.4).
+
+Verificación de sintaxis: `src/index.ts` (1 endpoint nuevo),
+`03-app-core.js` y `06-documentos-y-resto.js` verificados con los métodos
+ya establecidos — los 3 parsean sin errores (el primero falla solo en
+`Cannot find package 'dotenv'`, resolución de módulos; los otros 2 se
+ejecutan completos hasta `ReferenceError: window is not defined`,
+comportamiento esperado fuera de un navegador).
+
+### Archivos modificados esta ronda
+
+- **`src/index.ts`** — nuevo `GET /api/cronograma`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — adaptador
+  `_cargarCronogramaAdminGranular()` + helper `_fusionarCronogramaEnDB()`;
+  1 rama nueva en `_navegarConCargaGranularSiAplica()`; 1 variable + 1
+  rama nueva en el bootstrap F5 en frío.
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  comentario de investigación en `htmlComunicadoGeneral()`; guardarraíl de
+  la red de seguridad agregado dentro de `enviarComunicadoGeneral()`.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún cambio en `src/routes/lms.ts` ni en ningún archivo del módulo de
+Traslado Inter-Institucional (decisión explícita de esta ronda: se
+audita, se documenta, no se toca código de ese módulo).
+
+### Rol Docente y módulos Admin ya migrados (Rondas 60-62): confirmados
+### intactos
+
+Ninguna rama ni guard de esas rondas se modificó — todo el código nuevo
+de esta ronda vive en 2 puntos aislados: (1) una rama `else if` adicional
+dentro del bloque `admin` ya existente, y (2) un guardarraíl AÑADIDO (no
+modificado) dentro de una función que ya existía sin tocar su lógica de
+negocio. Verificado con la Parte E del test nuevo y con la suite completa
+(64/64 archivos en verde, incluidos los 4 tests del rol Docente de las
+Rondas 56-59 y los 3 tests dedicados a los módulos Admin de las Rondas
+60-62).
+
+## Ronda 64
+
+Arranque formal del **ROL SÚPER ADMIN**, habiendo completado al 100% los
+roles Docente y Directivo/Admin (Rondas 56-63). Alcance de esta ronda:
+(1) aclaración de nomenclatura técnica real; (2) inventario completo de
+los 16 `_gestorPag` exclusivos de este rol; (3) migración de la vista
+piloto de mayor impacto/menor riesgo encontrada por evidencia de código
+(no necesariamente la sugerida literalmente); (4) confirmación de cero
+regresión en Docente/Admin.
+
+### Nomenclatura técnica real (confirmada con grep, no supuesta)
+
+El Súper Admin es una identidad **completamente separada** de `sesion`
+(Docente/Admin):
+
+- **Sesión**: variable global `gestorSesion` (no `sesion`), puesta en
+  `{logged:true}` únicamente dentro de `doLoginGestor()`, tras validar
+  contra `gestorDB.superAdmin.u`/`.p`.
+- **Blob**: `gestorDB`, el estado **de toda la plataforma** (no de una
+  institución), guardado bajo la llave especial `GESTOR_SK` — nunca bajo
+  el `sk` de ninguna institución.
+- **Pull completo**: `async function _pullGestorDB()` (equivalente exacto
+  de `_pullDB()`), llama a `GET /api/inetis/gestordb` — confirmado que
+  este endpoint YA existente en el backend devuelve el `gestorDB`
+  **completo, sin filtrar** (no se modificó esta ronda: sigue siendo un
+  candidato legítimo de optimización futura, pero fuera del alcance del
+  piloto de esta ronda).
+- **Router de páginas**: `renderGestorAdmin()` (equivalente de
+  `renderApp()`), gobernado por la variable `_gestorPag` (no `pag`) —
+  función completamente distinta de `_navegarConCargaGranularSiAplica()`
+  (el wrapper de Docente/Admin), confirmando que ambos roles son
+  arquitecturas paralelas e independientes.
+- **Hallazgo crítico**: `gestorSesion` **no tiene ningún mecanismo de
+  persistencia/restauración** (ni `localStorage` ni `sessionStorage`) —
+  confirmado por grep, cero resultados. A diferencia de Docente/Admin, no
+  existe ningún escenario de "F5 en frío" para este rol: el Súper Admin
+  siempre debe iniciar sesión de nuevo. Toda la optimización posible aquí
+  es de **navegación en caliente** entre páginas `_gestorPag` dentro de
+  una sesión ya abierta.
+
+### Inventario completo de los 16 `_gestorPag`
+
+| `_gestorPag` | Función principal | Dependencia de datos | Categoría |
+|---|---|---|---|
+| `plataformas` | `htmlGestorPlataformas()` + `_refrescarStatsPlataformasReal()` | Antes: 1 `GET /api/inetis/db?sk=` (blob completo) **por institución**, en serie | 🔴 Blob masivo N-instituciones — **MIGRADO esta ronda** |
+| `salud` | `_refrescarSaludSistema()` | 1 `GET /api/inetis/db?sk=` (blob completo) **por institución**, en paralelo (`Promise.all`) | 🔴 Blob masivo N-instituciones — **hermano del piloto, NO migrado esta ronda (catálogo pendiente)** |
+| `config` | `htmlGestorConfig()` | Solo `gestorDB.superAdmin`, `gestorDB.wsp1/2` (ya en memoria) | 🟢 Sin riesgo |
+| `ia` | `htmlGestorIA()` | Switches vía `gestorDB`/`/api/superadmin/modulos-estado` | 🟢 Sin riesgo |
+| `cronograma` (global) | `htmlGestorCronograma()` | Solo `gestorDB.platforms` (ya en memoria) | 🟢 Sin riesgo |
+| `notificaciones` | `htmlGestorNotificaciones()` | Solo `gestorDB` | 🟢 Sin riesgo |
+| `creditos` | `htmlGestorCreditos()` | Solo `gestorDB.iaLimiteDefault`/`.iaLimitePorInst`/`.platforms` | 🟢 Sin riesgo |
+| `sesiones` | `htmlGestorTiempoSesion()` | Solo `gestorDB.platforms` (ya en memoria) | 🟢 Sin riesgo |
+| `sugerencias` | `htmlGestorSugerencias()` | Solo `gestorDB.sugerencias` (buzón global, ya en memoria) | 🟢 Sin riesgo |
+| `analitica` | `htmlGestorAnalitica()` | Solo `gestorDB.usoLog` (ya en memoria) | 🟢 Sin riesgo |
+| `planes` | `htmlGestorPlanes()` | Solo `gestorDB.platforms` (ya en memoria) | 🟢 Sin riesgo |
+| `agenteia` | `_refrescarAgenteIA()` / `_refrescarControlProcesosIA()` | `GET /api/agent/status`, `GET /api/agent/logs` (**ya paginado desde la Ronda 55**), `GET /api/superadmin/modulos-estado` | 🟢 **Ya granular — precedente confirmado** |
+| `infraestructura` | `_refrescarInfraestructura()` | `GET /api/admin/infrastructure-status` (**Ronda 49**) + `GET /api/agent/logs` | 🟢 **Ya granular — precedente confirmado** |
+| `etc` | `_refrescarEtcEntidades()` / `_refrescarEstadoSms()` | `GET /api/etc/entidades`, `GET /api/superadmin/modulos-estado` | 🟢 **Ya granular** |
+| `universidades` | `_refrescarUniversidades()` | `GET /api/educacion-superior/universidades` | 🟢 **Ya granular** |
+| `nueva`/`editar` | formulario crear/editar institución | Solo `gestorDB.platforms` (ya en memoria) | 🟢 Sin riesgo |
+
+**Conclusión honesta del inventario**: de los 16 módulos, solo 2
+dependían realmente de un patrón "blob masivo" (`plataformas` y `salud`,
+ambos con el MISMO defecto: N descargas completas de institución solo
+para contar 3 números). Los otros 14 o bien ya leían exclusivamente de
+`gestorDB` en memoria (sin costo adicional), o ya tenían sus propios
+endpoints granulares de rondas anteriores (Rondas 49 y 55), confirmados
+aquí como precedentes reales, no solo supuestos.
+
+### Vista piloto migrada: "Gestión / Listado de Instituciones" (`plataformas`)
+
+Elegida por evidencia de código como el candidato de **mayor severidad**
+encontrado hasta ahora en todo el proyecto (más pesado que cualquier caso
+de institución única de las Rondas 56-63): `_refrescarStatsPlataformasReal()`
+recorría **secuencialmente TODAS** las instituciones registradas y, por
+cada una, descargaba su blob **completo** (`GET /api/inetis/db?sk=...`,
+el mismo endpoint que usa `_pullDB()` para una sola institución) más
+`_migrateDB()` sobre ese blob entero — solo para leer 3 números: cantidad
+de estudiantes, cantidad de docentes y el usuario del admin.
+
+- **Backend**: nuevo `GET /api/gestor/plataformas-stats?sks=sk1,sk2,...`
+  en `src/index.ts`. Recibe la lista de `sk` que el cliente ya tiene en
+  memoria (`gestorDB.platforms`, sin costo de red adicional para
+  obtenerla) y calcula los 3 datos **del lado del servidor**, en paralelo
+  (`Promise.all`), reutilizando `_leerBlobInstitucionParaFragmento()` (el
+  mismo caché en memoria de 5s que ya usan los demás endpoints
+  granulares) y `_responderConETag()` (mismo patrón de ETag/Cache-Control
+  desde la Ronda 45/55). Solo lee `ests`/`users` del blob crudo, sin
+  correr `_migrateDB()` completo — esos dos arreglos existen igual en el
+  blob ya guardado, migrado o no. Una institución sin `sk` que exista
+  devuelve `{nEsts:0, nDocs:0, adminU:null}` en vez de fallar, igual que
+  el `continue` silencioso del código original.
+- **Frontend**: se extrajo el pintado en pantalla a un helper compartido
+  `_aplicarStatsPlataformaEnDOM(platId,nEsts,nDocs,adminUsername)`, usado
+  tanto por la función vieja (ahora renombrada conceptualmente a
+  "fallback", pero con su código intacto) como por la nueva
+  `_refrescarStatsPlataformasGranular()`, que hace **una sola** petición
+  HTTP con todos los `sk` juntos. Si esa petición falla por cualquier
+  motivo (red, HTTP no-ok, respuesta inesperada), cae a un fallback
+  **real** — ejecuta `_refrescarStatsPlataformasReal()` completa, no un
+  simple mensaje de error.
+- **Cableado**: el único punto de entrada real
+  (`setTimeout` dentro de `renderGestorAdmin()` para
+  `_gestorPag==='plataformas'`) fue actualizado para llamar a la versión
+  granular en vez de la vieja directamente.
+- **No se tocó** ningún mecanismo de F5-en-frío para este rol, porque
+  (como confirma el inventario) no existe ninguno: el Súper Admin no
+  persiste su sesión entre recargas.
+
+### Catálogo pendiente (declarado honestamente, no migrado esta ronda)
+
+- **`salud`** (`_refrescarSaludSistema()`): mismo defecto estructural que
+  el piloto migrado (N blobs completos, uno por institución, aunque en
+  paralelo en vez de en serie). Se documenta como el siguiente candidato
+  obvio para una futura ronda, reutilizando el mismo endpoint
+  `GET /api/gestor/plataformas-stats` recién creado más los campos
+  adicionales que esa vista necesita (papelera por institución, fallos de
+  guardado) — no se tocó esta ronda para mantener el alcance del piloto
+  acotado y verificable.
+- **`GET /api/inetis/gestordb`** (el "`_pullDB()` del Súper Admin"): sigue
+  devolviendo el `gestorDB` completo sin filtrar. No se optimizó esta
+  ronda porque el inventario mostró que, a diferencia del blob de una
+  institución (que puede crecer con cientos de estudiantes), `gestorDB`
+  es fundamentalmente una lista de metadatos livianos por institución —
+  el costo real detectado NO estaba en este pull, sino en el patrón
+  "N blobs de institución" de `plataformas`/`salud`. Queda como catálogo
+  de revisión futura si el número de instituciones creciera lo suficiente
+  para que este pull también se vuelva pesado.
+
+### Prueba nueva y suite completa
+
+- `test_ronda64_super_admin_inventario_pilot_plataformas.mjs` — 76
+  aserciones (Parte A: nomenclatura real confirmada por grep; Parte B:
+  inventario completo de los 16 `_gestorPag` con evidencia de código,
+  incluido el hallazgo del segundo caso hermano en `salud`; Parte C:
+  migración real del endpoint + adaptador de la vista piloto; Parte D:
+  verificación de equivalencia estructural por ejecución real simulada
+  —el camino granular y el camino viejo producen exactamente los mismos
+  3 números para los mismos datos de entrada, incluidos casos límite sin
+  admin y sin blob—; Parte E: cero regresión, confirmando que
+  `_navegarConCargaGranularSiAplica()` y todos los adaptadores Admin de
+  Rondas 60-63 siguen intactos y que el cambio de esta ronda vive en una
+  función completamente separada).
+
+Suite completa re-ejecutada: **65 archivos, 100% verde**. Ningún test
+previamente congelado necesitó ajuste esta ronda (el código nuevo vive en
+funciones y un endpoint completamente nuevos, sin extender ninguna
+cadena/envoltorio compartido de rondas anteriores).
+
+Verificación de sintaxis: `src/index.ts` (1 endpoint nuevo) y
+`03-app-core.js` (2 funciones nuevas + 1 helper + 1 línea de cableado
+modificada) verificados con los métodos ya establecidos — ambos parsean
+sin errores (el primero falla solo en `Cannot find package 'dotenv'`,
+resolución de módulos; el segundo se ejecuta completo hasta
+`ReferenceError: window is not defined`, comportamiento esperado fuera de
+un navegador).
+
+### Archivos modificados esta ronda
+
+- **`src/index.ts`** — nuevo `GET /api/gestor/plataformas-stats`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — nueva función
+  `_refrescarStatsPlataformasGranular()`; nuevo helper compartido
+  `_aplicarStatsPlataformaEnDOM()`; `_refrescarStatsPlataformasReal()`
+  conservada íntegra como fallback (refactorizada solo para usar el
+  helper de pintado compartido); 1 línea de cableado actualizada dentro de
+  `renderGestorAdmin()`.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún cambio en `06-documentos-y-resto.js` ni en ningún archivo del rol
+Docente/Admin.
+
+### Rol Docente y Admin (Rondas 56-63): confirmados intactos
+
+El wrapper `_navegarConCargaGranularSiAplica()`, sus ramas Docente/Admin,
+los 8 adaptadores Admin y la red de seguridad `window._dbGranularSolamente`
+no fueron tocados — viven en una función completamente distinta
+(`_navegarConCargaGranularSiAplica()`) de la que gobierna el cambio de
+esta ronda (`renderGestorAdmin()`). Verificado con la Parte E del test
+nuevo y con la suite completa (65/65 archivos en verde, incluidos todos
+los tests de Docente y Admin de rondas anteriores, sin ninguna
+modificación).
+
+## Ronda 65 — cierre formal del ROL SÚPER ADMIN
+
+Continuación directa de la Ronda 64: migración de la segunda vista con el
+mismo defecto ("Salud del Sistema") y barrido de sellado final de los 14
+submódulos restantes del rol, con documentación de cierre formal
+equivalente a la hecha para Docente (Ronda 59) y Admin (Ronda 63).
+
+### 1. Migración de "Salud del Sistema" (`_gestorPag==='salud'`)
+
+Investigación primero, como pidió el coordinador: se confirmó que Salud
+del Sistema **NO** necesita las mismas 3 métricas de Plataformas
+(estudiantes/docentes/admin) — necesita una métrica **distinta**:
+cantidad de elementos en la "papelera" de cada institución (registros con
+`deletedAt`: descriptores, asistencia, estudiantes, y las observaciones
+de cada estudiante), cruzada con los eventos de "guardado fallido" de los
+últimos 7 días (esto último NUNCA fue un blob masivo — siempre fue 1 sola
+petición a `/api/inetis/notifications`, no necesitaba migrarse).
+
+Por tratarse de una métrica adicional y no de las mismas 3 de antes, se
+extendió el endpoint existente de forma **aditiva** — el mismo patrón ya
+usado en `credenciales=1` (Ronda 62) o `incluirPersonal=1` (Ronda 61) —
+en vez de crear un endpoint paralelo duplicado:
+
+- **Backend**: `GET /api/gestor/plataformas-stats` (Ronda 64) ahora acepta
+  el parámetro opcional `incluirPapelera=1`. Cuando está presente, agrega
+  un 4to campo `papelera` a cada entrada de `stats`, calculado del **mismo**
+  blob que el endpoint ya leía para las otras 3 métricas — cero lecturas
+  de blob adicionales por esta extensión. Sin ese parámetro, la respuesta
+  es idéntica, byte a byte, a la de la Ronda 64 (cero regresión del piloto
+  de Plataformas).
+- **Frontend**: se extrajeron 2 helpers compartidos —
+  `_obtenerFallosSaludPorSk()` (la única petición de notificaciones, sin
+  cambios de comportamiento) y `_pintarSaludSistema(cont,plats,fallosPorSk,papeleraPorSk)`
+  (el cálculo de "instituciones con problema" + el pintado en pantalla,
+  extraído tal cual del código original) — usados por **ambos** caminos:
+  - `_refrescarSaludSistemaReal()`: la función original (N blobs
+    completos por institución, vía `Promise.all`), renombrada y conservada
+    **íntegra** como fallback real — mismo patrón de nomenclatura que
+    `_refrescarStatsPlataformasReal()` desde la Ronda 64.
+  - `_refrescarSaludSistemaGranular()` (nueva): hace 2 peticiones en
+    paralelo — la de notificaciones (sin cambios) y **una sola** llamada a
+    `GET /api/gestor/plataformas-stats?incluirPapelera=1&sks=...` con
+    todos los `sk` juntos — en vez de N descargas de blob completo. Ante
+    cualquier error (red, HTTP no-ok, respuesta inesperada), cae a un
+    fallback **real**: ejecuta `_refrescarSaludSistemaReal()` completa.
+- **Cableado**: el único punto de entrada real (`setTimeout` dentro de
+  `renderGestorAdmin()` para `_gestorPag==='salud'`) fue actualizado para
+  llamar a la versión granular.
+- **Verificación de equivalencia estructural con ejecución real**:
+  simulación con datos de entrada conocidos (institución con descriptor,
+  estudiante y observación eliminados = 3 elementos en papelera;
+  institución sin papelera; institución sin blob en el servidor) —
+  confirmado que el camino granular (réplica exacta de la lógica del
+  endpoint) y el camino viejo (réplica exacta de la lógica original)
+  producen exactamente el mismo conteo en los 3 casos, además de
+  verificar el umbral de alerta (`_PAPELERA_UMBRAL_ALERTA=50`) con y sin
+  fallos de guardado presentes.
+
+### 2. Barrido de sellado de los 14 submódulos restantes
+
+Repaso uno por uno, con evidencia real de código (grep de cada
+`htmlGestorXXX()`/`_refrescarXXX()`), no de memoria:
+
+| `_gestorPag` | Estado confirmado |
+|---|---|
+| `config`, `ia`, `cronograma` (global), `notificaciones`, `creditos` (vista), `sesiones`, `sugerencias`, `analitica`, `planes`, `nueva`/`editar` | 🟢 Solo `gestorDB` en memoria — sin fetch de blob de institución |
+| `agenteia`, `infraestructura`, `etc`, `universidades` | 🟢 Ya granulares desde rondas anteriores (Rondas 49 y 55) — confirmado con grep, sin cambios esta ronda |
+| `plataformas` | ✅ Migrado en la Ronda 64 |
+| `salud` | ✅ Migrado en **esta** ronda (arriba) |
+
+**Hallazgo adicional real, no anticipado en el inventario de la Ronda
+64**: la función `_gestorRefrescarCreditosIA()` (detrás del botón
+"🔄 Actualizar desde servidor" de `_gestorPag==='creditos'`, y también
+disparada automáticamente por `setTimeout` al entrar a esa página) recorre
+todas las instituciones activas y, **condicionalmente** — solo cuando la
+caché de `localStorage` de esa institución no tiene ya un campo `users`
+— descarga su blob completo, para armar una tabla de consumo de créditos
+de IA **por usuario** (no 3 agregados, sino usuario + rol + créditos
+usados/límite de cada persona).
+
+**Decisión documentada de esta ronda**: se deja como **catálogo
+pendiente**, no se migra ahora, por 2 razones técnicas:
+1. Ya tiene una mitigación parcial genuina (usa la caché local primero;
+   solo golpea el servidor cuando esa caché está vacía o desactualizada)
+   — no es un defecto sin ninguna protección, a diferencia de como
+   estaban Plataformas y Salud antes de sus respectivas migraciones.
+2. Su forma de datos es fundamentalmente distinta a la de
+   `/api/gestor/plataformas-stats` (registros por usuario, no 3 números
+   agregados por institución) — extenderlo de forma aditiva y segura
+   requiere diseñar una forma de respuesta nueva, no solo un parámetro
+   más; forzarlo en esta ronda de cierre habría añadido riesgo sin la
+   verificación cuidadosa que merece.
+
+**Categoría aparte, confirmada como excepción permanente**: se encontró
+también `descargarGestorCompleto()` (el botón "⬇ Descargar Sistema
+Completo" en la vista de Plataformas), que sí descarga el blob completo
+de cada institución — pero es una acción **deliberada, con confirmación
+explícita del usuario** (`customConfirm(...)`), cuyo propósito **es
+justamente** producir un respaldo completo descargable. Es la misma
+categoría de decisión que Traslado Inter-Institucional (Ronda 63): ya
+está correctamente diseñada para lo que hace, no es una descarga
+automática de navegación, y forzar una arquitectura granular aquí le
+restaría valor sin ningún beneficio real.
+
+### 3. Cobertura y pruebas
+
+- `test_ronda65_cierre_super_admin_salud_barrido.mjs` — 72 aserciones
+  (Parte A: extensión aditiva real del endpoint, con la forma de
+  respuesta sin `incluirPapelera` confirmada idéntica a la de la Ronda 64;
+  Parte B: fallback real conservado + helpers compartidos + camino
+  granular con fallback ante error; Parte C: verificación de equivalencia
+  estructural por ejecución real simulada, incluidos casos límite; Parte
+  D: barrido de sellado de los 14 submódulos restantes con evidencia real,
+  incluido el hallazgo de Créditos IA y la decisión documentada, más la
+  categoría aparte de `descargarGestorCompleto()`; Parte E: cero regresión
+  en Docente/Admin y confirmación de que el piloto de la Ronda 64 sigue
+  intacto).
+
+Suite completa re-ejecutada: **66 archivos, 100% verde**. 1 test
+previamente congelado actualizado con autorización explícita documentada
+en el propio archivo: `test_ronda64_super_admin_inventario_pilot_plataformas.mjs`,
+aserción B.4 — el nombre de función que verificaba (`_refrescarSaludSistema`)
+fue renombrado a `_refrescarSaludSistemaReal` por la migración de esta
+misma ronda (exactamente lo que ese test ya anticipaba en su propio
+comentario: "catálogo pendiente para una ronda futura"). El resto de ese
+test (el inventario completo y la migración de "plataformas") no cambió
+de alcance.
+
+Verificación de sintaxis: `src/index.ts` (extensión de 1 endpoint
+existente) y `03-app-core.js` (2 funciones nuevas + 2 helpers + 1 función
+renombrada + 1 línea de cableado modificada) verificados con los métodos
+ya establecidos — ambos parsean sin errores (el primero falla solo en
+`Cannot find package 'dotenv'`, resolución de módulos; el segundo se
+ejecuta completo hasta `ReferenceError: window is not defined`,
+comportamiento esperado fuera de un navegador).
+
+### Archivos modificados esta ronda
+
+- **`src/index.ts`** — extensión aditiva de `GET /api/gestor/plataformas-stats`
+  con el parámetro `incluirPapelera=1`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — `_refrescarSaludSistema()`
+  renombrada a `_refrescarSaludSistemaReal()` (fallback, lógica intacta);
+  nuevos helpers `_obtenerFallosSaludPorSk()` y `_pintarSaludSistema()`;
+  nueva función `_refrescarSaludSistemaGranular()`; 1 línea de cableado
+  actualizada dentro de `renderGestorAdmin()`.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+Ningún cambio en `06-documentos-y-resto.js` ni en ningún archivo del rol
+Docente/Admin.
+
+### 4. Cierre formal del ROL SÚPER ADMIN
+
+Estado final, declarado explícitamente como pidió el coordinador (mismo
+tipo de cierre que Docente, Ronda 59, y Admin, Ronda 63):
+
+- **Migrados a lectura granular** (2 de 16): `plataformas` (Ronda 64),
+  `salud` (Ronda 65).
+- **Ya granulares de rondas anteriores, sin necesidad de cambio** (4 de
+  16): `agenteia`, `infraestructura`, `etc`, `universidades`.
+- **Sin riesgo, solo lectura de `gestorDB` en memoria** (9 de 16):
+  `config`, `ia`, `cronograma` (global), `notificaciones`, `creditos`
+  (la vista en sí), `sesiones`, `sugerencias`, `analitica`, `planes`, más
+  el formulario `nueva`/`editar`.
+- **Excepción permanente, documentada y deliberada** (1 caso, no es un
+  `_gestorPag` propio): `descargarGestorCompleto()` — descarga masiva
+  intencional con confirmación explícita del usuario, correctamente
+  diseñada tal cual está.
+- **Catálogo pendiente para una ronda futura, con mitigación parcial ya
+  existente** (1 caso): la función `_gestorRefrescarCreditosIA()` dentro
+  de `creditos`, documentada en la sección 2 de arriba con las 2 razones
+  técnicas de por qué no se forzó esta ronda.
+
+**Ningún submódulo del rol Súper Admin queda en estado ambiguo**: cada
+uno de los 16 `_gestorPag`, más los 2 casos especiales encontrados durante
+el barrido (`descargarGestorCompleto()` y `_gestorRefrescarCreditosIA()`),
+tiene una categoría explícita y una razón documentada — migrado, ya
+granular, sin riesgo, excepción permanente, o catálogo pendiente con
+justificación técnica. El ROL SÚPER ADMIN queda formalmente cerrado con
+este nivel de cobertura.
+
+### Rol Docente y Admin: confirmados intactos
+
+El wrapper `_navegarConCargaGranularSiAplica()`, sus ramas Docente/Admin,
+los 8 adaptadores Admin y la red de seguridad `window._dbGranularSolamente`
+no fueron tocados esta ronda — todo el código nuevo vive dentro de
+`renderGestorAdmin()` y sus funciones auxiliares, arquitectura
+completamente separada. Verificado con la Parte E del test nuevo y con la
+suite completa (66/66 archivos en verde, incluidos todos los tests de
+Docente y Admin de rondas anteriores, sin ninguna modificación).
+
+## Ronda 66 — CIERRE Y SELLADO GLOBAL DEL SISTEMA (fin del ciclo Rondas 56-66)
+
+Ronda de **verificación y cierre formal**, no de nueva migración
+funcional — tal como pidió el coordinador. Confirma con evidencia real de
+código (no de memoria de rondas anteriores) que la red de seguridad
+`window._dbGranularSolamente` cubre efectivamente TODO punto de entrada no
+migrado, incluyendo explícitamente los 3 casos que el usuario ya aceptó
+dejar sin migración granular (Estudiante, Acudiente, Elecciones
+Escolares). Se encontró y corrigió 1 hallazgo real de higiene del
+invariante (no de exposición de datos).
+
+### 1. Barrido de integridad de `window._dbGranularSolamente`
+
+Se verificaron, con evidencia real, los 3 caminos por los que Estudiante,
+Acudiente (rol técnico `padre`) y Elecciones Escolares reciben su `db`:
+
+- **Login fresco (`doLoginPortal()`, el camino real de producción)**:
+  confirmado que SIEMPRE ejecuta `const platDB=await _fetchPlatDB(p.sk);`
+  — un fetch **completo** del blob de la institución — **antes** de
+  validar credenciales, para **cualquier** rol (`admin`, `docente`,
+  `padre`, `estudiante`, `elecciones` pasan todos por la misma función).
+  Nunca hay un camino condicional ni granular en este punto. Tras validar,
+  `db=platDB` reemplaza el objeto completo — nunca un merge parcial.
+- **F5 en frío (recarga de página con sesión restaurada)**: se
+  enumeraron las 14 variables `_esXxxDirecto` que dan acceso a un camino
+  granular en el bootstrap — las 14, sin excepción, dependen de
+  `_esDocenteFrio` o `_esAdminFrio`. Ninguna puede ser verdadera para
+  Estudiante/Acudiente/Elecciones. Por lo tanto, la ejecución de esos 3
+  roles siempre cae en el `else` final del bootstrap:
+  `ok=await _pullDB();` — el mismo catch-all universal que ya protegía
+  cualquier módulo Docente/Admin no migrado.
+- **Navegación dentro de la sesión ya iniciada**: el wrapper
+  `_navegarConCargaGranularSiAplica()` **no tiene ninguna rama** para
+  `sesion.r==='padre'`, `'estudiante'` ni `'elecciones'` — lo cual es
+  **seguro por ausencia**, no por una verificación activa: se confirmó,
+  leyendo el cuerpo completo de `renderPadre()`, `renderEstudiante()` y
+  `renderElecciones()`/`renderElecContenido()`, que **ninguna** de esas
+  funciones llama jamás a un helper `_fusionarXXXEnDB()` (los únicos
+  mecanismos que angostan `db`) — esos helpers solo son alcanzables desde
+  dentro de los adaptadores `*Granular`/`*AdminGranular`, exclusivos de
+  Docente/Admin. Es decir: el `db` completo obtenido en el login o el F5
+  nunca se estrecha después durante una sesión de estos 3 roles, porque
+  no existe ningún código que pueda estrecharlo.
+- **Sub-navegación interna de Elecciones** (`elecStep`): confirmado que es
+  un simple cambio de variable JS que vuelve a pintar sobre el mismo `db`
+  en memoria (`renderElecContenido()`), sin pasar por `navTo()` ni por
+  ningún fetch — mismo razonamiento de seguridad por ausencia.
+
+**Conclusión de la Parte 1**: no se trata de una suposición ("como no se
+tocaron, están cubiertos") sino de una cadena de evidencia verificada:
+(a) el dato que reciben siempre es completo en su origen (login/F5), y
+(b) no existe ningún código alcanzable desde su sesión que pueda
+volverlo parcial después. Ambos puntos confirmados con grep real y con
+una simulación de ejecución (ver la Parte C del test nuevo).
+
+### 2. Hallazgo real encontrado y corregido: higiene del invariante de la bandera
+
+Durante el barrido se detectó que `window._dbGranularSolamente` se
+restauraba a `false` **solo** dentro de `_pullDB()` — pero existen otros
+2 lugares del código que también asignan un blob **completo** a `db`
+fuera de `_pullDB()`: `doLoginPortal()` (el login real de producción,
+para cualquier rol) y `_finalizarSesionInstitucional()` (el camino
+alterno de Smart Auth, Ronda 47). Ninguno de los 2 restauraba la bandera
+después de su propia asignación completa.
+
+**Importante — esto NO era una exposición real de datos parciales**: en
+ambos casos, `db` ya quedaba genuinamente completo tras la asignación
+(`db=platDB`, un blob traído entero del servidor) — la bandera
+simplemente podía quedar **obsoleta en `true`** si una sesión anterior en
+la misma pestaña la había dejado así. La única consecuencia posible de
+esa obsolescencia era una llamada extra, redundante e inofensiva a
+`_pullDB()` la próxima vez que un Docente/Admin (nunca Estudiante/
+Acudiente/Elecciones, que no consultan esta bandera) navegara a una
+página del catálogo no migrado — nunca una lectura de datos incompletos.
+
+**Corrección aplicada** (aditiva, 1 línea en cada punto, sin reordenar ni
+tocar ninguna línea existente):
+- `doLoginPortal()`: se agregó `window._dbGranularSolamente=false;`
+  justo después de `db=platDB;`.
+- `_finalizarSesionInstitucional()`: mismo ajuste, en el mismo punto
+  relativo de su propia asignación `db=platDB;`.
+
+Con esto, los 3 únicos lugares del código que alguna vez asignan un blob
+**completo** a `db` (`_pullDB()`, `doLoginPortal()`,
+`_finalizarSesionInstitucional()`) restauran ahora, los 3, el mismo
+invariante: bandera en `true` si y solo si `db` es genuinamente parcial.
+
+### 3. Verificación de `.env`/`.env.example`
+
+Confirmado — sin imprimir ni exponer ningún valor real — que ambos
+archivos siguen presentes en la raíz del proyecto y del ZIP, con **44
+variables** cada uno (conteo estructural de líneas `NOMBRE=valor`, sin
+contar comentarios), y que **el nombre de cada una de las 44 variables**
+documentadas en `.env.example` existe también en `.env` — ninguna falta.
+
+### 4. Suite completa
+
+`test_ronda66_cierre_sellado_global.mjs` — 70 aserciones (Parte A:
+verificación real de los 3 caminos de datos para Estudiante/Acudiente/
+Elecciones, con evidencia de código en los 2 archivos frontend; Parte B:
+el hallazgo real y su corrección, con evidencia de que ambos puntos
+corregidos son distintos entre sí; Parte C: simulación de ejecución real
+que reproduce un ciclo login-Docente → login-Estudiante en la misma
+pestaña y confirma que el estudiante ve datos completos incluso con la
+bandera obsoleta, documentando que el hallazgo era de higiene y no de
+exposición; Parte D: verificación estructural de `.env`/`.env.example`
+sin exponer valores; Parte E: cero regresión en Docente/Admin/Súper
+Admin).
+
+Suite completa re-ejecutada: **67 archivos, 100% verde**. 1 test
+previamente congelado necesitó un ajuste, explicado con precisión como
+pidió el coordinador: `test_ronda47_ia_y_login_unificado.mjs` verificaba
+que, dentro de una ventana de 1800 caracteres desde el inicio de
+`_finalizarSesionInstitucional()`, aparecieran `db=platDB;`,
+`sesion=sesionData;` y `render();` — el nuevo comentario de higiene del
+invariante (Parte 2, arriba) agregó código ANTES de esas 2 últimas
+líneas, empujándolas fuera de esa ventana. Se amplió a 2600 caracteres;
+ninguna línea que ese test verificaba fue removida, reordenada ni
+alterada — solo se le agregó una línea nueva antes.
+
+Verificación de sintaxis: `03-app-core.js` (2 líneas nuevas + comentarios,
+ningún archivo backend tocado esta ronda) verificado con los métodos ya
+establecidos — se ejecuta completo hasta `ReferenceError: window is not
+defined`, comportamiento esperado fuera de un navegador. `src/index.ts`
+no se modificó esta ronda (ronda de verificación, sin endpoints nuevos).
+
+### Archivos modificados esta ronda
+
+- **`gestor-academico/dist/modules/03-app-core.js`** — 2 líneas nuevas
+  (`window._dbGranularSolamente=false;`, con su comentario explicativo)
+  en `doLoginPortal()` y en `_finalizarSesionInstitucional()`. Ningún otro
+  cambio de comportamiento.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección (cierre final).
+
+Ningún cambio en `06-documentos-y-resto.js` ni en `src/index.ts` esta
+ronda — confirmando la expectativa del coordinador de que una ronda de
+verificación limpia no requiere cambios funcionales de fondo.
+
+---
+
+## MATRIZ FINAL — Estado de todos los roles de la plataforma (cierre del ciclo Rondas 56-66)
+
+| Rol | Rondas | Estado | Resumen |
+|---|---|---|---|
+| **Docente** | 56-59 | ✅ Cerrado | Planilla, Notas de Actividades, Asistencia, Observador, Actividades/Tareas y Permisos migrados a lectura granular con adaptador + fallback real a `_pullDB()`. Resto del catálogo (Consolidados, PDFs, Documentos/Actas) protegido por `window._dbGranularSolamente`. F5-en-frío y navegación en caliente cubiertos por el mismo wrapper `_navegarConCargaGranularSiAplica()`. |
+| **Admin / Directivo** | 60-63 | ✅ Cerrado | 8 vistas migradas: Estudiantes (paginado por grado), Carga Académica, Planilla/Notas de Actividades (viendo cualquier docente), Credenciales (paginado por grado), Información Institucional, Horarios, Cronograma de Notas. Traslado Inter-Institucional auditado y dejado como **excepción permanente documentada** (ya resuelto correctamente server-side). Tablero dejado bajo la red de seguridad por complejidad de verificación. Comunicado General reforzado con guardarraíl adicional. |
+| **Súper Admin** | 64-65 | ✅ Cerrado | 2 vistas migradas: "Gestión/Listado de Instituciones" (Ronda 64) y "Salud del Sistema" (Ronda 65), ambas vía el mismo endpoint `GET /api/gestor/plataformas-stats` (extendido de forma aditiva con `incluirPapelera=1`). 4 vistas ya granulares de rondas anteriores (Rondas 49/55: `agenteia`, `infraestructura`, `etc`, `universidades`). 9 vistas sin riesgo (solo `gestorDB` en memoria). `descargarGestorCompleto()` documentado como **excepción permanente** (respaldo deliberado con confirmación explícita). `_gestorRefrescarCreditosIA()` documentado como **catálogo pendiente** (mitigación parcial ya existente, forma de datos distinta). |
+| **Estudiante** | — | 🛡️ Protegido por la red de seguridad (decisión del usuario) | Vista de consulta ligera. Verificado en la Ronda 66 con evidencia real: siempre recibe `db` completo en el login (`doLoginPortal()`) y en el F5-en-frío (catch-all `_pullDB()` universal); ningún código alcanzable desde su sesión puede angostar `db` después. No requiere ni requerirá adaptador granular propio salvo que el catálogo de la institución crezca lo suficiente para justificarlo en el futuro. |
+| **Acudiente** (rol técnico `padre`) | — | 🛡️ Protegido por la red de seguridad (decisión del usuario) | Misma verificación y misma conclusión que Estudiante — comparte exactamente el mismo camino de login (`doLoginPortal()`) y el mismo catch-all de F5. `renderPadre()` confirmado sin ninguna llamada a helpers de merge parcial. |
+| **Elecciones Escolares** (Votación de Personero/Contralor) | — | 🛡️ Protegido por la red de seguridad (decisión del usuario) | Módulo puntual de emisión de voto directo y conteo. Misma verificación: login completo, F5 con catch-all universal, y navegación interna (`elecStep`) confirmada como un simple cambio de variable sin fetch ni merge parcial — nunca puede angostar `db`. |
+
+**Hallazgo transversal de la Ronda 66** (aplica a los 3 roles protegidos
+por la red de seguridad): se corrigió una inconsistencia de higiene del
+invariante de `window._dbGranularSolamente` en los 2 puntos de login con
+blob completo fuera de `_pullDB()` — sin que existiera, en ningún momento
+de las 11 rondas de esta migración, una exposición real de datos
+parciales para Estudiante, Acudiente o Elecciones Escolares.
+
+### Resumen honesto del ciclo completo (Rondas 56 a 66)
+
+En 11 rondas se migró la arquitectura de carga de datos del frontend de
+un modelo de "un solo blob JSON gigante por institución, descargado
+entero en cada navegación" a un modelo de "fragmentos granulares por
+vista, con fallback real y verificado a la descarga completa" — para los
+3 roles con volumen de uso y de datos suficiente para justificarlo
+(Docente, Admin, Súper Admin). Cada migración se acompañó de:
+verificación de equivalencia estructural con ejecución real (nunca solo
+inspección de código), un adaptador con fallback explícito nunca
+decorativo, cableado tanto para navegación en caliente como para F5 en
+frío donde aplicaba, y una suite de pruebas que creció de 0 a 67 archivos
+sin perder cobertura de ninguna ronda anterior. Cada decisión de **no**
+migrar algo (Tablero, Traslado Inter-Institucional, `descargarGestorCompleto()`,
+`_gestorRefrescarCreditosIA()`, y los 3 roles Estudiante/Acudiente/
+Elecciones en su totalidad) fue documentada con una razón técnica
+explícita, nunca dejada en ambigüedad.
+
+**Confirmación explícita de disposición para producción en Render, desde
+la perspectiva de esta migración de arquitectura granular**: no queda
+ningún hueco conocido sin cerrar o sin documentar; la red de seguridad
+`window._dbGranularSolamente` cubre, con evidencia verificada, el 100%
+de los puntos de entrada no migrados de los 3 roles con adaptadores
+propios, y los 3 roles sin adaptador propio nunca dependen de esa
+bandera para empezar con datos correctos. El sistema, desde este eje de
+trabajo, está listo para desplegarse.

@@ -829,6 +829,11 @@ app.get('/api/inetis/db', async (req, res) => {
     // la última vez. Responder solo "304 Not Modified" (sin cuerpo) en ese
     // caso es, en la práctica, el ahorro de red más grande posible: es la
     // diferencia entre transferir todo el JSON o no transferir nada.
+    // RONDA 55 — misma cabecera Cache-Control (`no-cache`, ver el comentario
+    // junto a CACHE_CONTROL_REVALIDAR más arriba) que ya se agregó a los 3
+    // endpoints granulares — cierra el hallazgo que quedó pendiente,
+    // documentado como diagnóstico, en la Ronda 54.
+    res.setHeader('Cache-Control', CACHE_CONTROL_REVALIDAR);
     if (version && req.headers['if-none-match'] === `"${version}"`) {
       return res.status(304).end();
     }
@@ -883,9 +888,21 @@ async function _leerBlobInstitucionParaFragmento(sk: string): Promise<any | null
 // `If-None-Match` con un 304 sin cuerpo — funciona igual de bien por
 // cualquiera de los 2 caminos (relacional o blob), porque el ETag se
 // calcula sobre el resultado final, no sobre la fuente.
+// RONDA 55 — cabecera Cache-Control explícita (pendiente desde la Ronda 54).
+// Se usa `no-cache` (NO `no-store` ni un `max-age` largo): `no-cache` permite
+// al navegador GUARDAR la respuesta, pero lo obliga a revalidarla contra el
+// servidor antes de reutilizarla — que es exactamente el trabajo que ya hace
+// `If-None-Match`/ETag de abajo. Con esto, una recarga de la misma vista
+// dispara la petición condicional (pequeña, 304 sin cuerpo si nada cambió)
+// en vez de que el navegador decida servir una copia local sin preguntar
+// nada (lo que sí haría con un `max-age` positivo) o sin ningún tipo de
+// caché en absoluto (lo que pasaba antes, al no mandar ningún Cache-Control).
+const CACHE_CONTROL_REVALIDAR = 'no-cache';
+
 function _responderConETag(req: express.Request, res: express.Response, payload: any): express.Response {
   const cuerpo = JSON.stringify(payload);
   const etag = '"' + crypto.createHash('sha1').update(cuerpo).digest('hex') + '"';
+  res.setHeader('Cache-Control', CACHE_CONTROL_REVALIDAR);
   if (req.headers['if-none-match'] === etag) {
     return res.status(304).end();
   }
@@ -927,24 +944,293 @@ app.get('/api/grados', async (req, res) => {
 // con sus campos básicos (nombre, documento, id) — NO su blob completo de
 // notas/observador/ficha, que sigue viviendo en GET /api/inetis/db para
 // quien de verdad lo necesite completo.
+// RONDA 55 — paginación real (page/limit), pedida explícitamente por el
+// coordinador para "listados extensos" — un grado normal (30-200
+// estudiantes) no la necesita casi nunca, pero un grado consolidado de
+// jornada única con varios grupos fusionados sí puede crecer bastante, así
+// que se agrega igual, con límite por defecto documentado. Se aplica
+// DESPUÉS de filtrar por grado, sobre el arreglo final ya recortado — nunca
+// pagina sobre la institución completa, solo sobre el fragmento del grado
+// pedido, que es lo que ya hacía este endpoint desde la Ronda 44.
+const LIMITE_ESTUDIANTES_POR_PAGINA_DEFECTO = 100;
+const LIMITE_ESTUDIANTES_POR_PAGINA_MAXIMO = 500;
+function _paginar<T>(lista: T[], pageRaw: unknown, limitRaw: unknown): { items: T[]; page: number; limit: number; total: number; hasMore: boolean } {
+  const limit = Math.min(Math.max(parseInt(String(limitRaw ?? ''), 10) || LIMITE_ESTUDIANTES_POR_PAGINA_DEFECTO, 1), LIMITE_ESTUDIANTES_POR_PAGINA_MAXIMO);
+  const page = Math.max(parseInt(String(pageRaw ?? ''), 10) || 1, 1);
+  const inicio = (page - 1) * limit;
+  const items = lista.slice(inicio, inicio + limit);
+  return { items, page, limit, total: lista.length, hasMore: inicio + limit < lista.length };
+}
+
+// RONDA 60 — parámetro opcional "full=1" (aditivo, retrocompatible: sin él
+// el endpoint responde exactamente igual que antes de esta ronda). Lo usa
+// el piloto Directivo/Rector (Listado de Estudiantes, ver
+// CHECKLIST_DESPLIEGUE.md): esa pantalla necesita más campos por
+// estudiante (nombre completo por partes, foto, tipo de documento,
+// modalidad, estado de pensión, grado) que los que ya devolvía este
+// endpoint para su único caso de uso anterior (mínimo, aún sin consumidor
+// real en el frontend hasta esta ronda).
+// RONDA 62 — nuevo parámetro aditivo "credenciales=1" (independiente de
+// "full", nunca combinado con él): proyección EXCLUSIVA para
+// htmlVerCredenciales() (u, p, numDocAcud, acudiente — usuario/contraseña
+// del estudiante Y del acudiente). Deliberadamente separado de "full=1"
+// (Ronda 60, usado por "Listado de Estudiantes"/adm-est) para que esa otra
+// pantalla NUNCA reciba estos campos sensibles de más — cada vista pide
+// solo la proyección que necesita. INVESTIGACIÓN REAL: las contraseñas de
+// estudiante/acudiente (a diferencia de docentes/admins) se guardan EN
+// TEXTO PLANO en el blob (`e.p`), no cifradas — así lo muestra hoy mismo
+// htmlVerCredenciales() leyendo el blob completo; este endpoint no crea
+// ninguna exposición nueva, solo entrega el mismo dato por un camino más
+// angosto (un grado a la vez, paginado).
 app.get('/api/grados/:id/estudiantes', async (req, res) => {
   try {
     const sk = String(req.query.sk || '');
     const grado = decodeURIComponent(req.params.id || '');
+    const full = req.query.full === '1';
+    const credenciales = req.query.credenciales === '1';
     if (!sk || !grado) return res.status(400).json({ error: 'sk y grado (id) requeridos' });
     if (await _institucionYaMigradaRelacional(sk)) {
       const filas = await db.select().from(estudiantesRel).where(and(eq(estudiantesRel.sk, sk), eq(estudiantesRel.grado, grado)));
-      const estudiantes = filas.map((f) => ({ id: f.estIdOrigen, n: f.nombre, numDoc: f.numDoc, estadoMatricula: f.estadoMatricula }));
-      return _responderConETag(req, res, { estudiantes, fuente: 'relacional' });
+      const todos = filas.map((f) => ({ id: f.estIdOrigen, n: f.nombre, numDoc: f.numDoc, estadoMatricula: f.estadoMatricula }));
+      const pag = _paginar(todos, req.query.page, req.query.limit);
+      // Nota: el esquema relacional (Ronda 45) todavía no tiene columnas
+      // para credenciales de estudiante/acudiente — "credenciales=1" no se
+      // puede honrar aquí todavía; se responde igual que "fuente:
+      // relacional" siempre respondió (sin esos campos), y el adaptador
+      // del frontend detecta esa "fuente" y cae a _pullDB() en vez de
+      // mostrar credenciales incompletas.
+      return _responderConETag(req, res, { estudiantes: pag.items, fuente: 'relacional', page: pag.page, limit: pag.limit, total: pag.total, hasMore: pag.hasMore });
     }
     const blob = await _leerBlobInstitucionParaFragmento(sk);
-    if (!blob) return _responderConETag(req, res, { estudiantes: [], fuente: 'blob' });
-    const estudiantes = (blob.ests || [])
-      .filter((e: any) => e.g === grado)
-      .map((e: any) => ({ id: e.id, n: e.n, numDoc: e.numDoc || '', estadoMatricula: e.estadoMatricula || 'activo' }));
-    return _responderConETag(req, res, { estudiantes, fuente: 'blob' });
+    if (!blob) return _responderConETag(req, res, { estudiantes: [], fuente: 'blob', page: 1, limit: LIMITE_ESTUDIANTES_POR_PAGINA_DEFECTO, total: 0, hasMore: false });
+    const todosCrudos = (blob.ests || []).filter((e: any) => e.g === grado);
+    const todos = credenciales
+      ? todosCrudos.map((e: any) => ({
+          id: e.id, n: e.n, g: e.g, numDoc: e.numDoc || '', u: e.u || '', p: e.p || '',
+          numDocAcud: e.numDocAcud || '', acudiente: e.acudiente || '', tel: e.tel || '', email: e.email || '',
+        }))
+      : full
+      ? todosCrudos.map((e: any) => ({
+          id: e.id, n: e.n, g: e.g, numDoc: e.numDoc || '', estadoMatricula: e.estadoMatricula || 'activo',
+          apellido1: e.apellido1 || '', apellido2: e.apellido2 || '', nombre1: e.nombre1 || '', nombre2: e.nombre2 || '',
+          foto: e.foto || null, tipoDoc: e.tipoDoc || '', modalidad: e.modalidad || 'presencial', pensionAlDia: e.pensionAlDia,
+        }))
+      : todosCrudos.map((e: any) => ({ id: e.id, n: e.n, numDoc: e.numDoc || '', estadoMatricula: e.estadoMatricula || 'activo' }));
+    const pag = _paginar(todos, req.query.page, req.query.limit);
+    return _responderConETag(req, res, { estudiantes: pag.items, fuente: 'blob', page: pag.page, limit: pag.limit, total: pag.total, hasMore: pag.hasMore });
   } catch (e) {
     console.error('GET /api/grados/:id/estudiantes', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/usuarios-credenciales?sk=... — RONDA 62. Los administradores y
+// docentes (a diferencia de estudiantes/acudientes) SÍ guardan su
+// contraseña cifrada (`u.p`, hash) — y, a diferencia del hallazgo de la
+// Ronda 61 (Carga Académica, donde SÍ hacía falta el hash porque
+// _guardarEdicionDocente() lo preserva si el campo queda en blanco), aquí
+// se investigó `_resetPassDocente()` (06-documentos-y-resto.js) con el
+// mismo rigor: SIEMPRE genera un hash NUEVO (`_hashPassword(nueva)`) y
+// nunca lee ni depende del hash anterior — por lo tanto este endpoint NO
+// incluye el campo `p` en absoluto, ni cifrado, para no transmitir ese
+// dato sensible cuando la función de escritura real no lo necesita.
+app.get('/api/usuarios-credenciales', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { administradores: [], docentes: [] });
+    const users: any[] = blob.users || [];
+    const proj = (u: any) => ({ u: u.u, n: u.n || '', email: u.email || '', telefono: u.telefono || '' });
+    const administradores = users.filter((u) => u.r === 'admin').map((u) => ({ ...proj(u), soloLectura: !!u.soloLectura, tfaActivo: !!u.tfaActivo }));
+    const docentes = users.filter((u) => u.r === 'docente').map(proj);
+    return _responderConETag(req, res, { administradores, docentes });
+  } catch (e) {
+    console.error('GET /api/usuarios-credenciales', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/institucion?sk=... — RONDA 62. Fragmento LIGERO con los campos
+// escalares de "Configuración Institucional" (htmlConfigBase(), pag===
+// 'adm-base') — nombre, rector(a), año lectivo, DANE, NIT, municipio,
+// "Corregimiento / Sede" (INVESTIGACIÓN REAL: no existe un concepto de
+// "sedes" múltiples en este esquema — es un único campo de texto libre,
+// pese a que el plan de esta ronda mencionaba "sedes" en plural),
+// departamento, teléfono/email institucional, resolución, encabezado/pie
+// de página de documentos, firma del rector, logo/escudo, y
+// `nivelEducativo` (necesario para que la pantalla distinga Colegio vs.
+// Universidad — no vive en ningún otro fragmento granular existente).
+// Nunca incluye `carga`, `grados` ni `users`: esta pantalla ya obtiene eso
+// de los endpoints granulares reutilizados (GET /api/grados y GET
+// /api/carga-docente?incluirPersonal=1, Rondas 60/61).
+app.get('/api/institucion', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, {});
+    const campos = [
+      'nombre', 'rectora', 'anio', 'dane', 'nit', 'municipio', 'corregimiento', 'depto',
+      'telInst', 'emailInst', 'resolucion', 'encabezado', 'piePagina', 'firmaRectora',
+      'logo', 'escudoColombia', 'nivelEducativo',
+    ];
+    const info: Record<string, any> = {};
+    campos.forEach((c) => { info[c] = (blob as any)[c] ?? ''; });
+    return _responderConETag(req, res, info);
+  } catch (e) {
+    console.error('GET /api/institucion', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/horarios?sk=... — RONDA 62. `blob.horarios` es un objeto plano
+// GLOBAL keyeado por nombre de grado (ver htmlHorarios()/renderHorario()
+// en 03-app-core.js: `db.horarios[grado][dia+franja]`) — la vista "Por
+// Docente" recorre TODOS los grados buscando celdas de un docente
+// concreto (dependencia cruzada real, confirmada leyendo renderHorario():
+// `db.grados.forEach(g=>{ const v=((db.horarios||{})[g.n]||{})[...]; ...
+// })`), así que no existe un recorte seguro "un grado a la vez" para esta
+// vista sin duplicar esa misma lógica en el servidor. Se optó, en cambio,
+// por traer `blob.horarios` COMPLETO (igual patrón que Carga Académica,
+// Ronda 61: la institución entera en una sola llamada liviana, sin el
+// resto del blob) — nunca incluye notas, asistencia, observador, etc.
+app.get('/api/horarios', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { horarios: {}, horConfig: null });
+    return _responderConETag(req, res, { horarios: blob.horarios || {}, horConfig: blob.horConfig || null });
+  } catch (e) {
+    console.error('GET /api/horarios', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/cronograma?sk=... — RONDA 63 (barrido final, "quick win" #4:
+// una vista de configuración ligera adicional, de bajo riesgo, en la
+// misma categoría que GET /api/institucion, Ronda 62). `blob.cronograma`
+// (fechas de apertura/cierre por periodo) y `blob.periodosActivos`
+// (interruptores manuales por periodo) son ambos objetos/arreglos
+// pequeños, a nivel de institución completa — nunca por grado ni por
+// docente — así que no hay ningún recorte "más angosto" posible ni
+// necesario; se entrega tal cual, junto con `config.numPeriodos` (blob.config
+// completo NO se envía — sería reintroducir de más: solo se necesita ese
+// único número para saber cuántas filas de periodo dibujar).
+app.get('/api/cronograma', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { cronograma: {}, periodosActivos: null, numPeriodos: 4 });
+    return _responderConETag(req, res, {
+      cronograma: blob.cronograma || {},
+      periodosActivos: blob.periodosActivos || null,
+      numPeriodos: (blob.config && blob.config.numPeriodos) || 4,
+    });
+  } catch (e) {
+    console.error('GET /api/cronograma', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/gestor/plataformas-stats?sks=sk1,sk2,... — RONDA 64 (arranque
+// del ROL SÚPER ADMIN, vista piloto elegida: "Gestión / Listado de
+// Instituciones", _gestorPag==='plataformas').
+//
+// HALLAZGO que motiva este endpoint: la función frontend
+// `_refrescarStatsPlataformasReal()` (03-app-core.js) recorre TODAS las
+// instituciones registradas en `gestorDB.platforms` y, por CADA UNA,
+// descarga el blob COMPLETO de esa institución (el mismo
+// `GET /api/inetis/db?sk=...` que usa `_pullDB()` para una sola
+// institución) más `_migrateDB()` sobre ese blob entero — solo para leer
+// 3 números: cantidad de estudiantes, cantidad de docentes y el usuario
+// del admin. Es un patrón "N blobs completos" secuencial, uno por
+// institución — más pesado que cualquier caso de institución única
+// resuelto en las Rondas 56-63, porque aquí se multiplica por el número
+// total de instituciones de toda la plataforma.
+//
+// SOLUCIÓN: un único endpoint que recibe la lista de `sk` que el
+// Súper Admin YA tiene en memoria (gestorDB.platforms, sin blob masivo
+// adicional para obtenerla) y calcula esos 3 datos SERVIDOR-SIDE, por
+// institución, reutilizando `_leerBlobInstitucionParaFragmento` (mismo
+// caché en memoria de 5s que ya usan los demás endpoints granulares) —
+// así el servidor sigue leyendo un blob por institución (no hay forma de
+// evitar eso: son filas independientes en `kv_store`), pero el NAVEGADOR
+// ya no descarga ni migra ningún blob completo: una sola respuesta HTTP,
+// pequeña (unos pocos números por institución), reemplaza N respuestas
+// pesadas.
+//
+// Solo se leen `ests` y `users` del blob crudo (sin `_migrateDB()`) — esos
+// dos arreglos existen igual en el blob ya guardado, migrado o no, así que
+// no hay necesidad de correr la migración completa solo para contar.
+//
+// Nota de paginación: a diferencia de Estudiantes (Ronda 45/55) o
+// Credenciales (Ronda 62), aquí NO se pagina la LISTA de instituciones —
+// esa lista (`sks`) la aporta el propio cliente desde `gestorDB.platforms`,
+// que ya tiene en memoria sin costo adicional. Lo que se elimina es el
+// costo de ir una por una a buscar el detalle de cada una — igual que
+// `GET /api/carga-docente?incluirPersonal=1` (Ronda 61) no pagina la
+// planta docente de una institución: no hace falta, el "N+1" real que se
+// resuelve aquí es "una petición pesada por institución", no "una
+// institución tiene demasiados registros".
+// RONDA 65 — extensión ADITIVA (mismo patrón que `credenciales=1`,
+// Ronda 62, o `incluirPersonal=1`, Ronda 61): la vista "Salud del
+// Sistema" (_gestorPag==='salud', función `_refrescarSaludSistema()`)
+// tiene el MISMO defecto estructural que "Plataformas" (Ronda 64) — un
+// `Promise.all` que descarga el blob COMPLETO de CADA institución, esta
+// vez para calcular el tamaño de la "papelera" (elementos con
+// `deletedAt`: descriptores, asistencia, estudiantes y las observaciones
+// de cada estudiante). No son las mismas 3 métricas de "Plataformas"
+// (estudiantes/docentes/admin) — son una métrica DISTINTA y adicional —
+// así que en vez de crear un segundo endpoint paralelo, se añade aquí un
+// parámetro opcional `incluirPapelera=1` que agrega un 4to campo
+// (`papelera`) a cada entrada de `stats`, calculado del mismo blob que ya
+// se estaba leyendo para las otras 3 métricas — cero lecturas de blob
+// adicionales por esta extensión.
+app.get('/api/gestor/plataformas-stats', async (req, res) => {
+  try {
+    const sksParam = String(req.query.sks || '');
+    const incluirPapelera = req.query.incluirPapelera === '1';
+    const sks = sksParam
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (sks.length === 0) return _responderConETag(req, res, { stats: [] });
+    const stats = await Promise.all(
+      sks.map(async (sk) => {
+        try {
+          const blob = await _leerBlobInstitucionParaFragmento(sk);
+          if (!blob) return incluirPapelera ? { sk, nEsts: 0, nDocs: 0, adminU: null, papelera: 0 } : { sk, nEsts: 0, nDocs: 0, adminU: null };
+          const ests = Array.isArray(blob.ests) ? blob.ests : [];
+          const users = Array.isArray(blob.users) ? blob.users : [];
+          const nDocs = users.filter((u: any) => u && u.r === 'docente').length;
+          const admin = users.find((u: any) => u && u.r === 'admin');
+          const base: any = { sk, nEsts: ests.length, nDocs, adminU: admin ? admin.u : null };
+          if (incluirPapelera) {
+            const descriptores = Array.isArray(blob.descriptores) ? blob.descriptores : [];
+            const asistencia = Array.isArray(blob.asistencia) ? blob.asistencia : [];
+            let total = 0;
+            total += descriptores.filter((x: any) => x && x.deletedAt).length;
+            total += asistencia.filter((x: any) => x && x.deletedAt).length;
+            total += ests.filter((e: any) => e && e.deletedAt).length;
+            ests.forEach((e: any) => {
+              const obs = Array.isArray(e && e.observaciones) ? e.observaciones : [];
+              total += obs.filter((o: any) => o && o.deletedAt).length;
+            });
+            base.papelera = total;
+          }
+          return base;
+        } catch (eInterno) {
+          console.error('GET /api/gestor/plataformas-stats (sk=' + sk + ')', eInterno);
+          return incluirPapelera ? { sk, nEsts: 0, nDocs: 0, adminU: null, papelera: 0 } : { sk, nEsts: 0, nDocs: 0, adminU: null };
+        }
+      })
+    );
+    return _responderConETag(req, res, { stats });
+  } catch (e) {
+    console.error('GET /api/gestor/plataformas-stats', e);
     return res.status(500).json({ error: 'Error interno' });
   }
 });
@@ -978,6 +1264,269 @@ app.get('/api/grados/:id/materias/:materiaId/notas', async (req, res) => {
     return _responderConETag(req, res, { notas, fuente: 'blob' });
   } catch (e) {
     console.error('GET /api/grados/:id/materias/:materiaId/notas', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 56 — 2 endpoints NUEVOS, construidos específicamente para que el
+// adaptador granular del frontend (Docente → Planilla de Calificaciones,
+// ver _cargarPlanillaGranular() en 03-app-core.js) pueda alimentar el
+// objeto de estado en memoria SIN descargar el blob completo de la
+// institución. Mismo patrón conservador de la Ronda 44/45 (leer el
+// fragmento del blob ya cacheado por GET /api/inetis/db, nunca reescribir
+// el almacenamiento) — sin ruta relacional todavía (a diferencia de los 3
+// endpoints anteriores, que sí intentan primero `estudiantesRel`/
+// `calificacionesRel`): se prioriza aquí la seguridad/velocidad de entrega
+// de esta ronda; documentado como aditivo pendiente, no como omisión.
+// ════════════════════════════════════════════════════════════════════════
+
+// GET /api/carga-docente?sk=...&docente=... — lista LIVIANA de asignaturas/
+// grados asignados a UN docente (o de toda la institución si no se manda
+// "docente", uso reservado a un futuro consumidor admin). Es lo único que
+// necesita el selector "Asignatura" de Planilla — nunca incluye estudiantes
+// ni notas.
+// RONDA 61 — Front 1 y Front 2. `docente` sigue siendo un query param
+// LIBRE (ya lo era desde la Ronda 56: este endpoint nunca validó que
+// `docente` coincidiera con ningún token/sesión del lado del servidor,
+// solo filtra por el `sk` de la institución) — por eso un Admin/Rector ya
+// podía, sin ningún cambio de backend, pedir la carga de CUALQUIER
+// docente de su propia institución: alcanza con omitir `docente` (trae
+// TODA la carga) o pasar el usuario de un docente específico. El único
+// cambio real aquí es aditivo: `incluirPersonal=1` (nuevo, opcional,
+// hacia atrás compatible — sin él el endpoint responde exactamente igual
+// que antes) agrega un arreglo `personal` con los docentes (r==='docente')
+// MÁS los coordinadores de solo lectura (r==='admin'&&soloLectura), que es
+// exactamente el universo de usuarios que gestiona la pantalla "Carga
+// Académica y Docentes" (htmlCarga(), 03-app-core.js) aparte de la carga
+// en sí. Se incluye el campo `p` (hash de la contraseña, nunca la
+// contraseña en texto plano) porque `_guardarEdicionDocente()` lo
+// necesita para preservar la contraseña de un docente cuando el
+// admin edita sus datos dejando el campo de contraseña en blanco
+// (`p:pHash||d.users[idx].p`) — omitirlo aquí habría dejado sin
+// contraseña a cualquier docente editado por este camino granular. No es
+// una exposición nueva: un Admin ya recibía ese mismo hash de cada
+// docente de su institución al hacer un _pullDB() completo, como hace hoy
+// esta misma pantalla.
+app.get('/api/carga-docente', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const docente = req.query.docente ? String(req.query.docente) : null;
+    const incluirPersonal = req.query.incluirPersonal === '1';
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { carga: [], ...(incluirPersonal ? { personal: [] } : {}) });
+    const todaLaCarga: any[] = blob.carga || [];
+    const carga = docente ? todaLaCarga.filter((c: any) => c.d === docente) : todaLaCarga;
+    const payload: any = { carga };
+    if (incluirPersonal) {
+      payload.personal = (blob.users || []).filter((u: any) => u.r === 'docente' || (u.r === 'admin' && u.soloLectura));
+    }
+    return _responderConETag(req, res, payload);
+  } catch (e) {
+    console.error('GET /api/carga-docente', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/grados/:id/notas-completas?sk=... — el fragmento COMPLETO de UN
+// grado: sus estudiantes (con TODAS sus notas, de TODAS las materias del
+// grado, no solo una) + las asignaturas (`carga`) de ese grado + la
+// configuración de calificación (`config`) + `periodosActivos`. Es
+// deliberadamente más amplio que GET /api/grados/:id/materias/:materiaId/notas
+// (Ronda 44/45): ese endpoint alcanza para PINTAR una sola columna de
+// materia, pero Planilla también necesita comparar notas de TODAS las
+// materias del mismo grado para calcular "áreas perdidas"
+// (calcAreasPerd()/getAreasPerdidas(), 03-app-core.js) — si se le diera
+// solo una materia, esas funciones (que ya existían y no se tocan) fallarían
+// silenciosamente al no encontrar las notas de las otras materias. Sigue
+// siendo MUCHO más chico que el blob completo: nunca incluye asistencia,
+// observador, otros grados, ni el resto de módulos de la institución.
+app.get('/api/grados/:id/notas-completas', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const grado = decodeURIComponent(req.params.id || '');
+    if (!sk || !grado) return res.status(400).json({ error: 'sk y grado (id) requeridos' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { estudiantes: [], cargasDelGrado: [], config: {}, periodosActivos: null });
+    const cargasDelGrado = (blob.carga || []).filter((c: any) => c.g === grado);
+    const estudiantes = (blob.ests || [])
+      .filter((e: any) => e.g === grado)
+      .map((e: any) => ({ id: e.id, n: e.n, foto: e.foto || null, numDoc: e.numDoc || '', g: e.g, nts: e.nts || {} }));
+    return _responderConETag(req, res, {
+      estudiantes,
+      cargasDelGrado,
+      config: blob.config || {},
+      periodosActivos: blob.periodosActivos || null,
+    });
+  } catch (e) {
+    console.error('GET /api/grados/:id/notas-completas', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 57 — 3 endpoints NUEVOS más, para migrar las 3 vistas restantes de
+// la jornada diaria del Docente (Notas de Actividades, Asistencia,
+// Observador) al mismo patrón aditivo/conservador de la Ronda 56: leer el
+// fragmento ya cacheado del blob (GET /api/inetis/db), nunca reescribir el
+// almacenamiento, `_responderConETag()` (ETag + Cache-Control) igual que
+// todos los anteriores.
+// ════════════════════════════════════════════════════════════════════════
+
+// GET /api/notas-actividades?sk=&cId=&per=... — INVESTIGACIÓN REAL (pedida
+// por el coordinador): `blob.notasAct` es un mapa PLANO y GLOBAL de TODA la
+// institución, con clave compuesta `cId_per_colId_estId` (ver
+// _ejecutarGuardarFilaNotas() más arriba, rama tipo==='actividad') — NO
+// está anidado dentro de cada estudiante como e.nts. Las columnas
+// (Descriptores/Logros/Indicadores que el docente crea, ej. "Taller 3") SÍ
+// viven organizadas por materia+periodo, pero en 2 estructuras GLOBALES
+// aparte: `blob.notasActColumnas` (catálogo de TODAS las columnas de la
+// institución, con su nombre/tipo) y `blob.notasActAsignadas` (mapa
+// `cId_per` -> [colId,...], qué columnas están asignadas a esa
+// materia+periodo). No existía ningún endpoint granular previo para esta
+// estructura — se construye este, nuevo, que filtra los 3 por el prefijo
+// exacto `cId_per` para no traer ni una nota de otra materia/periodo/
+// institución.
+app.get('/api/notas-actividades', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const cId = String(req.query.cId || '');
+    const per = String(req.query.per || '');
+    if (!sk || !cId || !per) return res.status(400).json({ error: 'sk, cId y per requeridos' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { estudiantes: [], columnas: [], notasAct: {} });
+    const claveAsignadas = cId + '_' + per;
+    const colIds: string[] = (blob.notasActAsignadas || {})[claveAsignadas] || [];
+    const columnas = (blob.notasActColumnas || []).filter((c: any) => colIds.includes(c.id));
+    const prefijo = cId + '_' + per + '_';
+    const notasAct: Record<string, any> = {};
+    Object.keys(blob.notasAct || {}).forEach((k) => {
+      if (k.startsWith(prefijo)) notasAct[k] = blob.notasAct[k];
+    });
+    const carga = (blob.carga || []).find((c: any) => String(c.id) === cId);
+    const grado = carga ? carga.g : null;
+    const estudiantes = grado
+      ? (blob.ests || []).filter((e: any) => e.g === grado).map((e: any) => ({ id: e.id, n: e.n, g: e.g }))
+      : [];
+    return _responderConETag(req, res, { estudiantes, columnas, notasAct, notasActAsignadas: { [claveAsignadas]: colIds } });
+  } catch (e) {
+    console.error('GET /api/notas-actividades', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/grados/:id/observador?sk=... — estudiantes de UN grado CON sus
+// observaciones (e.observaciones), el campo exacto que necesita
+// cargarListaObservador(). INVESTIGACIÓN REAL (pedida por el coordinador):
+// a diferencia de Planilla, el Observador NO tiene ninguna dependencia
+// cruzada de otras materias/grados — `e.observaciones` ya vive anidado
+// dentro de cada estudiante (igual que e.nts), y su filtrado por
+// `tipo_anotacion` (Ronda 40, Tutor PTA) ya ocurre del lado del CLIENTE
+// sobre este mismo arreglo (_tipoAnotacionEfectivo()/_TIPOS_ANOTACION_
+// VISIBLES_TUTOR_PTA en 03-app-core.js) — no se toca esa lógica; este
+// endpoint solo entrega el arreglo completo de observaciones tal cual,
+// para que el filtrado siga aplicándose exactamente igual que hoy.
+app.get('/api/grados/:id/observador', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const grado = decodeURIComponent(req.params.id || '');
+    if (!sk || !grado) return res.status(400).json({ error: 'sk y grado (id) requeridos' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { estudiantes: [] });
+    const estudiantes = (blob.ests || [])
+      .filter((e: any) => e.g === grado)
+      .map((e: any) => ({ id: e.id, n: e.n, foto: e.foto || null, g: e.g, observaciones: e.observaciones || [] }));
+    return _responderConETag(req, res, { estudiantes });
+  } catch (e) {
+    console.error('GET /api/grados/:id/observador', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// GET /api/asistencia?sk=&grado=&cargaId=... — registros de asistencia de
+// UN grado+asignatura (nunca la institución completa). `blob.asistencia`
+// es un arreglo PLANO y GLOBAL (igual patrón que notasAct) con un registro
+// por CLASE dictada — se filtra por grado+cargaId, se excluyen los ya
+// eliminados (deletedAt, papelera) y se limita a los 200 más recientes
+// (misma filosofía de límite razonable que Ronda 55, la vista ya muestra
+// como máximo 60 en pantalla — 200 deja margen sin acercarse al tamaño del
+// blob completo).
+const LIMITE_ASISTENCIA_REGISTROS = 200;
+app.get('/api/asistencia', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const grado = String(req.query.grado || '');
+    const cargaId = req.query.cargaId ? String(req.query.cargaId) : null;
+    if (!sk || !grado) return res.status(400).json({ error: 'sk y grado requeridos' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { estudiantes: [], registros: [] });
+    const estudiantes = (blob.ests || [])
+      .filter((e: any) => !e.deletedAt && e.g === grado)
+      .map((e: any) => ({ id: e.id, n: e.n, g: e.g }));
+    const registros = (blob.asistencia || [])
+      .filter((a: any) => !a.deletedAt && a.grado === grado && (!cargaId || String(a.cargaId) === cargaId))
+      .sort((a: any, b: any) => (b.fecha || '').localeCompare(a.fecha || '') || (b.hora || '').localeCompare(a.hora || ''))
+      .slice(0, LIMITE_ASISTENCIA_REGISTROS);
+    return _responderConETag(req, res, { estudiantes, registros });
+  } catch (e) {
+    console.error('GET /api/asistencia', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// RONDA 59 — Módulo de Actividades/Tareas/Talleres del Docente (leccionario,
+// planeaciones y entregas incluidos, ver investigación real en
+// CHECKLIST_DESPLIEGUE.md). Investigación de código real (htmlDocenteActividades(),
+// 06-documentos-y-resto.js) confirma que la LISTA de actividades que ve un
+// Docente NO se filtra por "quién la creó" sino por "en qué grados dicta
+// clase" (gradosDelDocente(sesion.u) → [...new Set(carga.filter(c=>c.d===u).map(c=>c.g))]),
+// porque un Docente debe poder ver actividades de OTRAS asignaturas/otros
+// docentes para el mismo grado — misma clase de dependencia cruzada que ya
+// se documentó para Planilla en la Ronda 56, replicada aquí fielmente en
+// el backend en vez de asumir un filtro más simple ("solo mis propias
+// actividades") que hubiera sido incorrecto.
+app.get('/api/actividades-docente', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const docente = String(req.query.docente || '');
+    if (!sk || !docente) return res.status(400).json({ error: 'sk y docente requeridos' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { actividades: [], actEntregas: [], leccionario: [], planeacionesIA: [] });
+    const gradosDoc: string[] = [...new Set((blob.carga || []).filter((c: any) => c.d === docente).map((c: any) => c.g))];
+    const actividades = (blob.actividades || []).filter((a: any) => gradosDoc.includes(a.grado));
+    const idsAct = new Set(actividades.map((a: any) => String(a.id)));
+    const actEntregas = (blob.actEntregas || []).filter((e: any) => idsAct.has(String(e.actId)));
+    // Leccionario y Planeaciones IA sí son estrictamente por docente (ver
+    // htmlDocenteActividades(): "l.docente===sesion.u" y
+    // "p.docente===sesion.u||!p.docente" — un registro sin docente asignado
+    // también se muestra, se replica esa misma condición aquí).
+    const leccionario = (blob.leccionario || []).filter((l: any) => l.docente === docente);
+    const planeacionesIA = (blob.planeacionesIA || []).filter((p: any) => p.docente === docente || !p.docente);
+    return _responderConETag(req, res, { actividades, actEntregas, leccionario, planeacionesIA });
+  } catch (e) {
+    console.error('GET /api/actividades-docente', e);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// RONDA 59 — Módulo de Permisos/Justificantes del Docente (H03.03.F01).
+// Investigación real (htmlAusentismo(), 06-documentos-y-resto.js) confirma
+// que "db.ausentismos" es un array GLOBAL de solicitudes de TODA la
+// institución, filtrado del lado del cliente por "s.doc===sesion.u" — sin
+// ninguna dependencia cruzada (a diferencia de Actividades, un Docente
+// nunca necesita ver el permiso de OTRO docente en esta pantalla).
+app.get('/api/permisos-docente', async (req, res) => {
+  try {
+    const sk = String(req.query.sk || '');
+    const docente = String(req.query.docente || '');
+    if (!sk || !docente) return res.status(400).json({ error: 'sk y docente requeridos' });
+    const blob = await _leerBlobInstitucionParaFragmento(sk);
+    if (!blob) return _responderConETag(req, res, { ausentismos: [] });
+    const ausentismos = (blob.ausentismos || []).filter((s: any) => s.doc === docente);
+    return _responderConETag(req, res, { ausentismos });
+  } catch (e) {
+    console.error('GET /api/permisos-docente', e);
     return res.status(500).json({ error: 'Error interno' });
   }
 });
