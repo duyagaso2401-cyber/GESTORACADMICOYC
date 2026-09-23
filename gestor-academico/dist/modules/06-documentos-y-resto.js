@@ -1154,9 +1154,24 @@ function guardarAsistencia(){
       var idx=d.asistencia.findIndex(function(a){
         return !a.deletedAt && a.fecha===asistFecha&&String(a.cargaId)===String(asistCId)&&a.grado===asistGrado;
       });
+      // RONDA 73 — HALLAZGO 1: "asistPeriodo" vale literalmente "P1".."P4"
+      // (viene del <select id="asistPeriodoSel"> de este mismo archivo, ver
+      // más arriba), mientras que sincronizarAsistenciaASER() (Ronda 72,
+      // 03-app-core.js) comparaba contra el periodo de la Planilla ("1".."4",
+      // sin prefijo) — ningún registro coincidía nunca. Se normaliza aquí,
+      // al GUARDAR, con la MISMA función (_normalizarPeriodo(), definida en
+      // 03-app-core.js) que ahora también se usa al LEER, para que los
+      // registros NUEVOS queden ya en forma canónica (solo dígitos) hacia
+      // adelante — los registros viejos con el formato "P4" siguen
+      // encontrándose igual porque la lectura normaliza también ambos lados
+      // (ver _obtenerClasesAsistenciaPeriodo() en 03-app-core.js). Envuelto
+      // en "typeof===function" por si este módulo llegara a cargar antes
+      // que 03-app-core.js (mismo patrón defensivo que ya usa este archivo
+      // más abajo para _dispararAutoSyncAsistSERSiAplica).
+      var _periodoNormalizado=(typeof _normalizarPeriodo==='function')?_normalizarPeriodo(asistPeriodo):asistPeriodo;
       var reg={
         id:idx!==-1?d.asistencia[idx].id:('a'+Date.now()),
-        fecha:asistFecha,hora:asistHora,horaFin:asistHoraFin,periodo:asistPeriodo,grado:asistGrado,
+        fecha:asistFecha,hora:asistHora,horaFin:asistHoraFin,periodo:_periodoNormalizado,grado:asistGrado,
         cargaId:Number(asistCId),docente:sesion.u,actividad:actividad,
         presentes:presentes,ausentes:ausentes,justificados:justificados
       };

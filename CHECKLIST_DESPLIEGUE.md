@@ -7384,3 +7384,145 @@ agregó una preferencia de "umbral personalizado" por institución para los
 pidió que fueran configurables; se documenta aquí para que quede
 constancia de la decisión, y sería una extensión sencilla si se pide más
 adelante.
+
+## Ronda 73 — 2 hallazgos reales de pruebas en vivo sobre la Ronda 72
+
+El usuario probó la Ronda 72 en vivo (grado 11°, Periodo 4) y reportó 2
+hallazgos concretos con evidencia real (mensaje de la propia UI + DevTools
+Network/Console), no hipótesis.
+
+### HALLAZGO 1 — el botón "🔄 Asistencia → SER" reportaba "0 estudiantes"
+
+**Causa raíz real, confirmada leyendo lado a lado el código de
+`guardarAsistencia()` (06-documentos-y-resto.js) y el de
+`sincronizarAsistenciaASER()` (Ronda 72, 03-app-core.js)** — el descalce
+exacto que el usuario sospechaba, ahora confirmado con precisión:
+
+- `guardarAsistencia()` guarda `periodo:asistPeriodo`, y `asistPeriodo`
+  (declarado en `06-documentos-y-resto.js`) viene del
+  `<select id="asistPeriodoSel">` cuyas opciones son literalmente
+  `"P1"`, `"P2"`, `"P3"`, `"P4"` — **CON** el prefijo `"P"`.
+- `sincronizarAsistenciaASER()` (Ronda 72) recibía `planPer` de la
+  Planilla, cuyo `<select id="planPer">` (`htmlPlanilla()`) usa
+  `<option value="${n}">` — es decir `"1"`, `"2"`, `"3"`, `"4"`, **SIN**
+  prefijo — y comparaba `String(a.periodo)===String(per)`, es decir
+  literalmente `'P4' === '4'` → `false` **siempre**. No era un caso raro
+  ni dependiente de la institución: con este descalce, la sincronización
+  NUNCA podía encontrar ningún registro de asistencia, para ningún
+  periodo, en ninguna institución — exactamente lo que el usuario vio.
+
+El `cargaId` en sí **no** tenía descalce real (ambos módulos usan el mismo
+id numérico de `db.carga`) — se investigó explícitamente y se descartó
+como causa; aun así, se agregó el respaldo por nombre de asignatura
+normalizado que pidió el usuario, por robustez a futuro (documentado más
+abajo).
+
+**Corrección**: `_normalizarPeriodo(valor)`, una función pura que reduce
+cualquier formato (`4`, `"4"`, `"P4"`, `"PERIODO 4"`, `"Período N°4"`, con
+espacios/mayúsculas de sobra) a la misma forma canónica (solo los
+dígitos, como string) — aplicada en **ambos lados**:
+- **Lectura** (`_obtenerClasesAsistenciaPeriodo()`, nueva en
+  `03-app-core.js`): compara `_normalizarPeriodo(a.periodo)` contra
+  `_normalizarPeriodo(per)` — así los registros YA guardados en
+  producción con el formato viejo (`"P4"`) se siguen encontrando sin
+  necesidad de migrar ningún dato existente.
+- **Escritura** (`guardarAsistencia()`, `06-documentos-y-resto.js`): ahora
+  guarda `periodo:_normalizarPeriodo(asistPeriodo)`, así que los registros
+  **nuevos** quedan ya en forma canónica hacia adelante.
+
+**Respaldo por nombre de asignatura** (`_normalizarNombreAsignatura()`):
+si el `cargaId` de un registro no coincide directamente, se compara el
+nombre normalizado (minúsculas, sin tildes, recortado) de la asignatura de
+ese registro contra la de la carga objetivo, para el mismo grado — protege
+contra un esquema de carga menos uniforme en el futuro, aunque no se
+encontró evidencia de que el problema real fuera este.
+
+**Log de diagnóstico** (pedido explícito del usuario, punto 2): un único
+`console.log('[Asistencia→SER] ...')` dentro de `sincronizarAsistenciaASER()`
+(no uno por estudiante — se calcula una sola vez el subconjunto de
+`db.asistencia` para todo el grupo, lo cual además es más eficiente que el
+enfoque de la Ronda 72 que recalculaba el filtro por cada estudiante),
+mostrando grado, asignatura, `cId`, el periodo tal como llegó de la
+Planilla y su forma normalizada, cuántos registros de asistencia se
+encontraron, y qué llaves se compararon — no cambia ningún comportamiento,
+solo ayuda a diagnosticar visualmente en DevTools si un descalce similar
+volviera a ocurrir con otra combinación de datos.
+
+### HALLAZGO 2 — 409 Conflict al alternar los switches de configuración
+
+**Causa raíz real, confirmada leyendo `_pushDB()` completo**: no tenía
+ninguna protección de reentrancia. `saveDB()`/`_saveTimer` solo debounce
+la *programación* de `_pushDB()` (un único `setTimeout` compartido) — pero
+si el `fetch()` de un `_pushDB()` anterior TODAVÍA estaba en camino
+(esperando respuesta del servidor) cuando otro cambio (ej. un segundo
+toggle de switch, o cualquier otro `updDB()` sin bandera granular)
+programaba un `_saveTimer` nuevo, ese nuevo `_pushDB()` arrancaba una
+**segunda petición POST /api/inetis/db en paralelo**, con la MISMA
+`baseVersion` que la primera (porque `window._dbVersion` todavía no se
+había actualizado con la respuesta de la primera). Cuando la primera
+terminaba y avanzaba la versión en el servidor, la segunda llegaba con una
+versión ya vieja y el servidor respondía 409 — exactamente el síntoma
+visto en DevTools al alternar Auto-guardar/Sincronización automática.
+
+Se evaluó el criterio explícito del pedido: `db.config` NO necesita
+migrarse a un endpoint/cola granular nueva (sería un cambio de alcance
+mayor no solicitado) — sigue siendo válido que la configuración se
+persista vía el blob completo; el problema real era la falta de un
+candado de reentrancia, no el mecanismo de persistencia en sí.
+
+**Corrección**: `window._pushDBEnProceso` — un candado booleano. Si
+`_pushDB()` se llama mientras ya hay una petición en vuelo, **no** abre una
+segunda en paralelo: simplemente reprograma su propio turno 350ms más
+tarde (mismo patrón exacto de `saveDB()`). Cuando le toque, `db` se envía
+tal como esté EN ESE MOMENTO (nunca un snapshot viejo), así que ningún
+cambio de configuración se pierde — solo se pospone lo mínimo necesario
+para no pisarse con el envío que ya estaba en camino. El candado se libera
+en un bloque `finally` (cubre éxito, 409, 402 y error de red por igual),
+así que nunca queda "trabado" bloqueando guardados futuros.
+
+### Tests
+
+Nuevo archivo **`test_ronda73_asistencia_ser_matching_y_config_race.mjs`**
+(26 aserciones, ejecución real vía `vm` del archivo fuente completo, mismo
+patrón de las rondas 71/72):
+- **Parte 1** (12 aserciones) — reproduce el escenario real reportado: 22
+  estudiantes de un grado, con 10 registros de asistencia guardados con
+  **3 variantes de formato de periodo distintas** ("P4", "PERIODO 4", "4")
+  simultáneamente. Confirma que los 22 estudiantes se encuentran y reciben
+  su nota (antes de esta ronda, esto daba 0 — ver el reporte real del
+  usuario), que el log de diagnóstico se imprime con el conteo correcto de
+  registros y las llaves comparadas, y prueba `_normalizarPeriodo()` de
+  forma aislada con las variantes explícitas del pedido (`4`, `"4"`,
+  `"P4"`, `"PERIODO 4"`, con espacios/mayúsculas y un símbolo de grado).
+- **Parte 2** (14 aserciones) — 3 escenarios de conmutación rápida de
+  switches de configuración: (a) 4 toggles consecutivos de Auto-guardar y
+  Sincronización automática de Asistencia→SER sin esperar confirmación
+  entre uno y otro, confirmando que NUNCA hay más de una petición
+  POST /api/inetis/db en vuelo a la vez, que ningún 409 se dispara por esta
+  causa, que el candado se libera correctamente al terminar, y que el
+  valor FINAL de cada switch se conserva (ninguna actualización de
+  configuración se pierde, solo se reprograma en el tiempo); (b) lo mismo
+  mientras hay una nota guardándose por la cola granular de la Ronda 71 al
+  mismo tiempo, confirmando que ambos mecanismos conviven sin pisarse ni
+  bloquear la interfaz.
+
+Suite completa re-ejecutada: **74 archivos, 100% verde** (73 previos + 1
+nuevo de esta ronda). Ningún test previamente congelado requirió cambios.
+
+### Archivos modificados esta ronda
+
+- **`gestor-academico/dist/modules/03-app-core.js`** —
+  `_inasistenciasPeriodo()` (Ronda 72) reemplazada por
+  `_normalizarPeriodo()`, `_normalizarNombreAsignatura()`,
+  `_obtenerClasesAsistenciaPeriodo()` e `_inasistenciasEnClases()`;
+  `sincronizarAsistenciaASER()` actualizada para usar el matching flexible
+  y emitir el log de diagnóstico; `_pushDB()` con el nuevo candado de
+  reentrancia `window._pushDBEnProceso` (liberado en `finally`).
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  `guardarAsistencia()` ahora normaliza el periodo con
+  `_normalizarPeriodo()` antes de guardarlo en `db.asistencia`.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+No se tocó `src/index.ts` en ningún momento de esta ronda — ambos
+hallazgos eran enteramente del lado del frontend (formato de llave al
+comparar, y falta de un candado de reentrancia en el envío del blob).

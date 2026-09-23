@@ -920,7 +920,37 @@ function saveDB(){
   if(_saveTimer) clearTimeout(_saveTimer);
   _saveTimer=setTimeout(_pushDB,350);
 }
+// RONDA 73 — HALLAZGO 2 (reportado con evidencia real de DevTools):
+// alternar el switch de "Auto-guardar" o el de "Sincronización automática
+// de Asistencia → SER" disparaba un 409 Conflict contra POST /api/inetis/db
+// justo después del clic. Causa raíz real confirmada leyendo _pushDB()
+// completo: NO tenía ninguna protección de reentrancia. saveDB()/_saveTimer
+// solo debounce la PROGRAMACIÓN de _pushDB() (un único setTimeout
+// compartido) — pero si el fetch() de un _pushDB() anterior TODAVÍA estaba
+// en camino (esperando respuesta del servidor) cuando otro cambio (ej. un
+// segundo toggle, o cualquier otro updDB() sin bandera granular) programaba
+// un _saveTimer nuevo, ese nuevo _pushDB() arrancaba una SEGUNDA petición
+// POST /api/inetis/db en PARALELO, con la MISMA "baseVersion" que la
+// primera (porque "window._dbVersion" todavía no se había actualizado con
+// la respuesta de la primera). Cuando la primera terminaba y avanzaba la
+// versión en el servidor, la segunda llegaba con una versión ya vieja y el
+// servidor respondía 409 — exactamente el síntoma visto en DevTools al
+// alternar los switches. La corrección: un candado de reentrancia
+// (window._pushDBEnProceso) — si ya hay un envío del blob completo en
+// vuelo, este NO abre una segunda petición en paralelo: simplemente
+// reprograma su propio turno 350ms más tarde (mismo patrón exacto de
+// saveDB()). Cuando le toque, "db" se envía tal como esté EN ESE MOMENTO
+// (nunca un snapshot viejo), así que el cambio de configuración de todas
+// formas queda guardado — solo se pospone lo mínimo necesario para no
+// pisarse con el envío que ya estaba en camino.
+window._pushDBEnProceso=false;
 async function _pushDB(){
+  if(window._pushDBEnProceso){
+    if(_saveTimer) clearTimeout(_saveTimer);
+    _saveTimer=setTimeout(_pushDB,350);
+    return;
+  }
+  window._pushDBEnProceso=true;
   const _sk=_skActual();
   // Reutiliza el JSON ya calculado en saveDB() en vez de volver a serializar
   // el objeto completo (evita un tercer stringify del mismo contenido).
@@ -1031,6 +1061,13 @@ async function _pushDB(){
             meta:{institucion:db.nombre||'',rol:sesion?sesion.r:''}})}).catch(function(){});
       }catch(_eh){}
     }
+  } finally {
+    // RONDA 73 — libera el candado de reentrancia SIEMPRE (éxito, 409, 402
+    // o error de red) para que el siguiente guardado programado (el propio,
+    // si se reprogramó arriba, u otro cualquiera) pueda ejecutarse en su
+    // turno sin quedar bloqueado para siempre por un candado que nunca se
+    // suelta.
+    window._pushDBEnProceso=false;
   }
 }
 let _fallosConsecutivosGuardado=0;
@@ -14586,11 +14623,75 @@ function _verificarAlertaInasistenciaCriticaSiAplica(estId,grado,cId){
 //     una ausencia con justificación válida no debería castigar el SER.
 //     Documentado aquí explícitamente por si la institución prefiere lo
 //     contrario en el futuro — sería un cambio de una sola línea.
-function _inasistenciasPeriodo(dRef,estId,cId,per,grado){
-  const clases=(dRef.asistencia||[]).filter(a=>!a.deletedAt&&a.grado===grado&&String(a.cargaId)===String(cId)&&String(a.periodo)===String(per));
-  const totalClases=clases.length;
-  const inasistencias=clases.filter(c=>(c.ausentes||[]).some(x=>String(x)===String(estId))).length;
-  return {inasistencias,totalClases};
+// RONDA 73 — HALLAZGO 1 (reportado con evidencia real de pruebas en vivo,
+// grado 11° Periodo 4): el botón mostraba "0 estudiantes... 22 sin
+// registros" a pesar de que el docente SÍ había registrado asistencia real.
+// Causa raíz confirmada leyendo, lado a lado, el código REAL de
+// guardarAsistencia() (06-documentos-y-resto.js) y el de esta función tal
+// como quedó en la Ronda 72:
+//   - guardarAsistencia() guarda "periodo:asistPeriodo", y "asistPeriodo"
+//     (declarado en 06-documentos-y-resto.js, poblado por el <select
+//     id="asistPeriodoSel"> con <option value="P1">…<option value="P4">)
+//     vale literalmente "P1".."P4" — CON el prefijo "P".
+//   - sincronizarAsistenciaASER() (Ronda 72) recibía "planPer" de la
+//     Planilla, cuyo <select id="planPer"> (htmlPlanilla()) usa
+//     <option value="${n}"> — es decir, "1".."4", SIN prefijo — y
+//     comparaba "String(a.periodo)===String(per)", es decir
+//     "'P4'==='4'" -> false SIEMPRE. Ningún registro de asistencia
+//     coincidía jamás, para NINGUNA institución — no era un caso raro, era
+//     el caso normal, exactamente como lo reportó el usuario.
+// La corrección: _normalizarPeriodo() reduce CUALQUIER formato ("4", 4,
+// "P4", "Periodo 4", "PERIODO N°4", con espacios de sobra, etc.) a la
+// misma forma canónica (solo los dígitos, como string) y se aplica en
+// AMBOS lados de la comparación — nunca se vuelve a asumir un formato
+// exacto de un solo lado. Se aplica en LECTURA aquí (para que los
+// registros YA guardados en producción con el formato viejo "P4" sealso
+// sigan encontrándose sin necesidad de migrar datos) y también se
+// normaliza al ESCRIBIR en guardarAsistencia() (ver 06-documentos-y-resto.js)
+// para que los registros nuevos queden ya en forma canónica hacia adelante.
+function _normalizarPeriodo(valor){
+  if(valor===undefined||valor===null) return '';
+  const m=String(valor).trim().match(/(\d+)/);
+  return m?m[1]:String(valor).trim().toUpperCase();
+}
+// Normaliza el nombre de una asignatura para el matching de respaldo por
+// nombre (punto 1 del pedido: "implementa un matching flexible... por
+// nombre normalizado de la asignatura para el grupo/grado actual"). No se
+// encontró evidencia real de que el cargaId difiera entre Asistencia y
+// Planilla (ambos usan el mismo id numérico de db.carga) — el descalce
+// real y confirmado fue únicamente el de periodo, de arriba — pero este
+// respaldo se agrega de todas formas, tal como lo pidió explícitamente el
+// usuario, para proteger contra una institución futura con un esquema de
+// carga menos uniforme.
+function _normalizarNombreAsignatura(s){
+  return String(s||'').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+}
+// Calcula UNA sola vez (no por estudiante — eficiencia y punto 2 del
+// pedido: un único lugar desde el cual emitir el log de diagnóstico) el
+// subconjunto de "db.asistencia" que corresponde a este grado+asignatura+
+// periodo, con coincidencia flexible en ambos lados.
+function _obtenerClasesAsistenciaPeriodo(dRef,cId,per,grado){
+  const perNorm=_normalizarPeriodo(per);
+  const cIdStr=String(cId);
+  const cargaObjetivo=(dRef.carga||[]).find(c=>String(c.id)===cIdStr);
+  const nombreObjetivoNorm=cargaObjetivo?_normalizarNombreAsignatura(cargaObjetivo.m||cargaObjetivo.a):'';
+  return (dRef.asistencia||[]).filter(a=>{
+    if(a.deletedAt) return false;
+    if(a.grado!==grado) return false;
+    if(_normalizarPeriodo(a.periodo)!==perNorm) return false;
+    if(String(a.cargaId)===cIdStr) return true;
+    // Respaldo por nombre normalizado (ver comentario de
+    // _normalizarNombreAsignatura arriba) — solo entra en juego si el
+    // cargaId no coincidió directamente.
+    if(nombreObjetivoNorm){
+      const cargaDelRegistro=(dRef.carga||[]).find(c=>String(c.id)===String(a.cargaId));
+      if(cargaDelRegistro&&_normalizarNombreAsignatura(cargaDelRegistro.m||cargaDelRegistro.a)===nombreObjetivoNorm) return true;
+    }
+    return false;
+  });
+}
+function _inasistenciasEnClases(clases,estId){
+  return clases.filter(c=>(c.ausentes||[]).some(x=>String(x)===String(estId))).length;
 }
 // Función PURA y testeable (punto 2 del pedido): los 5 tramos EXACTOS que
 // especificó el usuario. CONVENCIÓN DE LÍMITES elegida y documentada aquí
@@ -14634,15 +14735,32 @@ function calcularNotaSERPorAsistencia(inasistencias,totalClases){
 // aquí, igual que ya no se dispara desde "Replicar a todos".
 function sincronizarAsistenciaASER(cIdParam,perParam,opts){
   opts=opts||{};
-  const cId=Number(cIdParam),per=Number(perParam);
+  const cId=Number(cIdParam);
+  // RONDA 73 — se conserva "per" como el valor de PLANILLA (numérico/string
+  // "1".."4", sin prefijo) SOLO para seguir escribiendo en nts[cId][per]
+  // exactamente con la misma llave que usa el resto de la Planilla
+  // (saveNota(), aplicarReplicaColumna(), etc. — esa llave nunca tuvo el
+  // problema, es interna y consistente). La normalización de formato
+  // (_normalizarPeriodo) se usa ÚNICAMENTE para la COMPARACIÓN contra
+  // "db.asistencia" (ver _obtenerClasesAsistenciaPeriodo), que es donde
+  // vivía el descalce real "P4" vs "4".
+  const per=Number(perParam);
   const carga=db.carga.find(x=>x.id===cId);
   if(!carga){ if(!opts.silencioso) customAlert('Seleccione una asignatura primero.'); return {aplicados:0,sinDatos:0}; }
   let aplicados=0,sinDatos=0;
   updDB(d=>{
+    const _clasesDelPeriodo=_obtenerClasesAsistenciaPeriodo(d,cId,per,carga.g);
+    // RONDA 73 — LOG DE DIAGNÓSTICO pedido explícitamente por el usuario
+    // (punto 2 del pedido): no cambia ningún comportamiento, solo ayuda a
+    // verificar en DevTools, en el momento, cuántos registros de asistencia
+    // se encontraron y con qué llaves se compararon — útil si en el futuro
+    // vuelve a aparecer un descalce similar con otra combinación de datos.
+    console.log('[Asistencia→SER] grado="'+carga.g+'" asignatura="'+(carga.m||carga.a||'')+'" (cId='+cId+') periodo Planilla="'+perParam+'" (normalizado="'+_normalizarPeriodo(per)+'") -> '+_clasesDelPeriodo.length+' registro(s) de asistencia encontrados en db.asistencia para este grado/asignatura/periodo. Llaves comparadas: grado (igualdad exacta), periodo (ambos lados normalizados con _normalizarPeriodo — acepta "4", "P4", "PERIODO 4", etc.), cargaId (String(a.cargaId)===String('+cId+')) con respaldo por nombre de asignatura normalizado si el cargaId no coincide.');
     const _filasAfectadas=[];
     d.ests.forEach((e,idx)=>{
       if(e.g!==carga.g) return;
-      const {inasistencias,totalClases}=_inasistenciasPeriodo(d,e.id,cId,per,carga.g);
+      const totalClases=_clasesDelPeriodo.length;
+      const inasistencias=_inasistenciasEnClases(_clasesDelPeriodo,e.id);
       const nota=calcularNotaSERPorAsistencia(inasistencias,totalClases);
       if(nota===null){ sinDatos++; return; }
       const nts=JSON.parse(JSON.stringify(e.nts||{}));
