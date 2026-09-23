@@ -6916,3 +6916,314 @@ No se tocó `src/lib/gemini-config.ts`, el wrapper de resiliencia, ni el
 endpoint `/api/inetis/ai/psicopedagogico` — el usuario pidió específicamente
 mejorar el contenido de Planeaciones, no el de Observador/Diagnóstico
 Psicopedagógico en esta ronda.
+
+## Ronda 71 — Eliminación de la carrera Planilla/Notas: nunca más blob completo desde esas 2 vistas
+
+Bug crítico de integridad de datos, tratado con el mismo rigor que los
+hallazgos de Rondas 41/43: el usuario trajo evidencia REAL de DevTools
+(Network + Console) mostrando que las notas de Planilla/Notas de
+Actividades se revertían al editar celdas o usar "Replicar a todos".
+
+### Evidencia técnica reportada por el usuario
+
+1. Al editar celdas o replicar notas, algunas peticiones POST a
+   `/api/inetis/db` fallaban con **HTTP 409 (Conflict)**.
+2. Coexistían llamadas a `/api/inetis/notas/guardar-fila` (200 OK) con
+   `/api/inetis/db` (409 Conflict) — una carrera de tiempo entre el
+   guardado granular (Ronda 36) y un guardado monolítico del blob completo
+   que, según la arquitectura de la Ronda 36, NO debería estar disparándose
+   desde Planilla ni Notas de Actividades.
+
+### Causa raíz real, confirmada con grep (no una suposición)
+
+La Ronda 36 implementó el guardado atómico fila-por-fila
+(`_marcarFilaEnEdicion()`/`_desmarcarFilaEnEdicion()` + `_debounceGuardarFilaNotas()`)
+para que `saveDB()` supiera cuándo debía enviar SOLO una fila en vez del
+blob completo. Ese mecanismo estaba pensado para UNA fila a la vez — y
+funcionaba correctamente para `saveNota()` y `_guardarNotaAct()` (edición
+de una sola celda). El problema real: **5 funciones que tocan VARIAS filas
+en una sola llamada a `updDB()`** nunca marcaban esa bandera, así que
+`saveDB()` caía a su último recurso — programar el guardado del blob
+completo (`_pushDB()` → `POST /api/inetis/db`) — exactamente 350ms después:
+
+- `aplicarReplicaColumna()` — "📋 Replicar a todos" de la Planilla.
+- `aplicarReplicaSeleccionados()` — "👥 Seleccionados" de la Planilla.
+- `_aplicarNotasPendientesEnDB()` — el botón "GUARDAR CAMBIOS" (modo
+  manual) de la Planilla, aplicando TODAS las notas pendientes de golpe.
+- `aplicarReplicaNotaAct()` — "📋 Replicar a todos" de Notas de Actividades.
+- `_aplicarNotasActPendientesEnDB()` — "GUARDAR CAMBIOS" de Notas de
+  Actividades.
+
+Ese blob completo viajaba con una `baseVersion` que podía quedar
+desactualizada frente a OTRAS filas que, mientras tanto, sí se habían
+guardado bien por la vía granular (avanzando la versión real del
+servidor) — el servidor respondía 409, y aunque la fusión de conflicto
+existente (`_resolverConflictoDB()`, Rondas 20-25) NO borra datos a ciegas
+(hace una fusión de 3 vías), la sola aparición de ese ciclo era la carrera
+exacta que el usuario detectó con DevTools.
+
+**Segundo hallazgo real, igual de importante**: dentro de
+`_enviarFilaNotasAlServidor()` (el envío de UNA fila individual),
+**cualquier fallo** (una respuesta no-2xx del servidor O un error de red)
+caía también, como "respaldo", al mismo guardado monolítico del blob
+completo. Esto significa que incluso una edición de una sola celda podía
+disparar la carrera si esa fila fallaba una vez por cualquier motivo
+transitorio, mientras otras filas se seguían guardando bien por la vía
+granular en paralelo.
+
+### Corrección aplicada
+
+**1. Cola serializada central de guardado por fila** (nueva, en
+`03-app-core.js`): `_encolarFilaNotas()`/`_procesarColaFilas()`. Toda
+escritura de notas — una fila individual (vía el debounce ya existente de
+la Ronda 36) o un LOTE completo (las 5 funciones de arriba) — se encola
+aquí y se envía **una a la vez, nunca en paralelo**. Si la misma fila
+vuelve a editarse mientras está en cola, se actualiza con el valor más
+reciente antes de enviarse (nunca se envía un valor viejo capturado en el
+instante de encolar).
+
+**2. Nueva bandera de "lote en edición"** (`window._loteFilasEnEdicion`,
+con `_marcarLoteFilasEnEdicion()`/`_desmarcarLoteFilasEnEdicion()`) — la
+misma idea de `_filaEnEdicion` (Ronda 36) pero para una operación que
+afecta varias filas de una sola vez. Las 5 funciones bulk listadas arriba
+ahora construyen la lista de filas realmente afectadas y la marcan ANTES
+de que `updDB()` llame a `saveDB()` — `saveDB()` encola cada una
+granularmente en la cola central, y **el guardado monolítico del blob
+completo (`_pushDB()`) ya NO se dispara jamás desde Planilla ni desde
+Notas de Actividades** al usar "Replicar a todos" o "GUARDAR CAMBIOS".
+
+**3. Manejo del 409/error del lado de una fila individual, sin
+`_pullDB()` destructivo**: se quitó por completo el "respaldo" que caía al
+blob completo ante cualquier fallo de `guardar-fila`. Ahora, un fallo de
+esa fila incrementa un contador de reintentos (`window._reintentosFilaNotas`)
+y la fila se **re-encola automáticamente** con una espera corta (800ms ×
+intento) hasta 2 intentos adicionales; si sigue fallando de forma
+persistente, se traslada a la cola de resiliencia offline ya existente
+(`OutboxNotas`, Ronda 45) para reenviarse sola en cuanto la condición que
+la bloqueaba se resuelva — nunca al blob completo, y en ningún punto de
+este flujo se llama a `_pullDB()`. El dato del docente permanece en
+memoria y en `localStorage` en todo momento.
+
+**4. La fusión de 3 vías existente (`_resolverConflictoDB()`, Rondas
+20-25) se dejó intacta** — sigue siendo la protección correcta para el
+caso legítimo en que el guardado monolítico del blob SÍ se usa (todas las
+demás pantallas del sistema que aún dependen de él), y como se explicó, no
+hace un `_pullDB()`/sobrescritura ciega; solo dejó de ser necesaria para
+Planilla/Notas de Actividades porque, con esta ronda, esas 2 vistas ya no
+generan tráfico al endpoint monolítico.
+
+### Tests
+
+Suite completa re-ejecutada: **72 archivos, 100% verde** (70 previos + 2
+tests congelados corregidos + 1 nuevo — ver también la EXTENSIÓN más abajo,
+que amplía este mismo archivo nuevo con un cuarto escenario en vez de sumar
+un archivo de test adicional).
+
+Tests previamente congelados que requirieron ajuste (documentado con
+autorización explícita, ya que el comportamiento que verificaban era
+precisamente la causa raíz que esta ronda corrigió):
+
+- **`test_ronda36_planilla_perfil_simat.mjs`** — la aserción "b11" asumía
+  que un fallo del guardado por fila debía caer al blob completo como
+  respaldo; se reemplazó por una que confirma la AUSENCIA de ese patrón y
+  la PRESENCIA del nuevo contador de reintentos. La aserción "b6"
+  (verifica el debounce de 1.8s) se mantuvo con el mismo criterio, solo se
+  amplió el rango de caracteres que tolera la expresión regular porque el
+  nuevo comentario junto a esa línea es más largo — el comportamiento de
+  1.8s en sí no cambió.
+- **`test_ronda45_dimensiones.mjs`** — la aserción sobre "coexistencia, no
+  reemplazo" del respaldo al blob completo se reemplazó por una que
+  confirma que ese patrón ya NO existe en el archivo, y que el Outbox
+  (Ronda 45) sigue siendo el destino real de resiliencia, ahora como único
+  respaldo en vez de coexistir con el blob completo.
+
+Nuevo: **`test_ronda71_cola_granular_sin_perdida_notas.mjs`** (23
+aserciones, con **ejecución real completa** del archivo fuente real vía
+`vm` — no funciones reescritas ni simplificadas — usando un sandbox con
+stubs mínimos de navegador (localStorage, DOM, MutationObserver, fetch)
+suficientes para que el archivo real arranque sin errores, y mutando el
+estado real (`db`, `planCId`, `sesion`, etc.) a través del mismo contexto
+de `vm` en que esos `let` de nivel superior viven):
+- **Escenario A** — ediciones rápidas consecutivas de 3 estudiantes
+  distintos: confirma que las 3 notas se conservan en memoria, que se
+  hicieron exactamente 3 llamadas granulares (nunca al blob completo), y
+  que la cola serializada queda inactiva al terminar.
+- **Escenario B** — "Replicar a todos" a 5 estudiantes de una sola vez (el
+  caso explícito reportado): confirma que las 5 notas se conservan, que
+  NINGUNA llamada al blob completo se disparó, y que se hicieron
+  exactamente 5 llamadas granulares.
+- **Escenario C** — el caso más crítico: "Replicar a todos" donde UNA fila
+  falla con 409 en su primer intento (el síntoma exacto de DevTools):
+  confirma que la nota de esa fila NUNCA se pierde en memoria, que se
+  reintenta automáticamente y termina confirmándose en el "servidor"
+  simulado, que el 409 nunca disparó el blob completo, y que `_pullDB()`
+  nunca se llamó.
+
+---
+
+## EXTENSIÓN a la Ronda 71 — Descriptores/Logros/Indicadores: descriptor
+## recién creado que "desaparecía" por colisión de id, no por `_pullDB()`
+
+El usuario agregó este reporte ANTES de que se entregara el zip de la
+Ronda 71, pidiendo explícitamente que se incluyera en la MISMA ronda (no
+una ronda nueva): al crear o editar un descriptor, a veces el sistema
+muestra "guardado" pero el descriptor no aparece al recargar y hay que
+volver a crearlo. Su hipótesis inicial era la misma causa raíz que el bug
+principal de esta ronda (un `_pullDB()` destructivo tras un 409).
+
+### Investigación real (grep + lectura completa del código)
+
+Primero se verificó, con grep real, si "Descriptores" comparte estructura
+con Notas de Actividades (`db.notasActColumnas`) como se sospechaba
+inicialmente — **no es así**: los descriptores viven en su propio arreglo,
+`db.descriptores` (cada elemento con `.id`, `.doc`, `.per`, `.gra`, `.mat`,
+`.niv`, `.txt`), completamente independiente de `notasActColumnas`
+(exclusivo de las columnas de Notas de Actividades/Planilla). Por lo
+tanto, la cola granular `_encolarFilaNotas()`/`guardar-fila` construida
+para la primera mitad de esta ronda **no aplica aquí**: ese endpoint solo
+entiende celdas de `nts`/`notasAct` de UN estudiante, nunca una entidad
+completa de `db.descriptores` — no existe (ni tendría sentido crear) un
+"guardar-fila" para un descriptor.
+
+Se identificaron las funciones reales de creación/edición/eliminación:
+`guardarDesc()`, `editarDesc()`, `eliminarDesc()` (vía `softDeleteRegistro()`,
+compartida con otros tipos de registro), `replicarUltimosDescs()` y
+`eliminarDescsSeleccionados()` — todas llaman a `updDB()` directamente, sin
+ninguna bandera de "fila/lote en edición", cayendo en el guardado
+monolítico normal del blob (`_pushDB()`, con su debounce de 350ms), igual
+que la inmensa mayoría de pantallas del sistema que nunca tuvieron el
+problema reportado.
+
+Se leyeron completos `_pushDB()`, `_resolverConflictoDB()`, `_syncAll()` y
+`_mergeArregloPorId()`/`_merge3way()` para confirmar o descartar la
+hipótesis del usuario de un "`_pullDB()` destructivo tras 409". Resultado:
+**la hipótesis no es literalmente correcta** (mismo patrón de hallazgo que
+la primera mitad de esta ronda) — ningún camino de fallo de `_pushDB()`
+(ni el 409, ni un error de red) ejecuta jamás un `_pullDB()` ni una
+sustitución ciega de `db`; el 409 siempre pasa por una fusión aditiva de 3
+vías por `.id`, y un error de red simplemente reintenta más tarde sin
+tocar `db`. Sin embargo, **sí se encontró la causa raíz real** al leer
+`_mergeArregloPorId()`: identifica cada elemento de un arreglo por su
+`.id` usando un `Map` — si DOS descriptores terminan con el MISMO `.id`,
+esa fusión (que corre en CADA 409 y en CADA sincronización periódica de
+fondo, sin importar qué pantalla la originó) los colapsa en uno solo,
+descartando el otro silenciosamente. Y en efecto: `guardarDesc()` y
+`replicarUltimosDescs()` generaban ese `.id` con `Date.now() + un
+desplazamiento pequeño` — a diferencia de **cualquier otra** función de
+este archivo que crea una entidad nueva (`est_exp_`, `sug_`, `cm_`, `lm_`,
+`ln_`, `nac_`), todas las cuales combinan `Date.now()` con
+`Math.random().toString(36)` precisamente para evitar esta colisión. Con
+un doble clic en "Guardar", o dos guardados casi simultáneos, `Date.now()`
+puede repetirse exactamente, produciendo ids idénticos entre dos
+descriptores distintos — exactamente el síntoma reportado ("a veces"
+desaparece, solo cuando ocurre la colisión).
+
+### Corrección aplicada
+
+Se agregó `_nuevoIdDescriptor()`, un generador de ids colisión-segura
+(`Date.now()*1000 + un contador incremental de sesión, módulo 1000`),
+usado ahora en `guardarDesc()` y `replicarUltimosDescs()` en vez del
+esquema anterior. Se mantiene **numérico a propósito** (no con el prefijo
+de texto que usan las demás entidades nuevas del sistema) porque
+`eliminarDescsSeleccionados()` y la tabla de Descriptores comparan
+`Number(checkbox.value) === d.id`; un id de texto habría roto esa
+comparación numérica ya existente. (Nota de depuración real: la primera
+versión probada usaba `Date.now()*100000`, que excede
+`Number.MAX_SAFE_INTEGER` y colapsaba TODOS los ids al mismo valor por
+redondeo de punto flotante — un bug distinto pero igual de destructivo,
+detectado por el propio test antes de llegar a esta ronda entregada, y
+corregido usando un multiplicador de 1000 en vez de 100000.)
+
+No fue necesario tocar `_pushDB()`, `_resolverConflictoDB()` ni
+`_syncAll()`: una vez que los ids son realmente únicos, la fusión de 3
+vías ya existente (aditiva por `.id`) conserva correctamente cualquier
+descriptor nuevo sin confirmar todavía por el servidor, exactamente como
+ya lo hacía para cualquier otro arreglo del sistema identificado por
+`.id`/`.u`/`.n`.
+
+### Test extendido (mismo archivo, mismo patrón de ejecución real con `vm`)
+
+Se agregó el **Escenario D** a `test_ronda71_cola_granular_sin_perdida_notas.mjs`
+(en vez de crear un archivo nuevo, para mantener toda la Ronda 71 —
+incluida esta extensión— consolidada en una sola evidencia de prueba),
+sumando 7 aserciones nuevas (30 en total en ese archivo):
+- Congela el reloj (`Date.now()`) del propio contexto `vm` en el MISMO
+  milisegundo para dos llamadas consecutivas a `guardarDesc()` — el peor
+  caso de colisión posible con el esquema anterior — y confirma que los 8
+  descriptores resultantes (4 niveles × 2 guardados) tienen 8 ids
+  distintos (D.1, D.2).
+- Dispara un 409 REAL contra `_pushDB()` (el "servidor" simulado responde
+  409 en el primer intento y 200 en el reintento posterior que
+  `_resolverConflictoDB()` dispara automáticamente) y confirma que los 8
+  descriptores siguen intactos y con ids distintos después de la fusión de
+  3 vías (D.3-D.6), que ningún indicador reemplazó al otro (D.7), y que
+  `_pullDB()` nunca se llamó (D.4) — verificando explícitamente lo que
+  pedía el usuario: el descriptor se conserva intacto hasta confirmarse en
+  la base de datos, sin que un 409 lo borre.
+
+### Archivos modificados por esta extensión
+
+- **`gestor-academico/dist/modules/03-app-core.js`** — nuevo generador de
+  ids colisión-segura `_nuevoIdDescriptor()`, usado en `guardarDesc()` y
+  `replicarUltimosDescs()` en vez del esquema anterior basado en
+  `Date.now()+desplazamiento pequeño`.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección (extensión).
+
+No fue necesario tocar `src/index.ts` — el problema era enteramente del
+generador de ids en el frontend; ningún endpoint del backend participa en
+la creación de un descriptor.
+
+Fuera de alcance de esta extensión (revisado, no tocado): `editarDesc()`,
+`eliminarDesc()` (vía `softDeleteRegistro()`) y `eliminarDescsSeleccionados()`
+no generan ids nuevos (solo modifican/marcan como eliminados registros
+existentes por su `.id` ya único), así que no comparten la causa raíz
+encontrada — se revisaron para confirmarlo, no se dejaron sin revisar.
+
+---
+
+## Archivos modificados en TODA la Ronda 71 (bug principal + extensión de Descriptores)
+
+1. **`gestor-academico/dist/modules/03-app-core.js`** — único archivo de
+   código modificado en toda la ronda, cubriendo ambos hallazgos:
+   - Cola serializada central de guardado por fila (`_encolarFilaNotas()`,
+     `_procesarColaFilas()`, `_claveFilaNotas()`, reintentos vía
+     `window._reintentosFilaNotas`).
+   - Nueva bandera de lote (`window._loteFilasEnEdicion`,
+     `_marcarLoteFilasEnEdicion()`/`_desmarcarLoteFilasEnEdicion()`).
+   - Las 5 funciones de guardado en lote de Planilla/Notas de Actividades
+     (`aplicarReplicaColumna()`, `aplicarReplicaSeleccionados()`,
+     `_aplicarNotasPendientesEnDB()`, `aplicarReplicaNotaAct()`,
+     `_aplicarNotasActPendientesEnDB()`) actualizadas para marcar sus filas
+     afectadas antes de guardar.
+   - Eliminado el "respaldo al blob completo" en
+     `_enviarFilaNotasAlServidor()` ante cualquier fallo de una fila
+     individual.
+   - Nuevo generador de ids colisión-segura `_nuevoIdDescriptor()`, usado
+     en `guardarDesc()` y `replicarUltimosDescs()` (extensión Descriptores).
+2. **`CHECKLIST_DESPLIEGUE.md`** — esta sección completa (bug principal +
+   extensión).
+
+`src/index.ts` (backend) **no se tocó en ningún momento de esta ronda**:
+ambos hallazgos eran enteramente del lado del frontend.
+
+### Test
+
+Un único archivo de test cubre toda la ronda (bug principal + extensión):
+**`test_ronda71_cola_granular_sin_perdida_notas.mjs`**, con **30
+aserciones** (23 del bug principal — Escenarios A/B/C — + 7 de la
+extensión de Descriptores — Escenario D), todas con ejecución real vía
+`vm` del archivo fuente completo.
+
+### Suite completa
+
+**72 archivos de test, 100% verde** (sin contar un archivo nuevo aparte
+para la extensión, ya que el Escenario D se sumó al mismo archivo nuevo de
+esta ronda en vez de crear uno adicional).
+
+Fuera de alcance de la Ronda 71 en general (revisado, no tocado): la
+importación masiva de Planilla vía CSV (`importarPlanillaCSV()`) sigue
+usando el guardado monolítico del blob completo — es una acción explícita,
+deliberada y poco frecuente del docente (no parte del flujo de edición
+interactiva rápida que reportó el usuario), así que no comparte el mismo
+riesgo de carrera; se documenta aquí para que quede constancia de que se
+revisó, no que se pasó por alto.

@@ -671,21 +671,151 @@ function _registrarConflictoBitacora(_sk,conflictos,detalles,origen){
 window._filaEnEdicion=null; // {tipo:'planilla'|'actividad', estId, cId, per, colId}
 function _marcarFilaEnEdicion(info){ window._filaEnEdicion=info; }
 function _desmarcarFilaEnEdicion(){ window._filaEnEdicion=null; }
+// RONDA 71 — LOTE de filas en edición: la misma idea de "_filaEnEdicion"
+// (arriba) pero para una operación que toca VARIAS filas de una sola vez
+// (Replicar a todos, Guardar Cambios en lote de notas pendientes, etc.).
+// Investigado con grep real: estas operaciones llaman a updDB() UNA sola
+// vez con muchos estudiantes adentro, así que "_filaEnEdicion" (pensado
+// para UNA fila) nunca se marcaba, y saveDB() caía en su último recurso:
+// programar un guardado del blob COMPLETO (_pushDB → POST /api/inetis/db)
+// — el mismo endpoint monolítico que, si coincide en el tiempo con otra
+// fila que ya se guardó por la vía granular (y adelantó la versión del
+// servidor), responde 409 y dispara la fusión de conflicto. Esto es
+// EXACTAMENTE la "carrera" (coexistencia de guardar-fila 200 OK y
+// /api/inetis/db 409) que el usuario detectó con evidencia real de
+// DevTools. La solución: cuando una operación de LOTE marca esta bandera
+// ANTES de que updDB() llame a saveDB() (ver aplicarReplicaColumna(),
+// aplicarReplicaSeleccionados(), _aplicarNotasPendientesEnDB(),
+// aplicarReplicaNotaAct() y _aplicarNotasActPendientesEnDB()), saveDB()
+// encola cada fila del lote en la MISMA cola granular serializada que ya
+// usa una fila individual — el guardado monolítico del blob completo
+// JAMÁS se dispara desde Planilla ni desde Notas de Actividades.
+window._loteFilasEnEdicion=null; // Array<{tipo,estId,cId,per,colId}> | null
+function _marcarLoteFilasEnEdicion(lista){ window._loteFilasEnEdicion=lista; }
+function _desmarcarLoteFilasEnEdicion(){ window._loteFilasEnEdicion=null; }
+// RONDA 71 — EXTENSIÓN (Descriptores/Logros/Indicadores): el usuario reportó
+// que, a veces, al crear/editar un descriptor el sistema muestra "guardado"
+// pero el descriptor no aparece más al recargar. Investigado con grep+lectura
+// real (NO es la misma estructura que Notas de Actividades: los descriptores
+// viven en "db.descriptores", un arreglo propio con ".id" numérico — nunca en
+// "db.notasActColumnas", que es exclusivo de las columnas de Notas de
+// Actividades/Planilla). Por eso este bug NO puede reutilizar literalmente
+// _encolarFilaNotas()/guardar-fila (ese endpoint solo entiende celdas de
+// "nts"/"notasAct" de UN estudiante, nunca una entidad de "db.descriptores").
+//
+// La causa raíz real, confirmada leyendo _resolverConflictoDB(), _syncAll() y
+// _mergeArregloPorId(): CADA conflicto 409 y CADA sincronización periódica de
+// fondo pasa "db.descriptores" por una fusión de 3 vías que identifica cada
+// descriptor por su ".id" usando un Map (bMap/mMap/tMap) — si dos
+// descriptores terminan con el MISMO id (ej. el docente hace doble clic en
+// "Guardar" o dos guardados caen en el mismo milisegundo), el Map los
+// colapsa en uno solo la próxima vez que corre CUALQUIER fusión (un 409 de
+// esta u otra pantalla, o el ciclo de sincronización de fondo), borrando
+// silenciosamente uno de los dos — exactamente el síntoma reportado
+// ("a veces" desaparece, solo cuando ocurre la colisión). guardarDesc() y
+// replicarUltimosDescs() generaban ese id así: "Date.now() + offset chico"
+// (base+(gi*100)+(txi*10)+i, o base+i) — a diferencia de CUALQUIER OTRA
+// función de este archivo que crea una entidad nueva (est_exp_, sug_, cm_,
+// lm_, ln_, nac_), todas las cuales combinan Date.now() con
+// Math.random().toString(36) precisamente para evitar esta colisión. Los
+// descriptores eran la única excepción — de ahí el bug real.
+//
+// La fusión de 3 vías en sí NUNCA sobrescribe ni ejecuta un _pullDB()
+// destructivo (confirmado leyendo _pushDB(), _resolverConflictoDB() y
+// _syncAll() completos: un 409 siempre fusiona por id de forma aditiva, un
+// fallo de red simplemente reintenta más tarde sin tocar "db") — el defecto
+// real nunca fue "un pullDB borra los descriptores", sino "el id colisionado
+// hace que la propia fusión aditiva confunda dos descriptores distintos con
+// uno solo". La corrección es generar ids de descriptor genuinamente únicos
+// (ver _nuevoIdDescriptor() más abajo) — se mantienen NUMÉRICOS a propósito
+// (no con el prefijo de texto que usan las demás entidades) porque
+// eliminarDescsSeleccionados() y el checkbox de la tabla de Descriptores
+// comparan "Number(checkbox.value) === d.id"; un id de texto rompería esa
+// comparación numérica existente.
+window._descIdSeq=0;
+function _nuevoIdDescriptor(){
+  // IMPORTANTE: el multiplicador debe mantener el resultado dentro de
+  // Number.MAX_SAFE_INTEGER (2^53-1, ≈9.007e15). Date.now() ya tiene 13
+  // dígitos (~1.7e12); un multiplicador de 1000 (3 dígitos) deja el
+  // resultado en ~1.7e15 — seguro. Un multiplicador de 100000 (probado y
+  // descartado durante esta misma ronda) se va a ~1.7e17, fuera del rango
+  // seguro de precisión de punto flotante: TODOS los ids terminaban
+  // colapsando al mismo valor por redondeo, un bug distinto pero igual de
+  // destructivo que el que esta función busca corregir.
+  window._descIdSeq=((window._descIdSeq||0)+1)%1000;
+  return Date.now()*1000+window._descIdSeq;
+}
 window._timersFilaNotas={};
 function _debounceGuardarFilaNotas(sk,info){
   const clave=info.tipo+'_'+info.estId+'_'+info.cId+'_'+info.per+'_'+(info.colId||'');
   if(window._timersFilaNotas[clave]) clearTimeout(window._timersFilaNotas[clave]);
   window._timersFilaNotas[clave]=setTimeout(function(){
     delete window._timersFilaNotas[clave];
-    _enviarFilaNotasAlServidor(sk,info);
+    // RONDA 71 — antes llamaba directo a _enviarFilaNotasAlServidor(),
+    // disparando su propio fetch() de forma completamente independiente de
+    // cualquier otra fila que estuviera guardándose al mismo tiempo. Ahora
+    // se ENCOLA en la cola serializada central (ver _encolarFilaNotas()
+    // más abajo) — nunca más de una petición de guardado de notas viaja a
+    // la vez, eliminando la posibilidad de que varias filas (o un lote)
+    // se pisen entre sí o compitan con el guardado monolítico del blob.
+    _encolarFilaNotas(sk,info);
   },1800); // 1.8s — dentro del rango 1.5-2s pedido
 }
-function _enviarFilaNotasAlServidor(sk,info){
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 71 — COLA SERIALIZADA DE GUARDADO POR FILA. Punto único de entrada
+// para CUALQUIER escritura de notas (una fila individual, vía el debounce
+// de arriba, o un LOTE completo — Replicar a todos, Guardar Cambios). Las
+// filas se encolan y se envían UNA A LA VEZ, en orden de llegada — nunca
+// en paralelo. Si mientras una fila está en camino llega una edición NUEVA
+// para esa MISMA fila (ej. el docente cambia de opinión antes de que el
+// envío anterior confirme), se actualiza la entrada en la cola con la
+// información más reciente y se reconstruye el payload con los datos
+// ACTUALES de "db" en el momento de enviarla — nunca con un valor viejo
+// capturado en el instante de encolar. Un fallo (red caída o el servidor
+// devuelve un error) NUNCA borra el estado local ni dispara un _pullDB()
+// destructivo: la fila se reintenta un par de veces con una espera corta,
+// y solo si sigue fallando se traslada a la cola de resiliencia offline ya
+// existente (OutboxNotas, RONDA 45) para reenviarse sola en cuanto la
+// conexión vuelva — el dato del docente jamás se pierde ni se revierte.
+// ════════════════════════════════════════════════════════════════════════
+window._colaGuardadoFilas=[]; // claves en orden de llegada
+window._colaGuardadoFilasInfo={}; // clave -> {sk,info} más reciente (dedup)
+window._colaGuardadoFilasEnProceso=false;
+window._reintentosFilaNotas={}; // clave -> intentos consecutivos fallidos
+function _claveFilaNotas(info){
+  return info.tipo+'_'+info.estId+'_'+info.cId+'_'+info.per+'_'+(info.colId||'');
+}
+function _encolarFilaNotas(sk,info){
+  const clave=_claveFilaNotas(info);
+  if(!(clave in window._colaGuardadoFilasInfo)){
+    window._colaGuardadoFilas.push(clave);
+  }
+  window._colaGuardadoFilasInfo[clave]={sk,info};
+  _procesarColaFilas();
+}
+async function _procesarColaFilas(){
+  if(window._colaGuardadoFilasEnProceso) return; // ya hay un ciclo corriendo — la fila nueva ya quedó encolada y le llegará su turno
+  window._colaGuardadoFilasEnProceso=true;
+  try{
+    while(window._colaGuardadoFilas.length>0){
+      const clave=window._colaGuardadoFilas.shift();
+      const entrada=window._colaGuardadoFilasInfo[clave];
+      delete window._colaGuardadoFilasInfo[clave];
+      if(!entrada) continue;
+      await _enviarFilaNotasAlServidor(entrada.sk,entrada.info,clave);
+    }
+  }finally{
+    window._colaGuardadoFilasEnProceso=false;
+  }
+}
+function _enviarFilaNotasAlServidor(sk,info,claveOverride){
+  const clave=claveOverride||_claveFilaNotas(info);
   let payload=null;
   if(info.tipo==='planilla'){
     const est=(db.ests||[]).find(function(x){return String(x.id)===String(info.estId);});
     const notas=est&&est.nts&&est.nts[info.cId]&&est.nts[info.cId][info.per]?est.nts[info.cId][info.per]:null;
-    if(!notas) return;
+    if(!notas) return Promise.resolve();
     payload={sk,tipo:'planilla',estId:info.estId,cId:info.cId,per:info.per,notas};
   }else if(info.tipo==='actividad'){
     const key=info.cId+'_'+info.per+'_'+info.colId+'_'+info.estId;
@@ -694,7 +824,7 @@ function _enviarFilaNotasAlServidor(sk,info){
     // celda" (ver eliminarNotaAct()) — el backend lo interpreta como borrado.
     payload={sk,tipo:'actividad',estId:info.estId,cId:info.cId,per:info.per,colId:info.colId,
       valor:celda?celda.valor:undefined,fecha:celda?celda.fecha:undefined,hora:celda?celda.hora:undefined,obs:celda?celda.obs:undefined};
-  }else return;
+  }else return Promise.resolve();
   // RONDA 39 — defensa en profundidad: se envía el rolEspecifico de quien
   // origina la petición para que el backend pueda rechazar con 403 a Docente
   // Orientador/Tutor PTA aunque, por algún medio, hayan llegado a disparar
@@ -708,38 +838,61 @@ function _enviarFilaNotasAlServidor(sk,info){
   // que diga el resto del payload.
   const _hdrsGuardarFila={'Content-Type':'application/json'};
   if(sesion&&sesion.jwt) _hdrsGuardarFila['Authorization']='Bearer '+sesion.jwt;
-  fetch(API_BASE+'/api/inetis/notas/guardar-fila',{method:'POST',headers:_hdrsGuardarFila,body:JSON.stringify(payload)})
+  return fetch(API_BASE+'/api/inetis/notas/guardar-fila',{method:'POST',headers:_hdrsGuardarFila,body:JSON.stringify(payload)})
     .then(function(r){
       if(r.ok){
         _fallosConsecutivosGuardado=0;
+        window._reintentosFilaNotas[clave]=0;
         _updateSyncChip('ok');
         _lastSyncTs=Date.now();
       }else{
-        // Si el guardado fila-por-fila falla (institución bloqueada, sesión
-        // vencida, etc.), se cae al camino de siempre (blob completo) como
-        // respaldo — nunca se pierde la nota, solo se retransmite más de lo
-        // ideal en ese caso puntual.
-        if(_saveTimer) clearTimeout(_saveTimer);
-        _saveTimer=setTimeout(_pushDB,350);
+        // RONDA 71 — HALLAZGO CRÍTICO CORREGIDO: antes, CUALQUIER fallo del
+        // guardado por fila (incluido un 409, o cualquier error transitorio
+        // del servidor) caía de inmediato al guardado monolítico del blob
+        // completo (_pushDB → POST /api/inetis/db) como "respaldo". Ese
+        // respaldo era precisamente la causa de la carrera que el usuario
+        // detectó con DevTools: mientras ESTA fila fallaba y disparaba el
+        // blob completo con una versión (baseVersion) ya desactualizada,
+        // OTRAS filas seguían guardándose bien por la vía granular y
+        // adelantaban la versión real del servidor — el blob completo
+        // llegaba después con una versión vieja, el servidor respondía 409,
+        // y la fusión de conflicto (aunque en sí misma no borra nada, ver
+        // _resolverConflictoDB) generaba exactamente la sensación reportada
+        // de "las notas se revierten". Ahora, un fallo de ESTA fila se
+        // reintenta un par de veces (con una pequeña espera) SIN tocar el
+        // blob completo ni el resto de la cola; si sigue fallando de forma
+        // persistente (ej. institución bloqueada, sesión vencida), se
+        // traslada a la cola de resiliencia offline (OutboxNotas, ya
+        // existente desde la Ronda 45) para reenviarse sola más adelante —
+        // el dato del docente permanece en memoria/localStorage en todo
+        // momento y NUNCA se dispara un _pullDB() ni un guardado monolítico
+        // desde este punto.
+        window._reintentosFilaNotas[clave]=(window._reintentosFilaNotas[clave]||0)+1;
+        if(window._reintentosFilaNotas[clave]<3){
+          setTimeout(function(){ _encolarFilaNotas(sk,info); },800*window._reintentosFilaNotas[clave]);
+        }else{
+          window._reintentosFilaNotas[clave]=0;
+          _updateSyncChip('offline');
+          if(typeof OutboxNotas!=='undefined'&&OutboxNotas&&OutboxNotas.encolar){
+            OutboxNotas.encolar(payload,API_BASE+'/api/notas/actualizar',_hdrsGuardarFila).catch(function(){});
+          }
+        }
       }
     })
     .catch(function(){
       _updateSyncChip('offline');
       // RONDA 45 — DIMENSIÓN 2: este catch() es justamente el caso "no hay
       // red de verdad" (un error de fetch, no una respuesta 4xx/5xx del
-      // servidor — ese otro caso ya lo maneja la rama "else" de arriba,
-      // sin tocarla). Además del respaldo que YA existía (reintentar con
-      // el blob completo en 350ms), se encola el mismo payload en la cola
-      // de resiliencia offline de IndexedDB (ver 08-outbox-notas.js) — si
-      // la pestaña se cierra o el celular pierde señal por horas antes de
-      // que ese reintento de 350ms tenga oportunidad de funcionar, el
-      // cambio de todas formas sobrevive y se reenvía solo en cuanto
-      // vuelva la conexión, en el mismo orden en que se generó.
+      // servidor — ese otro caso ya lo maneja la rama "else" de arriba). Se
+      // encola el mismo payload en la cola de resiliencia offline de
+      // IndexedDB (ver 08-outbox-notas.js) — si la pestaña se cierra o el
+      // celular pierde señal por horas, el cambio de todas formas sobrevive
+      // y se reenvía solo en cuanto vuelva la conexión, en el mismo orden en
+      // que se generó. RONDA 71: ya NO cae al blob completo como respaldo —
+      // ver el comentario extenso de la rama de arriba.
       if(typeof OutboxNotas!=='undefined'&&OutboxNotas&&OutboxNotas.encolar){
         OutboxNotas.encolar(payload,API_BASE+'/api/notas/actualizar',_hdrsGuardarFila).catch(function(){});
       }
-      if(_saveTimer) clearTimeout(_saveTimer);
-      _saveTimer=setTimeout(_pushDB,350);
     });
 }
 function saveDB(){
@@ -751,6 +904,15 @@ function saveDB(){
       localStorage.setItem(_sk,_lastDbJson);
     }catch(e){ _lastDbJson=null; }
   });
+  // RONDA 71 — un LOTE de filas (Replicar a todos, Guardar Cambios en
+  // lote) se encola granularmente una por una en la cola serializada
+  // central — nunca cae al guardado monolítico del blob completo. Ver el
+  // comentario extenso junto a "window._loteFilasEnEdicion" más arriba.
+  if(window._loteFilasEnEdicion&&window._loteFilasEnEdicion.length){
+    const _skLote=_sk;
+    window._loteFilasEnEdicion.forEach(function(info){ _encolarFilaNotas(_skLote,info); });
+    return;
+  }
   if(window._filaEnEdicion){
     _debounceGuardarFilaNotas(_sk,window._filaEnEdicion);
     return;
@@ -12567,7 +12729,6 @@ function guardarDesc(){
   }
 
   const niveles = ['bajo', 'basico', 'alto', 'superior'];
-  const base = Date.now();
   const auto = document.getElementById('autoReplicaChk');
   const replicar = !auto || auto.checked;
   let gradosDestino = [gra];
@@ -12595,7 +12756,12 @@ function guardarDesc(){
             txtFinal += txRaw;
           }
           d.descriptores.push({
-            id: base + (gi * 100) + (txi * 10) + i,
+            // RONDA 71 (extensión Descriptores) — antes: "base+(gi*100)+(txi*10)+i"
+            // con "base=Date.now()", capaz de colisionar entre dos guardados
+            // rápidos (doble clic, o dos docentes guardando casi al mismo
+            // milisegundo) y perder uno de los dos en la próxima fusión de 3
+            // vías (ver el comentario extenso junto a _nuevoIdDescriptor()).
+            id: _nuevoIdDescriptor(),
             per,
             mat,
             niv,
@@ -12695,10 +12861,12 @@ function replicarUltimosDescs(){
     gradsDest.forEach(gradDest => {
       // Reemplazar descriptores activos previos en ese destino para esa materia/periodo
       d.descriptores = (d.descriptores || []).filter(x => !(x.doc === doc && String(x.per) === String(per) && x.mat === mat && x.gra === gradDest));
-      const base = Date.now() + Math.floor(Math.random() * 10000);
       srcDescs.forEach((sd, i) => {
         d.descriptores.push({
-          id: base + i,
+          // RONDA 71 (extensión Descriptores) — mismo cambio que en
+          // guardarDesc(): id colisionable ("Date.now()+random pequeño+i")
+          // reemplazado por el generador colisión-segura compartido.
+          id: _nuevoIdDescriptor(),
           per: sd.per,
           mat: sd.mat,
           niv: sd.niv,
@@ -14202,12 +14370,21 @@ function _aplicarNotasActPendientesEnDB(){
   _notasActPendientes={};
   updDB(function(d){
     d.notasAct=d.notasAct||{};
+    // RONDA 71 — "GUARDAR CAMBIOS" de Notas de Actividades aplica TODAS
+    // las celdas pendientes en una sola llamada a updDB(), potencialmente
+    // de varios estudiantes/columnas a la vez — se registra cada fila
+    // afectada para que saveDB() las encole granularmente en vez de caer
+    // al guardado monolítico del blob completo.
+    const _filasLoteAfectadas=[];
     keys.forEach(function(k){
       const p=pending[k];
       d.notasAct[k]={valor:p.valor,fecha:p.fecha,hora:p.hora,obs:p.obs||''};
+      _filasLoteAfectadas.push({tipo:'actividad',estId:p.estId,cId:p.cId,per:p.per,colId:p.colId});
     });
+    _marcarLoteFilasEnEdicion(_filasLoteAfectadas);
     return d;
   });
+  _desmarcarLoteFilasEnEdicion();
 }
 
 function _actualizarIndicadorPendientesNAC(){
@@ -14518,6 +14695,7 @@ function _aplicarNotasPendientesEnDB(){
   const pending=JSON.parse(JSON.stringify(_notasPendientes));
   _notasPendientes={};
   const _pendAlertas=[]; // {estId,cId,per,baseAntes,baseDespues} — se disparan DESPUÉS de updDB()
+  const _filasLoteAfectadas=[]; // RONDA 71 — ver comentario más abajo
   updDB(function(d){
     keys.forEach(function(k){
       const p=pending[k];
@@ -14539,9 +14717,17 @@ function _aplicarNotasPendientesEnDB(){
       d.ests[idx]=Object.assign({},e,{nts});
       _registrarCambioNota(d,{estId:p.estId,estNombre:e.n,cId,per,campo:p.campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
       _pendAlertas.push({estId:p.estId,cId,per,baseAntes,baseDespues});
+      // RONDA 71 — "GUARDAR CAMBIOS" (modo manual) aplica TODAS las notas
+      // pendientes en una sola llamada a updDB(), potencialmente de varios
+      // estudiantes/columnas a la vez — se registra cada fila afectada para
+      // que saveDB() las encole granularmente en vez de caer al guardado
+      // monolítico del blob completo.
+      _filasLoteAfectadas.push({tipo:'planilla',estId:p.estId,cId,per});
     });
+    _marcarLoteFilasEnEdicion(_filasLoteAfectadas);
     return d;
   });
+  _desmarcarLoteFilasEnEdicion();
   _pendAlertas.forEach(function(a){_dispararAlertaBajoDesempenoSiAplica(a.estId,a.cId,a.per,a.baseAntes,a.baseDespues);});
 }
 
@@ -14657,6 +14843,13 @@ function aplicarReplicaColumna(campo,valor){
   const ests=db.ests.filter(x=>x.g===carga.g);
   let aplicados=0,omitidos=0;
   updDB(d=>{
+    // RONDA 71 — "Replicar a todos" toca MUCHAS filas en una sola llamada
+    // a updDB(), así que "_filaEnEdicion" (pensado para una sola fila)
+    // nunca se marcaba y saveDB() caía al guardado monolítico del blob
+    // completo (ver hallazgo documentado junto a "_loteFilasEnEdicion" más
+    // arriba). Se construye aquí la lista de filas realmente afectadas y
+    // se marca ANTES de que "return d" deje que updDB() llame a saveDB().
+    const _filasAfectadas=[];
     d.ests.forEach((e,idx)=>{
       if(e.g!==carga.g) return;
       // Para nivelación, sólo aplicar a estudiantes elegibles (1-2 áreas perdidas)
@@ -14670,9 +14863,12 @@ function aplicarReplicaColumna(campo,valor){
       nts[cId][per][campo]=numVal;
       d.ests[idx]={...e,nts};
       aplicados++;
+      _filasAfectadas.push({tipo:'planilla',estId:e.id,cId,per});
     });
+    _marcarLoteFilasEnEdicion(_filasAfectadas);
     return d;
   });
+  _desmarcarLoteFilasEnEdicion();
   cerrarPopupNota();
   // Limpiar notas pendientes de este campo/asignatura/periodo para que no sobreescriban la réplica
   const _cIdS=String(cId),_perS=String(per);
@@ -14786,6 +14982,11 @@ function aplicarReplicaSeleccionados(campo){
   const cId=Number(planCId),per=Number(planPer);
   let aplicados=0,omitidos=0;
   updDB(d=>{
+    // RONDA 71 — mismo criterio que aplicarReplicaColumna(): esta operación
+    // toca varias filas de una sola vez, así que se marca el LOTE de filas
+    // afectadas para que saveDB() las encole granularmente en vez de caer
+    // al guardado monolítico del blob completo.
+    const _filasAfectadas=[];
     d.ests.forEach((e,idx)=>{
       if(!ids.has(String(e.id)))return; // comparar como strings
       if(campo==='niv'){
@@ -14798,9 +14999,12 @@ function aplicarReplicaSeleccionados(campo){
       nts[cId][per][campo]=numVal;
       d.ests[idx]={...e,nts};
       aplicados++;
+      _filasAfectadas.push({tipo:'planilla',estId:e.id,cId,per});
     });
+    _marcarLoteFilasEnEdicion(_filasAfectadas);
     return d;
   });
+  _desmarcarLoteFilasEnEdicion();
   cerrarPopupNota();
   // Limpiar pendientes de los estudiantes seleccionados para este campo/asignatura/periodo
   const _cIdS=String(cId),_perS=String(per);
@@ -15861,6 +16065,12 @@ function aplicarReplicaNotaAct(colId,valor){
   if(_autoGuardar){
     updDB(d=>{
       d.notasAct=d.notasAct||{};
+      // RONDA 71 — "Replicar a todos" (Notas de Actividades) toca varias
+      // filas de una sola vez, igual que su equivalente en Planilla — se
+      // marca el LOTE de filas afectadas para que saveDB() las encole
+      // granularmente en vez de caer al guardado monolítico del blob
+      // completo.
+      const _filasAfectadas=[];
       ests.forEach(e=>{
         const key=cId+'_'+per+'_'+colId+'_'+e.id;
         // Se conserva la observación que ese estudiante ya tuviera para esta
@@ -15868,9 +16078,12 @@ function aplicarReplicaNotaAct(colId,valor){
         // silencio un comentario individual que el docente ya había escrito.
         const obsPrevia=(d.notasAct[key]&&d.notasAct[key].obs)||'';
         d.notasAct[key]={valor:numVal,fecha,hora,obs:obsPrevia};
+        _filasAfectadas.push({tipo:'actividad',estId:e.id,cId,per,colId});
       });
+      _marcarLoteFilasEnEdicion(_filasAfectadas);
       return d;
     });
+    _desmarcarLoteFilasEnEdicion();
   }else{
     ests.forEach(e=>{
       const key=cId+'_'+per+'_'+colId+'_'+e.id;
