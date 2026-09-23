@@ -4746,8 +4746,6 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       return;
     }
 
-    const systemPrompt = buildSystemPrompt(context || {});
-
     const history = (messages || []).slice(0, -1).map(m => ({
       role: m.role === 'user' ? 'user' as const : 'model' as const,
       parts: [{ text: m.content || '' }],
@@ -4763,6 +4761,20 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
     const isPlanear = mode === 'planear' || (messages || []).some(m =>
       m.content && m.content.includes('planeación de clase COMPLETA')
     );
+
+    // RONDA 69 — el usuario adjuntó PDFs reales de Planeaciones donde la
+    // respuesta de la IA se cortaba a mitad de generación (evidencia real:
+    // "...INFORMÁT" seguido inmediatamente del mensaje de alto volumen
+    // incrustado en el documento). Una causa contribuyente es que las
+    // planeaciones piden contenido extenso sin límite explícito de
+    // extensión, acercándose al techo de maxOutputTokens y aumentando el
+    // riesgo de que el proveedor corte la respuesta a mitad de streaming.
+    // Se añade una instrucción explícita de concisión SOLO al modo
+    // "planear" (no afecta el chat general ni otros modos).
+    const systemPromptBase = buildSystemPrompt(context || {});
+    const systemPrompt = isPlanear
+      ? systemPromptBase + `\n\nINSTRUCCIÓN ADICIONAL PARA PLANEACIÓN DE CLASE (RONDA 69): responde de forma concisa, ejecutiva y bien estructurada (títulos y viñetas claros), sin superar aproximadamente 1500 tokens en total, para evitar que la respuesta se corte a mitad de generación por límites de longitud del proveedor de IA. Prioriza claridad y estructura sobre extensión — es preferible una planeación completa y concisa que una extensa que se corte antes de terminar.`
+      : systemPromptBase;
 
     // RONDA 48: migrado al wrapper central de resiliencia
     // (llamarGeminiConResiliencia) — reintenta el MISMO modelo con backoff
@@ -4808,10 +4820,36 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       return;
     }
 
-    for await (const chunk of stream) {
-      if (chunk.text) {
-        res.write(`data: ${JSON.stringify({ content: chunk.text })}\n\n`);
+    try {
+      for await (const chunk of stream) {
+        if (chunk.text) {
+          res.write(`data: ${JSON.stringify({ content: chunk.text })}\n\n`);
+        }
       }
+    } catch (streamErr: unknown) {
+      // RONDA 69 — HALLAZGO MÁS CRÍTICO de esta ronda, confirmado con
+      // evidencia real: el usuario adjuntó un PDF de Planeación generado
+      // en producción donde el texto termina literalmente
+      // "...INFORMÁT" + el mensaje amigable de "alto volumen" incrustado
+      // SIN separación, como si fuera parte del documento. Causa raíz: un
+      // fallo de Gemini A MITAD del streaming (después de ya haber escrito
+      // texto parcial válido con `content`) caía antes en el catch-all
+      // genérico de más abajo, que también escribe el mensaje amigable
+      // usando el campo `content` — exactamente indistinguible, para el
+      // frontend, de más texto real del documento, así que el frontend lo
+      // concatenaba directo (`resp+=d.content`) al final del texto parcial
+      // ya generado. Ahora un fallo DURANTE el streaming (después del
+      // primer chunk) se distingue explícitamente y se envía por el campo
+      // `error` (nunca por `content`), para que el frontend lo trate como
+      // una falla real — descarta el texto parcial en vez de incrustarlo
+      // en el documento final. Ver iaEnviar() en 03-app-core.js (Ronda 69).
+      console.error(`[Adán chat] Fallo A MITAD del streaming (después de haber enviado texto parcial) — error crudo:`, streamErr);
+      try {
+        res.write(`data: ${JSON.stringify({ error: mensajeAmigablePorError(streamErr) })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      } catch {}
+      return;
     }
 
     res.write('data: [DONE]\n\n');
@@ -4960,6 +4998,8 @@ Proporciona:
 1. Resumen ejecutivo de novedades comportamentales y de asistencia.
 2. Identificación de estudiantes en riesgo académico o deserción.
 3. Recomendaciones y compromisos recomendados para docentes y acudientes.
+
+INSTRUCCIÓN ADICIONAL (RONDA 69): responde de forma concisa, ejecutiva y estructurada (títulos y viñetas claros), sin superar aproximadamente 1500 tokens en total, para evitar que la respuesta se corte a mitad de generación por límites de longitud del proveedor de IA.
 `;
 
     // RONDA 48: migrado al wrapper central de resiliencia.

@@ -20199,9 +20199,188 @@ function _guardarPlaneacionIA(silent){
   iaRenderMsgs();
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 69 — el usuario adjuntó 3 PDFs REALES generados por el sistema
+// (Planeaciones y Observador/Dictamen Psicopedagógico) con 4 problemas
+// confirmados con evidencia directa:
+//   1) Mojibake ("Ø=ÜÐ", "Ø=ÜÊ") — emojis/Unicode que la fuente estándar
+//      de jsPDF (Latin-1/WinAnsi) no puede dibujar.
+//   2) [HALLAZGO MÁS CRÍTICO] Un mensaje de error de la IA (el mismo
+//      mensajeAmigablePorError() de Rondas 48/50/67) quedó incrustado
+//      LITERALMENTE dentro de un PDF de Planeación, a mitad de una
+//      palabra, porque un fallo de streaming a mitad de generación se
+//      insertaba como más "content" en vez de detectarse como error (ver
+//      fix del lado servidor en src/index.ts, endpoint /api/inetis/ai/chat).
+//   3) Markdown literal ("###", "**", etc.) sin procesar.
+//   4) Notación LaTeX literal ("$S \ge 4.7$") sin convertir.
+// Las funciones de esta sección son el punto CENTRAL y reutilizable de
+// saneamiento — se usan en TODO generador de PDF/Word que reciba texto
+// generado por IA (hoy: _descargarPlaneIAPDF/_descargarPlaneIAWord, que
+// sirven tanto a "📋 Planeaciones" como a cualquier respuesta del chat de
+// Adán incluyendo el "🧠 Diagnóstico Psicopedagógico" abierto vía
+// iaAbrirConPrompt() en 06-documentos-y-resto.js — ambos comparten el
+// mismo panel de chat _iaMsgs y los mismos botones de descarga).
+// ════════════════════════════════════════════════════════════════════════
+
+// Detecta si un texto ES (o contiene) uno de los mensajes amigables de
+// error de IA (Rondas 48/50/51/67) en vez de contenido real generado.
+// Se usa como red de seguridad ANTES de generar un documento oficial — si
+// el "contenido" es en realidad un error de la API, nunca debe llegar a
+// convertirse en un PDF/Word entregable (integridad documental).
+function _esMensajeErrorIA(texto){
+  if(!texto) return false;
+  const t=String(texto);
+  return t.includes('servicio de IA está experimentando')
+      || t.includes('servicio de IA no está disponible')
+      || t.includes('problema inesperado al conectar con el servicio de IA')
+      || t.includes('Clave GEMINI_API_KEY')
+      || t.includes('inicializar el cliente de Google Gemini');
+}
+
+// Convierte la notación LaTeX más común que la IA a veces devuelve
+// (comparadores, conjuntos numéricos, exponentes/superíndices, fracciones
+// simples) a texto plano legible. No es un parser LaTeX completo (no hace
+// falta para el caso de uso real observado) — cubre con expresiones
+// regulares razonables los patrones que aparecieron en los documentos
+// reales adjuntados por el usuario, ej. "$S \ge 4.7$" → "S >= 4.7".
+function _convertirLatexBasico(texto){
+  if(!texto) return '';
+  let t=String(texto);
+  t=t.replace(/\\geq\b/g,'>=').replace(/\\ge\b/g,'>=');
+  t=t.replace(/\\leq\b/g,'<=').replace(/\\le\b/g,'<=');
+  t=t.replace(/\\neq\b/g,'!=').replace(/\\ne\b/g,'!=');
+  t=t.replace(/\\times\b/g,'x').replace(/\\cdot\b/g,'·');
+  t=t.replace(/\\pm\b/g,'+/-');
+  t=t.replace(/\\infty\b/g,'infinito');
+  // Conjuntos numéricos: \mathbb{N} -> N, \mathbb{R} -> R, etc.
+  t=t.replace(/\\mathbb\{([A-Za-z])\}/g,'$1');
+  // Exponentes/superíndices: 11^{\circ} -> 11°, x^{2} -> x^2
+  t=t.replace(/(\w)\^\{\\circ\}/g,'$1°');
+  t=t.replace(/(\w)\^\{(\w+)\}/g,'$1^$2');
+  t=t.replace(/\\circ\b/g,'°');
+  // Fracciones simples: \frac{a}{b} -> a/b
+  t=t.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g,'$1/$2');
+  // Cualquier otro comando LaTeX de una palabra que no se reconoció arriba
+  // (ej. \alpha) se deja como el nombre plano, más legible que el comando crudo.
+  t=t.replace(/\\([a-zA-Z]+)/g,'$1');
+  // Quitar los delimitadores de modo matemático "$...$"/"$$...$$" dejando
+  // el contenido ya convertido (nunca se borra el contenido, solo los
+  // delimitadores).
+  t=t.replace(/\$\$([^$]*)\$\$/g,'$1');
+  t=t.replace(/\$([^$]*)\$/g,'$1');
+  return t;
+}
+
+// Saneamiento central de texto de IA antes de insertarlo en un PDF con
+// jsPDF (fuentes estándar Latin-1/WinAnsi): convierte LaTeX y remueve
+// emojis/símbolos Unicode fuera de ese rango, evitando el mojibake real
+// confirmado por el usuario. NO se debe duplicar esta lógica en cada
+// generador de PDF — todos deben llamar a esta función.
+function sanitizeTextForPDF(texto){
+  if(!texto) return '';
+  let t=_convertirLatexBasico(String(texto));
+  // Red de seguridad final: cualquier carácter fuera del rango Latin-1
+  // (0x00-0xFF) que jsPDF no puede dibujar se remueve — cubre emojis
+  // (📌🎓⚠️⚡✅❌🔴🟡🟢🤝 etc.), flechas, dingbats y cualquier símbolo
+  // Unicode no anticipado, sin dejar pasar bytes corruptos. Se conserva
+  // una lista corta de caracteres tipográficos comunes y seguros de
+  // representar (comillas curvas, guiones largos, viñeta, euro).
+  t=t.replace(/[^\u0000-ÿ€‘’“”–—•]/gu,'');
+  // Colapsar espacios que pudieran quedar huérfanos tras remover un emoji
+  // rodeado de espacios (ej. "Hola 📌 Mundo" -> "Hola  Mundo" -> "Hola Mundo").
+  t=t.replace(/[ \t]{2,}/g,' ');
+  return t;
+}
+
+// Parser Markdown → estilos reales de jsPDF (no solo texto plano con los
+// símbolos removidos): encabezados "#".."######" se dibujan en negrita
+// con tamaño real por nivel, listas "-"/"*" se dibujan con viñeta real, y
+// los párrafos narrativos se UNEN en un solo bloque continuo (nunca se
+// respeta un salto de línea manual por renglón individual) para que
+// splitTextToSize calcule el ajuste real sobre el párrafo completo, con
+// justificación aplicada a las líneas intermedias (la última línea de
+// cada párrafo no se justifica, para no estirar texto corto de forma
+// antiestética). Reutilizable para cualquier generador de PDF con texto
+// de IA en Markdown.
+function _renderMarkdownEnPDF(doc,textoCrudo,opts){
+  opts=opts||{};
+  const M=opts.margenIzq!=null?opts.margenIzq:25;
+  const cW=opts.anchoUtil!=null?opts.anchoUtil:160;
+  const H=opts.altoPagina!=null?opts.altoPagina:297;
+  const margenInferior=opts.margenInferior!=null?opts.margenInferior:20;
+  let y=opts.yInicial!=null?opts.yInicial:30;
+
+  function nuevaPaginaSiNecesario(alturaNecesaria){
+    if(y+alturaNecesaria>H-margenInferior){
+      doc.addPage();
+      y=opts.yPaginaNueva!=null?opts.yPaginaNueva:M;
+    }
+  }
+
+  const limpio=sanitizeTextForPDF(textoCrudo);
+  const bloques=limpio.split(/\n\s*\n/).map(b=>b.trim()).filter(b=>b.length>0);
+
+  bloques.forEach(bloque=>{
+    const lineasBloque=bloque.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
+    if(!lineasBloque.length) return;
+    const esLista=lineasBloque.every(l=>/^[-*•]\s+/.test(l));
+    const matchEncabezado=lineasBloque.length===1?lineasBloque[0].match(/^(#{1,6})\s+(.*)$/):null;
+
+    if(matchEncabezado){
+      const nivel=matchEncabezado[1].length;
+      const texto=matchEncabezado[2].replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1').trim();
+      const tam=nivel===1?13:nivel===2?12:nivel===3?11:10.5;
+      nuevaPaginaSiNecesario(tam*0.6+6);
+      y+=2;
+      doc.setFont('helvetica','bold');doc.setFontSize(tam);doc.setTextColor(0,51,102);
+      const lineasEnc=doc.splitTextToSize(texto,cW);
+      lineasEnc.forEach(l=>{nuevaPaginaSiNecesario(6.5);doc.text(l,M,y);y+=nivel<=2?6.5:6;});
+      y+=1.5;
+      doc.setTextColor(20,20,20);
+      return;
+    }
+
+    if(esLista){
+      doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(20,20,20);
+      lineasBloque.forEach(l=>{
+        const textoItem=l.replace(/^[-*•]\s+/,'').replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1').trim();
+        const lineasItem=doc.splitTextToSize(textoItem,cW-6);
+        lineasItem.forEach((li,i)=>{
+          nuevaPaginaSiNecesario(5.5);
+          doc.text((i===0?'• ':'  ')+li,M+2,y);
+          y+=5.5;
+        });
+      });
+      y+=1.5;
+      return;
+    }
+
+    const parrafo=lineasBloque.join(' ').replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1').trim();
+    if(!parrafo) return;
+    doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(20,20,20);
+    const lineasParrafo=doc.splitTextToSize(parrafo,cW);
+    lineasParrafo.forEach((l,i)=>{
+      nuevaPaginaSiNecesario(5.5);
+      if(i===lineasParrafo.length-1){
+        doc.text(l,M,y);
+      } else {
+        doc.text(l,M,y,{align:'justify',maxWidth:cW});
+      }
+      y+=5.5;
+    });
+    y+=3;
+  });
+
+  return y;
+}
+
 function _descargarPlaneIAPDF(msgIdx,overrideContent){
   const content=overrideContent||(msgIdx>=0?(_iaMsgs[msgIdx]||{}).content:null);
   if(!content) return;
+  if(_esMensajeErrorIA(content)){
+    customAlert('⚠️ Esta respuesta contiene un mensaje de error del servicio de IA (no es contenido real generado). No se generará el documento — por favor vuelve a intentar la consulta y descarga el PDF solo cuando la respuesta se haya completado correctamente.');
+    return;
+  }
   const msg={content};
   const meta=window._iaPlaneacionMeta||{};
   const {jsPDF}=window.jspdf;
@@ -20235,18 +20414,12 @@ function _descargarPlaneIAPDF(msgIdx,overrideContent){
   y+=metaRows.length*7+10;
   // Línea separadora
   doc.setDrawColor(0,51,102);doc.setLineWidth(0.5);doc.line(M,y,W-M,y);y+=5;
-  // Contenido principal
-  doc.setFontSize(10);doc.setFont('helvetica','normal');doc.setTextColor(20,20,20);
-  const plain=msg.content.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1');
-  const lines=doc.splitTextToSize(plain,cW);
-  lines.forEach(line=>{
-    if(y>H-20){doc.addPage();y=M;}
-    const isSectionTitle=/^[A-ZÁÉÍÓÚÑ\d].{0,60}[:·■—]/.test(line.trim())||/^\d+[\.\)]/.test(line.trim());
-    doc.setFont('helvetica',isSectionTitle?'bold':'normal');
-    doc.setFontSize(isSectionTitle?10:9.5);
-    doc.text(line,M,y);
-    y+=isSectionTitle?6:5.5;
-  });
+  // Contenido principal — RONDA 69: saneado (LaTeX/emojis) y renderizado
+  // con estilos Markdown reales (encabezados en negrita/tamaño real,
+  // viñetas reales, párrafos completos justificados vía splitTextToSize
+  // aplicado al bloque unido, nunca renglón por renglón) en vez del
+  // volcado de texto plano con solo los asteriscos removidos.
+  y=_renderMarkdownEnPDF(doc,msg.content,{margenIzq:M,anchoUtil:cW,altoPagina:H,yInicial:y,margenInferior:20});
   // Firma y pie en cada página
   const pgCount=doc.getNumberOfPages();
   for(let p=1;p<=pgCount;p++){
@@ -20265,7 +20438,16 @@ function _descargarPlaneIAPDF(msgIdx,overrideContent){
 function _descargarPlaneIAWord(msgIdx,overrideContent){
   const content=overrideContent||(msgIdx>=0?(_iaMsgs[msgIdx]||{}).content:null);
   if(!content) return;
-  const msg={content};
+  if(_esMensajeErrorIA(content)){
+    customAlert('⚠️ Esta respuesta contiene un mensaje de error del servicio de IA (no es contenido real generado). No se generará el documento — por favor vuelve a intentar la consulta y descarga el Word solo cuando la respuesta se haya completado correctamente.');
+    return;
+  }
+  // RONDA 69 — Word usa charset UTF-8 (soporta emojis sin el problema de
+  // fuente Latin-1/WinAnsi de jsPDF), pero SÍ hereda el mismo problema de
+  // notación LaTeX literal sin convertir, así que se aplica igual la
+  // conversión LaTeX básica (no el retiro de emojis, que en Word no hace
+  // falta).
+  const msg={content:_convertirLatexBasico(content)};
   const meta=window._iaPlaneacionMeta||{};
   const inst=db.nombre||'INSTITUCIÓN EDUCATIVA';
   const html=`<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>

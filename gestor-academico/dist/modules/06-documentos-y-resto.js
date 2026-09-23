@@ -982,7 +982,9 @@ Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
 1. 🔍 Diagnóstico e Impacto Pedagógico
 2. 👨‍🏫 Recomendaciones y Estrategias para el Docente de Aula
 3. 🏛️ Acciones Institucionales y Psicoorientación para Directivos (Rector / Coordinador)
-4. 📝 Compromiso sugerido para el Acudiente y Estudiante`;
+4. 📝 Compromiso sugerido para el Acudiente y Estudiante
+
+INSTRUCCIÓN ADICIONAL (RONDA 69): responde de forma concisa, ejecutiva y bien estructurada, sin superar aproximadamente 1500 tokens en total, para evitar que la respuesta se corte a mitad de generación por límites de longitud del proveedor de IA.`;
 
   if(typeof iaAbrirConPrompt === 'function'){
     iaAbrirConPrompt(prompt, '🧠 Diagnóstico Psicopedagógico — ' + est.n);
@@ -1081,15 +1083,23 @@ function descargarReportePsicopedagogicoPDF(grado, cId){
     if(pctAus >= pctCrit){
       doc.setTextColor(192, 57, 43); doc.setFont('helvetica', 'bold');
       doc.text(pctAus.toFixed(1) + '%', COL[3], y + 4, { align: 'center' });
-      doc.text('🔴 RIESGO REPROBACIÓN', COL[4] + 1, y + 4);
+      // RONDA 69 — estos 3 rótulos usaban un emoji de color literal
+      // (círculo rojo/amarillo/verde) pasado directo a jsPDF: la fuente
+      // estándar Latin-1/WinAnsi no
+      // puede dibujarlo y produce el mismo mojibake ("Ø=ÜÐ", etc.)
+      // confirmado por el usuario en otros PDFs del sistema. El color de
+      // fondo/texto de la fila ya comunica visualmente la alerta, así que
+      // el emoji se retira sin perder la información (el texto la sigue
+      // describiendo explícitamente).
+      doc.text('RIESGO REPROBACIÓN', COL[4] + 1, y + 4);
     } else if(pctAus >= pctPrev){
       doc.setTextColor(211, 84, 0); doc.setFont('helvetica', 'bold');
       doc.text(pctAus.toFixed(1) + '%', COL[3], y + 4, { align: 'center' });
-      doc.text('🟡 ALERTA PREVENTIVA', COL[4] + 1, y + 4);
+      doc.text('ALERTA PREVENTIVA', COL[4] + 1, y + 4);
     } else {
       doc.setTextColor(39, 174, 96); doc.setFont('helvetica', 'normal');
       doc.text(pctAus.toFixed(1) + '%', COL[3], y + 4, { align: 'center' });
-      doc.text('🟢 Normal', COL[4] + 1, y + 4);
+      doc.text('Normal', COL[4] + 1, y + 4);
     }
     y += 5.5;
   });
@@ -7590,16 +7600,23 @@ function pdfHistorialIndividualObs(estId){
       doc.setTextColor(40,40,60);doc.setFont('helvetica','bold');doc.setFontSize(7.5);
       doc.text(`${o.fecha||'S/fecha'}   |   Docente: ${o.doc||'—'}`,34,y+6);
       doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(30,30,50);
-      const lines=doc.splitTextToSize(o.txt||'(sin texto)',PW-50);
+      // RONDA 69 — texto libre del observador (puede haber sido pegado
+      // desde una respuesta de Adán IA por un docente): se sanea con la
+      // misma función central usada en Planeaciones, para evitar mojibake
+      // si contiene emojis/Unicode o notación LaTeX sin convertir.
+      const lines=doc.splitTextToSize(sanitizeTextForPDF(o.txt)||'(sin texto)',PW-50);
       lines.forEach((l,li)=>{doc.text(l,34,y+11+li*4);});
       let oy=y+11+lines.length*4;
       if(o.compromisos){
         doc.setFont('helvetica','italic');doc.setFontSize(6.5);doc.setTextColor(26,82,118);
-        doc.text('📌 '+o.compromisos,34,oy+1);oy+=5;
+        // RONDA 69 — el emoji de chincheta hardcodeado se retira (mismo
+        // motivo que arriba: la fuente estándar de jsPDF no lo puede
+        // dibujar), y el texto libre de "compromisos" también se sanea.
+        doc.text('Compromiso: '+sanitizeTextForPDF(o.compromisos),34,oy+1);oy+=5;
       }
       if(o.acudiente){
         doc.setFont('helvetica','italic');doc.setFontSize(6.5);doc.setTextColor(125,102,8);
-        doc.text('🤝 Acudiente: '+o.acudiente,34,oy+1);
+        doc.text('Acudiente: '+sanitizeTextForPDF(o.acudiente),34,oy+1);
       }
       y+=lineH+2;
     });

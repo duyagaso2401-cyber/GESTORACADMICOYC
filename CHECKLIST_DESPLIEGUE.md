@@ -6545,3 +6545,235 @@ Ningún cambio a `src/index.ts`, `src/routes/university.ts`,
 consumen el modelo primario/fallbacks de forma centralizada desde
 `gemini-config.ts` (por diseño desde la Ronda 48), así que el cambio de
 modelos se propaga automáticamente sin tocarlos.
+
+## Ronda 69 — Saneamiento de PDFs de IA (mojibake, streaming cortado, Markdown/LaTeX literal)
+
+El usuario adjuntó 3 PDFs REALES generados por el sistema (Planeaciones y
+Observador/Dictamen Psicopedagógico) y el coordinador los leyó directamente
+para confirmar la evidencia antes de delegar esta ronda. Se confirmaron con
+evidencia directa 4 problemas.
+
+### 0. Hallazgo MÁS CRÍTICO (priorizado explícitamente): streaming cortado insertado en el documento
+
+**Causa raíz real, encontrada en `src/index.ts`, endpoint `POST
+/api/inetis/ai/chat`:** el bucle que reenvía los fragmentos (`chunks`) del
+streaming de Gemini al frontend no tenía su propio manejo de error. Si
+Gemini fallaba **a mitad del streaming** (después de ya haber enviado texto
+parcial válido — ej. tras escribir "...INFORMÁT" de
+"INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA"), la excepción caía en el
+`catch` genérico de todo el endpoint, el cual escribía el mensaje amigable
+de error (`mensajeAmigablePorError()`, Rondas 48/50/67) usando el mismo
+campo `content` que el texto real — **indistinguible para el frontend**.
+El frontend (`iaEnviar()` en `03-app-core.js`) simplemente concatena todo
+lo que llega por `content` (`resp+=d.content`), así que el mensaje de error
+terminaba pegado sin separación al final del texto parcial, y ese texto
+mixto se guardaba como el contenido "final" del mensaje — el mismo que
+luego se convierte en PDF/Word. Esto coincide exactamente con la evidencia
+real: *"...INFORMÁT⚡ El servicio de IA está experimentando un alto
+volumen..."*.
+
+**Corrección:** el bucle `for await (const chunk of stream)` ahora tiene su
+propio `try/catch`. Un fallo ahí se envía por el campo **`error`** (nunca
+`content`), y el frontend ya tenía (sin usarla hasta ahora, código muerto)
+una rama `if(d.error){resp='❌ '+d.error;break;}` que **reemplaza** el
+texto parcial en vez de concatenarlo — así un fallo a mitad de generación
+nunca vuelve a quedar mezclado con texto real dentro de un documento
+oficial. No se tocó el mecanismo de resiliencia (reintentos/backoff/rotación
+de modelo de la Ronda 50) — ese sigue intacto; lo que faltaba era distinguir
+un fallo *después* de que el streaming ya había empezado a entregar texto
+válido.
+
+### 1. Validación defensiva antes de generar el PDF/Word (ask explícito del usuario, punto 2b)
+
+Como red de seguridad adicional (independiente del fix de raíz de arriba,
+por si algún día vuelve a colarse un mensaje de error completo como
+contenido de un mensaje), se agregó `_esMensajeErrorIA(texto)` en
+`03-app-core.js`: detecta si un texto ES o contiene alguno de los mensajes
+amigables conocidos de `mensajeAmigablePorError()` (los 3 casos: alto
+volumen/429-503, NOT_FOUND/404, genérico) o los 2 mensajes de "clave
+ausente"/"SDK no inicializado" del streaming. Se usa la MISMA función (no
+un string hardcodeado separado que pudiera desincronizarse) en
+`_descargarPlaneIAPDF()` y `_descargarPlaneIAWord()`, **antes** de generar
+el documento: si detecta un mensaje de error, no genera nada y muestra un
+aviso pidiendo reintentar la consulta.
+
+### 2. `sanitizeTextForPDF(texto)` — saneamiento central y reutilizable
+
+Se investigó cuántos generadores de PDF existen en el proyecto (respuesta:
+más de 30 funciones `pdfXxx()`/`descargarXxx()` en `03-app-core.js` y
+`06-documentos-y-resto.js`) y cuáles reciben texto generado por IA. Solo
+**dos puntos de entrada** reciben texto de IA de forma directa, y ambos
+comparten la MISMA función central de descarga: `_descargarPlaneIAPDF()` /
+`_descargarPlaneIAWord()` — usada tanto por "📋 Planeaciones" como por
+cualquier respuesta del chat de Adán, incluyendo el "🧠 Diagnóstico
+Psicopedagógico" (`analizarInasistenciaAdan()` en `06-documentos-y-resto.js`
+abre el mismo chat vía `iaAbrirConPrompt()`, y los botones "📄 PDF"/"📝
+Word" están disponibles para cualquier mensaje del asistente, no solo
+planeaciones). Por eso el saneamiento se implementó una sola vez, en un
+solo lugar, y ambos casos quedan cubiertos automáticamente — no se duplicó
+lógica en cada generador.
+
+`sanitizeTextForPDF()`:
+- Convierte notación LaTeX común (`_convertirLatexBasico()`, sub-función):
+  `\ge`/`\geq`→`>=`, `\le`/`\leq`→`<=`, `\neq`/`\ne`→`!=`, `\mathbb{N}`→`N`,
+  `11^{\circ}`→`11°`, `\frac{a}{b}`→`a/b`, quita los delimitadores `$...$`
+  conservando el contenido ya convertido. Verificado con el caso EXACTO
+  reportado: `"$S \ge 4.7$ o $A \ge 4.0$"` → `"S >= 4.7 o A >= 4.0"`.
+- Remueve como red de seguridad final cualquier carácter fuera del rango
+  Latin-1 (0x00-0xFF) que la fuente estándar de jsPDF no puede dibujar —
+  cubre emojis, flechas, dingbats y cualquier símbolo Unicode no
+  anticipado, sin dejar pasar bytes corruptos, conservando una lista
+  blanca corta de tipografía segura (comillas curvas, guiones largos,
+  viñeta, euro) y todo el español acentuado (á, é, í, ó, ú, ñ, ¿, ¡, °),
+  que sí está dentro de Latin-1.
+
+Se aplicó, además de en las Planeaciones y el Diagnóstico Psicopedagógico
+(vía la función central), también a **`pdfHistorialIndividualObs()`** (el
+PDF real de historial de Observador) en los campos de texto libre
+`o.txt`, `o.compromisos` y `o.acudiente` — estos son campos donde un
+docente podría pegar texto generado por Adán IA, así que llevan el mismo
+riesgo aunque no pasen por el chat directamente.
+
+### 3. Hallazgo adicional real: emojis hardcodeados en jsPDF (mismo síntoma, sin relación con IA)
+
+Durante la auditoría de "cuántos generadores... aplican el mismo riesgo" se
+encontraron **2 generadores más** con el MISMO síntoma de mojibake, pero
+por una causa distinta: emojis literales escritos directamente en el
+código fuente (no generados por IA) y pasados sin ningún saneamiento a
+`doc.text()`:
+- `descargarReportePsicopedagogicoPDF()` (06-documentos-y-resto.js) —
+  usaba `'🔴 RIESGO REPROBACIÓN'`, `'🟡 ALERTA PREVENTIVA'`, `'🟢 Normal'`.
+- `pdfHistorialIndividualObs()` (el PDF real de "Observador") — usaba
+  `'📌 '+o.compromisos` y `'🤝 Acudiente: '+o.acudiente`.
+
+Se removieron los 5 emojis hardcodeados (el color de fondo/texto de cada
+fila ya comunica visualmente la severidad, así que no se pierde
+información) — reportado honestamente aquí porque, aunque no reciben texto
+de IA, es la misma clase de bug con el mismo síntoma visual que motivó
+esta ronda, y se decidió corregirlo también en vez de dejarlo pasar por no
+estar mencionado explícitamente en el reporte del usuario.
+
+`pdfActa()` (módulo de Actas) usa `acta.contenido`, un campo de texto
+libre tecleado manualmente por el usuario en un formulario — no hay
+ninguna vía automática en el código que inserte ahí una respuesta de la
+IA, así que se dejó fuera del alcance de esta ronda (no es un punto de
+entrada de IA real, a diferencia de los anteriores).
+
+### 4. Parser Markdown → estilos reales de jsPDF
+
+Nueva función `_renderMarkdownEnPDF(doc, textoCrudo, opts)` (03-app-core.js),
+reemplaza el volcado de texto plano que antes solo removía `**`/`*` con
+`.replace()` y dejaba pasar `#`/`##`/`###` literales:
+- Encabezados Markdown (`#` a `######`) se dibujan con **negrita y tamaño
+  real** de jsPDF (13pt/12pt/11pt/10.5pt según el nivel), no solo texto sin
+  el símbolo.
+- Listas (`-`/`*`) se dibujan con **viñeta real** (`•`), con sangría para
+  las líneas envueltas de un mismo ítem.
+- Párrafos narrativos: se remueven los marcadores de negrita/cursiva
+  restantes (una mezcla real de negrita+texto normal en la misma línea de
+  jsPDF requeriría posicionar segmentos manualmente; se documenta esta
+  simplificación en vez de dejarlo sin resolver).
+
+### 5. Saltos de línea manuales vs. párrafo completo + justificación
+
+Se investigó con evidencia real de código cómo se generaban los saltos de
+línea: el código anterior pasaba el contenido COMPLETO de la IA (con
+cualquier `\n` que la IA hubiera insertado, ej. uno por oración) directo a
+`doc.splitTextToSize()`, que respeta esos `\n` como saltos forzados en vez
+de recalcular el ajuste sobre el párrafo completo — esto es lo que producía
+párrafos "cortados" renglón por renglón al copiar a Word. Confirmado y
+corregido: `_renderMarkdownEnPDF()` primero separa el texto en **bloques**
+por línea en blanco (`\n\s*\n` = límite real de párrafo), y dentro de un
+bloque de párrafo narrativo **une todas sus líneas con un espacio** antes
+de pasarlo a `splitTextToSize()` — nunca inserta un salto de línea manual
+por renglón individual. Las líneas resultantes de un párrafo (excepto la
+última, para no estirar texto corto de forma antiestética) se dibujan con
+`{align:'justify'}`, nativo de jsPDF — no se agregó `html2pdf.js`/
+`html2canvas` como dependencia nueva (no verificable en este sandbox sin
+acceso a npm registry), ya que jsPDF soporta justificación nativa desde
+hace varias versiones y ya era la librería en uso.
+
+### 6. Prompt backend — límite de concisión (~1500 tokens)
+
+Se ubicaron los 3 puntos reales donde se construye el prompt de
+Planeaciones/Observador y se les agregó la instrucción de concisión pedida
+por el usuario, para reducir el riesgo de que la respuesta se corte a
+mitad de generación por el límite de longitud del proveedor:
+- `src/index.ts`, `POST /api/inetis/ai/chat`: se agrega la instrucción
+  **solo cuando `isPlanear` es verdadero** (Planeaciones), sin afectar el
+  chat general de Adán ni otros modos.
+- `src/index.ts`, `POST /api/inetis/ai/psicopedagogico` (endpoint
+  dedicado, actualmente sin un llamador activo en el frontend de este
+  snapshot, pero se corrigió igual por consistencia y porque puede
+  reactivarse).
+- `gestor-academico/dist/modules/06-documentos-y-resto.js`,
+  `analizarInasistenciaAdan()` — este es el prompt que REALMENTE arma el
+  "🧠 Diagnóstico Psicopedagógico" que el usuario reportó (se envía vía
+  `iaAbrirConPrompt()` al chat general, no al endpoint dedicado de arriba).
+
+### 7. Tests
+
+Suite completa re-ejecutada: **70 archivos, 100% verde** (69 previos + 1
+nuevo). Ningún test previamente congelado necesitó ajuste esta ronda — todo
+el código nuevo es aditivo (nuevas funciones, nuevos `try/catch`, nueva
+instrucción de prompt condicional) y no cambió ninguna firma, comportamiento
+ni salida de código ya cubierto por un test anterior.
+
+Nuevo: **`test_ronda69_saneamiento_pdf_ia.mjs`** (47 aserciones, con
+**ejecución real** vía `vm` del archivo fuente real `03-app-core.js` — no
+una reescritura de las funciones — aprovechando que las declaraciones
+`function` quedan hoisteadas antes de que el resto del script falle por
+dependencias de navegador):
+- Parte A: mojibake de emojis — verifica con el texto EXACTO del reporte
+  ("📌 PLANEACIÓN...", "🔎 DATOS GENERALES...", "⚠️ Factores de Riesgo") que
+  `sanitizeTextForPDF()` los remueve conservando el texto real (con
+  acentos) intacto.
+- Parte B: LaTeX — verifica el caso EXACTO reportado
+  (`"$S \ge 4.7$ o $A \ge 4.0$"` → `"S >= 4.7 o A >= 4.0"`) más otros
+  patrones (`\mathbb{N}`, `11^{\circ}`, `\le`).
+- Parte C: Markdown → estilos reales, ejecutando `_renderMarkdownEnPDF()`
+  contra un `doc` jsPDF simulado y verificando las llamadas reales a
+  `setFont`/`setFontSize`/`text()` (tamaño 13 en H1, 12 en H2, viñeta real
+  en listas, sin ningún `#`/`**` literal sobreviviendo).
+- Parte D: saltos de línea manuales — verifica que 3 líneas de un mismo
+  párrafo se unen en un solo bloque antes de llegar a `splitTextToSize()`,
+  y que las líneas no finales de un párrafo llevan `{align:'justify'}`
+  mientras la última no.
+- Parte E: el hallazgo más crítico — verifica que `_esMensajeErrorIA()`
+  detecta los 3 mensajes amigables conocidos, el caso EXACTO reportado
+  (texto parcial + mensaje de error concatenado sin espacio), Y que un
+  texto real que casualmente menciona la palabra "servicio" NO se marca
+  como error (evita falsos positivos).
+- Parte F: inspección del código fuente real de `src/index.ts` confirmando
+  que el streaming ahora usa su propio `try/catch` y envía `error` (no
+  `content`) ante un fallo a mitad de generación.
+- Parte G: confirma la instrucción de ~1500 tokens en los 3 puntos reales
+  del prompt.
+- Parte H: confirma que ambos generadores (PDF y Word) usan la MISMA
+  función central `_esMensajeErrorIA`, no un string duplicado.
+- Parte I: confirma la remoción de los 5 emojis hardcodeados adicionales
+  encontrados y el saneamiento de los campos libres del Observador real.
+
+### 8. Archivos modificados esta ronda
+
+- **`src/index.ts`** — `POST /api/inetis/ai/chat`: `try/catch` propio
+  alrededor del bucle de streaming (envía `error` en vez de `content` ante
+  un fallo a mitad de generación); instrucción de concisión (~1500 tokens)
+  agregada al prompt solo en modo `planear`. `POST
+  /api/inetis/ai/psicopedagogico`: misma instrucción de concisión agregada
+  al `promptText`.
+- **`gestor-academico/dist/modules/03-app-core.js`** — nuevas funciones
+  centrales `_esMensajeErrorIA()`, `_convertirLatexBasico()`,
+  `sanitizeTextForPDF()`, `_renderMarkdownEnPDF()`; `_descargarPlaneIAPDF()`
+  y `_descargarPlaneIAWord()` actualizadas con la validación defensiva y el
+  nuevo renderizado/saneamiento.
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  instrucción de concisión agregada al prompt de
+  `analizarInasistenciaAdan()`; emojis hardcodeados removidos en
+  `descargarReportePsicopedagogicoPDF()` y `pdfHistorialIndividualObs()`;
+  saneamiento aplicado a los campos libres de esta última.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+No se tocó `src/lib/gemini-config.ts` ni el wrapper de resiliencia (Ronda
+50/68) — esta ronda era sobre cómo se procesa/renderiza el texto una vez
+recibido, no sobre el mecanismo de reintento/rotación de modelos.
