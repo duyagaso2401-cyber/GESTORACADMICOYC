@@ -44,7 +44,7 @@ import { enviarCorreoGeneral, correoGeneralConfigurado, smtpGeneralConfigurado }
 import { emailApiConfigurado, emailApiProveedor, enviarPorApiHttp } from './lib/email-http-provider.js';
 import { sseClients, broadcastChange } from './lib/sync-bus.js';
 import { registrarActividadPlataforma, iniciarKeepAliveInteligente, estadoActividadReciente } from './lib/keep-alive.js';
-import { PRIMARY_MODEL, ALL_CANDIDATE_MODELS, llamarGeminiConResiliencia, generarContenidoConResiliencia, mensajeAmigablePorError } from './lib/gemini-config.js';
+import { PRIMARY_MODEL, ALL_CANDIDATE_MODELS, llamarGeminiConResiliencia, generarContenidoConResiliencia, mensajeAmigablePorError, formatearErrorGeminiParaLog } from './lib/gemini-config.js';
 import * as infraTelemetry from './services/infraTelemetry.js';
 import agentRouter from './routes/agent.js';
 import * as ecosystemAgent from './services/ecosystemAgent.js';
@@ -4717,6 +4717,14 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
 
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
+      // RONDA 67 — diagnóstico del servidor: este caso (clave ausente) es
+      // DISTINTO del mensaje amigable genérico "servicio no disponible" que
+      // reportó el usuario (ese viene de mensajeAmigablePorError() más
+      // abajo, tras intentar TODOS los modelos) — aquí ni siquiera se llega
+      // a intentar un modelo. Se deja explícito en los logs para que un
+      // administrador revisando la consola de Render distinga de inmediato
+      // "nunca se intentó llamar a Gemini" de "se intentó y falló".
+      console.error('[Adán chat] GEMINI_API_KEY/GOOGLE_API_KEY no configurada — no se intentó ningún modelo.');
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -4728,6 +4736,7 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
 
     const genAI = getGenAI(apiKey);
     if (!genAI) {
+      console.error('[Adán chat] getGenAI() devolvió null — la clave está presente pero el SDK no pudo inicializarse (ver "Error al inicializar GoogleGenAI" arriba en los logs).');
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -4791,7 +4800,8 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
       // amigable clasificado por tipo de error (429/503/404/otro), NUNCA el
       // objeto de error original. El detalle técnico completo sigue yendo a
       // los logs del servidor vía console.error más abajo si aplica.
-      console.error(`[Adán chat] Fallaron todos los modelos (${intento.modelosIntentados.join(', ')}):`, intento.error);
+      console.error(`[Adán chat] Fallaron todos los modelos — ${formatearErrorGeminiParaLog(intento)}`);
+      console.error(`[Adán chat] Error crudo completo:`, intento.error);
       res.write(`data: ${JSON.stringify({ content: mensajeAmigablePorError(intento) })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
@@ -4842,6 +4852,9 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
+      // RONDA 67 — mismo criterio de diagnóstico que /ai/chat: distingue en
+      // los logs del servidor "nunca se intentó" de "se intentó y falló".
+      console.error('[Adán general] GEMINI_API_KEY/GOOGLE_API_KEY no configurada — no se intentó ningún modelo.');
       return res.json({
         ok: false,
         error: 'GEMINI_API_KEY_NO_CONFIGURADA',
@@ -4851,6 +4864,7 @@ app.post('/api/inetis/ai/general', async (req, res) => {
 
     const genAI = getGenAI(apiKey);
     if (!genAI) {
+      console.error('[Adán general] getGenAI() devolvió null — la clave está presente pero el SDK no pudo inicializarse.');
       return res.json({
         ok: false,
         error: 'ERROR_INICIALIZANDO_GENAI',
@@ -4885,7 +4899,8 @@ app.post('/api/inetis/ai/general', async (req, res) => {
       // en un customAlert — por eso `error` también debe llevar el mensaje
       // amigable ya sanitizado (nunca un código técnico ni el objeto crudo),
       // igual que `content`.
-      console.error(`[Adán general] Fallaron todos los modelos (${intentoGeneral.modelosIntentados.join(', ')}):`, intentoGeneral.error);
+      console.error(`[Adán general] Fallaron todos los modelos — ${formatearErrorGeminiParaLog(intentoGeneral)}`);
+      console.error(`[Adán general] Error crudo completo:`, intentoGeneral.error);
       const mensajeAmigable = mensajeAmigablePorError(intentoGeneral);
       return res.json({
         ok: false,
@@ -4923,11 +4938,14 @@ app.post('/api/inetis/ai/psicopedagogico', async (req, res) => {
 
     const apiKey = getGeminiApiKey(req);
     if (!apiKey) {
+      // RONDA 67 — mismo criterio de diagnóstico que los otros 2 endpoints.
+      console.error('[Adán psicopedagógico] GEMINI_API_KEY/GOOGLE_API_KEY no configurada — no se intentó ningún modelo.');
       return res.status(400).json({ ok: false, message: 'Clave API no configurada' });
     }
 
     const genAI = getGenAI(apiKey);
     if (!genAI) {
+      console.error('[Adán psicopedagógico] getGenAI() devolvió null — la clave está presente pero el SDK no pudo inicializarse.');
       return res.status(500).json({ ok: false, message: 'Error al inicializar Gemini' });
     }
 
@@ -4959,7 +4977,8 @@ Proporciona:
     // usuario). Ahora se detecta ese caso explícitamente y se responde con
     // el mismo mensaje amigable clasificado, nunca el error crudo.
     if (!intentoPsico.ok) {
-      console.error(`[Adán psicopedagógico] Fallaron todos los modelos (${intentoPsico.modelosIntentados.join(', ')}):`, intentoPsico.error);
+      console.error(`[Adán psicopedagógico] Fallaron todos los modelos — ${formatearErrorGeminiParaLog(intentoPsico)}`);
+      console.error(`[Adán psicopedagógico] Error crudo completo:`, intentoPsico.error);
       return res.json({ ok: false, error: intentoPsico.tipoError || 'ERROR_GEMINI', report: mensajeAmigablePorError(intentoPsico) });
     }
 

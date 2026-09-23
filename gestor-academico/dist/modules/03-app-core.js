@@ -4388,7 +4388,15 @@ async function gestorIAenviar(){
   window._gestorIAmsgList.push({role:'assistant',content:'',loading:true});gestorIArenderMsgs();
   try{
     const r=await fetch(API_BASE+'/api/inetis/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:window._gestorIAmsgList.filter(m=>!m.loading).slice(-20),context:ctx})});
-    if(!r.ok) throw new Error('HTTP '+r.status);
+    if(!r.ok){
+      // RONDA 67 — mismo diagnóstico agregado en iaEnviar(): status HTTP +
+      // cuerpo de la respuesta en console.error antes de caer al fallback
+      // local. No cambia lo que ve el Súper Admin en el chat.
+      let _cuerpoErrorHttpG='';
+      try{ _cuerpoErrorHttpG=await r.text(); }catch(_eLeerG){}
+      console.error('[Adán chat — Súper Admin] Fallo HTTP en /api/inetis/ai/chat — status:',r.status,'— cuerpo de la respuesta:',_cuerpoErrorHttpG);
+      throw new Error('HTTP '+r.status);
+    }
     let resp='';
     if(r.body){
       const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
@@ -12778,8 +12786,14 @@ async function generarDescDesdeArchivoIA(){
         body: JSON.stringify({prompt: prompt})
       });
       const data = await r.json();
+      if(!r.ok||data.error){
+        // RONDA 67 — diagnóstico en consola antes del mensaje amigable
+        // (el customAlert del catch, más abajo): status HTTP + cuerpo
+        // completo de la respuesta del servidor.
+        console.error('[IA — extraer descriptores de archivo] /api/inetis/ai/general — status:',r.status,'— respuesta:',data);
+      }
       if(data.error) throw new Error(data.error);
-      
+
       const lineas = data.content.split('\\n').map(x=>x.trim()).filter(x=>x.length>5);
       if(lineas.length){
         document.getElementById('descItemsContainer').innerHTML='';
@@ -19157,6 +19171,10 @@ async function _generarObsConIA(estId){
       +'No uses viñetas, títulos, comillas ni encabezados — solo el texto corrido, listo para pegar directamente en el observador.';
     const r=await fetch(API_BASE+'/api/inetis/ai/general',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt})});
     const data=await r.json();
+    if(!r.ok||data.error||!data.content){
+      // RONDA 67 — diagnóstico en consola antes del customAlert amigable.
+      console.error('[IA — generar observación] /api/inetis/ai/general — status:',r.status,'— respuesta:',data);
+    }
     if(data.error||!data.content) throw new Error(data.error||'Sin respuesta de la IA');
     document.getElementById('_obsTextoFinal').value=data.content.trim();
   }catch(err){
@@ -20647,7 +20665,19 @@ async function iaEnviar(){
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({messages:msgsSend,context:ctx,mode:window._iaEsPlaneacion?'planear':undefined,...(_imgSent?{imagePart:_imgSent}:{})})
     });
-    if(!r.ok) throw new Error('HTTP '+r.status);
+    if(!r.ok){
+      // RONDA 67 — diagnóstico: antes de caer al mensaje amigable/fallback
+      // local (más abajo, en el catch), se deja en la consola del
+      // navegador el detalle técnico completo (status HTTP + cuerpo de la
+      // respuesta) para que quien abra las herramientas de desarrollador
+      // pueda diagnosticar sin adivinar. Esto NO cambia lo que ve el
+      // usuario final en la burbuja del chat — solo agrega información en
+      // console.error.
+      let _cuerpoErrorHttp='';
+      try{ _cuerpoErrorHttp=await r.text(); }catch(_eLeer){}
+      console.error('[Adán chat] Fallo HTTP en /api/inetis/ai/chat — status:',r.status,'— cuerpo de la respuesta:',_cuerpoErrorHttp);
+      throw new Error('HTTP '+r.status);
+    }
     let resp='';
     _iaMsgs[_iaMsgs.length-1]={role:'assistant',content:'',loading:false};
     if(r.body){

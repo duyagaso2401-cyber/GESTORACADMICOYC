@@ -26,7 +26,7 @@ import { eq, and, asc, sql } from 'drizzle-orm';
 import { uploadMemoria, subirBufferACloudinary } from '../lib/upload.js';
 import { leerFichaPlataformaGestor as _leerFichaPlataformaGestorCacheada, verificarEstadoInstitucion } from '../lib/gestor-cache.js';
 import { GoogleGenAI } from '@google/genai';
-import { llamarGeminiConResiliencia, mensajeAmigablePorError } from '../lib/gemini-config.js';
+import { llamarGeminiConResiliencia, mensajeAmigablePorError, formatearErrorGeminiParaLog } from '../lib/gemini-config.js';
 import type { Express } from 'express';
 interface ArchivoSubidoMulter { buffer: Buffer; mimetype: string; originalname: string; size: number; }
 
@@ -1509,7 +1509,13 @@ router.post('/asistente/chat', async (req: any, res) => {
     const { mensaje, historial } = req.body || {};
     if (!mensaje || !String(mensaje).trim()) return res.status(400).json({ error: 'Escriba un mensaje.' });
     const apiKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
-    if (!apiKey) return res.status(503).json({ error: 'El Asistente Universitario no está disponible en este momento (falta configuración del servidor).' });
+    if (!apiKey) {
+      // RONDA 67 — mismo criterio de diagnóstico que los 3 endpoints de
+      // Adán en src/index.ts: deja explícito en los logs que nunca se
+      // intentó llamar a Gemini, distinto de un fallo tras intentarlo.
+      console.error('[Asistente Universitario] GEMINI_API_KEY/GOOGLE_API_KEY no configurada — no se intentó ningún modelo.');
+      return res.status(503).json({ error: 'El Asistente Universitario no está disponible en este momento (falta configuración del servidor).' });
+    }
 
     const inst = await leerInstitucion(req.sesionUniv.sk);
     const systemPrompt = _asistenteUniversitarioSystemPrompt({ nombreInstitucion: inst?.nombre, rol: req.sesionUniv.rol });
@@ -1549,7 +1555,8 @@ router.post('/asistente/chat', async (req: any, res) => {
       // técnico), pero ahora se usa el mismo mensaje amigable CLASIFICADO
       // (429/503/404/otro) que los otros 3 puntos de instanciación, en vez
       // del genérico único, para consistencia en toda la aplicación.
-      console.error(`[Asistente Universitario] Fallaron todos los modelos (${intentoAsistente.modelosIntentados.join(', ')}):`, intentoAsistente.error);
+      console.error(`[Asistente Universitario] Fallaron todos los modelos — ${formatearErrorGeminiParaLog(intentoAsistente)}`);
+      console.error(`[Asistente Universitario] Error crudo completo:`, intentoAsistente.error);
       return res.json({ respuesta: mensajeAmigablePorError(intentoAsistente) });
     }
     textoCompleto = intentoAsistente.resultado || '';

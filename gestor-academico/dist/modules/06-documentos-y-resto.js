@@ -994,8 +994,13 @@ Estructura tu respuesta en 4 secciones concretas y de aplicación inmediata:
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: prompt })
     })
-    .then(function(r){ return r.json(); })
-    .then(function(d){
+    .then(function(r){ return r.json().then(function(d){ return {r:r,d:d}; }); })
+    .then(function(_res){
+      var r=_res.r, d=_res.d;
+      if(!r.ok||d.error){
+        // RONDA 67 — diagnóstico en consola antes del aviso amigable.
+        console.error('[IA — diagnóstico psicopedagógico] /api/inetis/ai/general — status:',r.status,'— respuesta:',d);
+      }
       if(d.content){
         customAlert('🧠 DIAGNÓSTICO PSICOPEDAGÓGICO (ADÁN IA):\n\n' + d.content);
       } else if(d.error){

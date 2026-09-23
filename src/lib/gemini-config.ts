@@ -45,52 +45,79 @@ function _normalizarModelo(nombre: string): string {
   return String(nombre || '').replace(/^models\//, '').trim();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 68 — PRIMERA VEZ CON EVIDENCIA REAL DE PRODUCCIÓN (distinto de las
+// Rondas 47/48/50, donde el usuario solo SUGERÍA nombres de modelo sin
+// evidencia y había que investigar/corregir con documentación). Esta vez el
+// usuario ejecutó el script de diagnóstico entregado en la Ronda 67
+// (scripts/diagnostico-gemini.ts) contra la API real de Google y trajo el
+// MENSAJE DE ERROR EXACTO devuelto por Google para cada modelo:
+//
+//   - 'gemini-2.5-flash' y 'gemini-2.0-flash' → 404 (NOT_FOUND) confirmado,
+//     con el mensaje textual de Google: "This model is no longer
+//     available... Please update your code to use models/gemini-3.6-flash...".
+//     Es decir, Google mismo recomienda explícitamente el reemplazo. SE
+//     RETIRAN de la lista de candidatos activa (no se reintroducen "por si
+//     acaso" — sería repetir el mismo error que ya se evitó con 1.5-flash).
+//   - 'gemini-3.7-flash' y 'gemini-3.8-flash' → 503 (UNAVAILABLE) por alta
+//     demanda — NO 404. Un 503 es saturación TEMPORAL del servidor de
+//     Google (ver el backoff específico para este caso, Ronda 48/50, sin
+//     cambios), no evidencia de que el modelo esté descontinuado. Se
+//     MANTIENEN en la lista, como respaldo después del primario.
+//   - 'gemini-flash-latest' → 429 (RESOURCE_EXHAUSTED) por cuota agotada en
+//     ese alias — tampoco es evidencia de que no exista, es un límite de
+//     cuota compartido (el alias puede estar sirviendo mucho tráfico de
+//     otras aplicaciones). Se MANTIENE, pero no como respaldo principal
+//     (ver orden final abajo), porque un alias de alta demanda puede volver
+//     a toparse con el mismo límite de cuota.
+//
+// Se verificó ADEMÁS, de forma independiente, que 'gemini-3.6-flash' es un
+// modelo real y vigente (ficha oficial de Google DeepMind confirmada por el
+// coordinador vía búsqueda web el día de esta ronda) — no es una suposición
+// ni una repetición del error de rondas anteriores con 'gemini-1.5-flash' (esa
+// familia SIGUE sin reintroducirse: ninguna evidencia de ninguna ronda, ni
+// siquiera esta, lo recomienda).
+//
+// ORDEN FINAL, con criterio de ingeniería (no solo "agregar nombres"):
+//   1º gemini-3.6-flash   — primario. Confirmado recomendado por el propio
+//                           mensaje de error de Google, y confirmado vigente
+//                           por fuente independiente (ficha de DeepMind).
+//   2º gemini-3.7-flash   — respaldo. Falló con 503 (temporal), no 404.
+//   3º gemini-3.8-flash   — respaldo. Mismo caso: 503, no 404.
+//   4º gemini-flash-latest— respaldo de último recurso. Falló con 429
+//                           (cuota), no 404 — pero al ser un alias de alta
+//                           demanda compartida, se deja DESPUÉS de los 2
+//                           modelos con nombre fijo (3.7/3.8), no antes.
+// 'gemini-2.5-flash' y 'gemini-2.0-flash' quedan REMOVIDOS de esta lista —
+// no borrados en silencio: este comentario documenta la evidencia real
+// (404 confirmado en producción) que motivó sacarlos.
+// ════════════════════════════════════════════════════════════════════════════
+
 /**
  * Modelo primario: SIEMPRE configurable sin tocar código vía GEMINI_MODEL.
- * Si no está seteada, se usa un default razonable de la generación actual
- * (Gemini 3.x, documentada como recomendada en septiembre 2026). Este
- * default también quedará obsoleto eventualmente — por eso existe
- * MODEL_FALLBACKS debajo, y por eso GEMINI_MODEL es la vía recomendada para
- * ajustarlo sin esperar una nueva ronda.
+ * Si no está seteada, se usa un default razonable de la generación actual.
+ * RONDA 68: actualizado a 'gemini-3.6-flash' — evidencia real de producción
+ * (ver comentario de cabecera de esta sección). Este default también
+ * quedará obsoleto eventualmente — por eso existe MODEL_FALLBACKS debajo, y
+ * por eso GEMINI_MODEL es la vía recomendada para ajustarlo sin esperar una
+ * nueva ronda.
  */
-export const DEFAULT_PRIMARY_MODEL = 'gemini-3.5-flash';
+export const DEFAULT_PRIMARY_MODEL = 'gemini-3.6-flash';
 export const PRIMARY_MODEL = _normalizarModelo(process.env.GEMINI_MODEL || DEFAULT_PRIMARY_MODEL);
 
 /**
  * Red de seguridad ordenada de modelos de respaldo, probados EN ESTE ORDEN
  * si el primario falla (404 persistente, o agotó sus reintentos en
- * 429/503). Deliberadamente NUNCA incluye 'gemini-1.5-flash' (familia
- * retirada — ver comentario de cabecera). Incluye variantes 3.x adicionales,
- * el alias 'gemini-flash-latest' (documentado por Google como apuntador al
- * flash más reciente, pero con reportes de 404 inesperados cuando Google
- * re-apunta el alias antes de actualizar su propia documentación — por eso
- * va como una opción más de la lista, nunca como primario ni como única
- * red de seguridad) y 'gemini-2.5-flash' al final, como puente de
- * transición mientras esa familia siga respondiendo (documentada con
- * retiro aproximado a mediados de octubre de 2026 — revisar esta lista
- * cuando esa fecha se acerque o pase).
+ * 429/503). Deliberadamente NUNCA incluye 'gemini-1.5-flash' NI
+ * 'gemini-2.5-flash'/'gemini-2.0-flash' (las 3 familias con 404 CONFIRMADO
+ * — la primera por documentación oficial de Google, Ronda 48; las otras 2
+ * por evidencia real de producción, Ronda 68 — ver comentario de cabecera).
+ * Ver ese mismo comentario para la justificación completa de este orden.
  */
-// RONDA 50 — el usuario volvió a mencionar 'gemini-1.5-flash' como ejemplo
-// en su reporte de bug. Se investigó de nuevo (mismo criterio de Ronda 48,
-// sin acceso de red en vivo a la API de Google desde este entorno): la
-// familia Gemini 1.5 sigue documentada como RETIRADA por completo en
-// ai.google.dev/gemini-api/docs/deprecations, así que NO se reintroduce bajo
-// ninguna circunstancia — hacerlo solo cambiaría un 404/429 real por otro
-// 404 garantizado. Se añade en cambio 'gemini-2.0-flash' AL FINAL de la
-// lista (después de 'gemini-2.5-flash', como red de seguridad de último
-// recurso): es un modelo real y fue GA (disponibilidad general) documentado
-// por Google. No se puede confirmar en vivo desde este entorno si sigue
-// activo hoy (22 de septiembre de 2026) o si ya fue retirado igual que 1.5 —
-// esa es la incertidumbre honesta que se documenta aquí. Como va al final de
-// la cadena de fallback (nunca como primario), el peor caso de que también
-// esté retirado es un 404 más antes de agotar la lista, sin costo real de
-// disponibilidad; el mejor caso es una red de seguridad adicional real.
 export const MODEL_FALLBACKS: string[] = [
   'gemini-3.7-flash',
   'gemini-3.8-flash',
   'gemini-flash-latest',
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
 ].map(_normalizarModelo);
 
 /** Lista final, deduplicada, con el primario siempre de primero. */
@@ -376,4 +403,42 @@ export async function generarContenidoConResiliencia(
   opciones: OpcionesResilienciaGemini = {}
 ): Promise<ResultadoResilienciaGemini<any>> {
   return llamarGeminiConResiliencia((modelo) => genAI.models.generateContent({ ...params, model: modelo }), opciones);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 67 — reporte del usuario: el chat de IA muestra el mensaje amigable
+// genérico ("El servicio de IA no está disponible...") incluso para una
+// consulta trivial ("2+2?"), tanto con como sin acceso a BD. Investigación:
+// ese mensaje es exactamente `mensajeAmigablePorError()` para el caso
+// NOT_FOUND (arriba) — es decir, TODOS los modelos de `ALL_CANDIDATE_MODELS`
+// terminaron devolviendo 404, o el flujo llegó a "OTRO" con un mensaje que
+// contiene "not found". Como este entorno no tiene acceso de red en vivo a
+// la API de Gemini, no se puede confirmar aquí si la causa real es: (a) la
+// GEMINI_API_KEY no está configurada en el entorno donde el usuario prueba
+// (ver `getGeminiApiKey()`/`getGenAI()` en src/index.ts, que YA devuelven un
+// mensaje específico y distinto — "Clave ... no detectada" — antes de
+// siquiera intentar un modelo, así que si el usuario ve el mensaje de 404 en
+// vez de ese, la clave SÍ está presente), (b) los nombres de modelo de
+// `ALL_CANDIDATE_MODELS` ya no son válidos para esa clave/versión de API, o
+// (c) algún error de red/proxy que el SDK reporta con un mensaje que
+// contiene la palabra "not found" por coincidencia. Los 4 puntos de
+// instanciación YA registraban `console.error(...)` con el error crudo
+// completo (Rondas 48/50) — este helper solo lo hace más fácil de leer de
+// un vistazo en los logs del servidor (consola de Render o local),
+// extrayendo explícitamente el status HTTP, el último modelo intentado y el
+// mensaje técnico, en una sola línea. NO cambia en absoluto lo que ve el
+// usuario final (`mensajeAmigablePorError()` sigue siendo la única fuente
+// de ese texto) — es exclusivamente para diagnóstico del lado del servidor.
+export function formatearErrorGeminiParaLog(
+  intento: Pick<ResultadoResilienciaGemini<any>, 'modelosIntentados' | 'error' | 'tipoError'>
+): string {
+  const err = intento.error;
+  const status = err?.status ?? err?.statusCode ?? err?.code ?? 'desconocido';
+  const mensaje = (err && (err.message || String(err))) || 'sin mensaje';
+  const ultimoModelo = intento.modelosIntentados[intento.modelosIntentados.length - 1] || 'ninguno';
+  return (
+    `tipoError=${intento.tipoError || 'desconocido'} · status=${status} · ` +
+    `último modelo intentado=${ultimoModelo} · todos los modelos intentados=[${intento.modelosIntentados.join(', ')}] · ` +
+    `mensaje técnico="${mensaje}"`
+  );
 }
