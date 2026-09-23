@@ -20323,6 +20323,58 @@ function _renderMarkdownEnPDF(doc,textoCrudo,opts){
   bloques.forEach(bloque=>{
     const lineasBloque=bloque.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
     if(!lineasBloque.length) return;
+
+    // RONDA 70 — el usuario confirmó (con evidencia real de PDFs
+    // generados) que las secciones de Actividades/Criterios de
+    // Evaluación a veces vienen de la IA como una tabla Markdown
+    // (`| Col | Col |` con una fila separadora `|---|---|`) o como una
+    // tabla dibujada con bordes ASCII (`+----+----+`) — ninguna de las
+    // dos es interpretada por el resto de este renderizador, así que
+    // antes se dejaban pasar como texto literal con los caracteres
+    // "+"/"-"/"|" crudos. Se detectan aquí ANTES de las demás
+    // comprobaciones (encabezado/lista/párrafo) y se convierten a un
+    // bloque limpio de viñetas "Campo: Valor" — no se implementa una
+    // tabla real con celdas de jsPDF a propósito (más simple y más
+    // seguro contra desbordes de columna que una réplica visual exacta).
+    const esLineaBordeOSeparadorTabla=l=>/^[\s|:\-+=]+$/.test(l)&&/[|\-+]/.test(l);
+    const lineasFilaTabla=lineasBloque.filter(l=>l.includes('|')&&!esLineaBordeOSeparadorTabla(l));
+    const tieneLineaBorde=lineasBloque.some(esLineaBordeOSeparadorTabla);
+    const esTabla=lineasFilaTabla.length>=1&&(tieneLineaBorde||lineasFilaTabla.length>=2);
+    // Caso borde: un bloque hecho ÚNICAMENTE de líneas de borde/separador
+    // (ej. un "+---------+" suelto, sin ninguna fila de contenido en el
+    // mismo bloque) no aporta información — se descarta en vez de caer al
+    // renderizado de párrafo, que lo mostraría como texto literal crudo.
+    if(!esTabla&&lineasBloque.every(esLineaBordeOSeparadorTabla)) return;
+
+    if(esTabla){
+      const parsearFila=l=>{
+        let s=l.trim();
+        if(s.startsWith('|')) s=s.slice(1);
+        if(s.endsWith('|')) s=s.slice(0,-1);
+        return s.split('|').map(c=>c.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1').trim());
+      };
+      const filas=lineasFilaTabla.map(parsearFila);
+      const encabezado=filas.length>=2?filas[0]:null;
+      const filasDatos=filas.length>=2?filas.slice(1):filas;
+      doc.setFont('helvetica','normal');doc.setFontSize(9.5);doc.setTextColor(20,20,20);
+      filasDatos.forEach(celdas=>{
+        const partes=celdas.map((c,i)=>{
+          const campo=encabezado&&encabezado[i]?encabezado[i]:'';
+          return campo?(campo+': '+c):c;
+        }).filter(p=>p.trim().length>0);
+        if(!partes.length) return;
+        const textoFila=partes.join('  ·  ');
+        const lineasItem=doc.splitTextToSize(textoFila,cW-6);
+        lineasItem.forEach((li,i)=>{
+          nuevaPaginaSiNecesario(5.5);
+          doc.text((i===0?'• ':'  ')+li,M+2,y);
+          y+=5.5;
+        });
+      });
+      y+=1.5;
+      return;
+    }
+
     const esLista=lineasBloque.every(l=>/^[-*•]\s+/.test(l));
     const matchEncabezado=lineasBloque.length===1?lineasBloque[0].match(/^(#{1,6})\s+(.*)$/):null;
 

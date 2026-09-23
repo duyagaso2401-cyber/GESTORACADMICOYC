@@ -6777,3 +6777,142 @@ dependencias de navegador):
 No se tocó `src/lib/gemini-config.ts` ni el wrapper de resiliencia (Ronda
 50/68) — esta ronda era sobre cómo se procesa/renderiza el texto una vez
 recibido, no sobre el mecanismo de reintento/rotación de modelos.
+
+## Ronda 70 — Contenido pedagógico completo en Planeaciones + tablas limpias en PDF
+
+El usuario confirmó que la Ronda 69 resolvió por completo tipografía,
+caracteres extraños y desbordes, pero reportó que el CONTENIDO de las
+Planeaciones de Clase quedó "demasiado esquemático": solo la estructura,
+sin desarrollo temático, ejemplos ni taller.
+
+### 0. La tensión directa con la Ronda 69 y cómo se resolvió
+
+La Ronda 69 había agregado una instrucción de **concisión** al prompt de
+planeación ("responde sin superar los 1500 tokens") precisamente para
+evitar el streaming cortado a mitad de generación. Esta ronda pide
+exactamente lo opuesto: contenido MÁS extenso (marco conceptual, 2+
+ejemplos resueltos paso a paso, taller de 3-5 ejercicios, evaluación). Se
+resolvió la tensión investigando primero el límite técnico real, en vez de
+obedecer literalmente ambos pedidos en conflicto:
+
+- El "1500 tokens" de la Ronda 69 **nunca fue un parámetro duro del SDK**
+  — era solo una instrucción dentro del texto del prompt (el modelo se
+  autolimitaba). El parámetro técnico real y duro, `maxOutputTokens` en la
+  llamada a `chats.create()`, era **4096** para el modo "planear" — es
+  decir, la Ronda 69 dejó sin usar un colchón de ~2600 tokens entre el
+  objetivo blando (1500) y el techo duro (4096).
+- Se usó ese colchón para resolver la tensión con seguridad:
+  - El objetivo blando del prompt se subió de 1500 a **~3000-3200
+    tokens**, suficiente para caber el marco conceptual + 2 ejemplos +
+    taller + cierre pedidos.
+  - El techo técnico duro (`maxOutputTokens`) del modo "planear" se subió
+    de **4096 a 6144**, en la misma proporción, para mantener un colchón
+    de seguridad similar (~2900 tokens) entre el nuevo objetivo blando y
+    el nuevo techo — **nunca se le pidió al prompt más contenido del que
+    el límite técnico permite generar completo**, que es exactamente lo
+    que habría reintroducido el bug de streaming cortado cerrado en la
+    Ronda 69.
+  - El prompt también instruye explícitamente a la IA a ser "eficiente en
+    el uso de palabras" (prosa directa, sin relleno ni repeticiones) para
+    que el contenido pedido quepa dentro del nuevo presupuesto.
+  - Se agregó además una instrucción explícita de NO generar tablas con
+    bordes ASCII (ver punto 2) — una defensa adicional del lado del
+    prompt, complementaria a la del renderizador.
+- La protección de la Ronda 69 (`_esMensajeErrorIA()`, que bloquea la
+  generación del PDF/Word si el contenido es un mensaje de error de la
+  IA) se dejó **completamente intacta**, como red de seguridad adicional
+  independiente de este ajuste de presupuesto — tal como pidió
+  explícitamente el coordinador.
+- El fix de streaming cortado de la Ronda 69 (el `try/catch` propio del
+  bucle de streaming que envía `error` en vez de `content` ante un fallo a
+  mitad de generación) también se dejó intacto — no se tocó el mecanismo,
+  solo el presupuesto de tokens que lo alimenta.
+
+Este ajuste solo afecta al modo `planear` de `/api/inetis/ai/chat`. El
+endpoint dedicado `/api/inetis/ai/psicopedagogico` y el prompt de
+`analizarInasistenciaAdan()` (Ronda 69) no se tocaron esta ronda — el
+usuario no reportó que su contenido fuera insuficiente, solo el de
+Planeaciones.
+
+### 1. Prompt de Planeación reconstruido con las 3 secciones exactas
+
+En `src/index.ts`, `POST /api/inetis/ai/chat` (modo `planear`), el prompt
+ahora exige explícitamente, con contenido real desarrollado (no solo
+títulos):
+
+1. **MARCO CONCEPTUAL / CONTENIDO TEMÁTICO** — explicación teórica clara
+   del tema, adaptada al grado.
+2. **EJEMPLOS DESARROLLADOS** — al menos 2 ejemplos resueltos paso a paso,
+   con el procedimiento completo.
+3. **SECUENCIA DIDÁCTICA DETALLADA**, en orden: (a) Actividad Diagnóstica
+   / Saberes Previos (2-3 preguntas puntuales), (b) Actividad de
+   Desarrollo en Clase (taller práctico de 3 a 5 ejercicios), (c)
+   Actividad de Cierre y Evaluación (pregunta tipo Prueba Saber o "ticket
+   de salida").
+
+### 2. Renderizado de tablas Markdown/ASCII en `_renderMarkdownEnPDF()`
+
+Se investigó primero con evidencia real (contra los propios síntomas
+reportados) y se confirmó que `_renderMarkdownEnPDF()` (construido en la
+Ronda 69) no tenía ninguna detección de tablas: una tabla Markdown
+(`| Col | Col |` con fila separadora `|---|---|`) o una tabla dibujada con
+bordes ASCII (`+----+----+`) caían en la rama de "párrafo normal" y se
+renderizaban como texto literal con los caracteres `+`/`-`/`|` crudos —
+exactamente el síntoma reportado.
+
+Se agregó una detección de bloque-tabla (antes de las comprobaciones de
+encabezado/lista/párrafo) que reconoce ambos formatos (Markdown con `|` y
+ASCII con bordes de `+`/`-`/`=`) y convierte cada fila de datos a un bloque
+de viñeta limpio `"Campo: Valor  ·  Campo: Valor"` usando la fila de
+encabezado de la tabla como nombres de campo — tal como sugirió el
+coordinador, no se implementó una tabla real con celdas de jsPDF (más
+simple y más seguro contra desbordes de columna que una réplica visual
+exacta). Un bloque que resulta ser únicamente una línea de borde suelta
+(sin ninguna fila de contenido en el mismo bloque) se descarta en vez de
+caer al renderizado de párrafo crudo.
+
+### 3. Tests
+
+Suite completa re-ejecutada: **71 archivos, 100% verde** (70 previos + 1
+nuevo). Ningún test previamente congelado necesitó ajuste esta ronda — el
+cambio de presupuesto de tokens y el nuevo contenido del prompt son
+aditivos sobre el mismo mecanismo (ningún test anterior fijaba el valor
+literal "1500" o "4096" como una aserción exacta que se rompiera; los que
+sí referencian el prompt de planeación verifican su EXISTENCIA/estructura
+condicional, no el valor numérico exacto del objetivo de tokens).
+
+Nuevo: **`test_ronda70_planeacion_completa_y_tablas.mjs`** (27
+aserciones):
+- Parte A: confirma por inspección del código fuente real que el prompt
+  exige las 3 secciones pedidas (marco conceptual, 2+ ejemplos, secuencia
+  didáctica con diagnóstico/taller de 3-5 ejercicios/cierre), que el
+  objetivo blando subió a ~3000-3200 tokens, que el techo técnico duro
+  subió de 4096 a 6144 en proporción, y que el código documenta
+  explícitamente el razonamiento de por qué esto no reintroduce el riesgo
+  de la Ronda 69 (colchón de seguridad ≥2000 tokens entre objetivo blando
+  y techo duro, igual criterio que la Ronda 69).
+- Parte B: confirma que la protección `_esMensajeErrorIA()` y el fix de
+  streaming cortado de la Ronda 69 siguen intactos, sin cambios.
+- Parte C: **ejecución real** (vía `vm`, del archivo fuente real, no
+  funciones reescritas) de `_renderMarkdownEnPDF()` contra una tabla
+  Markdown real, una tabla con bordes ASCII real, un bloque de borde
+  suelto, y el flujo normal de encabezados/listas/párrafos de la Ronda 69
+  (para confirmar que no hay regresión) — todos verificados contra las
+  llamadas reales a `doc.text()` de un `doc` jsPDF simulado.
+
+### 4. Archivos modificados esta ronda
+
+- **`src/index.ts`** — `POST /api/inetis/ai/chat`: prompt de modo
+  `planear` reconstruido con las 3 secciones pedidas y el objetivo de
+  tokens ampliado a ~3000-3200; `maxOutputTokens` del modo `planear` subido
+  de 4096 a 6144.
+- **`gestor-academico/dist/modules/03-app-core.js`** —
+  `_renderMarkdownEnPDF()`: nueva detección de bloques-tabla
+  (Markdown/ASCII) convertidos a viñetas "Campo: Valor" limpias, con
+  descarte de bordes sueltos sin contenido.
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+No se tocó `src/lib/gemini-config.ts`, el wrapper de resiliencia, ni el
+endpoint `/api/inetis/ai/psicopedagogico` — el usuario pidió específicamente
+mejorar el contenido de Planeaciones, no el de Observador/Diagnóstico
+Psicopedagógico en esta ronda.

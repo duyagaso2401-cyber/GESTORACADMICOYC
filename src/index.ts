@@ -4765,15 +4765,48 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
     // RONDA 69 — el usuario adjuntó PDFs reales de Planeaciones donde la
     // respuesta de la IA se cortaba a mitad de generación (evidencia real:
     // "...INFORMÁT" seguido inmediatamente del mensaje de alto volumen
-    // incrustado en el documento). Una causa contribuyente es que las
-    // planeaciones piden contenido extenso sin límite explícito de
-    // extensión, acercándose al techo de maxOutputTokens y aumentando el
-    // riesgo de que el proveedor corte la respuesta a mitad de streaming.
-    // Se añade una instrucción explícita de concisión SOLO al modo
-    // "planear" (no afecta el chat general ni otros modos).
+    // incrustado en el documento). Se añadió entonces una instrucción de
+    // concisión (~1500 tokens) SOLO al modo "planear".
+    //
+    // RONDA 70 — TENSIÓN DIRECTA con lo anterior: el usuario ahora reporta
+    // que, con esa instrucción, la planeación quedó "demasiado
+    // esquemática" (solo estructura, sin marco conceptual, sin ejemplos
+    // desarrollados, sin taller). Pide contenido pedagógico mucho más
+    // completo — justo lo opuesto de "responde en ≤1500 tokens".
+    //
+    // Resolución de la tensión (no se obedece literalmente ambos pedidos
+    // en conflicto; se investigó primero el límite técnico real): el
+    // "1500 tokens" de la Ronda 69 NUNCA fue un parámetro duro del SDK —
+    // fue solo una instrucción DENTRO DEL TEXTO del prompt (el modelo se
+    // autolimitaba). El parámetro técnico real y duro (`maxOutputTokens`,
+    // ver más abajo en `chats.create`) para el modo "planear" era 4096 —
+    // es decir, la Ronda 69 dejó un colchón de ~2600 tokens sin usar
+    // entre el objetivo blando (1500) y el techo duro (4096). Ese colchón
+    // es justo lo que permite ampliar el objetivo con seguridad: se sube
+    // el objetivo de la instrucción a ~3200 tokens (suficiente para marco
+    // conceptual + 2 ejemplos resueltos + taller de 3-5 ejercicios +
+    // cierre/evaluación) y, además, se sube el propio techo duro de
+    // `maxOutputTokens` de 4096 a 6144, para mantener un colchón de
+    // seguridad proporcional similar (~2900 tokens) entre el nuevo
+    // objetivo blando y el nuevo techo duro — nunca se le pide al prompt
+    // más contenido del que el límite técnico permite generar completo,
+    // que es exactamente lo que reintroduciría el bug de streaming
+    // cortado cerrado en la Ronda 69. La protección `_esMensajeErrorIA()`
+    // del frontend (Ronda 69, bloquea la generación del PDF/Word si el
+    // contenido es un mensaje de error de la IA) se deja intacta como red
+    // de seguridad adicional, independientemente de este ajuste.
     const systemPromptBase = buildSystemPrompt(context || {});
     const systemPrompt = isPlanear
-      ? systemPromptBase + `\n\nINSTRUCCIÓN ADICIONAL PARA PLANEACIÓN DE CLASE (RONDA 69): responde de forma concisa, ejecutiva y bien estructurada (títulos y viñetas claros), sin superar aproximadamente 1500 tokens en total, para evitar que la respuesta se corte a mitad de generación por límites de longitud del proveedor de IA. Prioriza claridad y estructura sobre extensión — es preferible una planeación completa y concisa que una extensa que se corte antes de terminar.`
+      ? systemPromptBase + `\n\nINSTRUCCIÓN ADICIONAL PARA PLANEACIÓN DE CLASE (RONDA 70 — reemplaza el objetivo más estricto de la Ronda 69, ver CHECKLIST_DESPLIEGUE.md): desarrolla la planeación de forma COMPLETA y pedagógicamente útil para el docente, NO solo un esquema o resumen de títulos. Incluye SIEMPRE, con contenido real desarrollado (nunca solo el título de la sección):
+
+1) MARCO CONCEPTUAL / CONTENIDO TEMÁTICO: explicación teórica clara del tema, adaptada al nivel del grado indicado.
+2) EJEMPLOS DESARROLLADOS: al menos 2 ejemplos resueltos paso a paso, mostrando el procedimiento completo (no solo el resultado final).
+3) SECUENCIA DIDÁCTICA DETALLADA, en este orden:
+   a. Actividad Diagnóstica / Saberes Previos: 2-3 preguntas puntuales para activar conocimientos previos.
+   b. Actividad de Desarrollo en Clase: un taller práctico con 3 a 5 ejercicios específicos para que resuelvan los estudiantes.
+   c. Actividad de Cierre y Evaluación: una pregunta tipo Prueba Saber o un "ticket de salida".
+
+Para lograr todo esto SIN que la respuesta se corte a mitad de generación: sé eficiente en el uso de palabras (prosa directa y bien estructurada con títulos y viñetas, sin relleno, sin repeticiones, sin introducciones largas) y apunta a un total aproximado de 3000 a 3200 tokens en toda la respuesta (se amplía respecto a los 1500 de la Ronda 69 para caber este contenido, dejando margen bajo el límite técnico configurado). NUNCA generes tablas con bordes tipo ASCII (con caracteres "+", "-", "|" dibujando cuadros) — usa encabezados en Markdown y viñetas para presentar cualquier información tabular (por ejemplo, criterios de evaluación).`
       : systemPromptBase;
 
     // RONDA 48: migrado al wrapper central de resiliencia
@@ -4788,7 +4821,14 @@ app.post('/api/inetis/ai/chat', async (req, res) => {
         config: {
           systemInstruction: systemPrompt,
           temperature: 0.7,
-          maxOutputTokens: isPlanear ? 4096 : 2048, // Permite respuestas largas sin cortar la idea
+          // RONDA 70 — techo duro subido de 4096 a 6144 para el modo
+          // "planear", en proporción al nuevo objetivo blando de ~3200
+          // tokens del prompt (ver comentario extenso arriba, en la
+          // construcción de `systemPrompt`) — mantiene un colchón de
+          // seguridad similar al que dejó la Ronda 69 (4096 técnico vs.
+          // 1500 blando), ahora escalado al contenido pedagógico más
+          // extenso que pidió el usuario en esta ronda.
+          maxOutputTokens: isPlanear ? 6144 : 2048, // Permite respuestas largas sin cortar la idea
         },
         history: history.slice(-6), // Mantiene un contexto de conversación equilibrado
       });
