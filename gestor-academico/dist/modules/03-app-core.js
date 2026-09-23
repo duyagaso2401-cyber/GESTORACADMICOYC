@@ -13894,7 +13894,13 @@ function htmlPlanilla(){
       const _cp2=_cfgP.columnasExtra||[];const _tex=_cp2.reduce((s,c)=>(s+(parseFloat(c.pct)||0)/100),0);const _sc2=Math.max(0,1-_tex);
       return [{key:'s',nom:_cfgP.nomSer||'SER',pct:Math.round((_cfgP.pctSer||0.25)*_sc2*100)},{key:'sb',nom:_cfgP.nomSaber||'SABER',pct:Math.round((_cfgP.pctSaber||0.35)*_sc2*100)},{key:'h',nom:_cfgP.nomHacer||'HACER',pct:Math.round((_cfgP.pctHacer||0.40)*_sc2*100)},..._cp2.map((c,i)=>({key:'ex'+i,nom:c.nom||('Extra '+(i+1)),pct:parseFloat(c.pct)||0}))];
     })();
-    const allHeaders=_allColsHead.map(col=>`<th style="font-size:0.78rem">${col.nom}<br><small>${col.pct}%</small>${repBtn(col.key,'#003366')}</th>`).join('');
+    // RONDA 72 — botón "Sincronizar Asistencia a SER": se agrega SOLO en la
+    // columna cuyo campo real es "s" (SER) — el campo de datos ("s") es fijo
+    // en todo el sistema aunque la institución le haya cambiado el nombre
+    // visible con "nomSer" (ver htmlPlanilla()/saveNota()/_baseNota()), así
+    // que se detecta por "col.key==='s'", no por el nombre mostrado.
+    const btnSyncSER=`<br><button onclick="_confirmarSincronizarAsistenciaASER()" title="Calcular la nota del SER de todo el grupo a partir del % de inasistencia del periodo (editable manualmente después)" style="margin-top:3px;background:rgba(255,255,255,0.92);color:#145a32;border:1px solid rgba(255,255,255,0.6);border-radius:4px;font-size:0.65rem;font-weight:bold;padding:3px 6px;cursor:pointer;line-height:1">🔄 Asistencia → SER</button>`;
+    const allHeaders=_allColsHead.map(col=>`<th style="font-size:0.78rem">${col.nom}<br><small>${col.pct}%</small>${repBtn(col.key,'#003366')}${col.key==='s'?btnSyncSER:''}</th>`).join('');
     tabla=`<div class="over"><table><thead><tr>
       <th style="background:#f0f4f8;color:#5d6d7e;font-size:0.7rem;min-width:52px;border:1px solid #ddd;padding:5px 4px;text-align:center">ID</th>
       <th style="text-align:left;min-width:200px;font-size:0.78rem">Estudiante</th>
@@ -13985,6 +13991,10 @@ function htmlPlanilla(){
       ${_autoGuardarHabilitadoPlat()?`<button id="_btnAutoGuardar" onclick="_toggleAutoGuardar()" title="${_autoGuardar?'Las notas se guardan al instante — haga clic para cambiar a modo manual':'Las notas esperan GUARDAR CAMBIOS — haga clic para activar guardado automático'}" style="background:${_autoGuardar?'#27ae60':'#7f8c8d'};color:#fff;border:none;border-radius:6px;padding:9px 14px;font-size:0.82rem;cursor:pointer;font-weight:bold;min-height:38px">
         ${_autoGuardar?'⚡ Auto-guardar: ON':'🕹 Auto-guardar: OFF'}
       </button>`:''}
+      ${carga?`<label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:#145a32;background:#eafaf1;border:1px solid #a9dfbf;border-radius:6px;padding:7px 10px;cursor:pointer" title="Con esta opción activa, cada vez que se registre asistencia de esta asignatura/grupo, la nota del SER se recalcula sola a partir del % de inasistencia del periodo — puede seguir editándola manualmente cuando quiera.">
+        <input type="checkbox" id="_chkAutoSyncAsistSER" ${_autoSyncAsistSERActivo(planCId)?'checked':''} onchange="_toggleAutoSyncAsistSER('${planCId}')">
+        Sincronización automática de Asistencia → SER
+      </label>`:''}
     </div>
   </div>`;
 }
@@ -14547,6 +14557,170 @@ function _verificarAlertaInasistenciaCriticaSiAplica(estId,grado,cId){
       body:JSON.stringify({to:est.email,subject:`🔴 Alerta de Inasistencia Crítica — ${asig} — ${est.n}`,text:cuerpo})
     }).catch(()=>{});
   }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 72 — NUEVA FUNCIONALIDAD PEDAGÓGICA: Asistencia → nota del SER.
+// El usuario pidió conectar el Módulo de Asistencia con la columna del SER
+// (25% por defecto) de la Planilla: el % de inasistencia del estudiante en
+// el periodo se traduce automáticamente en una nota 1.0–5.0 de esa columna.
+//
+// FUENTE DEL DATO (investigado con grep+lectura real, punto 3 del pedido):
+// "db.asistencia" YA es la estructura granular migrada en la Ronda 57
+// (_cargarAsistenciaGranular(), más arriba en este mismo archivo) — un
+// arreglo GLOBAL de registros, cada uno UNA sesión/clase tomada:
+//   {id, fecha, hora, horaFin, periodo, grado, cargaId, docente, actividad,
+//    presentes:[estId...], ausentes:[estId...], justificados:[estId...]}
+// (ver guardarAsistencia() en 06-documentos-y-resto.js). Se reutiliza esta
+// MISMA fuente (no se creó un endpoint ni una estructura nueva) y la MISMA
+// fórmula de conteo que ya usa _verificarAlertaInasistenciaCriticaSiAplica()
+// arriba, ahora también filtrada por periodo porque el usuario pidió
+// explícitamente "el conteo de fallas DEL PERIODO":
+//   - "total de clases" del periodo = cuántos registros de asistencia
+//     existen para ese grado+cargaId+periodo (cada registro = una clase
+//     tomada ese día — no se asume un número fijo de clases).
+//   - "inasistencias" = en cuántos de esos registros el estudiante aparece
+//     en "ausentes". Una ausencia ya JUSTIFICADA ("justificados") NO cuenta
+//     como inasistencia para este cálculo — es la misma distinción que ya
+//     hace el propio campo del sistema (separa "ausentes" de
+//     "justificados"), y es la interpretación pedagógica más defendible:
+//     una ausencia con justificación válida no debería castigar el SER.
+//     Documentado aquí explícitamente por si la institución prefiere lo
+//     contrario en el futuro — sería un cambio de una sola línea.
+function _inasistenciasPeriodo(dRef,estId,cId,per,grado){
+  const clases=(dRef.asistencia||[]).filter(a=>!a.deletedAt&&a.grado===grado&&String(a.cargaId)===String(cId)&&String(a.periodo)===String(per));
+  const totalClases=clases.length;
+  const inasistencias=clases.filter(c=>(c.ausentes||[]).some(x=>String(x)===String(estId))).length;
+  return {inasistencias,totalClases};
+}
+// Función PURA y testeable (punto 2 del pedido): los 5 tramos EXACTOS que
+// especificó el usuario. CONVENCIÓN DE LÍMITES elegida y documentada aquí
+// (el usuario pidió explícitamente aclarar esto): cada tramo usa "<=" en su
+// límite superior declarado (0-5, 6-10, 11-15 se leen como "hasta 5%",
+// "hasta 10%", "hasta 15%" respectivamente — un 10.0% exacto cae en el
+// tramo de 4.5, no en el de 3.8). Entre el límite superior del tramo
+// "16-24" y el arranque de ">=25" no hay hueco: cualquier valor mayor a 15
+// y MENOR a 25 (incluye no-enteros como 24.5%, que puede ocurrir porque el
+// % de inasistencia real casi nunca es un entero exacto) cae en el tramo de
+// 2.8, y desde 25% en adelante (inclusive) cae en el tramo de 1.0 — así los
+// 5 tramos cubren el 100% de la recta real [0,100] sin huecos ni
+// solapamientos.
+function calcularNotaSERPorAsistencia(inasistencias,totalClases){
+  const total=Number(totalClases)||0;
+  if(total<=0) return null; // sin clases registradas todavía: no hay base para calcular nada — se deja al docente
+  const inas=Math.max(0,Number(inasistencias)||0);
+  const pct=(inas/total)*100;
+  if(pct<=5) return 5.0;
+  if(pct<=10) return 4.5;
+  if(pct<=15) return 3.8;
+  if(pct<25) return 2.8;
+  return 1.0;
+}
+// Aplica el cálculo a TODOS los estudiantes del grado de "cId" para el
+// periodo "per", escribiendo el resultado en nts[cId][per].s (la nota del
+// SER) — punto 6 del pedido: se escribe exactamente igual que
+// aplicarReplicaColumna()/saveNota() escriben cualquier otra nota de la
+// Planilla, así que el docente puede sobreescribirla manualmente después
+// sin ninguna restricción ni bandera de "solo lectura".
+//
+// INTEGRACIÓN CON LA COLA GRANULAR DE LA RONDA 71 (punto 4 del pedido,
+// crítico): esta es exactamente la misma clase de "escritura en lote sobre
+// todo un grupo" que causó el bug de la Ronda 71 (Replicar a
+// Columna/Seleccionados) — se sigue el MISMO patrón ya construido en vez de
+// abrir un camino nuevo: se construye la lista de filas realmente afectadas
+// y se marca con _marcarLoteFilasEnEdicion() ANTES de que "return d" deje
+// que updDB() llame a saveDB(), que a su vez encola cada fila en la cola
+// serializada central (_encolarFilaNotas()/_procesarColaFilas()) — el
+// guardado monolítico del blob completo (_pushDB()) nunca se dispara desde
+// aquí, igual que ya no se dispara desde "Replicar a todos".
+function sincronizarAsistenciaASER(cIdParam,perParam,opts){
+  opts=opts||{};
+  const cId=Number(cIdParam),per=Number(perParam);
+  const carga=db.carga.find(x=>x.id===cId);
+  if(!carga){ if(!opts.silencioso) customAlert('Seleccione una asignatura primero.'); return {aplicados:0,sinDatos:0}; }
+  let aplicados=0,sinDatos=0;
+  updDB(d=>{
+    const _filasAfectadas=[];
+    d.ests.forEach((e,idx)=>{
+      if(e.g!==carga.g) return;
+      const {inasistencias,totalClases}=_inasistenciasPeriodo(d,e.id,cId,per,carga.g);
+      const nota=calcularNotaSERPorAsistencia(inasistencias,totalClases);
+      if(nota===null){ sinDatos++; return; }
+      const nts=JSON.parse(JSON.stringify(e.nts||{}));
+      if(!nts[cId]) nts[cId]={};
+      if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
+      nts[cId][per].s=nota;
+      d.ests[idx]={...e,nts};
+      aplicados++;
+      _filasAfectadas.push({tipo:'planilla',estId:e.id,cId,per});
+    });
+    if(_filasAfectadas.length) _marcarLoteFilasEnEdicion(_filasAfectadas);
+    return d;
+  });
+  _desmarcarLoteFilasEnEdicion();
+  if(aplicados>0&&pag==='planilla'&&Number(planCId)===cId&&Number(planPer)===per){
+    // Refresco granular (mismo criterio que aplicarReplicaColumna()): solo
+    // las filas realmente afectadas, sin renderApp(), para no interrumpir
+    // al docente si está viendo esta misma Planilla en este instante.
+    db.ests.filter(x=>x.g===carga.g).forEach(e=>_refrescarFilaPlanilla(e.id));
+    _refrescarEstadisticaPlanilla();
+  }
+  if(!opts.silencioso){
+    let msg='✅ SER sincronizado con asistencia para '+aplicados+' estudiante(s).';
+    if(sinDatos>0) msg+='\n⚠️ '+sinDatos+' estudiante(s) sin registros de asistencia en este periodo (sin cambios).';
+    _toastPlan(msg,'#27ae60');
+  }
+  return {aplicados,sinDatos};
+}
+// Confirmación antes de aplicar (punto 2 del pedido — botón/opción en la
+// Planilla): sobreescribe la nota del SER de TODO el grupo, así que se pide
+// confirmación explícita antes de ejecutar, igual criterio que otras
+// acciones masivas destructivas del sistema (customConfirm).
+async function _confirmarSincronizarAsistenciaASER(){
+  const carga=db.carga.find(x=>x.id===Number(planCId));
+  if(!carga){customAlert('Seleccione una asignatura primero.');return;}
+  if(!await customConfirm('¿Calcular la nota del SER a partir de la asistencia del Periodo '+planPer+' para TODOS los estudiantes de '+carga.g+'?\n\nEsto SOBREESCRIBIRÁ la nota actual del SER de cada estudiante — podrá editarla manualmente después si lo necesita.')) return;
+  sincronizarAsistenciaASER(planCId,planPer);
+}
+// Switch de sincronización AUTOMÁTICA vs. MANUAL (punto 5 del pedido). Se
+// persiste POR ASIGNATURA/GRUPO (db.config.autoSyncAsistSER[cId], igual
+// convención de "un mapa por cId" que ya usa el sistema en otras
+// preferencias por carga, ej. db.notasActAsignadas) y no globalmente por
+// docente ni por institución: un mismo docente puede querer este cálculo
+// automático en una asignatura y manual en otra (ej. Educación Física vs.
+// una materia con criterios de SER muy distintos a la asistencia).
+function _autoSyncAsistSERActivo(cId){
+  return !!(db.config&&db.config.autoSyncAsistSER&&db.config.autoSyncAsistSER[String(cId)]);
+}
+function _toggleAutoSyncAsistSER(cId){
+  const activarA=!_autoSyncAsistSERActivo(cId);
+  updDB(d=>{
+    if(!d.config) d.config={};
+    if(!d.config.autoSyncAsistSER) d.config.autoSyncAsistSER={};
+    d.config.autoSyncAsistSER[String(cId)]=activarA;
+    return d;
+  });
+  const chk=document.getElementById('_chkAutoSyncAsistSER');
+  if(chk) chk.checked=activarA;
+  _toastPlan(activarA?'⚡ Sincronización automática de Asistencia → SER activada para esta asignatura.':'🕹 Sincronización automática de Asistencia → SER desactivada para esta asignatura (use el botón manual).','#27ae60');
+}
+// CUÁNDO se dispara el cálculo automático (punto 5 del pedido — se evaluó
+// el impacto en rendimiento explícitamente): NUNCA en cada renderApp()/
+// apertura de la Planilla (htmlPlanilla() se ejecuta en CADA render — de
+// hacerlo ahí, cada tecla o clic en la Planilla dispararía un updDB() en
+// cascada sobre TODO el grupo, exactamente el "recálculo innecesario en
+// cascada" que se pidió evitar). En vez de eso, se dispara UNA sola vez,
+// justo después de que guardarAsistencia() (06-documentos-y-resto.js)
+// confirma un registro nuevo/actualizado de asistencia para ese
+// grado+asignatura+periodo — es el único momento en que el dato de origen
+// (el conteo de fallas) realmente cambió, así que es el único momento en
+// que vale la pena recalcular. Se llama en modo "silencioso" (sin toast de
+// confirmación ni popup) para no interrumpir el flujo del docente que
+// apenas terminó de tomar asistencia.
+function _dispararAutoSyncAsistSERSiAplica(cId,per){
+  try{
+    if(!_autoSyncAsistSERActivo(cId)) return;
+    sincronizarAsistenciaASER(cId,per,{silencioso:true});
+  }catch(e){}
 }
 // ── MOTOR DE SINCRONIZACIÓN INVISIBLE APLICADO A LA PLANILLA ───────────────
 // Mismo principio que window.SyncEngine (07-sync-engine.js): un guardado

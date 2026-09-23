@@ -7227,3 +7227,160 @@ deliberada y poco frecuente del docente (no parte del flujo de edición
 interactiva rápida que reportó el usuario), así que no comparte el mismo
 riesgo de carrera; se documenta aquí para que quede constancia de que se
 revisó, no que se pasó por alto.
+
+## Ronda 72 — Nueva funcionalidad pedagógica: Asistencia → nota del SER
+
+A diferencia de las rondas anteriores, esta NO es una corrección de un bug
+sino una funcionalidad nueva pedida por el usuario: conectar el Módulo de
+Asistencia con la columna del SER (25% por defecto, junto con SABER 35% y
+HACER 40%) de la Planilla de Calificaciones, para que el % de inasistencia
+del estudiante en el periodo se traduzca automáticamente en una nota
+cuantitativa (1.0–5.0) del SER.
+
+### Investigación real previa a escribir código
+
+**1. Cómo está modelada la división SER/SABER/HACER en la Planilla**
+(confirmado con grep + lectura real, no se asumió nada): la nota de cada
+estudiante para una asignatura+periodo vive en `e.nts[cId][per]`, un objeto
+plano `{s, sb, h, rec, niv}` — `s` es el campo REAL de datos del SER (visto
+en `saveNota()`, `aplicarReplicaColumna()`, `_baseNota()`, etc.), mientras
+que `nomSer`/`pctSer` (por defecto 25%) en `db.config` solo controlan el
+NOMBRE mostrado y el peso porcentual — la clave de datos `s` es fija en
+todo el sistema aunque la institución renombre la columna. Esto era
+indispensable de confirmar antes de escribir en el campo correcto.
+
+**2. Fuente del dato de inasistencias** (punto 3 del pedido): se reutilizó
+`db.asistencia`, la estructura YA migrada a la arquitectura granular en la
+Ronda 57 (`_cargarAsistenciaGranular()`) — un arreglo GLOBAL donde cada
+elemento es UNA sesión/clase tomada (`{fecha, periodo, grado, cargaId,
+presentes, ausentes, justificados}`, ver `guardarAsistencia()` en
+`06-documentos-y-resto.js`). No se creó ningún endpoint ni estructura
+nueva. "Total de clases" del periodo se cuenta contando cuántos registros
+de asistencia existen para ese grado+cargaId+periodo (nunca se asume un
+número fijo) — misma fórmula que ya usaba
+`_verificarAlertaInasistenciaCriticaSiAplica()` (Ronda por debajo de esta),
+ahora también filtrada por periodo porque el usuario pidió explícitamente
+"el conteo de fallas DEL PERIODO". Decisión documentada: una ausencia ya
+**justificada** (`justificados`) NO cuenta como inasistencia para este
+cálculo — es la distinción que el propio sistema ya hace entre esos dos
+campos, y es la lectura pedagógica más defendible (una ausencia con
+justificación válida no debería castigar el SER).
+
+### 1. Lógica de cálculo (función pura y testeable)
+
+`calcularNotaSERPorAsistencia(inasistencias, totalClases)` en
+`03-app-core.js`, con los 5 tramos exactos pedidos por el usuario.
+**Convención de límites elegida y documentada** (el usuario pidió
+explícitamente aclarar los casos límite): cada tramo declarado usa `<=` en
+su límite superior (0–5%, 6–10%, 11–15% se leen "hasta 5%", "hasta 10%",
+"hasta 15%" — un 10.0% exacto cae en 4.5, no en 3.8). El tramo "16–24%"
+se extiende con `< 25` para cubrir sin huecos cualquier valor no entero
+entre 15% y 25% (ej. 24.5%, que ocurre en la práctica porque el % real casi
+nunca es un entero exacto). Desde 25% inclusive, 1.0. Con `totalClases<=0`
+devuelve `null` (nunca fuerza una nota ni divide por cero) — se deja la
+celda tal cual hasta que haya al menos una clase registrada.
+
+### 2. Interfaz en Planilla
+
+- **Botón "🔄 Asistencia → SER"** agregado en el encabezado de la columna
+  cuyo campo de datos es `s` (SER) — junto a los botones ya existentes
+  "📋 Replicar a todos"/"👥 Seleccionados". Pide confirmación
+  (`_confirmarSincronizarAsistenciaASER()`, con `customConfirm`) antes de
+  aplicar, porque sobreescribe la nota de TODO el grupo.
+- **Switch "Sincronización automática de Asistencia → SER"** (checkbox) en
+  la barra de acciones de la Planilla, junto al botón de Auto-guardar.
+  Persistido en `db.config.autoSyncAsistSER[cId]` — **por
+  asignatura/grupo**, no por docente ni por institución completa: un mismo
+  docente puede querer el cálculo automático en una materia y manual en
+  otra. Se investigó primero si existía un patrón de preferencia
+  equivalente en el sistema antes de decidir el criterio (se encontró
+  `db.notasActAsignadas`, un mapa por `cId` — mismo criterio replicado
+  aquí).
+- **Cuándo se dispara el cálculo automático** (se evaluó explícitamente el
+  impacto en rendimiento, como pidió el usuario): NUNCA en cada
+  `renderApp()`/apertura de la Planilla — `htmlPlanilla()` se ejecuta en
+  CADA render, así que dispararlo ahí habría causado un recálculo en
+  cascada sobre todo el grupo con cada tecla o clic, exactamente lo que se
+  pidió evitar. En vez de eso, se dispara UNA sola vez, justo después de
+  que `guardarAsistencia()` (`06-documentos-y-resto.js`) confirma un
+  registro de asistencia nuevo/actualizado para esa asignatura/grupo/
+  periodo — el único momento en que el dato de origen realmente cambió.
+- **Editable manualmente en todo momento** (punto 6 del pedido, verificado
+  con un test real — ver Escenario C más abajo): la nota calculada se
+  escribe en `nts[cId][per].s` exactamente igual que cualquier otra nota de
+  la Planilla (vía el mismo camino de `updDB()`/cola granular) — el
+  docente puede sobreescribirla después con `saveNota()` normal, sin
+  ninguna bandera de "solo lectura" ni restricción especial.
+
+### 3. Integración con la cola granular de la Ronda 71 (crítico)
+
+El pedido señaló explícitamente que aplicar esta sincronización de forma
+MASIVA sobre un grupo es la MISMA clase de "escritura en lote" que causó
+el bug de la Ronda 71 — y pidió reutilizar la cola en vez de construir un
+camino nuevo. `sincronizarAsistenciaASER()` sigue el patrón EXACTO de
+`aplicarReplicaColumna()`: construye la lista de filas realmente afectadas
+DENTRO del `updDB()`, la marca con `_marcarLoteFilasEnEdicion()` antes de
+`return d`, y la desmarca justo después — `saveDB()` encola cada fila en
+`_encolarFilaNotas()`/`_procesarColaFilas()` (la cola serializada central
+de la Ronda 71), nunca dispara `_pushDB()` (el blob completo). Verificado
+con ejecución real (ver Parte 2 del test) que un 409 simulado en una fila,
+durante una sincronización masiva de 5 estudiantes, se comporta
+exactamente como ya se corrigió en la Ronda 71: la fila se reintenta y se
+confirma, sin blob completo y sin `_pullDB()`.
+
+### Tests
+
+Nuevo archivo **`test_ronda72_asistencia_a_ser.mjs`** (37 aserciones, con
+ejecución real vía `vm` del archivo fuente completo, mismo patrón
+construido en la Ronda 71):
+- **Parte 1** (16 aserciones) — `calcularNotaSERPorAsistencia()` en los 5
+  tramos y sus límites exactos: 0%/5% (5.0), 6%/10% (4.5), 10.01% (ya no
+  4.5, pasa a 3.8), 11%/15% (3.8), 15.01% (ya no 3.8, pasa a 2.8), 16%/24%/
+  24.99% (2.8), 25%/50%/100% (1.0), y `totalClases=0` (`null`, nunca
+  división por cero).
+- **Parte 2, Escenario A** (9 aserciones) — sincronización masiva "camino
+  feliz" sobre 5 estudiantes con historiales de asistencia distintos:
+  confirma que cada nota calculada es la correcta y que la operación
+  completa NUNCA dispara el guardado monolítico del blob completo (usa la
+  cola granular de la Ronda 71).
+- **Parte 2, Escenario B** (7 aserciones) — la MISMA condición de carrera
+  de la Ronda 71 (una fila falla con 409 en su primer intento) reproducida
+  sobre esta función nueva: confirma que ninguna nota se pierde, que la
+  fila se reintenta y confirma, y que ni el blob completo ni `_pullDB()` se
+  disparan.
+- **Parte 2, Escenario C** (2 aserciones) — el docente sobreescribe
+  manualmente una nota ya calculada por Asistencia→SER con `saveNota()`
+  normal: confirma que no queda bloqueada ni de solo lectura.
+
+Suite completa re-ejecutada: **73 archivos, 100% verde** (72 previos de la
+Ronda 71 + 1 nuevo de esta ronda). Ningún test previamente congelado
+requirió cambios en esta ronda.
+
+### Archivos modificados esta ronda
+
+- **`gestor-academico/dist/modules/03-app-core.js`** — nuevas funciones
+  `_inasistenciasPeriodo()`, `calcularNotaSERPorAsistencia()`,
+  `sincronizarAsistenciaASER()`, `_confirmarSincronizarAsistenciaASER()`,
+  `_autoSyncAsistSERActivo()`, `_toggleAutoSyncAsistSER()`,
+  `_dispararAutoSyncAsistSERSiAplica()`; nuevo botón "🔄 Asistencia → SER"
+  en el encabezado de la columna del SER de `htmlPlanilla()`; nuevo
+  checkbox de sincronización automática junto al botón de Auto-guardar.
+- **`gestor-academico/dist/modules/06-documentos-y-resto.js`** —
+  `guardarAsistencia()` ahora dispara
+  `_dispararAutoSyncAsistSERSiAplica(asistCId, asistPeriodo)` justo después
+  de confirmar el registro de asistencia (envuelto en `try/catch` +
+  verificación `typeof===function`, mismo patrón defensivo que ya usa esa
+  función para `_verificarAlertaInasistenciaCriticaSiAplica`).
+- **`CHECKLIST_DESPLIEGUE.md`** — esta misma sección.
+
+No se tocó `src/index.ts` — la funcionalidad completa vive del lado del
+frontend, reutilizando `db.asistencia` (ya expuesto por
+`GET /api/asistencia`, sin cambios) y la cola granular ya existente de
+`guardar-fila` (sin cambios en el backend).
+
+Fuera de alcance de esta ronda (revisado, decisión explícita): no se
+agregó una preferencia de "umbral personalizado" por institución para los
+5 tramos — el usuario especificó los 5 tramos como valores fijos y no
+pidió que fueran configurables; se documenta aquí para que quede
+constancia de la decisión, y sería una extensión sencilla si se pide más
+adelante.

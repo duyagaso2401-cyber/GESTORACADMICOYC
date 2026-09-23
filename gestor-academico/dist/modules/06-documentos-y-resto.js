@@ -1165,6 +1165,21 @@ function guardarAsistencia(){
       return d;
     });
 
+    // RONDA 72 — dispara el recálculo AUTOMÁTICO de Asistencia → SER (si el
+    // docente activó el switch para esta asignatura/grupo) justo aquí,
+    // inmediatamente después de confirmar el registro de asistencia — es el
+    // único momento en que el dato de origen (conteo de fallas) cambió de
+    // verdad, evitando cualquier recálculo en cascada en cada render de la
+    // Planilla (ver el comentario extenso junto a
+    // _dispararAutoSyncAsistSERSiAplica() en 03-app-core.js). Envuelto en
+    // try/catch + "typeof===function" por si este módulo llegara a cargar
+    // antes que 03-app-core.js.
+    try{
+      if(typeof _dispararAutoSyncAsistSERSiAplica==='function'&&asistCId&&asistPeriodo){
+        _dispararAutoSyncAsistSERSiAplica(asistCId,asistPeriodo);
+      }
+    }catch(ex){}
+
     // ── NOTIFICACIONES AUTOMÁTICAS DE AUSENCIA A PADRES ──────────────────────
     if(ausentes.length>0){
       var cargaInfo=db.carga.find(function(c){return String(c.id)===String(asistCId);})||{m:'Asignatura',a:'Asignatura'};
