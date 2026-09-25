@@ -10142,6 +10142,21 @@ function htmlConfigEvalPedagogica(){
             <input type="number" id="cfgUmbralAusenciasAlerta" min="1" max="60" step="1" value="${db.config?.umbralAusenciasAlerta!=null?db.config.umbralAusenciasAlerta:3}" style="width:85px;padding:6px;font-weight:bold;color:#003366;font-size:0.9rem">
             <span style="font-size:0.8rem;font-weight:bold">ausencias (Por defecto 3)</span>
           </div>
+          <hr style="border-color:#d8e8f5;margin:12px 0">
+          <!-- RONDA 74 — Ingreso manual de inasistencias en Planilla/Notas de
+               Actividades. Interruptor global: apagado por defecto (false),
+               para que ninguna institución que ya use el sistema vea cambiar
+               de golpe su Planilla ni sus boletines/informes existentes. Solo
+               al activarlo aparece la columna "Inasistencias" en Planilla de
+               Notas y Notas de Actividades, y el dato se refleja en los PDF
+               de boletines/informes (ver htmlPlanilla(), htmlNotasActividades()
+               y _generarBoletinesPDF()). -->
+          <b style="font-size:0.85rem;color:#003366">📋 Inasistencias Manuales en Planilla (Ronda 74)</b>
+          <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Permite que el docente escriba manualmente el total de inasistencias del periodo en la Planilla de Notas y en Notas de Actividades. Cada valor queda amarrado a su grado, asignatura y periodo exactos — cambiar de periodo o de asignatura siempre muestra solo el dato de ese contexto.</p>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="cfgMostrarInasistPlanilla" ${db.config?.mostrarInasistenciasEnPlanilla===true?'checked':''} style="width:16px;height:16px">
+            <span style="font-size:0.85rem">Mostrar columna de Inasistencias en Planillas e Informes</span>
+          </label>
         </div>
       </div>
       <div>
@@ -10247,6 +10262,9 @@ function guardarConfigPedagogica(){
     d.config.alertasAusenciasActivas=document.getElementById('cfgAlertasAusenciasActivas')?.checked||false;
     const _umbralAus=parseInt(document.getElementById('cfgUmbralAusenciasAlerta')?.value||3);
     d.config.umbralAusenciasAlerta=(_umbralAus>0?_umbralAus:3);
+    // RONDA 74 — switch global (default false): ver comentario junto al
+    // checkbox "cfgMostrarInasistPlanilla" en htmlConfigEvalPedagogica().
+    d.config.mostrarInasistenciasEnPlanilla=document.getElementById('cfgMostrarInasistPlanilla')?.checked||false;
     return d;
   });
   _pushDB();
@@ -13847,12 +13865,19 @@ function htmlPlanilla(){
   const matsOpts=mats.map(c=>`<option value="${c.id}"${planCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
   const carga=planCId?db.carga.find(x=>x.id===Number(planCId)):null;
   const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
+  // RONDA 74 — columna de Inasistencias, controlada por el switch global
+  // db.config.mostrarInasistenciasEnPlanilla (por defecto false/oculta).
+  // Declarada aquí (ámbito de TODA la función) porque se usa tanto dentro
+  // de la tabla (más abajo) como en el panel de controles del pie de la
+  // Planilla, fuera del bloque "else" de la tabla.
+  const _mostrarInasP=(db.config||{}).mostrarInasistenciasEnPlanilla===true;
   let tabla='';
   if(!carga) tabla=`${_htmlEstadoVacio('🔎','Seleccione una asignatura.')}`;
   else if(!ests.length) tabla=`${_htmlEstadoVacio('🎓','No hay estudiantes en este grado.')}`;
   else {
     const eHead=planPer===String(_numPer)?`<th style="background:#6c3483;color:#fff;border:1px solid #ddd;padding:8px;font-size:0.78rem">NIVELACIÓN</th>`:'';
     const p3Head=(_numPer>1&&Number(planPer)<_numPer)?`<th style="background:#d35400;color:#fff;border:1px solid #ddd;padding:8px;font-size:0.75rem">NECESITA<br>PARA GANAR</th>`:'';
+    const inaHead=_mostrarInasP?`<th style="background:#616a6b;color:#fff;border:1px solid #ddd;padding:8px;font-size:0.75rem">INASIST.</th>`:'';
     const _cfgP=db.config||{};
     const _colsAllP=_cfgP.columnasBase&&_cfgP.columnasBase.length?_cfgP.columnasBase:(()=>{const ex=(_cfgP.columnasExtra||[]).map((c,i)=>({key:'ex'+i,...c}));return [{key:'s'},{key:'sb'},{key:'h'},...ex];})();
     const _perActTabla=(db.periodosActivos||Array(_numPer).fill(true))[Number(planPer)-1]!==false;
@@ -13922,6 +13947,7 @@ function htmlPlanilla(){
         <td style="font-weight:bold;font-size:1rem;color:${(!base&&!rec&&!niv)?'#aaa':colorNota(defFinal)};border:1px solid #ddd;padding:5px 6px;text-align:center" id="def-${e.id}">${(!base&&!rec&&!niv)?'—':(defFinal.toFixed(1)+(_esInicialG?`<br><span style="font-size:2rem;line-height:1;display:block">${escEmoji(defFinal)}</span><span style="font-size:0.72rem;font-weight:bold;background:${notaACualitativo(defFinal).color};color:#fff;border-radius:4px;padding:1px 6px;display:inline-block;margin-top:1px">${notaACualitativo(defFinal).letra}</span>`:''))}</td>
         ${nivCell}
         ${p3Cell}
+        ${_mostrarInasP?`<td style="background:#f4f6f6;border:1px solid #ddd;padding:3px 4px;text-align:center"><input type="number" min="0" step="1" inputmode="numeric" id="ina-input-${e.id}" value="${nd.ina||0}" title="Total de inasistencias del estudiante en esta asignatura y este periodo — dato manual, independiente de la asistencia automática." style="width:56px;padding:5px 3px;text-align:center;border:1px solid #b2babb;border-radius:5px;font-weight:bold;color:#424949" onchange="guardarInasistenciaManual('${e.id}','${nc}','${np}',this.value)"></td>`:''}
       </tr>`;
     }).join('');
     const repBtn=(campo,col)=>`<br><button onclick="replicarColumna('${campo}')" title="Aplicar la misma nota a todos los estudiantes en esta columna" style="margin-top:4px;background:rgba(255,255,255,0.92);color:${col};border:1px solid rgba(255,255,255,0.6);border-radius:4px;font-size:0.65rem;font-weight:bold;padding:3px 6px;cursor:pointer;line-height:1">📋 Replicar a todos</button><br><button onclick="replicarColumnaSeleccionados('${campo}')" title="Aplicar la misma nota a estudiantes seleccionados" style="margin-top:3px;background:rgba(255,255,255,0.92);color:${col};border:1px solid rgba(255,255,255,0.6);border-radius:4px;font-size:0.65rem;font-weight:bold;padding:3px 6px;cursor:pointer;line-height:1">👥 Seleccionados</button>`;
@@ -13947,6 +13973,7 @@ function htmlPlanilla(){
       <th style="background:#1a5276;font-size:0.78rem">DEFINITIVA</th>
       ${eHeadFull}
       ${p3Head}
+      ${inaHead}
     </tr></thead><tbody>${rows}</tbody></table></div>
     ${_htmlPaginacion(_pagPlan.pagina,_pagPlan.totalPaginas,_pagPlan.total,'_cambiarPaginaPlanilla')}`;
   }
@@ -14031,6 +14058,10 @@ function htmlPlanilla(){
       ${carga?`<label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:#145a32;background:#eafaf1;border:1px solid #a9dfbf;border-radius:6px;padding:7px 10px;cursor:pointer" title="Con esta opción activa, cada vez que se registre asistencia de esta asignatura/grupo, la nota del SER se recalcula sola a partir del % de inasistencia del periodo — puede seguir editándola manualmente cuando quiera.">
         <input type="checkbox" id="_chkAutoSyncAsistSER" ${_autoSyncAsistSERActivo(planCId)?'checked':''} onchange="_toggleAutoSyncAsistSER('${planCId}')">
         Sincronización automática de Asistencia → SER
+      </label>`:''}
+      ${(carga&&_mostrarInasP)?`<label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:#7d6608;background:#fef9e7;border:1px solid #f7dc6f;border-radius:6px;padding:7px 10px;cursor:pointer" title="Con esta opción activa, cada vez que edite el número de inasistencias en esta asignatura, la nota del SER se recalcula sola a partir de ese número (usando el mismo cálculo de Asistencia → SER) — puede seguir editándola manualmente después. Si la deja desactivada (por defecto), el número de inasistencias es solo informativo y no afecta ninguna nota.">
+        <input type="checkbox" id="_chkVincularInasistSER" ${_vincularInasistManualSERActivo(planCId)?'checked':''} onchange="_toggleVincularInasistManualSER('${planCId}')">
+        Vincular inasistencias manuales a la nota del SER
       </label>`:''}
     </div>
   </div>`;
@@ -14716,6 +14747,113 @@ function calcularNotaSERPorAsistencia(inasistencias,totalClases){
   if(pct<25) return 2.8;
   return 1.0;
 }
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 74 — INASISTENCIAS MANUALES EN PLANILLA Y NOTAS DE ACTIVIDADES.
+//
+// El dato vive en la MISMA celda de siempre (e.nts[cId][per]), en un campo
+// nuevo "ina" (entero >= 0) — exactamente la misma convención de contexto
+// que ya usan "s"/"sb"/"h"/"rec"/"niv": queda amarrado únicamente a
+// [estudiante][cId (asignatura/carga)][per (periodo)], nunca de forma
+// global ni por grado. Al reutilizar la misma celda, el guardado granular
+// ya existente (_marcarFilaEnEdicion → _encolarFilaNotas → POST
+// /api/inetis/notas/guardar-fila, ver saveNota() más abajo) sirve tal cual
+// para este campo también — el backend (ver _ejecutarGuardarFilaNotas() en
+// src/index.ts) fusiona "notas" campo por campo sobre la celda existente
+// ("{...e.nts[cId][per], ...notas}"), así que un campo nuevo como "ina"
+// pasa sin tocar el backend ni el resto de campos ya guardados. Por la
+// MISMA razón, Notas de Actividades (que usa este mismo cId/per de
+// contexto) puede leer y escribir el idéntico valor sin necesidad de una
+// celda propia en "db.notasAct" — ver htmlNotasActividades().
+function _leerInasistenciaManual(estId,cId,per){
+  const e=db.ests.find(x=>String(x.id)===String(estId));
+  if(!e) return 0;
+  const nd=((e.nts||{})[Number(cId)]||{})[Number(per)];
+  return nd&&typeof nd.ina==='number'?nd.ina:0;
+}
+// Total de inasistencias manuales de un estudiante en UN periodo, sumando
+// TODAS las asignaturas/cargas de su grado en ese periodo — se usa
+// únicamente para el resumen que se muestra en el boletín/informe PDF (ver
+// _generarBoletinesPDF()); nunca para decidir qué mostrar en la Planilla,
+// que siempre sigue mostrando el valor exacto de [cId][per].
+function _totalInasistenciasManualPeriodo(estId,grado,per){
+  const mats=db.carga.filter(c=>c.g===grado);
+  let total=0;
+  mats.forEach(m=>{ total+=_leerInasistenciaManual(estId,m.id,per); });
+  return total;
+}
+// Total ACUMULADO del año (todos los periodos configurados) — usado en el
+// Informe Final (ver incluirResumenFinal en _generarBoletinesPDF()).
+function _totalInasistenciasManualAnual(estId,grado){
+  const numPer=_getNumPer();
+  let total=0;
+  for(let p=1;p<=numPer;p++){ total+=_totalInasistenciasManualPeriodo(estId,grado,p); }
+  return total;
+}
+// Switch "Vincular inasistencias manuales a la nota del SER" — igual
+// convención que _autoSyncAsistSERActivo()/_toggleAutoSyncAsistSER() (mapa
+// por cId en db.config, Ronda 73): un mismo docente puede querer este
+// enlace activo en una asignatura y no en otra. Cuando está activo,
+// guardarInasistenciaManual() recalcula la nota del SER de ESE estudiante
+// con calcularNotaSERPorAsistencia() cada vez que se edita el número de
+// inasistencias — el docente puede seguir sobreescribiendo esa nota del SER
+// manualmente después, exactamente igual que con "Asistencia → SER" (Ronda
+// 72/73). Cuando está INACTIVO (valor por defecto), el número de
+// inasistencias es puramente informativo: no toca ninguna nota.
+function _vincularInasistManualSERActivo(cId){
+  return !!(db.config&&db.config.vincularInasistManualSER&&db.config.vincularInasistManualSER[String(cId)]);
+}
+function _toggleVincularInasistManualSER(cId){
+  const activarA=!_vincularInasistManualSERActivo(cId);
+  updDB(d=>{
+    if(!d.config) d.config={};
+    if(!d.config.vincularInasistManualSER) d.config.vincularInasistManualSER={};
+    d.config.vincularInasistManualSER[String(cId)]=activarA;
+    return d;
+  });
+  const chk=document.getElementById('_chkVincularInasistSER');
+  if(chk) chk.checked=activarA;
+  _toastPlan(activarA?'⚡ Las inasistencias manuales ahora recalculan la nota del SER en esta asignatura.':'🕹 Las inasistencias manuales quedan como dato informativo (no afectan la nota del SER) en esta asignatura.','#27ae60');
+}
+// Punto único de guardado del número de inasistencias manuales — usado
+// tanto por la Planilla de Notas como por Notas de Actividades (ambas
+// pantallas comparten el mismo contexto [estId][cId][per], ver comentario
+// de arriba). Sigue EXACTAMENTE el mismo patrón que saveNota(): marca la
+// fila en edición ANTES de updDB()/saveDB() para que el guardado viaje por
+// la cola granular serializada (_encolarFilaNotas → POST
+// /api/inetis/notas/guardar-fila) y JAMÁS por el blob completo
+// (POST /api/inetis/db) — la "regla de oro" pedida explícitamente para esta
+// ronda.
+function guardarInasistenciaManual(estId,cId,per,valor){
+  const cIdN=Number(cId),perN=Number(per);
+  const numVal=Math.max(0,Math.round(parseFloat(valor)||0));
+  let _serRecalculada=null;
+  _marcarFilaEnEdicion({tipo:'planilla',estId,cId:cIdN,per:perN});
+  updDB(d=>{
+    const idx=d.ests.findIndex(x=>x.id===estId);if(idx===-1) return d;
+    const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
+    if(!nts[cIdN]) nts[cIdN]={};if(!nts[cIdN][perN]) nts[cIdN][perN]={s:0,sb:0,h:0,rec:0,niv:0};
+    const valorAnterior=nts[cIdN][perN].ina||0;
+    nts[cIdN][perN].ina=numVal;
+    if(_vincularInasistManualSERActivo(cIdN)){
+      const carga=d.carga.find(c=>c.id===cIdN);
+      if(carga){
+        const _clases=_obtenerClasesAsistenciaPeriodo(d,cIdN,perN,carga.g);
+        const nota=calcularNotaSERPorAsistencia(numVal,_clases.length);
+        if(nota!==null){ nts[cIdN][perN].s=nota; _serRecalculada=nota; }
+      }
+    }
+    d.ests[idx]={...e,nts};
+    _registrarCambioNota(d,{estId,estNombre:e.n,cId:cIdN,per:perN,campo:'ina',valorAnterior,valorNuevo:numVal});
+    return d;
+  });
+  _desmarcarFilaEnEdicion();
+  // Refresco granular: solo si esta fila está actualmente visible en
+  // Planilla (mismo cId/per abiertos) — evita reconstruir toda la pantalla.
+  if(pag==='planilla'&&Number(planCId)===cIdN&&Number(planPer)===perN){
+    _refrescarFilaPlanilla(estId);
+  }
+  return _serRecalculada;
+}
 // Aplica el cálculo a TODOS los estudiantes del grado de "cId" para el
 // periodo "per", escribiendo el resultado en nts[cId][per].s (la nota del
 // SER) — punto 6 del pedido: se escribe exactamente igual que
@@ -14885,6 +15023,12 @@ function _refrescarFilaPlanilla(estId){
     btn.title=est.sinCalificar?'Sin calificar — toque para ingresar la nota':'';
     btn.style.outline='none';
   });
+
+  // RONDA 74 — refresca el input de inasistencias manuales de esta fila (si
+  // la columna está visible) con el valor real de db, evitando que quede
+  // desincronizado tras un guardado por lotes/conflicto resuelto.
+  const inaEl=document.getElementById('ina-input-'+estId);
+  if(inaEl){ inaEl.value=nd.ina||0; }
 
   const bEl=document.getElementById('base-'+estId);
   if(bEl){bEl.textContent=!base?'—':base.toFixed(1);bEl.style.color=!base?'#aaa':(base<3?'#c0392b':'#333');}
@@ -15807,6 +15951,13 @@ function htmlNotasActividades(){
   else if(!ests.length) tabla=`${_htmlEstadoVacio('🎓','No hay estudiantes en este grado.')}`;
   else if(!cols.length) tabla=`<div class="warn-box">ℹ️ Aún no ha agregado columnas de notas para esta asignatura y periodo. Use el botón "➕ Agregar nota" para comenzar.</div>`;
   else {
+    // RONDA 74 — misma columna de Inasistencias que la Planilla, leyendo y
+    // escribiendo EXACTAMENTE la misma celda de contexto (e.nts[cId][per].ina)
+    // — ver comentario extenso junto a guardarInasistenciaManual(). Esta
+    // pantalla no necesita una celda propia en db.notasAct porque el dato no
+    // es "una actividad más": es el mismo total de inasistencias del
+    // periodo para esta asignatura/grado, amarrado al mismo contexto.
+    const _mostrarInasNAC=(db.config||{}).mostrarInasistenciasEnPlanilla===true;
     const headCols=cols.map(c=>`<th style="font-size:0.76rem;background:#003366;color:#fff">${c.nombre}<br><button title="Aplicar la misma nota a todos los estudiantes de este grado en esta columna" onclick="replicarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.92);color:#003366;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">📋 Replicar a todos</button><br><button title="Quitar esta columna de esta asignatura/periodo (no borra los datos ya registrados)" onclick="quitarColNotaAct('${c.id}')" style="margin-top:2px;background:rgba(255,255,255,0.85);color:#c0392b;border:none;border-radius:4px;font-size:0.62rem;font-weight:bold;padding:1px 5px;cursor:pointer">✕ quitar</button></th>`).join('');
     const rows=ests.map(e=>{
       const cells=cols.map(c=>{
@@ -15819,14 +15970,17 @@ function htmlNotasActividades(){
         </td>`;
       }).join('');
       const prom=_promedioNotasActEst(cId,per,e.id);
+      const inaCellNAC=_mostrarInasNAC?`<td style="background:#f4f6f6;border:1px solid #ddd;padding:3px 4px;text-align:center"><input type="number" min="0" step="1" inputmode="numeric" id="ina-input-nac-${e.id}" value="${_leerInasistenciaManual(e.id,cId,per)}" title="Total de inasistencias del estudiante en esta asignatura y este periodo — el mismo dato que se ve en la Planilla de Notas." style="width:56px;padding:5px 3px;text-align:center;border:1px solid #b2babb;border-radius:5px;font-weight:bold;color:#424949" onchange="guardarInasistenciaManual('${e.id}','${cId}','${per}',this.value)"></td>`:'';
       return `<tr>
         <td style="text-align:left;font-weight:500;border:1px solid #ddd;padding:4px 6px;font-size:0.82rem">${e.n}</td>
         ${cells}
         <td id="nac-prom-${e.id}" style="font-weight:bold;border:1px solid #ddd;padding:5px 6px;text-align:center;color:${prom!=null?colorNota(prom):'#aaa'}">${prom!=null?prom.toFixed(2):'—'}</td>
+        ${inaCellNAC}
       </tr>`;
     }).join('');
+    const inaHeadNAC=_mostrarInasNAC?`<th style="font-size:0.78rem;background:#616a6b;color:#fff">INASIST.</th>`:'';
     tabla=`<div class="over"><table><thead><tr>
-      <th style="font-size:0.78rem">Estudiante</th>${headCols}<th style="font-size:0.78rem;background:#1a5276;color:#fff">PROMEDIO</th>
+      <th style="font-size:0.78rem">Estudiante</th>${headCols}<th style="font-size:0.78rem;background:#1a5276;color:#fff">PROMEDIO</th>${inaHeadNAC}
     </tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
@@ -18044,6 +18198,24 @@ async function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     const pLabel=perProms.map((p,i)=>'P'+(i+1)+': '+p.toFixed(2)).join('   ');
     doc.text('PROMEDIOS:  '+pLabel+'   |   PROM. ANUAL: '+promAnualEst.toFixed(2)+'   PROM. CURSO P'+per+': '+promCurso.toFixed(2),_cx,fy+5,{align:'center',maxWidth:_tw-4});
     doc.setTextColor(0);fy+=9.5;
+    // RONDA 74 — resumen de Inasistencias manuales, SOLO si el administrador
+    // activó db.config.mostrarInasistenciasEnPlanilla (por defecto false: años
+    // anteriores y boletines de instituciones que no usan esta función no
+    // cambian en nada). Se suma por periodo (todas las asignaturas del grado
+    // en "per") y, en el Informe Final, también el acumulado del año — ver
+    // _totalInasistenciasManualPeriodo()/_totalInasistenciasManualAnual().
+    if((db.config||{}).mostrarInasistenciasEnPlanilla===true){
+      const _inasPer=_totalInasistenciasManualPeriodo(e.id,grado,per);
+      _asegurarEspacio(7.5);
+      doc.setFillColor(238,238,238);doc.rect(_lm,fy,_tw,6.5,'F');
+      doc.setLineWidth(0.3);doc.rect(_lm,fy,_tw,6.5);
+      doc.setFontSize(8.3);doc.setFont('helvetica','bold');doc.setTextColor(60,60,60);
+      const _inasTxt=incluirResumenFinal
+        ?'INASISTENCIAS — PERIODO '+per+': '+_inasPer+'   |   ACUMULADO ANUAL: '+_totalInasistenciasManualAnual(e.id,grado)
+        :'INASISTENCIAS DEL PERIODO '+per+': '+_inasPer;
+      doc.text(_inasTxt,_cx,fy+4.4,{align:'center',maxWidth:_tw-4});
+      doc.setTextColor(0);fy+=8.5;
+    }
     // Usar áreas del periodo si es boletin por periodo, o anual si es informe final
     const areasPerd=incluirResumenFinal?getAreasPerdidas(e.id,grado):getAreasPerdidasPeriodo(e.id,grado,per);
     if(areasPerd.length>0){

@@ -1,0 +1,9 @@
+Hola Claude, necesito corregir la lógica de sincronización y el comportamiento de la planilla de notas en el Gestor Académico YC:
+
+1. CONTROL SEGÚN EL MODO DE GUARDADO:
+   - Si el autoguardado está DESACTIVADO (modo manual): Desactiva por completo el intervalo/polling de sincronización en segundo plano. La interfaz NO debe comparar las casillas locales con el servidor ni emitir la alerta "se actualizaron datos de otras personas".
+   - Si el autoguardado está ACTIVADO: La sincronización debe ser silenciosa, sin emitir avisos flotantes de cambios externos a menos que haya un conflicto real de concurrencia guardado por otro usuario.
+
+2. ELIMINACIÓN DE RE-RENDERIZADO / TAMBALEO EN EL DOM:
+   - Evita el refresco completo o la re-evaluación masiva de la matriz de notas durante la lectura de estados. 
+   - Al guardar (manual o automáticamente), solo debe actualizarse el indicador visual de la casilla/botón de estado ("Guardado"), manteniendo el DOM intacto sin parpadeos.
