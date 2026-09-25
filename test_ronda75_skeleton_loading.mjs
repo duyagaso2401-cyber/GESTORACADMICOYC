@@ -297,12 +297,18 @@ check('mostrarSkeletonContenedor() no revienta si el elemento no existe (devuelv
 // ════════════════════════════════════════════════════════════════════════
 
 // ── Observador del Estudiante ──
-check('cargarListaObservador() muestra el skeleton tipo "tarjetas" en #listaObservador de inmediato, ANTES de resolver los datos', () => {
+// NOTA — Ronda 77: cargarListaObservador() ahora pinta la caché de
+// inmediato cuando "db.ests" ya tiene estudiantes de ese grado (ver
+// test_ronda77_optimizacion_rendimiento.mjs para esa cobertura). Este caso
+// prueba el escenario de CACHÉ VACÍA (grado sin datos todavía en memoria),
+// donde el comportamiento de Ronda 75/56 — mostrar el skeleton de inmediato
+// — sigue aplicando tal cual.
+check('cargarListaObservador() muestra el skeleton tipo "tarjetas" en #listaObservador de inmediato cuando NO hay nada en caché para ese grado, ANTES de resolver los datos', () => {
   const d = fixtureDB(); instalarDB(d);
   run(`
     window._idRegistryTest = {};
     document.getElementById = (id) => {
-      if (id === 'obsEstGrado') return { value: '10°' };
+      if (id === 'obsEstGrado') return { value: '11°' }; // grado sin estudiantes en la fixture -> caché vacía
       if (id === 'obsEstPer') return { value: '1' };
       if (id === 'listaObservador') { if(!window._wrapObs) window._wrapObs = document.createElement('div'); return window._wrapObs; }
       return null;
@@ -420,8 +426,15 @@ check('_tipoVistaPorPagina() mapea cada módulo reportado al tipo de vista corre
   assert.equal(run("_tipoVistaPorPagina('padre-home')"), 'formulario');
   assert.equal(run("_tipoVistaPorPagina('est-home')"), 'formulario');
 });
-check('_mostrarSkeletonYNavegar() sigue inyectando el skeleton en "#contenido" y disparando la navegación granular exactamente igual que en Ronda 56/74 (solo cambia la FORMA del skeleton, no el flujo)', () => {
-  const d = fixtureDB(); instalarDB(d);
+check('_mostrarSkeletonYNavegar() SIN nada en caché (db.nombre vacío — primera sincronización real) sigue inyectando el skeleton en "#contenido" y disparando la navegación granular exactamente igual que en Ronda 56/74 (solo cambia la FORMA del skeleton, no el flujo)', () => {
+  // RONDA 79 — desde esta ronda, _mostrarSkeletonYNavegar() SOLO muestra el
+  // skeleton crudo cuando NO hay todavía ningún dato local utilizable (ver
+  // test_ronda79_cache_primero_navegacion.mjs para el nuevo camino
+  // "caché-primero" cuando SÍ los hay) — aquí se fuerza ese escenario
+  // "sin caché" con "nombre: ''" (el mismo valor que trae el DDB en blanco
+  // de una institución que nunca sincronizó nada) para seguir cubriendo
+  // exactamente el comportamiento original de esta ronda.
+  const d = fixtureDB(); d.nombre = ''; instalarDB(d);
   run(`
     window._contNav = document.createElement('div');
     document.getElementById = (id) => (id === 'contenido' ? window._contNav : null);

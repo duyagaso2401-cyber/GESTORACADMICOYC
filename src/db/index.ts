@@ -17,9 +17,56 @@ if (!connectionString) {
 // TLS, como el servicio `postgres` de `infra/docker-compose.yml`). Ver
 // src/lib/db-ssl.ts para el detalle completo. Comportamiento histórico
 // (SSL activado) intacto para quien no configure nada nuevo.
+//
+// RONDA 79 — TUNING DEL POOL PARA MITIGAR EL "CUELLO DE BOTELLA" REPORTADO
+// (timeouts masivos en /api/carga-docente, /api/permisos-docente,
+// /api/grados/:id/observador, /api/actividades-docente y /api/inetis/db,
+// que además SÍ funcionan al instante si el usuario reintenta manualmente).
+// Antes de esta ronda, `new Pool({...})` no fijaba NINGUNO de estos 3
+// valores — `pg` usaba sus defaults (`max: 10`, `connectionTimeoutMillis: 0`
+// = sin límite, `idleTimeoutMillis: 10000`):
+//   - `max: 10` es bajo para el patrón real de esta app: cada usuario con
+//     una pestaña abierta mantiene su propio ciclo de sincronización en
+//     segundo plano (ver `_syncInterval`, 03-app-core.js) + cada módulo que
+//     visita dispara su propia consulta granular — con varios
+//     usuarios/pestañas activos a la vez, 10 conexiones se agotan rápido, y
+//     una consulta que no consigue una conexión libre del pool queda
+//     ENCOLADA (esto es, en sí mismo, indistinguible de "Neon está lento"
+//     desde el punto de vista del usuario, aunque el cuello de botella real
+//     esté en el propio proceso Node, no en Neon).
+//   - `connectionTimeoutMillis: 0` (sin límite) significa que, si el pool
+//     SÍ está saturado, una consulta puede quedarse esperando una conexión
+//     libre INDEFINIDAMENTE, sin siquiera llegar a intentar la consulta —
+//     el temporizador de `conTimeout()`/`conTimeoutYReintento()` (Ronda
+//     77/78) NUNCA llega a arrancar porque la promesa de `db.select()` ni
+//     siquiera empieza a ejecutarse todavía (sigue en la cola del pool).
+//   - `idleTimeoutMillis: 10000` (10s) es agresivo: una conexión ociosa se
+//     cierra y hay que abrir una nueva (con su propio handshake TLS
+//     completo contra Neon) en cuanto vuelve a hacer falta — si el patrón
+//     de uso real tiene pausas de más de 10s entre peticiones (normal en
+//     una sesión de un docente navegando la interfaz), el pool termina
+//     reabriendo conexiones nuevas todo el tiempo en vez de reutilizar las
+//     que ya negociaron TLS.
+// Los 3 valores nuevos, según lo pedido:
+//   - `max: 20`: más margen para bursts de varios usuarios/pestañas a la
+//     vez sin encolar peticiones detrás de una cola de conexión agotada.
+//   - `connectionTimeoutMillis: 10000` (10s): si el pool SÍ llegara a
+//     saturarse, la espera por una conexión libre ahora tiene un límite
+//     razonable — falla con un error claro en vez de colgarse para
+//     siempre, y ese error SÍ es capturado por el mismo `catch` que ya
+//     maneja `TimeoutError` en cada endpoint (ver `_responderTimeoutBD`).
+//   - `idleTimeoutMillis: 30000` (30s): las conexiones ya negociadas
+//     (TLS incluido) se mantienen vivas y se reutilizan por más tiempo
+//     entre peticiones, evitando renegociar TLS en cada ráfaga de uso
+//     normal — este es el ajuste que más directamente reduce la latencia
+//     percibida de "abrir una conexión nueva" que el usuario reporta como
+//     traducirse en timeouts intermitentes.
 const pool = new Pool({
   connectionString,
   ssl: resolverSslPg(connectionString),
+  max: 20,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
 });
 
 // RONDA 49: se exporta el pool crudo (además de `db`) para que

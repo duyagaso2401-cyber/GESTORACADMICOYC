@@ -586,7 +586,7 @@ router.post('/contratos/:id/evaluar', requiereRol(['Rector', 'Directivo', 'Admin
             const passwordTemporal = generarTokenAcceso().slice(0, 10);
             blob.users.push({
               u: usuarioFinal,
-              p: hashPasswordServidor(passwordTemporal),
+              p: await hashPasswordServidor(passwordTemporal),
               n: contrato.nombreCompleto.toUpperCase(),
               r: 'docente',
               cedula: contrato.docenteCedula,
@@ -684,7 +684,7 @@ router.post('/contratos/acceso/login-institucional', async (req, res) => {
       return res.status(404).json({ ok: false, error: 'No fue posible leer la institución indicada.' });
     }
     const usuarioEncontrado = blob.users.find((u: any) => u && String(u.u || '') === usuarioLimpio);
-    if (!usuarioEncontrado || !verificarPasswordServidor(String(password), usuarioEncontrado.p)) {
+    if (!usuarioEncontrado || !(await verificarPasswordServidor(String(password), usuarioEncontrado.p))) {
       return res.status(401).json({ ok: false, error: 'Usuario o contraseña incorrectos.' });
     }
     // Solo docentes (y roles administrativos del propio colegio) pueden

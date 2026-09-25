@@ -13,7 +13,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources, ensureSchemaRedInterinstitucional, estudiantesIndiceRed, solicitudesTraslado, ensureSchemaRelacionalNotas, autoSeedSuperAdmin, estudiantesRel, materiasRel, calificacionesRel, migracionRelacionalNotas } from './db/index.js';
+import { db, pool, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources, ensureSchemaRedInterinstitucional, estudiantesIndiceRed, solicitudesTraslado, ensureSchemaRelacionalNotas, autoSeedSuperAdmin, estudiantesRel, materiasRel, calificacionesRel, migracionRelacionalNotas } from './db/index.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
@@ -36,7 +36,8 @@ import { GoogleGenAI } from '@google/genai';
 import { enviarPushParaNotificacion, VAPID_PUBLIC_KEY, PUSH_HABILITADO } from './lib/push-provider.js';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
-import { leerDbCacheado, guardarDbCache, invalidarDbCache, leerBlobInstitucion } from './lib/db-cache.js';
+import { leerDbCacheado, guardarDbCache, invalidarDbCache, leerBlobInstitucion, leerFilaKvStoreConDedup, TimeoutError } from './lib/db-cache.js';
+import { conTimeoutYReintento, TIMEOUT_CONSULTA_BD_MS } from './lib/timeout.js';
 import { emitirTokenRestablecimiento, verificarYConsumirTokenRestablecimiento, hashPasswordServidor, verificarPasswordServidor, limpiarTokensRestablecimientoExpirados } from './lib/reset-tokens.js';
 import { verificarFirmaWompi, verificarFirmaMercadoPago, verificarFirmaStripe, normalizarEstadoPago, parsearReferenciaPago, type ReferenciaPago } from './lib/pagos-webhooks.js';
 import { cloudinaryConfigurado } from './lib/cloudinary.js';
@@ -643,6 +644,30 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString(), ...estado });
 });
 
+// ── RONDA 80 · PRE-WARM DEL POOL DE POSTGRES ────────────────────────────────
+// /api/health de arriba es DELIBERADAMENTE liviano (no toca Neon), así que no
+// sirve para "calentar" el pool antes del login. Este endpoint SÍ toma
+// prestada una conexión real del pool (una consulta trivial `SELECT 1`, sin
+// tocar ninguna tabla) para que, cuando el usuario recién ve el formulario de
+// login y todavía está escribiendo su clave, el pool ya tenga una conexión
+// lista/reciente en vez de tener que abrir una desde cero (handshake TCP +
+// TLS + autenticación) justo en el momento crítico de presionar "Ingresar".
+// Es intencionalmente best-effort: el frontend lo dispara en segundo plano
+// (fire-and-forget) al pintar la pantalla de login y nunca espera su
+// respuesta ni bloquea nada si falla o tarda.
+app.get('/api/inetis/prewarm', async (_req, res) => {
+  try {
+    const inicio = Date.now();
+    await pool.query('SELECT 1');
+    res.json({ ok: true, ms: Date.now() - inicio });
+  } catch (e) {
+    // Un fallo aquí no debe alarmar a nadie: es solo un intento de
+    // "calentar" la conexión, el login real hará su propio intento con sus
+    // propios timeouts/reintentos de todas formas.
+    res.json({ ok: false });
+  }
+});
+
 app.get('/api/inetis/events', (req, res) => {
   const sk = String(req.query.sk || '');
   if (!sk) { res.status(400).json({ error: 'sk requerido' }); return; }
@@ -743,9 +768,29 @@ app.post('/api/auth/login', async (req, res) => {
     if (!sk || !u || !p) return res.status(400).json({ error: 'Faltan datos (sk, u, p).' });
     const estado = await verificarEstadoInstitucion(sk);
     if (!estado.ok) return res.status(403).json({ error: estado.motivo });
-    const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
-    if (!rows.length) return res.status(404).json({ error: 'Institución no encontrada.' });
-    const platDB: any = rows[0].value || {};
+    // RONDA 80 — este endpoint hacía su propia lectura de kv_store directa
+    // (db.select(...)), por fuera de la caché de 5s / deduplicación de
+    // lecturas concurrentes / timeout+reintento por arranque en frío que ya
+    // protegen a /api/inetis/db y a las 15 rutas granulares desde la Ronda
+    // 79. Eso lo dejaba fuera de esas protecciones justo en el endpoint más
+    // sensible a la latencia (login): si el pool estaba "frío", esta
+    // consulta podía tardar sin el reintento automático de
+    // conTimeoutYReintento, y si dos pestañas/usuarios intentaban entrar a
+    // la misma institución al mismo tiempo con la caché vacía, cada una
+    // disparaba su propia consulta a Neon en vez de compartir una sola (ver
+    // leerFilaKvStoreConDedup). Se alinea aquí con el mismo mecanismo.
+    const resultado = await leerFilaKvStoreConDedup(sk, () =>
+      conTimeoutYReintento(
+        async () => {
+          const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+          return { value: rows.length ? rows[0].value : null, updatedAt: rows.length ? rows[0].updatedAt : null, existe: rows.length > 0 };
+        },
+        TIMEOUT_CONSULTA_BD_MS,
+        'Timeout consultando kv_store (POST /api/auth/login)'
+      )
+    );
+    if (!resultado.existe) return res.status(404).json({ error: 'Institución no encontrada.' });
+    const platDB: any = resultado.value || {};
     const uStr = String(u), pStr = String(p);
 
     // Mismo orden de prioridad server-side que ya usa doLoginInstitucional()
@@ -753,14 +798,14 @@ app.post('/api/auth/login', async (req, res) => {
     // frontend porque esta es ahora la fuente de verdad que queda firmada.
     // 1) Personal institucional (cualquier rol de staff), usuario exacto.
     const staffUser = (platDB.users || []).find((x: any) => x.u === uStr && x.r !== 'elecciones');
-    if (staffUser && verificarPasswordServidor(pStr, staffUser.p)) {
+    if (staffUser && await verificarPasswordServidor(pStr, staffUser.p)) {
       const token = firmarJWT({ sub: uStr, sk, rol: staffUser.r, rolEspecifico: staffUser.rolEspecifico || undefined, nombre: staffUser.n || '' });
       return res.json({ ok: true, token, rol: staffUser.r, rolEspecifico: staffUser.rolEspecifico || null });
     }
     // 2) Módulo de Elecciones.
     if (uStr === 'elecciones') {
       const eu = (platDB.users || []).find((x: any) => x.r === 'elecciones');
-      if (eu && verificarPasswordServidor(pStr, eu.p)) {
+      if (eu && await verificarPasswordServidor(pStr, eu.p)) {
         const token = firmarJWT({ sub: 'elecciones', sk, rol: 'elecciones', nombre: 'MÓDULO ELECCIONES' });
         return res.json({ ok: true, token, rol: 'elecciones', rolEspecifico: null });
       }
@@ -804,21 +849,40 @@ app.get('/api/inetis/db', async (req, res) => {
     }
     // PILAR 2 (rendimiento): caché en memoria de 5s — ver src/lib/db-cache.ts.
     // Evita golpear Neon en cada sincronización periódica cuando nada cambió.
-    let filaValue: any;
-    let filaUpdatedAt: Date | null;
-    let filaExiste: boolean;
-    const cacheada = leerDbCacheado(sk);
-    if (cacheada) {
-      filaValue = cacheada.value;
-      filaUpdatedAt = cacheada.updatedAt;
-      filaExiste = cacheada.existe;
-    } else {
-      const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
-      filaExiste = rows.length > 0;
-      filaValue = filaExiste ? rows[0].value : null;
-      filaUpdatedAt = filaExiste ? rows[0].updatedAt : null;
-      guardarDbCache(sk, filaValue, filaUpdatedAt, filaExiste);
-    }
+    //
+    // RONDA 79 — DEDUPLICACIÓN DE LECTURAS CONCURRENTES: `leerFilaKvStoreConDedup()`
+    // (src/lib/db-cache.ts) resuelve tanto la caché de 5s de arriba COMO el
+    // caso, confirmado por el usuario en terminal, de varias peticiones
+    // (/api/inetis/db, /api/carga-docente, /api/permisos-docente,
+    // /api/grados/:id/observador, /api/actividades-docente) golpeando Neon
+    // AL MISMO TIEMPO para la MISMA institución justo cuando la caché todavía
+    // está vacía (típicamente tras un período de inactividad, cuando Neon
+    // puede estar en "cold start"): si otra de esas peticiones ya inició una
+    // lectura para este mismo "sk" y sigue en vuelo, esta la espera y
+    // reutiliza en vez de abrir una segunda consulta redundante.
+    //
+    // RONDA 77/78 — TIMEOUT + REINTENTO POR ARRANQUE EN FRÍO: la función que
+    // se le pasa a `leerFilaKvStoreConDedup()` sigue siendo la única que de
+    // verdad ejecuta la consulta (nunca se invoca más de una vez a la vez
+    // para el mismo "sk") y sigue envuelta en `conTimeoutYReintento()`: si
+    // el primer intento agota los 12s por un cold start, se espera 3s y se
+    // reintenta UNA vez más antes de responder 503 — y, gracias al dedup,
+    // CUALQUIER otro endpoint que estuviera esperando esta misma lectura se
+    // beneficia de ese mismo reintento sin disparar el suyo propio.
+    const resultado = await leerFilaKvStoreConDedup(sk, () =>
+      conTimeoutYReintento(
+        async () => {
+          const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+          const existe = rows.length > 0;
+          return { value: existe ? rows[0].value : null, updatedAt: existe ? rows[0].updatedAt : null, existe };
+        },
+        TIMEOUT_CONSULTA_BD_MS,
+        'Timeout consultando kv_store (GET /api/inetis/db)'
+      )
+    );
+    const filaValue = resultado.value;
+    const filaUpdatedAt = resultado.updatedAt;
+    const filaExiste = resultado.existe;
     if (!filaExiste) return res.json({ data: null, version: null });
     const version = filaUpdatedAt ? filaUpdatedAt.toISOString() : null;
     // Petición condicional: si el navegador ya tiene esta misma versión (se
@@ -840,6 +904,7 @@ app.get('/api/inetis/db', async (req, res) => {
     if (version) res.setHeader('ETag', `"${version}"`);
     return res.json({ data: filaValue, version });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/inetis/db');
     console.error('GET /api/inetis/db', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -863,13 +928,41 @@ app.get('/api/inetis/db', async (req, res) => {
 // CHECKLIST_DESPLIEGUE.md, Ronda 44, Dimensión 1.
 // ════════════════════════════════════════════════════════════════════════
 async function _leerBlobInstitucionParaFragmento(sk: string): Promise<any | null> {
-  const cacheada = leerDbCacheado(sk);
-  if (cacheada) return cacheada.existe ? cacheada.value : null;
-  const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
-  const existe = rows.length > 0;
-  const value = existe ? rows[0].value : null;
-  guardarDbCache(sk, value, existe ? rows[0].updatedAt : null, existe);
-  return value;
+  // RONDA 77 — TIMEOUT DE SEGURIDAD: esta función es el punto de entrada
+  // COMPARTIDO de TODOS los endpoints granulares (Observador, Asistencia,
+  // Actividades del Docente, Permisos, Carga Académica, Notas de
+  // Actividades, etc. — ver los comentarios de Ronda 44/45 más abajo). Antes
+  // de esta ronda, si Neon estaba lento, un solo golpe de latencia dejaba
+  // colgada CUALQUIER vista que dependiera de este helper, sin importar cuál
+  // fuera. Ahora, si la consulta no responde dentro de TIMEOUT_CONSULTA_BD_MS,
+  // se propaga un TimeoutError — CADA endpoint que llama a esta función lo
+  // atrapa explícitamente en su catch (ver _responderTimeoutBD) para
+  // responder rápido y con un mensaje claro, en vez de dejar la petición
+  // del navegador esperando indefinidamente.
+  //
+  // RONDA 79 — DEDUPLICACIÓN + REINTENTO POR ARRANQUE EN FRÍO: al ser el
+  // punto de entrada COMPARTIDO por todos los granulares, es exactamente
+  // donde varias peticiones simultáneas (ej. /api/carga-docente y
+  // /api/grados/:id/observador pedidos casi a la vez al entrar a un módulo)
+  // pueden terminar disparando, cada una, su propia consulta idéntica a
+  // Neon para el mismo "sk". `leerFilaKvStoreConDedup()` (src/lib/db-cache.ts)
+  // colapsa esas peticiones en UNA sola consulta real en vuelo — y ahora
+  // también usa `conTimeoutYReintento()` (antes `conTimeout()` simple) para
+  // tolerar el mismo cold start de Neon que ya se mitigó en GET
+  // /api/inetis/db (Ronda 78): un timeout aquí ya no es definitivo, se
+  // reintenta una vez tras 3s antes de propagar el TimeoutError.
+  const resultado = await leerFilaKvStoreConDedup(sk, () =>
+    conTimeoutYReintento(
+      async () => {
+        const rows = await db.select().from(kvStore).where(eq(kvStore.key, sk));
+        const existe = rows.length > 0;
+        return { value: existe ? rows[0].value : null, updatedAt: existe ? rows[0].updatedAt : null, existe };
+      },
+      TIMEOUT_CONSULTA_BD_MS,
+      'Timeout consultando kv_store (_leerBlobInstitucionParaFragmento)'
+    )
+  );
+  return resultado.existe ? resultado.value : null;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -911,6 +1004,22 @@ function _responderConETag(req: express.Request, res: express.Response, payload:
   return res.status(200).send(cuerpo);
 }
 
+// RONDA 77 — respuesta RÁPIDA y consistente cuando conTimeout() corta una
+// consulta a Neon que estaba tardando demasiado (ver TIMEOUT_CONSULTA_BD_MS
+// en src/lib/timeout.ts). 503 (Service Unavailable) es más preciso que un
+// 500 genérico: le dice al cliente "la base de datos remota está lenta
+// ahora mismo, puede reintentar" en vez de "el servidor tiene un bug". El
+// frontend (_fetchConTimeout(), 03-app-core.js) además tiene su PROPIO
+// timeout independiente del lado del cliente, así que incluso si este
+// mensaje nunca llegara a tiempo, el navegador igual deja de esperar.
+function _responderTimeoutBD(res: express.Response, endpoint: string): express.Response {
+  console.error(`[timeout] ${endpoint}: la base de datos remota (Neon) tardó más de ${TIMEOUT_CONSULTA_BD_MS}ms en responder.`);
+  return res.status(503).json({
+    error: 'La base de datos remota está tardando demasiado en responder. Intente de nuevo en un momento.',
+    timeout: true,
+  });
+}
+
 async function _institucionYaMigradaRelacional(sk: string): Promise<boolean> {
   try {
     await _asegurarSchemaRelNotas();
@@ -935,6 +1044,7 @@ app.get('/api/grados', async (req, res) => {
     if (!blob) return _responderConETag(req, res, { grados: [], fuente: 'blob' });
     return _responderConETag(req, res, { grados: (blob.grados || []).map((g: any) => ({ n: g.n })), fuente: 'blob' });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/grados');
     console.error('GET /api/grados', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1019,6 +1129,7 @@ app.get('/api/grados/:id/estudiantes', async (req, res) => {
     const pag = _paginar(todos, req.query.page, req.query.limit);
     return _responderConETag(req, res, { estudiantes: pag.items, fuente: 'blob', page: pag.page, limit: pag.limit, total: pag.total, hasMore: pag.hasMore });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/grados/:id/estudiantes');
     console.error('GET /api/grados/:id/estudiantes', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1046,6 +1157,7 @@ app.get('/api/usuarios-credenciales', async (req, res) => {
     const docentes = users.filter((u) => u.r === 'docente').map(proj);
     return _responderConETag(req, res, { administradores, docentes });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/usuarios-credenciales');
     console.error('GET /api/usuarios-credenciales', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1079,6 +1191,7 @@ app.get('/api/institucion', async (req, res) => {
     campos.forEach((c) => { info[c] = (blob as any)[c] ?? ''; });
     return _responderConETag(req, res, info);
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/institucion');
     console.error('GET /api/institucion', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1103,6 +1216,7 @@ app.get('/api/horarios', async (req, res) => {
     if (!blob) return _responderConETag(req, res, { horarios: {}, horConfig: null });
     return _responderConETag(req, res, { horarios: blob.horarios || {}, horConfig: blob.horConfig || null });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/horarios');
     console.error('GET /api/horarios', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1130,6 +1244,7 @@ app.get('/api/cronograma', async (req, res) => {
       numPeriodos: (blob.config && blob.config.numPeriodos) || 4,
     });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/cronograma');
     console.error('GET /api/cronograma', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1230,6 +1345,7 @@ app.get('/api/gestor/plataformas-stats', async (req, res) => {
     );
     return _responderConETag(req, res, { stats });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/gestor/plataformas-stats');
     console.error('GET /api/gestor/plataformas-stats', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1263,6 +1379,7 @@ app.get('/api/grados/:id/materias/:materiaId/notas', async (req, res) => {
       .map((e: any) => ({ estId: e.id, n: e.n, notas: (e.nts && e.nts[materiaId]) || {} }));
     return _responderConETag(req, res, { notas, fuente: 'blob' });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/grados/:id/materias/:materiaId/notas');
     console.error('GET /api/grados/:id/materias/:materiaId/notas', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1324,6 +1441,7 @@ app.get('/api/carga-docente', async (req, res) => {
     }
     return _responderConETag(req, res, payload);
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/carga-docente');
     console.error('GET /api/carga-docente', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1360,6 +1478,7 @@ app.get('/api/grados/:id/notas-completas', async (req, res) => {
       periodosActivos: blob.periodosActivos || null,
     });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/grados/:id/notas-completas');
     console.error('GET /api/grados/:id/notas-completas', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1411,6 +1530,7 @@ app.get('/api/notas-actividades', async (req, res) => {
       : [];
     return _responderConETag(req, res, { estudiantes, columnas, notasAct, notasActAsignadas: { [claveAsignadas]: colIds } });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/notas-actividades');
     console.error('GET /api/notas-actividades', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1439,6 +1559,7 @@ app.get('/api/grados/:id/observador', async (req, res) => {
       .map((e: any) => ({ id: e.id, n: e.n, foto: e.foto || null, g: e.g, observaciones: e.observaciones || [] }));
     return _responderConETag(req, res, { estudiantes });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/grados/:id/observador');
     console.error('GET /api/grados/:id/observador', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1470,6 +1591,7 @@ app.get('/api/asistencia', async (req, res) => {
       .slice(0, LIMITE_ASISTENCIA_REGISTROS);
     return _responderConETag(req, res, { estudiantes, registros });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/asistencia');
     console.error('GET /api/asistencia', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1505,6 +1627,7 @@ app.get('/api/actividades-docente', async (req, res) => {
     const planeacionesIA = (blob.planeacionesIA || []).filter((p: any) => p.docente === docente || !p.docente);
     return _responderConETag(req, res, { actividades, actEntregas, leccionario, planeacionesIA });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/actividades-docente');
     console.error('GET /api/actividades-docente', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -1526,6 +1649,7 @@ app.get('/api/permisos-docente', async (req, res) => {
     const ausentismos = (blob.ausentismos || []).filter((s: any) => s.doc === docente);
     return _responderConETag(req, res, { ausentismos });
   } catch (e) {
+    if (e instanceof TimeoutError) return _responderTimeoutBD(res, 'GET /api/permisos-docente');
     console.error('GET /api/permisos-docente', e);
     return res.status(500).json({ error: 'Error interno' });
   }
@@ -3037,7 +3161,7 @@ app.post('/api/perfil/verificar-password', async (req, res) => {
     const inst: any = rows[0]?.value || null;
     const usuario = inst?.users?.find((x: any) => String(x.u) === String(userU));
     if (!usuario) return res.status(404).json({ ok: false, error: 'Usuario no encontrado.' });
-    const correcta = verificarPasswordServidor(String(passwordActual), String(usuario.p || ''));
+    const correcta = await verificarPasswordServidor(String(passwordActual), String(usuario.p || ''));
     return res.json({ ok: true, correcta });
   } catch (e) {
     console.error('POST /api/perfil/verificar-password', e);
@@ -3486,7 +3610,7 @@ app.post('/api/inetis/auth/restablecer/confirmar', async (req, res) => {
     const blob: any = filas[0].value;
     const idx = Array.isArray(blob.users) ? blob.users.findIndex((u: any) => u && u.u === payload.usuario) : -1;
     if (idx === -1) return res.status(404).json({ ok: false, error: 'La cuenta ya no existe.' });
-    blob.users[idx].p = hashPasswordServidor(String(nuevaPassword));
+    blob.users[idx].p = await hashPasswordServidor(String(nuevaPassword));
     const nowTs = new Date();
     await db
       .insert(kvStore)
@@ -3596,7 +3720,7 @@ app.post('/api/inetis/auth/invitacion/registrar', async (req, res) => {
     }
     blob.users.push({
       u: String(u),
-      p: hashPasswordServidor(String(p)),
+      p: await hashPasswordServidor(String(p)),
       n: String(n),
       r: entrada.rol,
       correo: correo ? String(correo) : '',

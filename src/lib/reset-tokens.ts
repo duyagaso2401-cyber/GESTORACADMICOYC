@@ -163,20 +163,48 @@ export async function limpiarTokensRestablecimientoExpirados(): Promise<number> 
   return vencidas.length;
 }
 
+// RONDA 80 — PBKDF2 ASÍNCRONO (NO BLOQUEANTE). El usuario reportó tardanza
+// al validar credenciales en el portal de login y pidió revisar el costo
+// del hashing. Este proyecto NO usa bcrypt/argon2 (ver el comentario de
+// diseño más arriba) sino PBKDF2-HMAC-SHA256 con 100.000 iteraciones — un
+// costo perfectamente razonable y recomendado (OWASP sugiere justamente
+// este rango para PBKDF2-SHA256); BAJARLO "para desarrollo" debilitaría de
+// verdad la protección contra fuerza bruta si ese cambio se filtrara a
+// producción por descuido, así que NO se tocó el número de iteraciones.
+//
+// El problema real no era CUÁNTO cuesta la verificación (unas pocas
+// decenas de milisegundos), sino QUE BLOQUEABA el hilo único de Node:
+// `crypto.pbkdf2Sync(...)` es síncrono — mientras corre, el proceso entero
+// no puede atender NINGUNA otra petición (otros logins, /api/inetis/db,
+// etc.), así que bajo varias peticiones concurrentes (exactamente el
+// patrón de pruebas locales de las rondas anteriores) los tiempos se
+// acumulan uno detrás de otro. La solución que preserva la seguridad
+// intacta es usar la versión ASÍNCRONA `crypto.pbkdf2` (basada en el
+// thread pool de libuv, fuera del hilo principal): mismo algoritmo, mismo
+// salt, MISMAS 100.000 iteraciones, mismo formato de salida — cero cambio
+// de seguridad — pero ya no bloquea el event loop mientras se calcula.
+function _pbkdf2Async(password: string, salt: Buffer, iteraciones: number, longitud: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    crypto.pbkdf2(password, salt, iteraciones, longitud, 'sha256', (err, derivado) => {
+      if (err) reject(err); else resolve(derivado);
+    });
+  });
+}
+
 /**
  * Genera un hash de contraseña en el MISMO formato que produce el frontend
  * (PBKDF2-HMAC-SHA256, 100000 iteraciones, salt de 16 bytes, formato
  * "pbkdf2$<saltHex>$<hashHex>" — ver _hashPassword() en 03-app-core.js).
- * Se usa Node "crypto".pbkdf2Sync (nativo, sin dependencias nuevas) en vez
- * de Web Crypto (que no existe en Node en todas las versiones soportadas);
- * el algoritmo PBKDF2-HMAC-SHA256 es un estándar y produce el mismo
- * resultado en ambos lados para las mismas entradas, así que una contraseña
- * fijada por el servidor con esta función es reconocida sin problema por
- * _verificarPassword() en el navegador al iniciar sesión.
+ * Se usa Node "crypto".pbkdf2 asíncrono (Ronda 80 — ver comentario arriba)
+ * en vez de Web Crypto (que no existe en Node en todas las versiones
+ * soportadas); el algoritmo PBKDF2-HMAC-SHA256 es un estándar y produce el
+ * mismo resultado en ambos lados para las mismas entradas, así que una
+ * contraseña fijada por el servidor con esta función es reconocida sin
+ * problema por _verificarPassword() en el navegador al iniciar sesión.
  */
-export function hashPasswordServidor(password: string): string {
+export async function hashPasswordServidor(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
-  const hash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+  const hash = await _pbkdf2Async(password, salt, 100000, 32);
   return 'pbkdf2$' + salt.toString('hex') + '$' + hash.toString('hex');
 }
 
@@ -192,16 +220,20 @@ export function hashPasswordServidor(password: string): string {
  * en el resto del sistema. Comparación en tiempo constante para evitar
  * ataques de temporización. Nunca lanza: ante cualquier entrada inválida
  * devuelve simplemente `false`.
+ *
+ * RONDA 80 — ahora ASÍNCRONA (ver el comentario junto a `_pbkdf2Async`):
+ * MISMO algoritmo/iteraciones/formato de siempre, ya no bloquea el event
+ * loop mientras calcula. Todos los llamadores (POST /api/auth/login y el
+ * resto de endpoints que verifican contraseña) ahora hacen `await`.
  */
-export function verificarPasswordServidor(passwordIngresada: string, valorGuardado: string | null | undefined): boolean {
+export async function verificarPasswordServidor(passwordIngresada: string, valorGuardado: string | null | undefined): Promise<boolean> {
   try {
     if (!valorGuardado) return false;
     const esHash = typeof valorGuardado === 'string' && valorGuardado.indexOf('pbkdf2$') === 0 && valorGuardado.split('$').length === 3;
     if (!esHash) return passwordIngresada === valorGuardado;
     const partes = valorGuardado.split('$');
     const salt = Buffer.from(partes[1], 'hex');
-    const derivado = crypto.pbkdf2Sync(passwordIngresada, salt, 100000, 32, 'sha256');
-    const bufDerivado = derivado;
+    const bufDerivado = await _pbkdf2Async(passwordIngresada, salt, 100000, 32);
     const bufGuardado = Buffer.from(partes[2], 'hex');
     if (bufDerivado.length !== bufGuardado.length || !bufDerivado.length) return false;
     return crypto.timingSafeEqual(bufDerivado, bufGuardado);

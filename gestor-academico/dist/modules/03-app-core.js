@@ -1155,20 +1155,74 @@ async function _resolverConflictoDB(conflicto,_sk){
     // memoria y se reintentará en el próximo guardado o sincronización.
   }
 }
-async function _pullDB(){
+// RONDA 77 — TIMEOUT DE SEGURIDAD en las peticiones de LECTURA granular
+// (_pullDB y todos los "_cargar...Granular()" de abajo) hacia el backend.
+// Se reportó lentitud/congelamiento extremo al navegar entre módulos
+// (Observador, Asistencia, Documentos, Actas, etc.) cuando la base de datos
+// remota (Neon) sufre latencia: antes, un simple fetch() sin límite de
+// tiempo podía quedarse esperando indefinidamente si la red o la BD en la
+// nube tardaban demasiado — con el skeleton (Ronda 75/76) ya garantizado
+// para desmontarse SIEMPRE que la promesa de la que depende finalmente se
+// resuelva o rechace, pero si esa promesa nunca termina, el skeleton igual
+// queda esperando para siempre.
+// _fetchConTimeout() usa AbortController para cancelar la petición si tarda
+// más de "ms" (por defecto 7000ms, dentro del rango de 5-8s pedido) y
+// SIEMPRE resuelve (nunca queda colgada): ante un timeout devuelve un
+// objeto compatible con la forma mínima que ya esperan estos llamadores
+// (r.ok===false), así el código existente cae automáticamente por su MISMO
+// camino de fallback ya probado (fallback a _pullDB(), o a los datos ya
+// presentes en memoria/localStorage) sin necesitar ningún cambio adicional
+// en cada función — es un reemplazo transparente de "fetch(...)".
+const TIMEOUT_FETCH_GRANULAR_MS = 7000;
+async function _fetchConTimeout(url, opts, ms){
+  const limiteMs = ms || TIMEOUT_FETCH_GRANULAR_MS;
+  const controlador = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  const opcionesFinales = controlador ? Object.assign({}, opts||{}, {signal:controlador.signal}) : (opts||{});
+  let temporizador = null;
   try{
-    const _sk=window._currentPlatSK||SK||GESTOR_SK;
-    const r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(_sk));
-    if(r.ok){const j=await r.json();if(j&&j.data){
-      db=_migrateDB(j.data);
-      window._dbVersion=j.version||null;
-      window._dbBaseSnapshot=_clonarDB(db);
-      // RONDA 58 — _pullDB() siempre trae el blob COMPLETO: a partir de aquí
-      // "db" deja de ser parcial, sin importar qué camino granular se haya
-      // usado antes. Ver _dbGranularSolamente más abajo.
-      window._dbGranularSolamente=false;
-      try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}return true;}}
-  }catch(e){}return false;
+    const carrera = [ fetch(url, opcionesFinales) ];
+    const promesaTimeout = new Promise((resolve)=>{
+      temporizador = setTimeout(()=>{
+        if(controlador) { try{ controlador.abort(); }catch(e){} }
+        resolve({ ok:false, status:0, _timeout:true, json: async()=>({}), text: async()=>'' });
+      }, limiteMs);
+    });
+    carrera.push(promesaTimeout);
+    return await Promise.race(carrera);
+  }catch(e){
+    // Cualquier error de red (no solo el timeout) también resuelve como
+    // "no ok" en vez de propagar la excepción — mismo contrato que ya
+    // asumen todos los llamadores actuales (if(!r.ok) return false;).
+    return { ok:false, status:0, _error:true, json: async()=>({}), text: async()=>'' };
+  }finally{
+    if(temporizador) clearTimeout(temporizador);
+  }
+}
+// RONDA 78 — "SINGLE-FLIGHT": si ya hay un _pullDB() en curso (por ejemplo,
+// el sync en segundo plano lo disparó justo cuando el usuario navegó a un
+// módulo que también lo necesita), NINGÚN llamador adicional debe iniciar
+// una petición HTTP nueva y paralela contra /api/inetis/db — todos deben
+// esperar y compartir la MISMA promesa/resultado. Esto es justo lo que el
+// usuario pidió: evitar que /api/inetis/db se dispare varias veces a la vez
+// justo cuando Neon puede estar en "cold start" (más lenta de lo normal).
+async function _pullDB(){
+  if(window._pullDBEnVuelo) return window._pullDBEnVuelo;
+  window._pullDBEnVuelo=(async()=>{
+    try{
+      const _sk=window._currentPlatSK||SK||GESTOR_SK;
+      const r=await _fetchConTimeout(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(_sk));
+      if(r.ok){const j=await r.json();if(j&&j.data){
+        db=_migrateDB(j.data);
+        window._dbVersion=j.version||null;
+        window._dbBaseSnapshot=_clonarDB(db);
+        // RONDA 58 — _pullDB() siempre trae el blob COMPLETO: a partir de aquí
+        // "db" deja de ser parcial, sin importar qué camino granular se haya
+        // usado antes. Ver _dbGranularSolamente más abajo.
+        window._dbGranularSolamente=false;
+        try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}return true;}}
+    }catch(e){}return false;
+    })().finally(function(){ window._pullDBEnVuelo=null; });
+  return window._pullDBEnVuelo;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1229,6 +1283,15 @@ function _fusionarCargaEnDB(cargasNuevas){
 }
 async function _cargarPlanillaGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion) return false;
     // RONDA 61 — Front 2: además de Docente (sesion.r==='docente', consulta
@@ -1240,7 +1303,7 @@ async function _cargarPlanillaGranular(){
     // — el filtro de institución ("sk") sigue siendo obligatorio siempre.
     const _esAdminVista=sesion.r==='admin';
     if(!_esAdminVista&&sesion.r!=='docente') return false;
-    const rCarga=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+(_esAdminVista?'':'&docente='+encodeURIComponent(sesion.u)));
+    const rCarga=await _fetchConTimeout(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+(_esAdminVista?'':'&docente='+encodeURIComponent(sesion.u)));
     if(!rCarga.ok) return false;
     const jCarga=await rCarga.json();
     const cargaDocente=jCarga.carga||[];
@@ -1249,7 +1312,7 @@ async function _cargarPlanillaGranular(){
     if(!cargaObjetivo) cargaObjetivo=cargaDocente[0];
     if(!cargaObjetivo) return false;
     const grado=cargaObjetivo.g;
-    const rGrado=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(grado)+'/notas-completas?sk='+encodeURIComponent(_sk));
+    const rGrado=await _fetchConTimeout(API_BASE+'/api/grados/'+encodeURIComponent(grado)+'/notas-completas?sk='+encodeURIComponent(_sk));
     if(!rGrado.ok) return false;
     const jGrado=await rGrado.json();
     _fusionarCargaEnDB(cargaDocente);
@@ -1280,6 +1343,15 @@ async function _cargarPlanillaGranular(){
 // cId_per solicitado.
 async function _cargarNotasActividadesGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion) return false;
     // RONDA 61 — Front 2: ver el comentario equivalente en
@@ -1287,7 +1359,7 @@ async function _cargarNotasActividadesGranular(){
     // también deja a un Admin elegir cualquier carga en su <select>).
     const _esAdminVista=sesion.r==='admin';
     if(!_esAdminVista&&sesion.r!=='docente') return false;
-    const rCarga=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+(_esAdminVista?'':'&docente='+encodeURIComponent(sesion.u)));
+    const rCarga=await _fetchConTimeout(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+(_esAdminVista?'':'&docente='+encodeURIComponent(sesion.u)));
     if(!rCarga.ok) return false;
     const jCarga=await rCarga.json();
     const cargaDocente=jCarga.carga||[];
@@ -1297,7 +1369,7 @@ async function _cargarNotasActividadesGranular(){
     if(!cargaObjetivo) return false;
     if(!notaActCId) notaActCId=String(cargaObjetivo.id);
     const cId=notaActCId,per=notaActPer||'1';
-    const rNac=await fetch(API_BASE+'/api/notas-actividades?sk='+encodeURIComponent(_sk)+'&cId='+encodeURIComponent(cId)+'&per='+encodeURIComponent(per));
+    const rNac=await _fetchConTimeout(API_BASE+'/api/notas-actividades?sk='+encodeURIComponent(_sk)+'&cId='+encodeURIComponent(cId)+'&per='+encodeURIComponent(per));
     if(!rNac.ok) return false;
     const jNac=await rNac.json();
     _fusionarCargaEnDB(cargaDocente);
@@ -1318,9 +1390,18 @@ async function _cargarNotasActividadesGranular(){
 // igual, sobre el mismo arreglo, sin tocar esa lógica.
 async function _cargarObservadorGranular(grado){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='docente'||!grado) return false;
-    const rObs=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(grado)+'/observador?sk='+encodeURIComponent(_sk));
+    const rObs=await _fetchConTimeout(API_BASE+'/api/grados/'+encodeURIComponent(grado)+'/observador?sk='+encodeURIComponent(_sk));
     if(!rObs.ok) return false;
     const jObs=await rObs.json();
     _fusionarEstudiantesEnDB(grado,jObs.estudiantes||[]);
@@ -1339,9 +1420,18 @@ function _fusionarAsistenciaEnDB(grado,cargaId,registrosNuevos){
 }
 async function _cargarAsistenciaGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='docente') return false;
-    const rCarga=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
+    const rCarga=await _fetchConTimeout(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
     if(!rCarga.ok) return false;
     const jCarga=await rCarga.json();
     const cargaDocente=jCarga.carga||[];
@@ -1352,7 +1442,7 @@ async function _cargarAsistenciaGranular(){
     let cargaObjetivo=asistCId?cargasGrado.find(c=>String(c.id)===String(asistCId)):null;
     if(!cargaObjetivo) cargaObjetivo=cargasGrado[0]||null;
     if(cargaObjetivo) asistCId=String(cargaObjetivo.id);
-    const rAsist=await fetch(API_BASE+'/api/asistencia?sk='+encodeURIComponent(_sk)+'&grado='+encodeURIComponent(asistGrado)+(asistCId?'&cargaId='+encodeURIComponent(asistCId):''));
+    const rAsist=await _fetchConTimeout(API_BASE+'/api/asistencia?sk='+encodeURIComponent(_sk)+'&grado='+encodeURIComponent(asistGrado)+(asistCId?'&cargaId='+encodeURIComponent(asistCId):''));
     if(!rAsist.ok) return false;
     const jAsist=await rAsist.json();
     _fusionarCargaEnDB(cargaDocente);
@@ -1388,9 +1478,18 @@ function _fusionarColeccionPorFiltro(clave,filtroDeReemplazo,itemsNuevos){
 // el endpoint devuelve.
 async function _cargarActividadesDocenteGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='docente') return false;
-    const r=await fetch(API_BASE+'/api/actividades-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
+    const r=await _fetchConTimeout(API_BASE+'/api/actividades-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
     if(!r.ok) return false;
     const j=await r.json();
     const gradosDoc=typeof gradosDelDocente==='function'?gradosDelDocente(sesion.u):[];
@@ -1407,9 +1506,18 @@ async function _cargarActividadesDocenteGranular(){
 // estrictamente por "s.doc===sesion.u" — sin ninguna dependencia cruzada.
 async function _cargarPermisosDocenteGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='docente') return false;
-    const r=await fetch(API_BASE+'/api/permisos-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
+    const r=await _fetchConTimeout(API_BASE+'/api/permisos-docente?sk='+encodeURIComponent(_sk)+'&docente='+encodeURIComponent(sesion.u));
     if(!r.ok) return false;
     const j=await r.json();
     _fusionarColeccionPorFiltro('ausentismos',s=>s.doc===sesion.u,j.ausentismos||[]);
@@ -1463,15 +1571,24 @@ window._admEstPagInfo=null;
 // GET /api/grados es liviano y se consulta primero en ambos casos.
 async function _cargarEstudiantesAdminGranular(grado,pagina){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='admin') return false;
-    const rGrados=await fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk));
+    const rGrados=await _fetchConTimeout(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk));
     if(!rGrados.ok) return false;
     const jGrados=await rGrados.json();
     _fusionarGradosEnDB(jGrados.grados||[]);
     const gradoObjetivo=grado||(jGrados.grados||[])[0]?.n;
     if(!gradoObjetivo) return false;
-    const rEst=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(gradoObjetivo)+'/estudiantes?sk='+encodeURIComponent(_sk)+'&full=1&page='+encodeURIComponent(pagina||1)+'&limit=30');
+    const rEst=await _fetchConTimeout(API_BASE+'/api/grados/'+encodeURIComponent(gradoObjetivo)+'/estudiantes?sk='+encodeURIComponent(_sk)+'&full=1&page='+encodeURIComponent(pagina||1)+'&limit=30');
     if(!rEst.ok) return false;
     const jEst=await rEst.json();
     _fusionarEstudiantesEnDB(gradoObjetivo,jEst.estudiantes||[]);
@@ -1522,9 +1639,18 @@ function _fusionarPersonalDocenteEnDB(personalNuevo){
 }
 async function _cargarCargaAcademicaAdminGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='admin') return false;
-    const r=await fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&incluirPersonal=1');
+    const r=await _fetchConTimeout(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&incluirPersonal=1');
     if(!r.ok) return false;
     const j=await r.json();
     // Reemplazo completo (no fusión parcial): este endpoint, sin filtro de
@@ -1573,12 +1699,21 @@ function _fusionarInfoInstitucionEnDB(info){
 }
 async function _cargarInstitucionAdminGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='admin') return false;
     const [rInfo,rGrados,rCarga]=await Promise.all([
-      fetch(API_BASE+'/api/institucion?sk='+encodeURIComponent(_sk)),
-      fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk)),
-      fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&incluirPersonal=1'),
+      _fetchConTimeout(API_BASE+'/api/institucion?sk='+encodeURIComponent(_sk)),
+      _fetchConTimeout(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk)),
+      _fetchConTimeout(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)+'&incluirPersonal=1'),
     ]);
     if(!rInfo.ok||!rGrados.ok||!rCarga.ok) return false;
     const [jInfo,jGrados,jCarga]=await Promise.all([rInfo.json(),rGrados.json(),rCarga.json()]);
@@ -1616,18 +1751,27 @@ function _fusionarUsuariosPorRolEnDB(esDelRol,usuariosNuevos){
 window._credEstPagInfo=null;
 async function _cargarCredencialesAdminGranular(grado,pagina){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='admin') return false;
-    const rUsu=await fetch(API_BASE+'/api/usuarios-credenciales?sk='+encodeURIComponent(_sk));
+    const rUsu=await _fetchConTimeout(API_BASE+'/api/usuarios-credenciales?sk='+encodeURIComponent(_sk));
     if(!rUsu.ok) return false;
     const jUsu=await rUsu.json();
-    const rGrados=await fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk));
+    const rGrados=await _fetchConTimeout(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk));
     if(!rGrados.ok) return false;
     const jGrados=await rGrados.json();
     _fusionarGradosEnDB(jGrados.grados||[]);
     const gradoObjetivo=grado||(jGrados.grados||[])[0]?.n;
     if(!gradoObjetivo) return false;
-    const rEst=await fetch(API_BASE+'/api/grados/'+encodeURIComponent(gradoObjetivo)+'/estudiantes?sk='+encodeURIComponent(_sk)+'&credenciales=1&page='+encodeURIComponent(pagina||1)+'&limit=30');
+    const rEst=await _fetchConTimeout(API_BASE+'/api/grados/'+encodeURIComponent(gradoObjetivo)+'/estudiantes?sk='+encodeURIComponent(_sk)+'&credenciales=1&page='+encodeURIComponent(pagina||1)+'&limit=30');
     if(!rEst.ok) return false;
     const jEst=await rEst.json();
     // El esquema relacional (Ronda 45) todavía no tiene columnas de
@@ -1659,12 +1803,21 @@ function _fusionarHorariosEnDB(horariosNuevos,horConfigNuevo){
 }
 async function _cargarHorariosAdminGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='admin') return false;
     const [rHor,rGrados,rCarga]=await Promise.all([
-      fetch(API_BASE+'/api/horarios?sk='+encodeURIComponent(_sk)),
-      fetch(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk)),
-      fetch(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)),
+      _fetchConTimeout(API_BASE+'/api/horarios?sk='+encodeURIComponent(_sk)),
+      _fetchConTimeout(API_BASE+'/api/grados?sk='+encodeURIComponent(_sk)),
+      _fetchConTimeout(API_BASE+'/api/carga-docente?sk='+encodeURIComponent(_sk)),
     ]);
     if(!rHor.ok||!rGrados.ok||!rCarga.ok) return false;
     const [jHor,jGrados,jCarga]=await Promise.all([rHor.json(),rGrados.json(),rCarga.json()]);
@@ -1695,9 +1848,18 @@ function _fusionarCronogramaEnDB(cronogramaNuevo,periodosActivosNuevo,numPeriodo
 }
 async function _cargarCronogramaAdminGranular(){
   try{
+    // RONDA 78 — si /api/inetis/db (pull completo) YA está en vuelo
+    // (disparado por otro módulo, el sync en segundo plano, u otra
+    // pestaña/llamador concurrente), NO se dispara una petición granular
+    // adicional en paralelo: se espera ese mismo pull completo y se
+    // reutiliza su resultado — así nunca hay 2+ peticiones simultáneas
+    // golpeando a Neon justo cuando puede estar en "cold start".
+    if(window._pullDBEnVuelo){
+      try{ return await window._pullDBEnVuelo; }catch(e){}
+    }
     const _sk=window._currentPlatSK||SK||GESTOR_SK;
     if(!_sk||!sesion||sesion.r!=='admin') return false;
-    const r=await fetch(API_BASE+'/api/cronograma?sk='+encodeURIComponent(_sk));
+    const r=await _fetchConTimeout(API_BASE+'/api/cronograma?sk='+encodeURIComponent(_sk));
     if(!r.ok) return false;
     const j=await r.json();
     _fusionarCronogramaEnDB(j.cronograma||{},j.periodosActivos,j.numPeriodos||4);
@@ -2751,9 +2913,36 @@ function loadPlatformDB(sk){
   return JSON.parse(JSON.stringify(DDB));
 }
 // Carga la BD de una plataforma desde el servidor y actualiza localStorage
+// RONDA 80 — PRE-WARM DEL POOL DE POSTGRES ANTES DEL LOGIN
+// Dispara, en segundo plano y sin esperar su respuesta (fire-and-forget), un
+// ping liviano al backend (GET /api/inetis/prewarm) que sí toca la base de
+// datos (a diferencia de /api/health, deliberadamente libre de Neon). La idea
+// es que, para cuando el usuario termine de escribir su usuario/contraseña y
+// presione "Ingresar", el pool de conexiones de Postgres ya tenga una
+// conexión reciente/lista en vez de tener que abrir una desde cero justo en
+// ese momento. Se limita a como mucho una vez cada 20s (con
+// window._ultimoPrewarmTs) para no generar tráfico de más si la pantalla de
+// login se vuelve a pintar varias veces seguidas (por ejemplo, al cambiar de
+// rol en el selector). Nunca debe poder romper ni demorar el render de la
+// pantalla de login: cualquier error se ignora en silencio.
+function _prewarmPoolBD(){
+  try{
+    const ahora=Date.now();
+    if(window._ultimoPrewarmTs&&(ahora-window._ultimoPrewarmTs)<20000) return;
+    window._ultimoPrewarmTs=ahora;
+    fetch(API_BASE+'/api/inetis/prewarm').catch(function(){});
+  }catch(e){}
+}
 async function _fetchPlatDB(sk){
   try{
-    const _r=await fetch(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(sk));
+    // RONDA 80 — antes usaba fetch() plano: si la red se quedaba colgada (p.ej.
+    // institución/pool "frío"), esta función nunca resolvía y el login entero
+    // se sentía congelado indefinidamente, sin caer nunca al fallback local de
+    // abajo. Ahora usa _fetchConTimeout (ya existente y usado en otras partes
+    // del código) para garantizar que, a los TIMEOUT_FETCH_GRANULAR_MS (7s),
+    // se libere el login y use el cache local via loadPlatformDB(sk) en vez
+    // de dejar al usuario esperando para siempre.
+    const _r=await _fetchConTimeout(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(sk));
     if(_r.ok){
       const _j=await _r.json();
       if(_j&&_j.data){
@@ -6813,6 +7002,42 @@ function render(){
   const _esAdminHorariosDirecto=_esAdminFrio&&pag==='horarios';
   // RONDA 63 — "quick win" #4 (barrido final).
   const _esAdminCronogramaDirecto=_esAdminFrio&&pag==='cronograma-notas';
+  // ══════════════════════════════════════════════════════════════════════
+  // RONDA 79 — CACHÉ-PRIMERO EN EL ARRANQUE EN FRÍO (STALE-WHILE-REVALIDATE).
+  // SÍNTOMA reportado: en módulos SIN camino granular propio de F5-en-frío
+  // (ej. "Observador de Aula" — no aparece en ninguna de las ramas de
+  // arriba ni de abajo), un F5 cae al "else" genérico más abajo
+  // (`ok=await _pullDB()`), que BLOQUEA el primer render de TODA la app
+  // hasta que ese pull completo resuelva. Con Neon en cold start, eso puede
+  // tardar hasta ~27s (12s + 3s de espera + 12s del reintento, ver
+  // conTimeoutYReintento, Ronda 78) — mientras tanto el usuario no ve NADA,
+  // ni siquiera los datos que YA tiene disponibles localmente desde su
+  // última sesión (guardados automáticamente en localStorage). Esto
+  // coincide exactamente con lo reportado: "la carga inicial falla o queda
+  // en timeout, pero al presionar manualmente Cargar, el contenido aparece
+  // de inmediato" — ese "Cargar" no hace nada especial, solo repinta la
+  // vista una vez que "db" YA tiene datos (locales o de red).
+  //
+  // "db" se sincronizó desde localStorage de forma SÍNCRONA muchísimo antes
+  // de este bootstrap (`let db = loadDB();`, línea ~80 de este archivo) —
+  // si esa institución ya tenía una sesión guardada, "db.nombre" ya viene
+  // poblado en este punto, ANTES de esperar ninguna respuesta de red. Si es
+  // así, se pinta la app DE INMEDIATO con esos datos (probablemente
+  // vigentes: el guardado automático ya los sincronizó en la sesión
+  // anterior) mientras la actualización de red sigue su curso en segundo
+  // plano exactamente igual que antes (el resto de esta función no cambia
+  // en absoluto). Si la red trae datos más recientes, se repinta al final
+  // (ver el combinador de abajo); si la red falla (timeout/cold start), la
+  // vista ya pintada con la caché se deja tal cual — nunca se "rebota" al
+  // usuario a la pantalla de login solo porque la revalidación en segundo
+  // plano no tuvo éxito, que es justamente lo que pasaba antes de esta
+  // ronda.
+  const _yaHabiaCacheLocalParaPintarYa=!!(sesion&&!window._adminPortalMode&&db&&db.nombre);
+  if(_yaHabiaCacheLocalParaPintarYa){
+    renderApp();
+    if(_seRestauro) setTimeout(_rehidratarSubmoduloPostRender,60);
+  }
+  // ══════════════════════════════════════════════════════════════════════
   let ok;
   // RONDA 58 — cada vez que uno de estos 4 caminos angostos tiene éxito SIN
   // haber pasado por _pullDB(), "db" queda marcado como parcial
@@ -6869,7 +7094,22 @@ function render(){
   } else {
     ok=await _pullDB();
   }
-  if(ok){if(sesion){renderApp();if(_seRestauro) setTimeout(_rehidratarSubmoduloPostRender,60);}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}else if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
+  if(ok){
+    // RONDA 79 — si ya se había pintado la app con la caché local más
+    // arriba, esto es simplemente la REVALIDACIÓN en segundo plano
+    // completándose con éxito: se repinta con los datos frescos (mismo
+    // renderApp() de siempre) en vez de tratarlo como el primer render.
+    if(sesion){renderApp();if(_seRestauro) setTimeout(_rehidratarSubmoduloPostRender,60);}
+    else if(window._adminPortalMode)renderAdminPortal();
+    else{iaRemoveWidget();renderGestorLanding();}
+  } else if(_yaHabiaCacheLocalParaPintarYa){
+    // RONDA 79 — la revalidación de red falló (timeout/cold start de Neon),
+    // pero la app YA está pintada con la caché local de más arriba: se deja
+    // esa vista tal cual, en vez de "rebotar" al usuario a la pantalla de
+    // login solo porque esta actualización en segundo plano no tuvo éxito.
+  } else if(window._adminPortalMode)renderAdminPortal();
+  else{iaRemoveWidget();renderGestorLanding();}
+}catch(e){if(pag==='restablecer-password')return;if(window._adminPortalMode)renderAdminPortal();else{iaRemoveWidget();renderGestorLanding();}}})().catch(function(){});
 
 // ============================================================
 // Ronda 12, Sección 2: PANTALLA DE RESTABLECIMIENTO DE CONTRASEÑA
@@ -7759,6 +7999,7 @@ _connectSSEGestor();
 const _WSP_SVG=`<svg width="20" height="20" viewBox="0 0 32 32" fill="white"><path d="M16 0C7.163 0 0 7.163 0 16c0 2.817.736 5.455 2.024 7.748L0 32l8.493-2.224A15.93 15.93 0 0016 32c8.837 0 16-7.163 16-16S24.837 0 16 0zm0 29.091a13.07 13.07 0 01-6.634-1.808l-.477-.284-4.944 1.295 1.32-4.815-.312-.495A13.027 13.027 0 012.909 16C2.909 8.765 8.765 2.909 16 2.909S29.091 8.765 29.091 16 23.235 29.091 16 29.091zm7.153-9.77c-.392-.196-2.32-1.145-2.68-1.274-.36-.131-.622-.196-.883.196-.26.392-1.013 1.275-1.242 1.536-.228.26-.457.294-.85.098-.392-.196-1.658-.612-3.16-1.949-1.168-1.042-1.957-2.329-2.186-2.72-.228-.392-.024-.604.172-.799.176-.175.392-.457.588-.686.196-.228.26-.392.392-.653.13-.261.065-.49-.033-.686-.098-.196-.883-2.13-1.21-2.916-.32-.765-.643-.661-.883-.673l-.751-.014c-.261 0-.686.098-.1045.49-.36.392-1.37 1.34-1.37 3.266 0 1.928 1.403 3.792 1.598 4.053.196.26 2.76 4.214 6.685 5.913.934.403 1.663.644 2.232.824.937.298 1.791.256 2.466.155.752-.112 2.32-.949 2.648-1.865.327-.916.327-1.703.228-1.866-.098-.163-.36-.261-.751-.457z"/></svg>`;
 function renderGestorLanding(){
   iaRemoveWidget();
+  _prewarmPoolBD(); // RONDA 80 — ver comentario de la función.
   // Auto-route via ?id=slug URL parameter
   if(window._urlInstId){
     const targetId=window._urlInstId;
@@ -8383,6 +8624,24 @@ function mostrarSkeletonContenedor(targetEl, tipoVista){
   targetEl.innerHTML = _htmlSkeletonPorTipo(tipoVista);
   return true;
 }
+// RONDA 76 — Se reportó que, tras la Ronda 75, algunas vistas (Observador
+// del Estudiante, Observador de Aula) podían quedarse mostrando el skeleton
+// de forma indefinida si algo fallaba a mitad de camino entre mostrarlo y
+// reemplazarlo por el contenido real. Estas 2 funciones son el "seguro"
+// que se usa desde ahora en TODO punto que muestra un skeleton antes de una
+// operación asíncrona/de renderizado: quitarSkeletonContenedor() limpia el
+// atributo aria-busy sin importar qué haya pasado (se llama SIEMPRE desde
+// un bloque finally), y _htmlErrorCargaSkeleton() da un mensaje de error
+// consistente para reemplazar el skeleton cuando la carga falla, en vez de
+// dejarlo pegado en pantalla.
+function quitarSkeletonContenedor(targetEl){
+  if(targetEl&&targetEl.removeAttribute) targetEl.removeAttribute('aria-busy');
+}
+function _htmlErrorCargaSkeleton(msg){
+  return '<div class="warn-box" style="background:#fdecea;border-left-color:#c0392b;color:#7d1b1b">'+
+    '❌ '+(msg||'Ocurrió un error al cargar los datos. Intente nuevamente.')+
+  '</div>';
+}
 function _htmlSkeletonContenido(){
   return _htmlSkeletonPorTipo('tabla');
 }
@@ -8402,6 +8661,36 @@ function _tipoVistaPorPagina(p){
 }
 function _mostrarSkeletonYNavegar(){
   const cont = document.getElementById('contenido');
+  // ══════════════════════════════════════════════════════════════════════
+  // RONDA 79 — CACHÉ-PRIMERO (STALE-WHILE-REVALIDATE) EN NAVEGACIÓN EN
+  // CALIENTE. Antes de esta ronda, ENTRAR a cualquier módulo (Planilla,
+  // Notas de Actividades, Asistencia, Permisos, Actividades, etc. — este es
+  // el ÚNICO punto de entrada compartido por toda la navegación por menú)
+  // SIEMPRE tapaba la vista con el skeleton y esperaba la respuesta de
+  // _navegarConCargaGranularSiAplica() (que hace la petición de red) antes
+  // de mostrar cualquier contenido real — aunque "db" ya tuviera, en
+  // memoria, datos perfectamente utilizables de una consulta anterior en
+  // esta misma sesión. Con Neon lento/en cold start, eso significa una
+  // pantalla en blanco/skeleton más tiempo del necesario para datos que, la
+  // gran mayoría de las veces, ya están disponibles localmente.
+  //
+  // Si "db" ya tiene datos reales (db.nombre poblado — no es el objeto
+  // DDB en blanco de una sesión nunca sincronizada), se pinta el contenido
+  // REAL de inmediato con lo que ya hay en memoria (renderApp(), la misma
+  // función de siempre) y la actualización de red se dispara en segundo
+  // plano exactamente igual que antes — _navegarConCargaGranularSiAplica()
+  // ya vuelve a llamar a renderApp() en cuanto esa actualización granular
+  // termina (ver el final de esa función), así que cualquier dato nuevo se
+  // refleja igual, solo que sin bloquear la primera vista.
+  //
+  // Si NO hay nada útil en caché todavía (primera sincronización real de
+  // la sesión), se conserva el comportamiento de siempre: mostrar el
+  // skeleton mientras se espera la primera respuesta de red.
+  if(db&&db.nombre){
+    renderApp();
+    setTimeout(_navegarConCargaGranularSiAplica, 0);
+    return;
+  }
   if(cont){
     cont.setAttribute('aria-busy','true');
     cont.innerHTML = _htmlSkeletonPorTipo(_tipoVistaPorPagina(pag));
@@ -19975,16 +20264,55 @@ async function cargarListaObservador(){
   // de la lógica (fetch granular, fallback a _pullDB, filtrado y armado de
   // la tabla) queda exactamente igual.
   const wrap=document.getElementById('listaObservador');
-  if(wrap) mostrarSkeletonContenedor(wrap,'tarjetas');
-  if(grado&&sesion&&sesion.r==='docente'){
-    let ok=false; try{ ok=await _cargarObservadorGranular(grado); }catch(e){}
-    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+  // RONDA 76 — CORRECCIÓN CRÍTICA: se reportó que la pantalla podía quedar
+  // congelada en el skeleton de forma indefinida si algo fallaba entre
+  // mostrarlo y armar la tabla final. TODO el proceso — incluido el pintado
+  // inicial desde caché de la Ronda 77 de abajo, no solo el fetch granular —
+  // se envuelve en try/catch/finally: pase lo que pase (éxito, arreglo
+  // vacío, error de red, o cualquier excepción inesperada en CUALQUIER
+  // punto), el "finally" GARANTIZA que el skeleton se desmonte
+  // (quitarSkeletonContenedor) — nunca queda pegado.
+  try{
+    const esTutorPTA=_esTutorPTA();
+    // RONDA 77 — CACHÉ-PRIMERO (stale-while-revalidate): si "db.ests" YA
+    // tiene en memoria/localStorage estudiantes de este grado (de una carga
+    // anterior en la misma sesión, o restaurados al abrir la app), se pintan
+    // de INMEDIATO — sin esperar ninguna red — mientras la sincronización de
+    // fondo (fetch granular) revalida en silencio y vuelve a pintar solo si
+    // hay cambios. Si no hay nada en caché para este grado todavía (primera
+    // vez que se consulta), se muestra el skeleton como antes.
+    const estsCache=((db&&db.ests)||[]).filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
+    if(wrap){
+      if(estsCache.length) wrap.innerHTML=_htmlTablaObservador(estsCache,per,esTutorPTA);
+      else mostrarSkeletonContenedor(wrap,'tarjetas');
+    }
+    // RONDA 77 — el fetch granular (_cargarObservadorGranular) y el fallback
+    // (_pullDB) ahora usan _fetchConTimeout() por debajo (7s por defecto): si
+    // la BD remota está lenta, esta espera SIEMPRE tiene un límite — nunca es
+    // indefinida — y como ya se pintó la caché arriba, el docente ve datos
+    // (aunque sean un instante desactualizados) en vez de una pantalla vacía.
+    if(grado&&sesion&&sesion.r==='docente'){
+      let ok=false; try{ ok=await _cargarObservadorGranular(grado); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    }
+    const ests=((db&&db.ests)||[]).filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
+    if(!wrap) return;
+    if(!ests.length){wrap.innerHTML=_htmlEstadoVacio('🔍','No se encontraron registros.');return;}
+    wrap.innerHTML=_htmlTablaObservador(ests,per,esTutorPTA);
+  }catch(err){
+    if(wrap) wrap.innerHTML=_htmlErrorCargaSkeleton('No se pudieron cargar los estudiantes. Verifique su conexión e intente nuevamente.');
+  }finally{
+    quitarSkeletonContenedor(wrap);
   }
-  const esTutorPTA=_esTutorPTA();
-  const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(!wrap) return;
-  if(!ests.length){wrap.innerHTML=_htmlEstadoVacio('🎓','Sin estudiantes.');return;}
-  wrap.innerHTML=`<div class="over"><table>
+}
+// RONDA 77 — extraído de cargarListaObservador() para poder reutilizarlo
+// tanto en el pintado INMEDIATO desde caché (stale-while-revalidate) como
+// en el pintado final con los datos ya revalidados contra el servidor. Es
+// una función pura (arreglo + contexto → HTML), sin ningún efecto
+// secundario ni referencia al DOM — el mismo HTML exacto que ya se armaba
+// antes en línea, ahora con un solo lugar para mantenerlo.
+function _htmlTablaObservador(ests,per,esTutorPTA){
+  return `<div class="over"><table>
     <thead><tr><th>#</th><th>Estudiante</th><th>Observaciones del Periodo</th><th>Acciones</th></tr></thead>
     <tbody>${ests.map((e,i)=>{
       const obsHtmlArr=(e.observaciones||[]).map((o,oi)=>{
@@ -23033,6 +23361,7 @@ function renderPortalInstitucion(platId,rolPre){
     if(_elActivoPI&&_elActivoPI.tagName==='INPUT'&&_elActivoPI.closest('#app')&&_elActivoPI.value){
       return;
     }
+    _prewarmPoolBD(); // RONDA 80 — ver comentario de la función.
     var p=gestorDB.platforms.find(function(x){return x.id===platId;});
     if(!p){customAlert('Institución no encontrada.');return;}
     var escudo=p.escudo?('<img src="'+p.escudo+'" style="height:70px;max-width:120px;object-fit:contain">'):'<div style="font-size:3rem">&#x1F3EB;</div>';
@@ -23109,6 +23438,16 @@ function renderPortalInstitucion(platId,rolPre){
     const user=document.getElementById('pUser').value.trim();
     const pass=document.getElementById('pPass').value;
     if(!user){customAlert('Complete los campos de usuario y contraseña.');return;}
+    // RONDA 80 — retroalimentación inmediata (mismo patrón ya usado en
+    // doLoginInstitucional/btnLoginInstitucional): este es el botón de login
+    // PRINCIPAL que usa la mayoría de usuarios finales (el portal por
+    // institución), y antes se quedaba sin ningún indicio visual mientras
+    // esperaba la red (_fetchPlatDB + verificación de clave), lo que se
+    // sentía como un doble clic posible o una app "congelada".
+    const _btnPortal=document.getElementById('pEntrar');
+    const _textoBtnPortalOriginal=_btnPortal?_btnPortal.innerHTML:null;
+    if(_btnPortal){ _btnPortal.disabled=true; _btnPortal.innerHTML='⏳ Verificando...'; }
+    try{
     const platDB=await _fetchPlatDB(p.sk);
     let sesionData=null;
     if(rol==='elecciones'){
@@ -23191,6 +23530,12 @@ function renderPortalInstitucion(platId,rolPre){
     _checkSchemaMigrationBanner();
     _actualizarBannerSyncManual();
     render();
+    }finally{
+      // Restaura el botón salvo que el login haya tenido éxito y ya haya
+      // reemplazado #app (render() de arriba) — en ese caso el elemento ya
+      // no está en pantalla y esto es un no-op inofensivo.
+      if(_btnPortal){ _btnPortal.disabled=false; _btnPortal.innerHTML=_textoBtnPortalOriginal; }
+    }
   }
   function previewLogoGestor(inputId,previewId,hiddenId){
     const file=document.getElementById(inputId).files[0];

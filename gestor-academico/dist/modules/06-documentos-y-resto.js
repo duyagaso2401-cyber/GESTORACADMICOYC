@@ -457,8 +457,14 @@ async function actualizarAsignaturasReg(gradoSel){
     // la llamada final a actualizarEstadosAsist) queda exactamente igual.
     var _contAsistReg=document.getElementById('contenido');
     if(_contAsistReg) mostrarSkeletonContenedor(_contAsistReg,'tabla');
-    var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
-    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    // RONDA 76 — CORRECCIÓN CRÍTICA: try/catch para que un error de red al
+    // llamar _cargarAsistenciaGranular()/_pullDB() nunca deje el skeleton
+    // pegado — actualizarEstadosAsist() (llamada justo abajo, en su propio
+    // finally) es la que se encarga de desmontarlo pase lo que pase.
+    try{
+      var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+    }catch(errReg){ /* nunca debería llegar aquí (ya está todo cubierto arriba); se deja como red de seguridad extra */ }
   }
   await actualizarEstadosAsist();
 }
@@ -481,22 +487,39 @@ async function actualizarEstadosAsist(){
   if(pSel && pSel.value){
     asistPeriodo = pSel.value;
   }
-  if(sesion && sesion.r==='docente'){
-    // RONDA 75 — mismo fix que en actualizarAsignaturasReg(): mostrar el
-    // skeleton tipo "tabla" de inmediato en vez de dejar la pantalla
-    // congelada hasta que este fetch termine y renderApp() reemplace todo
-    // el contenido de golpe. Se protege con un chequeo simple para no
-    // repetir el skeleton si actualizarAsignaturasReg() ya lo mostró un
-    // instante antes (no hace daño mostrarlo dos veces, pero es innecesario).
-    var _contAsistEst=document.getElementById('contenido');
-    if(_contAsistEst && _contAsistEst.getAttribute('aria-busy')!=='true'){
-      mostrarSkeletonContenedor(_contAsistEst,'tabla');
+  var _contAsistEst=document.getElementById('contenido');
+  // RONDA 76 — CORRECCIÓN CRÍTICA: se reportó que la pantalla de Asistencia
+  // podía quedar congelada en el skeleton indefinidamente. Todo el tramo
+  // asíncrono se envuelve en try/finally: el "finally" GARANTIZA que
+  // renderApp() (que reemplaza #contenido por el HTML real, desmontando así
+  // el skeleton) se ejecute siempre — incluso si algo lanza una excepción
+  // inesperada — y adicionalmente se limpia el atributo aria-busy por si
+  // renderApp() mismo llegara a fallar antes de reemplazar el contenido.
+  try{
+    if(sesion && sesion.r==='docente'){
+      // RONDA 75 — mismo fix que en actualizarAsignaturasReg(): mostrar el
+      // skeleton tipo "tabla" de inmediato en vez de dejar la pantalla
+      // congelada hasta que este fetch termine y renderApp() reemplace todo
+      // el contenido de golpe. Se protege con un chequeo simple para no
+      // repetir el skeleton si actualizarAsignaturasReg() ya lo mostró un
+      // instante antes (no hace daño mostrarlo dos veces, pero es innecesario).
+      if(_contAsistEst && _contAsistEst.getAttribute('aria-busy')!=='true'){
+        mostrarSkeletonContenedor(_contAsistEst,'tabla');
+      }
+      var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
+      if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
     }
-    var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
-    if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
+  }finally{
+    try{
+      renderApp();
+    }catch(errRender){
+      // Red de seguridad final: si renderApp() mismo llegara a fallar, no se
+      // deja el skeleton animando para siempre — se reemplaza por un aviso
+      // de error y se quita aria-busy.
+      if(_contAsistEst) _contAsistEst.innerHTML=_htmlErrorCargaSkeleton('No se pudo cargar el módulo de Asistencia. Intente nuevamente.');
+    }
+    quitarSkeletonContenedor(_contAsistEst);
   }
-
-  renderApp();
 }
 window.actualizarEstadosAsist = actualizarEstadosAsist;
 
@@ -4466,15 +4489,22 @@ function htmlObsAula(){
 }
 
 function renderObsAulaLista(){
-  const grado=document.getElementById('obsAulaGrado')?.value||'';
-  const per=document.getElementById('obsAulaPer')?.value||'1';
   const wrap=document.getElementById('obsAulaLista');
   const cnt=document.getElementById('obsAulaContador');
   if(!wrap) return;
-
-  const ests=(db.ests||[]).filter(e=>!e.deletedAt && e.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  if(cnt) cnt.textContent=ests.length+' estudiante(s)';
-  if(!ests.length){wrap.innerHTML='<div class="card">'+_htmlEstadoVacio('🎓','Sin estudiantes en este grado.')+'</div>';return;}
+  // RONDA 76 — CORRECCIÓN CRÍTICA: se reportó que "#obsAulaLista" podía
+  // quedarse pegado en el skeleton indefinidamente (esta función es
+  // síncrona — sin fetch — pero si algo lanzaba una excepción a mitad de
+  // camino, por ejemplo por datos parciales en "db" mientras la app todavía
+  // termina de cargar, el <div> nunca llegaba a reemplazarse). Se envuelve
+  // todo en try/catch/finally: el "finally" GARANTIZA que el skeleton se
+  // desmonte (quitarSkeletonContenedor), sin importar qué pase.
+  try{
+    const grado=document.getElementById('obsAulaGrado')?.value||'';
+    const per=document.getElementById('obsAulaPer')?.value||'1';
+    const ests=((db&&db.ests)||[]).filter(e=>!e.deletedAt && e.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
+    if(cnt) cnt.textContent=ests.length+' estudiante(s)';
+    if(!ests.length){wrap.innerHTML='<div class="card">'+_htmlEstadoVacio('🔍','No se encontraron registros.')+'</div>';return;}
 
   const tiposObs=[
     {v:'Comportamental',label:'😤 Comportamental',color:'#e67e22'},
@@ -4561,6 +4591,11 @@ function renderObsAulaLista(){
       <div id="obsAulaHistorial_${e.id}">${totalHtml}</div>
     </div>`;
   }).join('');
+  }catch(err){
+    wrap.innerHTML=_htmlErrorCargaSkeleton('No se pudieron cargar las observaciones de aula. Intente nuevamente.');
+  }finally{
+    quitarSkeletonContenedor(wrap);
+  }
 }
 
 function toggleObsAulaForm(estId){
