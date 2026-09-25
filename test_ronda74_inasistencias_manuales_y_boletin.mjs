@@ -196,8 +196,9 @@ function fixtureDB() {
     grados: [{ n: '10°', d: 'doc1' }],
     users: [{ u: 'doc1', r: 'docente', n: 'Docente Uno', p: 'x' }],
     carga: [
-      { id: 101, g: '10°', m: 'Matemáticas', a: 'Matemáticas', d: 'doc1', dn: 'Docente Uno' },
-      { id: 102, g: '10°', m: 'Español', a: 'Español', d: 'doc1', dn: 'Docente Uno' },
+      { id: 101, g: '10°', m: 'Matemáticas', a: 'Matemáticas', d: 'doc1', dn: 'Docente Uno', ih: 5 },
+      { id: 102, g: '10°', m: 'Español', a: 'Español', d: 'doc1', dn: 'Docente Uno', ih: 2 },
+      { id: 103, g: '10°', m: 'Ética', a: 'Ética', d: 'doc1', dn: 'Docente Uno' }, // sin "ih" definida a propósito, para probar el valor base por defecto
     ],
     ests: [
       { id: 'e1', n: 'ANA PEREZ', g: '10°', nts: {} },
@@ -332,34 +333,105 @@ check('_leerInasistenciaManual() devuelve 0 (no null/undefined) cuando el contex
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// (c) Vínculo opcional con la nota del SER (calcularNotaSERPorAsistencia)
+// (c) AJUSTE ESTRUCTURAL — motor de conversión % inasistencia -> nota del
+// SER 100% PARAMETRIZABLE (db.config.escalaAsistenciaSER). Ya no hay NINGÚN
+// tramo ni nota fijo en el código: calcularNotaSERPorAsistencia() es ahora
+// el ÚNICO motor, usado tanto por el vínculo manual como por el botón
+// automático "Asistencia → SER", y siempre lee la escala vigente de
+// db.config en el momento del cálculo (sin caché ni estado previo).
 // ════════════════════════════════════════════════════════════════════════
-check('calcularNotaSERPorAsistencia() real: tramos exactos', () => {
+check('_escalaAsistenciaSERDefault() tiene los 4 tramos de inicialización pedidos', () => {
+  // Comparación vía JSON.stringify: los objetos que cruzan la frontera del
+  // sandbox "vm" no comparten prototipo de Object con los literales del
+  // host, así que assert.deepEqual/deepStrictEqual los marca como distintos
+  // aunque su forma sea idéntica — JSON.stringify evita ese falso negativo.
+  const d = run('JSON.stringify(_escalaAsistenciaSERDefault())');
+  assert.equal(d, JSON.stringify([
+    { min: 0, max: 5, nota: 5.0 },
+    { min: 5.1, max: 15, nota: 4.0 },
+    { min: 15.1, max: 24.9, nota: 3.0 },
+    { min: 25, max: 100, nota: 1.0 },
+  ]));
+});
+check('_escalaAsistenciaSERActiva() usa los tramos de inicialización cuando la institución no ha configurado los suyos', () => {
+  instalarDB(fixtureDB()); // fixtureDB() no define escalaAsistenciaSER
+  assert.equal(run('db.config.escalaAsistenciaSER'), undefined);
+  assert.deepEqual(run('_escalaAsistenciaSERActiva()'), run('_escalaAsistenciaSERDefault()'));
+});
+check('REQUISITO (a): 0 inasistencias asigna la nota del Rango 1 (por defecto 5.0)', () => {
+  instalarDB(fixtureDB());
   assert.equal(run('calcularNotaSERPorAsistencia(0,10)'), 5.0);
-  assert.equal(run('calcularNotaSERPorAsistencia(1,10)'), 4.5); // 10%
-  assert.equal(run('calcularNotaSERPorAsistencia(1.5,10)'), 3.8); // 15%
-  assert.equal(run('calcularNotaSERPorAsistencia(2,10)'), 2.8); // 20% -> tramo "<25"
-  assert.equal(run('calcularNotaSERPorAsistencia(2.4,10)'), 2.8); // 24% -> sigue en "<25"
-  assert.equal(run('calcularNotaSERPorAsistencia(3,10)'), 1.0); // 30% -> crítico (>=25%)
-  assert.equal(run('calcularNotaSERPorAsistencia(0,0)'), null); // sin clases -> null
+  assert.equal(run('calcularNotaSERPorAsistencia(0,100)'), 5.0);
+});
+check('calcularNotaSERPorAsistencia() con la escala de inicialización: cae en cada uno de los 4 tramos exactamente donde corresponde', () => {
+  instalarDB(fixtureDB());
+  assert.equal(run('calcularNotaSERPorAsistencia(5,100)'), 5.0);   // 5%   -> tramo 1 (0–5)
+  assert.equal(run('calcularNotaSERPorAsistencia(6,100)'), 4.0);   // 6%   -> tramo 2 (5.1–15)
+  assert.equal(run('calcularNotaSERPorAsistencia(15,100)'), 4.0);  // 15%  -> tramo 2
+  assert.equal(run('calcularNotaSERPorAsistencia(16,100)'), 3.0);  // 16%  -> tramo 3 (15.1–24.9)
+  assert.equal(run('calcularNotaSERPorAsistencia(24.9,100)'), 3.0);// 24.9% -> tramo 3 (límite exacto pedido)
+  assert.equal(run('calcularNotaSERPorAsistencia(25,100)'), 1.0);  // 25%  -> tramo 4 (crítico)
+  assert.equal(run('calcularNotaSERPorAsistencia(80,100)'), 1.0);  // muy por encima -> sigue en el último tramo
+});
+check('calcularNotaSERPorAsistencia() sigue devolviendo null cuando no hay ninguna base real (total=0), sin importar la escala configurada', () => {
+  instalarDB(fixtureDB());
+  assert.equal(run('calcularNotaSERPorAsistencia(0,0)'), null);
+  assert.equal(run('calcularNotaSERPorAsistencia(5,0)'), null);
+});
+check('REQUISITO (b): al modificar dinámicamente db.config.escalaAsistenciaSER, el cálculo cambia AL INSTANTE, sin reiniciar la app', () => {
+  const d = fixtureDB();
+  instalarDB(d);
+  // Con la escala de inicialización, 10% de inasistencia da 4.0 (tramo 2).
+  assert.equal(run('calcularNotaSERPorAsistencia(1,10)'), 4.0);
+  // El "administrador" reconfigura la escala en caliente, EN LA MISMA
+  // SESIÓN, sin recargar ni reinstalar nada — solo mutando db.config.
+  run(`db.config.escalaAsistenciaSER = [
+    {min:0, max:100, nota:3.5}
+  ];`);
+  // La MISMA llamada, con los MISMOS argumentos, ahora refleja la nueva
+  // configuración de inmediato.
+  assert.equal(run('calcularNotaSERPorAsistencia(1,10)'), 3.5);
+  assert.equal(run('calcularNotaSERPorAsistencia(9,10)'), 3.5);
+  // Y se puede volver a reconfigurar cuantas veces se quiera.
+  run(`db.config.escalaAsistenciaSER = [
+    {min:0, max:49.9, nota:5.0},
+    {min:50, max:100, nota:0.0}
+  ];`);
+  assert.equal(run('calcularNotaSERPorAsistencia(4,10)'), 5.0); // 40%
+  assert.equal(run('calcularNotaSERPorAsistencia(5,10)'), 0.0); // 50%
+});
+check('una escala institucional vacía ([]) no deja a la institución sin motor de cálculo: se vuelve a la escala de inicialización', () => {
+  const d = fixtureDB(); d.config.escalaAsistenciaSER = [];
+  instalarDB(d);
+  assert.deepEqual(run('_escalaAsistenciaSERActiva()'), run('_escalaAsistenciaSERDefault()'));
+  assert.equal(run('calcularNotaSERPorAsistencia(0,10)'), 5.0);
+});
+check('_totalHorasEstimadasPeriodo(): Intensidad Horaria Semanal × 10 semanas', () => {
+  instalarDB(fixtureDB());
+  assert.equal(run("_totalHorasEstimadasPeriodo({ih:5})"), 50);
+  assert.equal(run("_totalHorasEstimadasPeriodo({ih:2})"), 20);
+});
+check('_totalHorasEstimadasPeriodo(): sin "ih" definida usa 1 hora/semana (=10 horas) por defecto', () => {
+  instalarDB(fixtureDB());
+  assert.equal(run("_totalHorasEstimadasPeriodo({})"), 10);
+  assert.equal(run("_totalHorasEstimadasPeriodo(db.carga.find(c=>c.id===103))"), 10);
 });
 check('con el switch de vínculo DESACTIVADO (por defecto), guardar inasistencias NO toca la nota del SER', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true;
   instalarDB(d);
   run("db.ests.find(x=>x.id==='e1').nts[101]={1:{s:4.2,sb:0,h:0,rec:0,niv:0}};");
-  run("guardarInasistenciaManual('e1','101','1',9)"); // 9 de 10 clases => sería crítico si estuviera vinculado
+  run("guardarInasistenciaManual('e1','101','1',9)");
   const serVal = run("db.ests.find(x=>x.id==='e1').nts[101][1].s");
   assert.equal(serVal, 4.2, 'la nota del SER no debe cambiar cuando el vínculo está desactivado');
 });
-check('con el switch de vínculo ACTIVADO, guardar inasistencias SÍ recalcula la nota del SER con calcularNotaSERPorAsistencia()', () => {
+check('con el switch de vínculo ACTIVADO, guardar inasistencias manuales SÍ recalcula el SER usando el MISMO motor parametrizable, con la asistencia REAL cuando existe', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true;
   instalarDB(d);
   run("_toggleVincularInasistManualSER('101')"); // activa el vínculo para cId=101
   assert.equal(run("_vincularInasistManualSERActivo('101')"), true);
-  // 10 clases registradas para cId=101/per=1 (ver fixtureDB.asistencia) — 3 inasistencias = 30% = tramo 1.0
-  run("guardarInasistenciaManual('e1','101','1',3)");
-  const serVal = run("db.ests.find(x=>x.id==='e1').nts[101][1].s");
-  assert.equal(serVal, 1.0);
+  // 10 clases REALES registradas para cId=101/per=1 (ver fixtureDB.asistencia) — 1 inasistencia = 10% -> tramo 2 (5.1-15) = 4.0
+  run("guardarInasistenciaManual('e1','101','1',1)");
+  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[101][1].s"), 4.0);
 });
 check('el vínculo a SER es POR ASIGNATURA (cId): activarlo en 101 no activa 102', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true;
@@ -368,14 +440,35 @@ check('el vínculo a SER es POR ASIGNATURA (cId): activarlo en 101 no activa 102
   assert.equal(run("_vincularInasistManualSERActivo('101')"), true);
   assert.equal(run("_vincularInasistManualSERActivo('102')"), false);
 });
-check('sin registros de asistencia para ese cId/periodo (totalClases=0), la nota del SER NO se toca aunque el vínculo esté activo', () => {
+check('sin registros de asistencia automática, el vínculo manual usa la Intensidad Horaria Semanal de la asignatura (ih×10) y SÍ recalcula el SER con la escala configurada', () => {
+  const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true; // 102 (Español) tiene ih:2 -> 20 horas estimadas, y NO tiene registros de asistencia en el fixture
+  instalarDB(d);
+  run("_toggleVincularInasistManualSER('102')");
+  run("db.ests.find(x=>x.id==='e1').nts[102]={1:{s:3.3,sb:0,h:0,rec:0,niv:0}};");
+  run("guardarInasistenciaManual('e1','102','1',1)"); // 1/20 = 5% -> tramo 1 (0-5) = 5.0
+  const serVal = run("db.ests.find(x=>x.id==='e1').nts[102][1].s");
+  assert.notEqual(serVal, 3.3, 'debe recalcularse (antes este caso quedaba sin tocar por falta de una referencia de horas)');
+  assert.equal(serVal, 5.0);
+});
+check('la asistencia automática REAL sigue teniendo prioridad sobre la estimación por Intensidad Horaria cuando ambas existen', () => {
+  const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true; // 101 tiene ih:5 (50h estimadas) PERO además 10 registros reales en el fixture — deben usarse los reales
+  instalarDB(d);
+  run("_toggleVincularInasistManualSER('101')");
+  run("guardarInasistenciaManual('e1','101','1',5)"); // 5 de 10 REALES = 50% (crítico) vs. 5 de 50 estimadas = 10% (tramo 2) — deben ganar los 10 reales
+  const serVal = run("db.ests.find(x=>x.id==='e1').nts[101][1].s");
+  assert.equal(serVal, 1.0, 'debe usar los 10 registros reales de asistencia (50% => tramo crítico), no la estimación de 50 horas por ih');
+});
+check('REQUISITO (b, extendido): reconfigurar la escala también cambia AL INSTANTE lo que calcula guardarInasistenciaManual() en la misma sesión', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true;
   instalarDB(d);
-  run("_toggleVincularInasistManualSER('102')"); // 102 (Español) no tiene registros de asistencia en el fixture
-  run("db.ests.find(x=>x.id==='e1').nts[102]={1:{s:3.3,sb:0,h:0,rec:0,niv:0}};");
-  run("guardarInasistenciaManual('e1','102','1',5)");
-  const serVal = run("db.ests.find(x=>x.id==='e1').nts[102][1].s");
-  assert.equal(serVal, 3.3, 'sin clases registradas, calcularNotaSERPorAsistencia() devuelve null y no debe sobreescribir la nota');
+  run("_toggleVincularInasistManualSER('102')"); // 102: ih=2 -> 20 horas estimadas
+  run("guardarInasistenciaManual('e1','102','1',1)"); // 5% -> tramo 1 por defecto = 5.0
+  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[102][1].s"), 5.0);
+  // El administrador cambia la escala institucional EN CALIENTE...
+  run(`db.config.escalaAsistenciaSER = [{min:0, max:100, nota:2.0}];`);
+  // ...y la SIGUIENTE edición del mismo docente, en la misma sesión, ya usa la nueva escala.
+  run("guardarInasistenciaManual('e1','102','1',2)"); // 10% -> con la nueva escala única, sigue siendo 2.0
+  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[102][1].s"), 2.0);
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -456,11 +549,105 @@ check('guardarConfigPedagogica() persiste el checkbox en db.config.mostrarInasis
       if(id==='cfgPctInasistCritica') return {value:'25'};
       if(id==='cfgPctInasistPreventiva') return {value:'20'};
       if(id.startsWith('pesPer_')) return {value:'25'};
-      return null;
+      return null; // sin stub de cfgEscalaAsistSERLista: guardarConfigPedagogica() debe tolerarlo sin fallar
     };
   `);
   run('guardarConfigPedagogica()');
   assert.equal(run('db.config.mostrarInasistenciasEnPlanilla'), true);
+});
+check('CORRECCIÓN — htmlConfigEvalPedagogica() YA NO muestra el campo manual de "Total de clases dictadas por periodo" (se eliminó según lo pedido)', () => {
+  instalarDB(fixtureDB());
+  const html = run('htmlConfigEvalPedagogica()');
+  assert.ok(!html.includes('cfgTotalClasesInasistManual'));
+  assert.ok(!html.includes('Total de clases dictadas por periodo'));
+  assert.ok(html.includes('id="cfgMostrarInasistPlanilla"'));
+});
+check('htmlConfigEvalPedagogica() renderiza un tramo por cada fila de la escala activa, con sus valores min/max/nota', () => {
+  const d = fixtureDB();
+  instalarDB(d); // sin escala propia -> usa la de inicialización (4 tramos)
+  const html = run('htmlConfigEvalPedagogica()');
+  assert.ok(html.includes('id="cfgEscalaAsistSERLista"'));
+  assert.ok(html.includes('data-tramoidx="0"') && html.includes('data-tramoidx="3"'));
+  assert.ok(html.includes('value="5.1"'), 'debe reflejar el mínimo del segundo tramo por defecto');
+  assert.ok(html.includes('onclick="agregarTramoEscalaSER()"'));
+});
+check('htmlConfigEvalPedagogica() renderiza la escala PROPIA de la institución cuando ya la configuró (no la de inicialización)', () => {
+  const d = fixtureDB();
+  d.config.escalaAsistenciaSER = [{min:0,max:100,nota:2.5}];
+  instalarDB(d);
+  const html = run('htmlConfigEvalPedagogica()');
+  assert.ok(html.includes('data-tramoidx="0"'));
+  assert.ok(!html.includes('data-tramoidx="1"'), 'no debe haber un segundo tramo — la institución solo configuró uno');
+  assert.ok(html.includes('value="2.5"'));
+});
+check('guardarConfigPedagogica() persiste una escala editada por el administrador leyendo fila por fila del editor', () => {
+  const d = fixtureDB();
+  instalarDB(d);
+  // Simula 2 filas del editor dinámico, tal como quedarían en el DOM real
+  // tras usar "➕ Agregar tramo" / "✕" y escribir los valores.
+  const fakeRow = (min, max, nota) => ({
+    querySelector(sel) {
+      if (sel.includes('"min"')) return { value: String(min) };
+      if (sel.includes('"max"')) return { value: String(max) };
+      if (sel.includes('"nota"')) return { value: String(nota) };
+      return null;
+    },
+  });
+  const fakeLista = { querySelectorAll: () => [fakeRow(0, 49.9, 5.0), fakeRow(50, 100, 1.0)] };
+  run(`
+    document.getElementById=function(id){
+      if(id==='cfgMostrarInasistPlanilla') return {checked:true};
+      if(id==='cfgNumPer') return {value:'4'};
+      if(id==='cfgPctInasistCritica') return {value:'25'};
+      if(id==='cfgPctInasistPreventiva') return {value:'20'};
+      if(id.startsWith('pesPer_')) return {value:'25'};
+      return null;
+    };
+  `);
+  const _baseGetById = run('document.getElementById');
+  ctx.document.getElementById = (id) => (id === 'cfgEscalaAsistSERLista' ? fakeLista : _baseGetById(id));
+  run('guardarConfigPedagogica()');
+  assert.equal(run('JSON.stringify(db.config.escalaAsistenciaSER)'), JSON.stringify([
+    { min: 0, max: 49.9, nota: 5.0 },
+    { min: 50, max: 100, nota: 1.0 },
+  ]));
+  // Y el motor de cálculo usa esa escala recién guardada de inmediato.
+  assert.equal(run('calcularNotaSERPorAsistencia(4,10)'), 5.0); // 40%
+  assert.equal(run('calcularNotaSERPorAsistencia(5,10)'), 1.0); // 50%
+});
+check('guardarConfigPedagogica() rechaza (no guarda) un tramo con nota fuera de 0.0–5.0, sin bloquear el resto del guardado', () => {
+  const d = fixtureDB();
+  instalarDB(d);
+  const fakeRow = (min, max, nota) => ({
+    querySelector(sel) {
+      if (sel.includes('"min"')) return { value: String(min) };
+      if (sel.includes('"max"')) return { value: String(max) };
+      if (sel.includes('"nota"')) return { value: String(nota) };
+      return null;
+    },
+  });
+  const fakeLista = { querySelectorAll: () => [fakeRow(0, 100, 7.5)] }; // nota inválida (>5)
+  run(`
+    document.getElementById=function(id){
+      if(id==='cfgMostrarInasistPlanilla') return {checked:true};
+      if(id==='cfgNumPer') return {value:'4'};
+      if(id==='cfgPctInasistCritica') return {value:'25'};
+      if(id==='cfgPctInasistPreventiva') return {value:'20'};
+      if(id.startsWith('pesPer_')) return {value:'25'};
+      return null;
+    };
+  `);
+  const _baseGetById = run('document.getElementById');
+  ctx.document.getElementById = (id) => (id === 'cfgEscalaAsistSERLista' ? fakeLista : _baseGetById(id));
+  run('guardarConfigPedagogica()');
+  assert.equal(run('db.config.mostrarInasistenciasEnPlanilla'), true, 'el resto de la configuración debe guardarse igual');
+  assert.equal(run('db.config.escalaAsistenciaSER'), undefined, 'un tramo inválido no debe dejar guardada una escala parcial/incorrecta');
+});
+check('el texto visible del panel de administración ya NO menciona "Ronda 74" (para no confundir al administrador)', () => {
+  const d = fixtureDB();
+  instalarDB(d);
+  const html = run('htmlConfigEvalPedagogica()');
+  assert.ok(!html.includes('Ronda 74'));
 });
 
 // ════════════════════════════════════════════════════════════════════════

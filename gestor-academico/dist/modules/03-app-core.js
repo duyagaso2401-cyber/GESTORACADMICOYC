@@ -10143,7 +10143,7 @@ function htmlConfigEvalPedagogica(){
             <span style="font-size:0.8rem;font-weight:bold">ausencias (Por defecto 3)</span>
           </div>
           <hr style="border-color:#d8e8f5;margin:12px 0">
-          <!-- RONDA 74 — Ingreso manual de inasistencias en Planilla/Notas de
+          <!-- Ingreso manual de inasistencias en Planilla/Notas de
                Actividades. Interruptor global: apagado por defecto (false),
                para que ninguna institución que ya use el sistema vea cambiar
                de golpe su Planilla ni sus boletines/informes existentes. Solo
@@ -10151,12 +10151,40 @@ function htmlConfigEvalPedagogica(){
                Notas y Notas de Actividades, y el dato se refleja en los PDF
                de boletines/informes (ver htmlPlanilla(), htmlNotasActividades()
                y _generarBoletinesPDF()). -->
-          <b style="font-size:0.85rem;color:#003366">📋 Inasistencias Manuales en Planilla (Ronda 74)</b>
+          <b style="font-size:0.85rem;color:#003366">📋 Inasistencias Manuales en Planilla</b>
           <p style="font-size:0.78rem;color:#555;margin:4px 0 8px">Permite que el docente escriba manualmente el total de inasistencias del periodo en la Planilla de Notas y en Notas de Actividades. Cada valor queda amarrado a su grado, asignatura y periodo exactos — cambiar de periodo o de asignatura siempre muestra solo el dato de ese contexto.</p>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="cfgMostrarInasistPlanilla" ${db.config?.mostrarInasistenciasEnPlanilla===true?'checked':''} style="width:16px;height:16px">
             <span style="font-size:0.85rem">Mostrar columna de Inasistencias en Planillas e Informes</span>
           </label>
+          <p style="font-size:0.74rem;color:#888;margin-top:6px">Si activa además "Vincular inasistencias manuales a la nota del SER" en la Planilla, el sistema calcula el total de horas del periodo automáticamente a partir de la Intensidad Horaria Semanal de cada asignatura (configurada en Carga Académica) — no requiere ningún ajuste adicional aquí.</p>
+          <hr style="border-color:#d8e8f5;margin:12px 0">
+          <!-- Editor de la escala de conversión % de inasistencia -> nota del
+               SER. Totalmente parametrizable: cada institución define sus
+               propios tramos (mínimo %, máximo % y nota asignada), sin
+               ningún valor fijo en el código — ver
+               _escalaAsistenciaSERActiva()/calcularNotaSERPorAsistencia().
+               Esta MISMA tabla gobierna tanto el vínculo manual de arriba
+               como el botón automático "🔄 Asistencia → SER" de la
+               Planilla (Ronda 72/73) — un solo motor de conversión para
+               toda la institución. -->
+          <b style="font-size:0.85rem;color:#003366">📊 Escala de Conversión: % de Inasistencia → Nota del SER</b>
+          <p style="font-size:0.78rem;color:#666;margin:4px 0 8px">Defina los tramos de porcentaje de inasistencia y la nota del SER que le corresponde a cada uno. Se usan tanto al vincular las inasistencias manuales como en el botón "Asistencia → SER" de la Planilla. Los tramos se evalúan de menor a mayor: se aplica el tramo cuyo "Desde %" sea el más alto que aún no supere el porcentaje real del estudiante.</p>
+          <div id="cfgEscalaAsistSERLista" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+            ${_escalaAsistenciaSERActiva().map((t,i)=>`
+            <div data-tramoidx="${i}" style="display:flex;gap:6px;align-items:center;background:#f8fafc;border:1px solid #c8d8e8;border-radius:6px;padding:5px 8px;color:#1a1a2e">
+              <span style="font-size:0.72rem;color:#888;min-width:16px">${i+1}.</span>
+              <span style="font-size:0.76rem;color:#555">Desde</span>
+              <input type="number" value="${t.min}" min="0" max="100" step="0.1" data-field="min" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem">
+              <span style="font-size:0.76rem;color:#555">% hasta</span>
+              <input type="number" value="${t.max}" min="0" max="100" step="0.1" data-field="max" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem">
+              <span style="font-size:0.76rem;color:#555">% → Nota SER:</span>
+              <input type="number" value="${t.nota}" min="0" max="5" step="0.1" data-field="nota" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem;font-weight:bold">
+              <button onclick="this.closest('[data-tramoidx]').remove()" style="background:#c0392b;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:0.78rem;margin-left:auto" title="Eliminar este tramo">✕</button>
+            </div>`).join('')}
+          </div>
+          <button onclick="agregarTramoEscalaSER()" style="background:#1a5276;color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:0.82rem">➕ Agregar tramo</button>
+          <p style="font-size:0.72rem;color:#888;margin-top:6px">Los cambios se guardan al hacer clic en "💾 Guardar Configuración Pedagógica" más abajo.</p>
         </div>
       </div>
       <div>
@@ -10262,9 +10290,39 @@ function guardarConfigPedagogica(){
     d.config.alertasAusenciasActivas=document.getElementById('cfgAlertasAusenciasActivas')?.checked||false;
     const _umbralAus=parseInt(document.getElementById('cfgUmbralAusenciasAlerta')?.value||3);
     d.config.umbralAusenciasAlerta=(_umbralAus>0?_umbralAus:3);
-    // RONDA 74 — switch global (default false): ver comentario junto al
-    // checkbox "cfgMostrarInasistPlanilla" en htmlConfigEvalPedagogica().
+    // Switch global (default false): ver comentario junto al checkbox
+    // "cfgMostrarInasistPlanilla" en htmlConfigEvalPedagogica(). El total de
+    // horas del periodo para el cálculo del SER se estima automáticamente a
+    // partir de la Intensidad Horaria Semanal de cada asignatura (ver
+    // _totalHorasEstimadasPeriodo()/guardarInasistenciaManual()) — no hay
+    // ningún campo de "total de clases" que configurar aquí.
     d.config.mostrarInasistenciasEnPlanilla=document.getElementById('cfgMostrarInasistPlanilla')?.checked||false;
+    // Escala 100% parametrizable de conversión % inasistencia -> nota del
+    // SER (ver _escalaAsistenciaSERActiva()/calcularNotaSERPorAsistencia()).
+    // Se lee fila por fila del editor dinámico; una fila incompleta o con
+    // una nota fuera de 0–5 se descarta en vez de bloquear el guardado del
+    // resto de la Configuración Pedagógica.
+    const _tramosListaEl=document.getElementById('cfgEscalaAsistSERLista');
+    if(_tramosListaEl){
+      const _tramosNuevos=[];
+      _tramosListaEl.querySelectorAll('div[data-tramoidx]').forEach(fila=>{
+        const minInp=fila.querySelector('input[data-field="min"]');
+        const maxInp=fila.querySelector('input[data-field="max"]');
+        const notaInp=fila.querySelector('input[data-field="nota"]');
+        if(!minInp||!maxInp||!notaInp) return;
+        const min=parseFloat(minInp.value), max=parseFloat(maxInp.value), nota=parseFloat(notaInp.value);
+        if(isNaN(min)||isNaN(max)||isNaN(nota)) return; // fila vacía/incompleta: se ignora
+        if(nota<0||nota>5){ customAlert('⚠️ Una nota de la escala de inasistencia quedó fuera del rango 0.0–5.0 y no se guardó ese tramo ('+nota+').'); return; }
+        _tramosNuevos.push({min,max,nota:parseFloat(nota.toFixed(1))});
+      });
+      if(_tramosNuevos.length){
+        d.config.escalaAsistenciaSER=_tramosNuevos;
+      }
+      // Si el administrador borró TODOS los tramos, se deja
+      // db.config.escalaAsistenciaSER intacto (o ausente) — _escalaAsistenciaSERActiva()
+      // ya sabe volver a los tramos de inicialización en ese caso, así que
+      // nunca queda la institución sin ninguna escala utilizable.
+    }
     return d;
   });
   _pushDB();
@@ -10325,6 +10383,17 @@ function actualizarTotalColumnas(){
   });
   totalEl.textContent='Total: '+Math.round(total)+'%';
   totalEl.style.color=Math.abs(total-100)<=1?'#27ae60':'#c0392b';
+}
+// Agrega un tramo vacío al editor de la escala de conversión % inasistencia
+// → nota del SER (ver htmlConfigEvalPedagogica()/_escalaAsistenciaSERActiva()).
+function agregarTramoEscalaSER(){
+  const cont=document.getElementById('cfgEscalaAsistSERLista');if(!cont) return;
+  const idx=cont.querySelectorAll('div[data-tramoidx]').length;
+  const div=document.createElement('div');
+  div.setAttribute('data-tramoidx',String(idx));
+  div.style.cssText='display:flex;gap:6px;align-items:center;background:#f8fafc;border:1px solid #c8d8e8;border-radius:6px;padding:5px 8px';
+  div.innerHTML=`<span style="font-size:0.72rem;color:#888;min-width:16px">${idx+1}.</span><span style="font-size:0.76rem;color:#555">Desde</span><input type="number" value="0" min="0" max="100" step="0.1" data-field="min" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem"><span style="font-size:0.76rem;color:#555">% hasta</span><input type="number" value="0" min="0" max="100" step="0.1" data-field="max" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem"><span style="font-size:0.76rem;color:#555">% → Nota SER:</span><input type="number" value="5.0" min="0" max="5" step="0.1" data-field="nota" style="width:64px;padding:5px;border:1px solid #c0cfe0;border-radius:5px;font-size:0.85rem;font-weight:bold"><button onclick="this.closest('[data-tramoidx]').remove()" style="background:#c0392b;color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:0.78rem;margin-left:auto" title="Eliminar este tramo">✕</button>`;
+  cont.appendChild(div);
 }
 function agregarColExtra(){agregarColBase();}
 function eliminarColExtra(i){
@@ -14724,28 +14793,85 @@ function _obtenerClasesAsistenciaPeriodo(dRef,cId,per,grado){
 function _inasistenciasEnClases(clases,estId){
   return clases.filter(c=>(c.ausentes||[]).some(x=>String(x)===String(estId))).length;
 }
-// Función PURA y testeable (punto 2 del pedido): los 5 tramos EXACTOS que
-// especificó el usuario. CONVENCIÓN DE LÍMITES elegida y documentada aquí
-// (el usuario pidió explícitamente aclarar esto): cada tramo usa "<=" en su
-// límite superior declarado (0-5, 6-10, 11-15 se leen como "hasta 5%",
-// "hasta 10%", "hasta 15%" respectivamente — un 10.0% exacto cae en el
-// tramo de 4.5, no en el de 3.8). Entre el límite superior del tramo
-// "16-24" y el arranque de ">=25" no hay hueco: cualquier valor mayor a 15
-// y MENOR a 25 (incluye no-enteros como 24.5%, que puede ocurrir porque el
-// % de inasistencia real casi nunca es un entero exacto) cae en el tramo de
-// 2.8, y desde 25% en adelante (inclusive) cae en el tramo de 1.0 — así los
-// 5 tramos cubren el 100% de la recta real [0,100] sin huecos ni
-// solapamientos.
+// ════════════════════════════════════════════════════════════════════════
+// ESCALA DE CONVERSIÓN % DE INASISTENCIA → NOTA DEL SER — 100% PARAMETRIZABLE
+// (ajuste estructural definitivo: ya no hay NINGÚN tramo ni nota fijo en el
+// código). Cada institución define sus propios tramos desde Configuración
+// (ver htmlConfigEvalPedagogica()/guardarConfigPedagogica(), sección
+// "📊 Escala de Conversión: % de Inasistencia → Nota del SER"), guardados en
+// db.config.escalaAsistenciaSER como un arreglo [{min,max,nota}, ...]. Esta
+// MISMA escala gobierna TANTO el vínculo de inasistencias manuales
+// (guardarInasistenciaManual()) COMO el botón automático "🔄 Asistencia →
+// SER" (sincronizarAsistenciaASER(), Ronda 72/73) — un solo motor de
+// conversión para toda la institución, sin duplicar lógica.
+//
+// Tramos de inicialización (se usan SOLO si la institución nunca ha
+// guardado su propia escala — ver _escalaAsistenciaSERActiva()): los 4
+// tramos pedidos explícitamente, ya no los 5 tramos más agresivos de
+// versiones anteriores de esta función.
+function _escalaAsistenciaSERDefault(){
+  // Se devuelve un arreglo NUEVO en cada llamada (nunca una referencia
+  // compartida) para que nadie pueda mutar por accidente el valor por
+  // defecto de otra institución.
+  return [
+    {min:0,   max:5,    nota:5.0},
+    {min:5.1, max:15,   nota:4.0},
+    {min:15.1,max:24.9, nota:3.0},
+    {min:25,  max:100,  nota:1.0},
+  ];
+}
+// Devuelve la escala REALMENTE activa: la configurada por la institución si
+// existe y tiene al menos un tramo, o la de inicialización en caso
+// contrario. Ningún otro punto del código debe leer db.config.escalaAsistenciaSER
+// directamente — todos pasan por aquí.
+function _escalaAsistenciaSERActiva(){
+  const propia=db.config&&db.config.escalaAsistenciaSER;
+  return (Array.isArray(propia)&&propia.length)?propia:_escalaAsistenciaSERDefault();
+}
+// Evalúa un porcentaje de inasistencia contra una escala de tramos y
+// devuelve la nota correspondiente. Se evalúa en CASCADA por el "mínimo" de
+// cada tramo (ordenados de menor a mayor): se aplica el tramo con el "min"
+// más alto que aún no supere "pct" — equivalente a evaluar por rango
+// cerrado [min,max] cuando los tramos están bien encadenados (sin huecos),
+// pero además tolera small gaps/solapamientos que un administrador pueda
+// introducir sin querer al editar la tabla, en vez de dejar al estudiante
+// sin nota por un tramo mal configurado.
+function _notaPorTramoAsistencia(pct,escala){
+  const tramos=(Array.isArray(escala)&&escala.length)?escala:_escalaAsistenciaSERDefault();
+  const ordenados=[...tramos].sort((a,b)=>Number(a.min)-Number(b.min));
+  let nota=Number(ordenados[0].nota);
+  for(const t of ordenados){
+    if(pct>=Number(t.min)) nota=Number(t.nota); else break;
+  }
+  return parseFloat(nota.toFixed(1));
+}
+// Punto único de cálculo de la nota del SER a partir de un % de
+// inasistencia — usado tanto por el vínculo manual (guardarInasistenciaManual())
+// como por el botón automático (sincronizarAsistenciaASER()). Devuelve
+// "null" únicamente cuando NO hay ninguna base real para calcular nada
+// (total de clases/horas = 0) — el mismo contrato que ya tenían ambos
+// llamadores desde las Rondas 72-74, para no romper su manejo de "sin
+// datos".
 function calcularNotaSERPorAsistencia(inasistencias,totalClases){
   const total=Number(totalClases)||0;
-  if(total<=0) return null; // sin clases registradas todavía: no hay base para calcular nada — se deja al docente
+  if(total<=0) return null; // sin clases/horas de referencia: no hay base para calcular nada — se deja al docente
   const inas=Math.max(0,Number(inasistencias)||0);
   const pct=(inas/total)*100;
-  if(pct<=5) return 5.0;
-  if(pct<=10) return 4.5;
-  if(pct<=15) return 3.8;
-  if(pct<25) return 2.8;
-  return 1.0;
+  return _notaPorTramoAsistencia(pct,_escalaAsistenciaSERActiva());
+}
+// Estimado de horas/clases totales del periodo para UNA asignatura, usado
+// por el vínculo "inasistencias manuales → SER" (ver
+// guardarInasistenciaManual() más abajo) cuando esa asignatura no tiene
+// registros reales en el módulo de Asistencia para el grado/periodo en
+// cuestión. Fórmula pedida explícitamente: Intensidad Horaria Semanal
+// (carga.ih, configurada en Carga Académica) × 10 semanas. Si la asignatura
+// no tiene "ih" definida, se usa 1 hora/semana como base (= 10 horas en el
+// periodo) — el mismo valor por defecto que ya usa el resto del sistema
+// para "ih" cuando falta (ver el formulario de Carga Académica:
+// "value=\"${c.ih||1}\"").
+function _totalHorasEstimadasPeriodo(carga){
+  const ihSemanal=Number(carga&&carga.ih)||1;
+  return ihSemanal*10;
 }
 // ════════════════════════════════════════════════════════════════════════
 // RONDA 74 — INASISTENCIAS MANUALES EN PLANILLA Y NOTAS DE ACTIVIDADES.
@@ -14837,8 +14963,28 @@ function guardarInasistenciaManual(estId,cId,per,valor){
     if(_vincularInasistManualSERActivo(cIdN)){
       const carga=d.carga.find(c=>c.id===cIdN);
       if(carga){
-        const _clases=_obtenerClasesAsistenciaPeriodo(d,cIdN,perN,carga.g);
-        const nota=calcularNotaSERPorAsistencia(numVal,_clases.length);
+        // Prioridad 1: registros REALES del módulo de Asistencia para este
+        // grado/asignatura/periodo (igual que sincronizarAsistenciaASER(),
+        // Ronda 72/73) — si la institución ya toma asistencia por clase, esa
+        // fuente manda siempre, sin importar la estimación de abajo.
+        let totalHoras=_obtenerClasesAsistenciaPeriodo(d,cIdN,perN,carga.g).length;
+        // Prioridad 2 (fallback): la mayoría de instituciones activan el
+        // ingreso MANUAL de inasistencias precisamente porque NO llevan
+        // asistencia diaria por clase en el sistema — en ese caso se estima
+        // el total de horas del periodo a partir de la Intensidad Horaria
+        // Semanal de la asignatura (carga.ih × 10 semanas — ver
+        // _totalHorasEstimadasPeriodo()), sin necesidad de configurar nada
+        // aparte.
+        if(!totalHoras) totalHoras=_totalHorasEstimadasPeriodo(carga);
+        // Ajuste estructural: ahora se usa el MISMO motor de conversión que
+        // el botón automático "Asistencia → SER" — calcularNotaSERPorAsistencia(),
+        // que a su vez lee la escala 100% configurable por la institución
+        // (db.config.escalaAsistenciaSER, ver _escalaAsistenciaSERActiva()).
+        // Ya no hay una fórmula aparte "solo para lo manual": si antes 1
+        // sola inasistencia manual hacía caer la nota de 5.0 a 1.0 de un
+        // salto, la institución lo corrige ajustando sus propios tramos en
+        // Configuración, sin depender de un valor fijo en el código.
+        const nota=calcularNotaSERPorAsistencia(numVal,totalHoras);
         if(nota!==null){ nts[cIdN][perN].s=nota; _serRecalculada=nota; }
       }
     }
