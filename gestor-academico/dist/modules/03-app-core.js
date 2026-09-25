@@ -8307,7 +8307,60 @@ function customPrompt(mensaje, valorInicial, titulo){
 // ============================================================
 // SKELETON DE CARGA — evita el parpadeo en blanco al cambiar de módulo
 // ============================================================
-function _htmlSkeletonContenido(){
+// RONDA 75 — ESTANDARIZACIÓN GLOBAL DEL SKELETON DE CARGA.
+// Antes de esta ronda, _htmlSkeletonContenido() solo tenía UN diseño fijo
+// (pensado para una tabla/planilla). Se generaliza en 2 piezas reutilizables
+// para poder aplicar el mismo mecanismo, con la forma visual correcta, a
+// CUALQUIER módulo del sistema:
+//   - _htmlSkeletonPorTipo(tipoVista): genera el HTML del esqueleto según el
+//     tipo de vista que va a cargar ('tabla', 'tarjetas'/'perfil',
+//     'formulario'/'panel'). Es una función pura (string in, string out),
+//     así que puede usarse tanto para inyectar directamente en un template
+//     HTML (ej. htmlActas()/htmlObsAula(), que dejaban un <div> vacío) como
+//     desde JS imperativo.
+//   - mostrarSkeletonContenedor(targetEl, tipoVista): envoltorio imperativo
+//     que toma un elemento del DOM ya existente (ej. un <div id="..."> de un
+//     submódulo) y le inyecta el esqueleto correspondiente ANTES de arrancar
+//     una operación asíncrona (fetch granular, etc.), para que el usuario
+//     vea de inmediato una respuesta visual en vez de que la pantalla quede
+//     "congelada" hasta que la operación termine y el contenido aparezca de
+//     golpe (el "salto"/layout shift reportado).
+// _htmlSkeletonContenido() se deja intacta (para no arriesgar ningún
+// llamador existente): internamente ahora es un alias de
+// _htmlSkeletonPorTipo('tabla'), que es exactamente el diseño que tenía.
+function _htmlSkeletonPorTipo(tipoVista){
+  const tipo = tipoVista || 'tabla';
+  if(tipo==='tarjetas' || tipo==='perfil'){
+    // Filas tipo "ficha de estudiante": avatar circular + 2 líneas de texto,
+    // repetidas — pensado para Observador del Estudiante, Ficha del Alumno,
+    // y cualquier listado de tarjetas/perfiles.
+    const filaPerfil = '<div class="skel-perfil-row">'+
+        '<div class="skel-avatar"></div>'+
+        '<div style="flex:1"><div class="skel-line w60"></div><div class="skel-line w40" style="margin-bottom:0"></div></div>'+
+      '</div>';
+    return '<div class="skel-wrap">'+
+      '<div class="skel-title"></div>'+
+      '<div class="skel-card">'+
+        Array(4).fill(filaPerfil).join('')+
+      '</div>'+
+    '</div>';
+  }
+  if(tipo==='formulario' || tipo==='panel'){
+    // Grilla de "campos" tipo formulario/panel de configuración: etiqueta +
+    // bloque simulando un input, repetido — pensado para Configuración,
+    // Panel de Institución y los dashboards (tarjetas de KPI + panel).
+    const campo = '<div class="skel-form-field"><div class="skel-line w40"></div><div class="skel-block"></div></div>';
+    return '<div class="skel-wrap">'+
+      '<div class="skel-title"></div>'+
+      '<div class="skel-card">'+
+        '<div class="skel-form-grid">'+Array(6).fill(campo).join('')+'</div>'+
+        '<div class="skel-block" style="height:60px"></div>'+
+      '</div>'+
+    '</div>';
+  }
+  // 'tabla' (default): mismo diseño original de _htmlSkeletonContenido() —
+  // usado para Asistencia, Observador de Aula, Descriptores, Actas y
+  // cualquier otro listado tabular.
   const filas = [80,60,100,40,90,55,70].map(function(w){
     return '<div class="skel-line w'+(w>=80?'80':w>=60?'60':'40')+'"></div>';
   }).join('');
@@ -8320,16 +8373,48 @@ function _htmlSkeletonContenido(){
     '</div>'+
   '</div>';
 }
+// Envoltorio imperativo: inyecta el skeleton del tipo indicado dentro de un
+// elemento del DOM ya existente. Devuelve true/false según haya podido
+// hacerlo (para que el llamador pueda decidir un plan B si el elemento no
+// existe todavía, aunque en la práctica esto no debería pasar).
+function mostrarSkeletonContenedor(targetEl, tipoVista){
+  if(!targetEl) return false;
+  if(targetEl.setAttribute) targetEl.setAttribute('aria-busy','true');
+  targetEl.innerHTML = _htmlSkeletonPorTipo(tipoVista);
+  return true;
+}
+function _htmlSkeletonContenido(){
+  return _htmlSkeletonPorTipo('tabla');
+}
+// Determina, según la página actual ("pag"), qué tipo de esqueleto conviene
+// mostrar mientras _navegarConCargaGranularSiAplica() resuelve los datos —
+// así el "salto" de layout se evita con una forma visual parecida a la del
+// contenido real que va a reemplazarlo, en vez de un único diseño genérico
+// para todo el sistema.
+function _tipoVistaPorPagina(p){
+  const TABLA=['asistencia','obs-aula','descriptores','actas','adm-est','adm-carga','planilla','notas-actividades','ver-credenciales'];
+  const TARJETAS=['observador'];
+  const FORMULARIO=['adm-base','horarios','cronograma-notas','config','config-pedagogica','panel-docente','panel-tendencias','tablero','padre-home','est-home'];
+  if(TABLA.includes(p)) return 'tabla';
+  if(TARJETAS.includes(p)) return 'tarjetas';
+  if(FORMULARIO.includes(p)) return 'formulario';
+  return 'tabla';
+}
 function _mostrarSkeletonYNavegar(){
   const cont = document.getElementById('contenido');
   if(cont){
     cont.setAttribute('aria-busy','true');
-    cont.innerHTML = _htmlSkeletonContenido();
+    cont.innerHTML = _htmlSkeletonPorTipo(_tipoVistaPorPagina(pag));
     // RONDA 56 — antes llamaba a renderApp() directamente; ahora pasa por
     // _navegarConCargaGranularSiAplica(), que SOLO agrega un paso adicional
     // (refresco granular) cuando pag==='planilla' y el rol es Docente — para
     // cualquier otra página/rol, termina llamando a renderApp() exactamente
     // igual que antes, sin ningún cambio de comportamiento.
+    // RONDA 75 — el ÚNICO cambio de comportamiento respecto a Ronda 56 es
+    // que el HTML inyectado ahora varía según el tipo de vista (ver
+    // _tipoVistaPorPagina arriba) en vez de ser siempre el mismo diseño; el
+    // resto de la lógica (requestAnimationFrame + setTimeout(...,0) antes de
+    // _navegarConCargaGranularSiAplica) queda idéntica.
     requestAnimationFrame(function(){ setTimeout(_navegarConCargaGranularSiAplica, 0); });
   } else {
     _navegarConCargaGranularSiAplica();
@@ -18773,7 +18858,15 @@ function htmlActas(){
     <button class="tab-btn ${actaTab==='material'?'active':''}" onclick="actaTab='material';renderActaTab()">🎒 Material para Estudiantes</button>
     <button class="tab-btn ${actaTab==='verificar'?'active':''}" onclick="actaTab='verificar';renderActaTab()">🔍 Verificar Documento</button>
   </div>
-  <div id="actaTabContenido"></div>`;
+  <div id="actaTabContenido">${_htmlSkeletonPorTipo('tabla')}</div>`;
+  // RONDA 75 — antes este <div> quedaba vacío hasta que renderActaTab() lo
+  // llenaba 60ms después (ver navTo()==>renderApp(), "if(pag==='actas')
+  // setTimeout(renderActaTab,60)"), produciendo un salto de layout brusco
+  // (contenido apareciendo de golpe sobre un espacio en blanco). Ahora el
+  // <div> nace con el skeleton tipo "tabla" ya dentro, y renderActaTab()
+  // simplemente lo reemplaza por el contenido real cuando esté listo — el
+  // temporizador de 60ms y toda la demás lógica de esta función y de
+  // renderActaTab() quedan exactamente igual.
 }
 
 function renderActaTab(){
@@ -19872,13 +19965,24 @@ function htmlObservador(){
 async function cargarListaObservador(){
   const grado=document.getElementById('obsEstGrado')?.value||'';
   const per=document.getElementById('obsEstPer')?.value||'1';
+  // RONDA 75 — antes, si el camino granular (_cargarObservadorGranular) o el
+  // fallback (_pullDB) tomaban un momento, la pantalla quedaba "congelada"
+  // (el <div id="listaObservador"> seguía con lo que tuviera antes, o vacío
+  // la primera vez) hasta que la lista terminaba de armarse más abajo,
+  // produciendo el salto brusco reportado. Ahora se toma el contenedor DE
+  // UNA VEZ y se le muestra el skeleton tipo "tarjetas" (perfiles de
+  // estudiante) ANTES de esperar cualquier operación asíncrona — el resto
+  // de la lógica (fetch granular, fallback a _pullDB, filtrado y armado de
+  // la tabla) queda exactamente igual.
+  const wrap=document.getElementById('listaObservador');
+  if(wrap) mostrarSkeletonContenedor(wrap,'tarjetas');
   if(grado&&sesion&&sesion.r==='docente'){
     let ok=false; try{ ok=await _cargarObservadorGranular(grado); }catch(e){}
     if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
   }
   const esTutorPTA=_esTutorPTA();
   const ests=db.ests.filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
-  const wrap=document.getElementById('listaObservador');if(!wrap) return;
+  if(!wrap) return;
   if(!ests.length){wrap.innerHTML=_htmlEstadoVacio('🎓','Sin estudiantes.');return;}
   wrap.innerHTML=`<div class="over"><table>
     <thead><tr><th>#</th><th>Estudiante</th><th>Observaciones del Periodo</th><th>Acciones</th></tr></thead>

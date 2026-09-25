@@ -448,6 +448,15 @@ async function actualizarAsignaturasReg(gradoSel){
     sel.innerHTML = opts || '<option value="">Sin asignaturas asignadas</option>';
   }
   if(!isAdmin && sesion && sesion.r==='docente'){
+    // RONDA 75 — este fetch granular podía tomar un instante mientras la
+    // pantalla de Asistencia quedaba "congelada" (sin ninguna señal visual)
+    // hasta que actualizarEstadosAsist() terminaba y llamaba a renderApp(),
+    // reemplazando todo #contenido de golpe (el "salto" brusco reportado).
+    // Se muestra el skeleton tipo "tabla" de inmediato, ANTES de esperar el
+    // fetch — el resto de la lógica (fetch granular, fallback a _pullDB, y
+    // la llamada final a actualizarEstadosAsist) queda exactamente igual.
+    var _contAsistReg=document.getElementById('contenido');
+    if(_contAsistReg) mostrarSkeletonContenedor(_contAsistReg,'tabla');
     var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
     if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
   }
@@ -473,6 +482,16 @@ async function actualizarEstadosAsist(){
     asistPeriodo = pSel.value;
   }
   if(sesion && sesion.r==='docente'){
+    // RONDA 75 — mismo fix que en actualizarAsignaturasReg(): mostrar el
+    // skeleton tipo "tabla" de inmediato en vez de dejar la pantalla
+    // congelada hasta que este fetch termine y renderApp() reemplace todo
+    // el contenido de golpe. Se protege con un chequeo simple para no
+    // repetir el skeleton si actualizarAsignaturasReg() ya lo mostró un
+    // instante antes (no hace daño mostrarlo dos veces, pero es innecesario).
+    var _contAsistEst=document.getElementById('contenido');
+    if(_contAsistEst && _contAsistEst.getAttribute('aria-busy')!=='true'){
+      mostrarSkeletonContenedor(_contAsistEst,'tabla');
+    }
     var ok=false; try{ ok=await _cargarAsistenciaGranular(); }catch(e){}
     if(ok){ window._dbGranularSolamente=true; } else { try{ await _pullDB(); }catch(e){} }
   }
@@ -4437,8 +4456,13 @@ function htmlObsAula(){
       <button class="btn-sm" style="background:#566573;padding:7px 14px" onclick="abrirModalPapelera('observacion')">♻️ Papelera de Observaciones</button>
     </div>
   </div>
-  <div id="obsAulaLista"></div>
+  <div id="obsAulaLista">${_htmlSkeletonPorTipo('tabla')}</div>
   <script>setTimeout(renderObsAulaLista,80);<\/script>`;
+  // RONDA 75 — antes "#obsAulaLista" quedaba vacío hasta que
+  // renderObsAulaLista() lo llenaba 80ms después, produciendo un salto de
+  // layout brusco. Ahora nace con el skeleton tipo "tabla" ya dentro;
+  // renderObsAulaLista() sigue reemplazándolo por el contenido real
+  // exactamente igual que antes (mismo temporizador, misma lógica).
 }
 
 function renderObsAulaLista(){
