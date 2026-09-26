@@ -284,7 +284,7 @@ label.lbl{display:block;margin-bottom:5px;font-size:0.82rem;font-weight:700;colo
 .flex-gap{display:flex;gap:8px;flex-wrap:wrap}
 table{width:100%;border-collapse:collapse;font-size:0.82rem;color:var(--td-text)}
 th{background:var(--table-header-bg);color:var(--table-header-text);padding:9px 8px;text-align:center;border:1px solid #1a5276;font-size:0.8rem;letter-spacing:.02em}
-td{padding:8px 8px;border:1px solid var(--table-border);text-align:center;background:var(--table-row-bg);color:var(--td-text)}.desc-table td{padding:2px 4px;line-height:1.35;word-break:break-word;white-space:pre-wrap;vertical-align:top;height:auto!important;min-height:unset!important}.desc-table th{padding:4px 5px;}.desc-table td:nth-child(6){text-align:left;min-width:180px;max-width:320px;word-break:break-word}
+td{padding:8px 8px;border:1px solid var(--table-border);text-align:center;background:var(--table-row-bg);color:var(--td-text);overflow-wrap:break-word;word-break:break-word}.desc-table td{padding:2px 4px;line-height:1.35;word-break:break-word;white-space:pre-wrap;vertical-align:top;height:auto!important;min-height:unset!important}.desc-table th{padding:4px 5px;}.desc-table td:nth-child(6){text-align:left;min-width:180px;max-width:320px;word-break:break-word}
 tr:nth-child(even) td{background:var(--table-row-alt)}
 .nota-input{width:65px;padding:5px 6px;border:1px solid var(--input-border);border-radius:4px;text-align:center;font-size:0.88rem;background:var(--input-bg);color:var(--input-text)}
 nav.nav{display:flex;gap:6px;margin-bottom:18px;border-bottom:2px solid var(--border-color);padding-bottom:10px;flex-wrap:wrap}
@@ -729,7 +729,7 @@ html[data-theme="dark"] .cm-title{color:var(--gold)}
 /* ================================================================
    SKELETON DE CARGA (evita parpadeos en blanco al cambiar módulo)
    ================================================================ */
-.skel-wrap{padding:4px 2px;animation:skelFadeIn .12s ease}
+.skel-wrap{padding:4px 2px;animation:skelFadeIn .12s ease;min-height:500px;box-sizing:border-box}
 @keyframes skelFadeIn{from{opacity:0}to{opacity:1}}
 .skel-line,.skel-block{
   background:linear-gradient(90deg,var(--skeleton-base) 25%,var(--skeleton-shine) 37%,var(--skeleton-base) 63%);

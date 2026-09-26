@@ -342,10 +342,24 @@ check('cargarListaObservador() sigue armando la tabla real de estudiantes tal co
 check('htmlObsAula() ya NO deja "#obsAulaLista" vacío: nace con el skeleton tipo "tabla" (evita el salto al poblarse 80ms después)', () => {
   const d = fixtureDB(); instalarDB(d);
   const html = run('htmlObsAula()');
-  const m = html.match(/<div id="obsAulaLista">([\s\S]*?)<\/div>\s*<script>/);
+  const m = html.match(/<div id="obsAulaLista">([\s\S]*?)<\/div>/);
   assert.ok(m, 'debe existir el contenedor #obsAulaLista');
   assert.ok(m[1].includes('skel-wrap'), 'el contenedor debe nacer con el skeleton, no vacío');
-  assert.ok(html.includes('setTimeout(renderObsAulaLista,80)'), 'el temporizador original que puebla la lista real debe seguir intacto');
+});
+// RONDA 81 — CORRECCIÓN: htmlObsAula() ya NO trae un <script>setTimeout(...)
+// incrustado — un <script> insertado vía innerHTML nunca lo ejecuta el
+// navegador, así que la carga automática de Observador de Aula en realidad
+// JAMÁS se disparaba (solo el botón "🔄 Cargar", con un onclick real,
+// funcionaba). Ahora la llamada real vive en renderApp() (03-app-core.js),
+// justo después de inyectar el HTML del módulo — mismo patrón ya usado ahí
+// para 'menciones-honor'/'actas'.
+check('htmlObsAula() ya NO incluye ningún <script> incrustado (ese patrón nunca se ejecutaba al insertarse vía innerHTML)', () => {
+  const d = fixtureDB(); instalarDB(d);
+  const html = run('htmlObsAula()');
+  assert.ok(!html.includes('<script>'), 'no debe quedar ningún <script> incrustado dentro del HTML devuelto por htmlObsAula()');
+});
+check('renderApp() dispara renderObsAulaLista() con un setTimeout REAL (no un <script> incrustado) cuando pag==="obs-aula", justo después de inyectar el HTML del módulo', () => {
+  assert.match(src1, /if\(pag==='obs-aula'\)\s*setTimeout\(renderObsAulaLista,80\);/, 'debe existir esta línea en renderApp(), igual patrón que menciones-honor/actas');
 });
 
 // ── Actas ──

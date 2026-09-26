@@ -1891,7 +1891,7 @@ async function _cargarCronogramaAdminGranular(){
 // _pullDB() completo ANTES de renderizar, para que ningún reporte/PDF/
 // consolidado del Docente se genere jamás con datos incompletos.
 window._dbGranularSolamente=window._dbGranularSolamente||false;
-async function _navegarConCargaGranularSiAplica(){
+async function _navegarConCargaGranularSiAplica(yaHabiaDatosEnCache){
   // RONDA 57 — se agregan aquí mismo las 2 vistas nuevas migradas
   // (Notas de Actividades, Asistencia) que SÍ tienen un punto de entrada
   // por menú/navTo() (Observador no lo tiene: su carga es 100% bajo demanda
@@ -1899,6 +1899,22 @@ async function _navegarConCargaGranularSiAplica(){
   // mismo patrón de FALLBACK EXPLÍCITO a _pullDB() si el camino granular
   // falla por cualquier motivo (red caída, etc.) — pedido explícitamente
   // por el usuario en esta ronda.
+  //
+  // RONDA 81 — "yaHabiaDatosEnCache" (true solo cuando _mostrarSkeletonYNavegar()
+  // ya pintó contenido real desde caché antes de llamar aquí) habilita dos
+  // cosas SOLO en ese caso, para no cambiar nada del camino "primera carga"
+  // (sin caché, con skeleton — ese sigue exactamente igual que antes):
+  //  (a) un indicador de sincronización sutil (barra superior, fuera del
+  //      contenedor del módulo) en vez de dejar la vista sin ningún indicio
+  //      de que algo sigue cargando en segundo plano;
+  //  (b) tomar una "foto" de "db" ANTES de esta actualización para, al
+  //      terminar, comparar si de verdad cambió algo — si es idéntico, se
+  //      evita un segundo renderApp() completo (causa real del "salto"/
+  //      parpadeo doble reportado: re-renderizar el contenedor entero sin
+  //      que hubiera ningún cambio que mostrar).
+  if(yaHabiaDatosEnCache){ _mostrarIndicadorSyncSutil(); }
+  const _dbAntesNav81 = yaHabiaDatosEnCache ? _clonarDB(db) : null;
+  try{
   if(sesion&&sesion.r==='docente'){
     if(pag==='planilla'){
       let ok=false; try{ ok=await _cargarPlanillaGranular(); }catch(e){}
@@ -1975,7 +1991,28 @@ async function _navegarConCargaGranularSiAplica(){
       try{ const okFull=await _pullDB(); if(okFull) window._dbGranularSolamente=false; }catch(e){}
     }
   }
+  // RONDA 81 — ACTUALIZACIÓN SILENCIOSA: si ya había datos utilizables en
+  // caché ANTES de esta actualización (yaHabiaDatosEnCache) y, tras
+  // consultarla, la red resultó devolver EXACTAMENTE lo mismo que ya estaba
+  // pintado, se omite este renderApp() — evita destruir y reconstruir todo
+  // el contenedor (menú + contenido) sin ningún cambio real que mostrar, que
+  // era la causa del "salto"/parpadeo doble ("pom, pom"). Se usa la misma
+  // comparación profunda (_profundamenteIgual) que ya usa updDB() para su
+  // propio "dirty check", así que el criterio de "¿cambió algo de verdad?"
+  // es exactamente el mismo en todo el sistema. Cuando NO había caché previa
+  // (primera carga real, con skeleton) este chequeo no aplica — siempre se
+  // renderiza, igual que siempre.
+  if(yaHabiaDatosEnCache && _dbAntesNav81 && _profundamenteIgual(_dbAntesNav81, db)){
+    const _cAct = document.getElementById('contenido');
+    const _todaviaTieneSkeleton = _cAct && (_cAct.getAttribute('aria-busy')==='true' || (_cAct.innerHTML && _cAct.innerHTML.includes('skel-wrap')));
+    if(!_todaviaTieneSkeleton){
+      return;
+    }
+  }
   renderApp();
+  }finally{
+    if(yaHabiaDatosEnCache){ _ocultarIndicadorSyncSutil(); }
+  }
 }
 // Reemplaza el patrón "pag='planilla';planCId=X;planPer=Y;renderApp()" usado
 // por botones de otras vistas (ej. "Ir a Planilla P{periodo}" en Consolidados)
@@ -8659,52 +8696,113 @@ function _tipoVistaPorPagina(p){
   if(FORMULARIO.includes(p)) return 'formulario';
   return 'tabla';
 }
+// ══════════════════════════════════════════════════════════════════════════
+// RONDA 81 — INDICADOR DE SINCRONIZACIÓN SUTIL (sin tocar el contenedor del
+// módulo). Cuando ya se pintó contenido real desde caché (ver el "camino
+// rápido" de _mostrarSkeletonYNavegar()) y la actualización de red sigue en
+// segundo plano, mostrar el skeleton pesado de nuevo o volver a pintar todo
+// el contenedor produce el "salto"/parpadeo ("pom, pom") reportado por el
+// usuario. En vez de eso, se agrega una barra de progreso delgada y fija en
+// la parte superior de la pantalla (fuera de "#contenido", así NUNCA puede
+// desplazar ni redimensionar nada del módulo) mientras dura la
+// actualización, y se retira sola al terminar — sin importar si al final
+// hubo datos nuevos o no.
+function _mostrarIndicadorSyncSutil(){
+  try{
+    if(document.getElementById('indicadorSyncSutil')) return;
+    if(!document.getElementById('indicadorSyncSutilKeyframes')){
+      const style=document.createElement('style');
+      style.id='indicadorSyncSutilKeyframes';
+      style.textContent='@keyframes indicadorSyncSutilAnim{0%{background-position:0% 0}100%{background-position:200% 0}}';
+      document.head.appendChild(style);
+    }
+    const ind=document.createElement('div');
+    ind.id='indicadorSyncSutil';
+    ind.setAttribute('aria-hidden','true');
+    ind.style.cssText='position:fixed;top:0;left:0;height:3px;width:100%;z-index:99999;'+
+      'background:linear-gradient(90deg,#1a6bb5,#66b3ff,#1a6bb5);background-size:200% 100%;'+
+      'animation:indicadorSyncSutilAnim 1.1s linear infinite;pointer-events:none;opacity:0.9';
+    document.body.appendChild(ind);
+  }catch(e){}
+}
+function _ocultarIndicadorSyncSutil(){
+  try{
+    const ind=document.getElementById('indicadorSyncSutil');
+    if(ind) ind.remove();
+  }catch(e){}
+}
+// ══════════════════════════════════════════════════════════════════════════
+// RONDA 82 — ACTUALIZACIÓN "SIN BRINCO" DE UN CONTENEDOR (guard-check +
+// estabilización de altura). El indicador/chequeo de la Ronda 81 evitaba el
+// SEGUNDO renderApp() completo cuando "db" no cambiaba — pero el usuario
+// reportó que el salto de layout ("pom, pom") seguía ocurriendo: la causa
+// real es que CUALQUIER llamada a renderApp() (no solo la de la Ronda 81)
+// destruye y reconstruye TODO el árbol de "#app" (menú lateral + perfil +
+// contenido) desde cero, y varias vistas (Observador del Estudiante,
+// Observador de Aula) además vuelven a escribir su propia tabla/lista una
+// SEGUNDA vez con "wrap.innerHTML=..." al terminar su actualización de red,
+// aunque el HTML resultante sea idéntico al que ya estaba pintado.
+//
+// Esta función es el guard-check genérico que pide el usuario (punto 2):
+// compara el HTML nuevo contra el que YA está en el contenedor y, si son
+// EXACTAMENTE iguales, no toca el DOM en absoluto (cero reflow/paint). Si
+// de verdad cambian, aplica el punto 1 (altura mínima estabilizadora):
+// fija, justo antes de reemplazar el contenido, un "min-height" igual a la
+// altura que el contenedor ya tenía, así el navegador nunca lo deja
+// colapsar a una altura menor en el instante entre borrar lo viejo y pintar
+// lo nuevo (la causa concreta del "brinco"/colapso de la barra de
+// desplazamiento) — y lo retira 2 frames después, cuando el contenido nuevo
+// ya terminó de asentarse, para que el contenedor pueda encogerse con
+// normalidad si el contenido real termina siendo más corto que el anterior.
+function _actualizarHTMLSiCambio(elemento, htmlNuevo){
+  if(!elemento) return false;
+  if(elemento.innerHTML===htmlNuevo) return false; // idéntico: no se toca el DOM
+  const _alturaPrevia82=elemento.offsetHeight;
+  if(_alturaPrevia82>0) elemento.style.minHeight=_alturaPrevia82+'px';
+  elemento.innerHTML=htmlNuevo;
+  requestAnimationFrame(function(){
+    requestAnimationFrame(function(){ elemento.style.minHeight=''; });
+  });
+  return true;
+}
 function _mostrarSkeletonYNavegar(){
   const cont = document.getElementById('contenido');
-  // ══════════════════════════════════════════════════════════════════════
-  // RONDA 79 — CACHÉ-PRIMERO (STALE-WHILE-REVALIDATE) EN NAVEGACIÓN EN
-  // CALIENTE. Antes de esta ronda, ENTRAR a cualquier módulo (Planilla,
-  // Notas de Actividades, Asistencia, Permisos, Actividades, etc. — este es
-  // el ÚNICO punto de entrada compartido por toda la navegación por menú)
-  // SIEMPRE tapaba la vista con el skeleton y esperaba la respuesta de
-  // _navegarConCargaGranularSiAplica() (que hace la petición de red) antes
-  // de mostrar cualquier contenido real — aunque "db" ya tuviera, en
-  // memoria, datos perfectamente utilizables de una consulta anterior en
-  // esta misma sesión. Con Neon lento/en cold start, eso significa una
-  // pantalla en blanco/skeleton más tiempo del necesario para datos que, la
-  // gran mayoría de las veces, ya están disponibles localmente.
-  //
-  // Si "db" ya tiene datos reales (db.nombre poblado — no es el objeto
-  // DDB en blanco de una sesión nunca sincronizada), se pinta el contenido
-  // REAL de inmediato con lo que ya hay en memoria (renderApp(), la misma
-  // función de siempre) y la actualización de red se dispara en segundo
-  // plano exactamente igual que antes — _navegarConCargaGranularSiAplica()
-  // ya vuelve a llamar a renderApp() en cuanto esa actualización granular
-  // termina (ver el final de esa función), así que cualquier dato nuevo se
-  // refleja igual, solo que sin bloquear la primera vista.
-  //
-  // Si NO hay nada útil en caché todavía (primera sincronización real de
-  // la sesión), se conserva el comportamiento de siempre: mostrar el
-  // skeleton mientras se espera la primera respuesta de red.
-  if(db&&db.nombre){
-    renderApp();
-    setTimeout(_navegarConCargaGranularSiAplica, 0);
-    return;
-  }
+  // Asegurar que el Skeleton se dibuje DE INMEDIATO con min-height: 500px
+  // para evitar cualquier colapso a 0px al hacer clic en el menú.
   if(cont){
+    if(cont.style) cont.style.minHeight = '500px';
+    _actualizarHTMLSiCambio(cont, _htmlSkeletonPorTipo(_tipoVistaPorPagina(pag)));
     cont.setAttribute('aria-busy','true');
-    cont.innerHTML = _htmlSkeletonPorTipo(_tipoVistaPorPagina(pag));
-    // RONDA 56 — antes llamaba a renderApp() directamente; ahora pasa por
-    // _navegarConCargaGranularSiAplica(), que SOLO agrega un paso adicional
-    // (refresco granular) cuando pag==='planilla' y el rol es Docente — para
-    // cualquier otra página/rol, termina llamando a renderApp() exactamente
-    // igual que antes, sin ningún cambio de comportamiento.
-    // RONDA 75 — el ÚNICO cambio de comportamiento respecto a Ronda 56 es
-    // que el HTML inyectado ahora varía según el tipo de vista (ver
-    // _tipoVistaPorPagina arriba) en vez de ser siempre el mismo diseño; el
-    // resto de la lógica (requestAnimationFrame + setTimeout(...,0) antes de
-    // _navegarConCargaGranularSiAplica) queda idéntica.
-    requestAnimationFrame(function(){ setTimeout(_navegarConCargaGranularSiAplica, 0); });
+    // Inmediatamente después de dibujar el Skeleton, ejecutar de forma asíncrona pero sin bloqueos
+    // la función de renderizado real de la vista seleccionada (renderApp), para que el contenido
+    // real o en caché reemplace al Skeleton sin quedarse esperando indefinidamente.
+    requestAnimationFrame(function(){
+      setTimeout(function(){
+        // Si db aún no tiene datos en memoria, asegurar carga desde caché local (localStorage)
+        if(typeof db === 'undefined' || !db || !(db.nombre || (db.users && db.users.length))){
+          try{
+            const _sk = typeof _skActual === 'function' ? _skActual() : (window._currentPlatSK || null);
+            if(_sk && typeof localStorage !== 'undefined'){
+              const _s = localStorage.getItem(_sk);
+              if(_s){
+                const _p = JSON.parse(_s);
+                if(_p && (_p.nombre || (_p.users && _p.users.length))){
+                  db = (typeof _migrateDB === 'function') ? _migrateDB(_p) : Object.assign({}, DDB, _p);
+                }
+              }
+            }
+          }catch(e){}
+        }
+        try{
+          renderApp();
+        }catch(e){
+          console.error('Error al renderizar vista tras skeleton:', e);
+        }
+        const c = document.getElementById('contenido');
+        if(c && c.removeAttribute) c.removeAttribute('aria-busy');
+        _navegarConCargaGranularSiAplica(true);
+      }, 0);
+    });
   } else {
     _navegarConCargaGranularSiAplica();
   }
@@ -9325,6 +9423,30 @@ function renderApp(){
     gestorSesion&&gestorEnPlataforma&&isAdmin?`<li><hr class="dropdown-divider"></li><li><a class="dropdown-item" href="#" onclick="descargarHTMLOffline();return false">💾 Descargar HTML Offline</a></li>`:'',
   ].filter(Boolean).join('');
 
+  // ══════════════════════════════════════════════════════════════════════
+  // RONDA 82 — ACTUALIZACIÓN QUIRÚRGICA DEL "CASCARÓN" (sidebar+perfil) vs.
+  // SOLO EL CONTENIDO. Hasta esta ronda, CADA llamada a renderApp() (venga
+  // de una navegación real o de una simple sincronización en segundo plano
+  // — Rondas 79/81) destruía y reconstruía TODO el árbol de "#app" (menú
+  // lateral completo, panel de perfil, banners) desde cero, aunque nada de
+  // eso hubiera cambiado. Eso reinicia el scroll, el foco, y provoca un
+  // reflow de la página ENTERA — la causa real de que el "salto"/parpadeo
+  // ("pom, pom") siguiera ocurriendo pese al chequeo de la Ronda 81 (que
+  // solo evitaba el CONTENIDO redundante, no el cascarón).
+  //
+  // "_shellFirma82" resume todo lo que puede cambiar la apariencia del
+  // cascarón (rol/usuario, foto/correo/teléfono de perfil, página activa —
+  // que cambia qué ítem del menú se resalta —, nombre de la institución,
+  // modo Gestor/solo-lectura, lector de pantalla). Si es idéntica a la del
+  // último render, el cascarón NO se toca: solo se actualiza "#contenido",
+  // y con su propio guard-check (_actualizarHTMLSiCambio, ver arriba) que
+  // ni siquiera reemplaza el DOM si el HTML resultante es igual al actual.
+  const _shellFirma82=JSON.stringify([isAdmin,sesion.r,sesion.u,sesion.n,sesion.foto||'',sesion.email||'',sesion.telefono||'',pag,_instNombre,!!gestorSesion,!!gestorEnPlataforma,!!sesion.soloLectura,!!_lectorPantallaActivo]);
+  const _appEl82=document.getElementById('app');
+  const _contEl82Existente=document.getElementById('contenido');
+  if(_appEl82&&_appEl82.getAttribute('data-shell-firma')===_shellFirma82&&_contEl82Existente){
+    _actualizarHTMLSiCambio(_contEl82Existente,contenido);
+  } else {
   document.getElementById('app').innerHTML=`
   ${_gestorModeBanner}
   ${_soloLecturaBanner}
@@ -9440,10 +9562,26 @@ function renderApp(){
     </div>
   </div>
   ${gestorSesion&&gestorEnPlataforma?`<button class="gestor-back-pill" onclick="salirDeGestorPlataforma()">← Volver al Gestor YC</button>`:''}`;
+  document.getElementById('app').setAttribute('data-shell-firma',_shellFirma82);
+  }
   attachLogoListeners();
   setTimeout(function(){if(typeof _agregarBotonHuellaPerfil==='function')_agregarBotonHuellaPerfil();},80);
   if(pag==='menciones-honor') setTimeout(actualizarTiposMencion,50);
   if(pag==='actas') setTimeout(renderActaTab,60);
+  // RONDA 81 — CORRECCIÓN: Observador de Aula exigía presionar "🔄 Cargar"
+  // para ver los datos. Causa real: htmlObsAula() (06-documentos-y-resto.js)
+  // dependía de un <script>setTimeout(renderObsAulaLista,80)<\/script>
+  // incrustado en el HTML que ella misma retorna — pero un <script> insertado
+  // vía innerHTML (como aquí, "document.getElementById('app').innerHTML=...")
+  // NUNCA se ejecuta (así lo define el estándar del DOM: un <script> creado
+  // por el parser de innerHTML queda marcado "ya iniciado" y el navegador lo
+  // ignora). Por eso la carga automática jamás disparaba en la práctica: solo
+  // funcionaba al presionar el botón (que sí usa un onclick real, cableado
+  // por el propio parser de atributos, no por ejecución de <script>). Se
+  // reemplaza por el mismo patrón ya usado arriba para 'menciones-honor'/
+  // 'actas': una llamada real de JS después de inyectar el HTML.
+  if(pag==='obs-aula') setTimeout(renderObsAulaLista,80);
+  if(pag==='observador') setTimeout(function(){ if(typeof cargarListaObservador==='function') cargarListaObservador(); },80);
   // Si el docente/admin ya había escrito algo en "Buscar módulo...", el
   // valor se conserva (ver el input más arriba), pero el filtro (qué
   // botones quedan ocultos) es un estado del DOM que hay que reaplicar
@@ -20298,7 +20436,14 @@ async function cargarListaObservador(){
     const ests=((db&&db.ests)||[]).filter(x=>x.g===grado).sort((a,b)=>a.n.localeCompare(b.n));
     if(!wrap) return;
     if(!ests.length){wrap.innerHTML=_htmlEstadoVacio('🔍','No se encontraron registros.');return;}
-    wrap.innerHTML=_htmlTablaObservador(ests,per,esTutorPTA);
+    // RONDA 82 — esta escritura final se ejecutaba SIEMPRE, incluso cuando la
+    // tabla ya se había pintado de inmediato desde caché unas líneas arriba
+    // (Ronda 77) y la revalidación de red resultó traer exactamente los
+    // mismos estudiantes/observaciones — reemplazando la tabla por una
+    // idéntica y provocando el "salto" de layout reportado. Con el
+    // guard-check (_actualizarHTMLSiCambio) solo se toca el DOM si el HTML
+    // realmente cambió.
+    _actualizarHTMLSiCambio(wrap,_htmlTablaObservador(ests,per,esTutorPTA));
   }catch(err){
     if(wrap) wrap.innerHTML=_htmlErrorCargaSkeleton('No se pudieron cargar los estudiantes. Verifique su conexión e intente nuevamente.');
   }finally{
@@ -20312,8 +20457,16 @@ async function cargarListaObservador(){
 // secundario ni referencia al DOM — el mismo HTML exacto que ya se armaba
 // antes en línea, ahora con un solo lugar para mantenerlo.
 function _htmlTablaObservador(ests,per,esTutorPTA){
-  return `<div class="over"><table>
-    <thead><tr><th>#</th><th>Estudiante</th><th>Observaciones del Periodo</th><th>Acciones</th></tr></thead>
+  // RONDA 82 — table-layout:fixed + anchos explícitos por columna: esta
+  // tabla se pinta primero con datos de caché y luego, tras la revalidación
+  // de red, puede reemplazarse otra vez (ver cargarListaObservador()) — con
+  // el "layout" automático de antes, si el texto de una fila cambiaba de
+  // longitud entre esas dos pinturas, el navegador podía recalcular el
+  // ancho de las columnas y producir un pequeño "salto" horizontal además
+  // del vertical. Con anchos fijos, las columnas ya no dependen del
+  // contenido de ninguna fila en particular.
+  return `<div class="over"><table style="table-layout:fixed">
+    <thead><tr><th style="width:6%">#</th><th style="width:22%">Estudiante</th><th style="width:52%">Observaciones del Periodo</th><th style="width:20%">Acciones</th></tr></thead>
     <tbody>${ests.map((e,i)=>{
       const obsHtmlArr=(e.observaciones||[]).map((o,oi)=>{
         if(o.per!=per) return '';

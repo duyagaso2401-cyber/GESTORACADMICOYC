@@ -4479,13 +4479,18 @@ function htmlObsAula(){
       <button class="btn-sm" style="background:#566573;padding:7px 14px" onclick="abrirModalPapelera('observacion')">♻️ Papelera de Observaciones</button>
     </div>
   </div>
-  <div id="obsAulaLista">${_htmlSkeletonPorTipo('tabla')}</div>
-  <script>setTimeout(renderObsAulaLista,80);<\/script>`;
+  <div id="obsAulaLista">${_htmlSkeletonPorTipo('tabla')}</div>`;
   // RONDA 75 — antes "#obsAulaLista" quedaba vacío hasta que
   // renderObsAulaLista() lo llenaba 80ms después, produciendo un salto de
   // layout brusco. Ahora nace con el skeleton tipo "tabla" ya dentro;
   // renderObsAulaLista() sigue reemplazándolo por el contenido real
   // exactamente igual que antes (mismo temporizador, misma lógica).
+  //
+  // RONDA 81 — se quita el <script>setTimeout(renderObsAulaLista,80)<\/script>
+  // que vivía aquí: un <script> insertado vía innerHTML NUNCA se ejecuta (ver
+  // el comentario en renderApp(), 03-app-core.js, donde ahora se dispara la
+  // llamada real de JS tras inyectar este HTML) — por eso la carga automática
+  // jamás funcionaba en la práctica, solo el botón "🔄 Cargar" (onclick real).
 }
 
 function renderObsAulaLista(){
@@ -4526,7 +4531,7 @@ function renderObsAulaLista(){
   ].map(g=>`<option value="${g.v}">${g.label}</option>`).join('');
   const isAdmin = sesion && sesion.r === 'admin';
 
-  wrap.innerHTML=ests.map((e,idx)=>{
+  const _htmlListaObsAula82=ests.map((e,idx)=>{
     const obsDelPer=(e.observaciones||[]).map((o, originalIdx)=>({ ...o, _origIdx: originalIdx })).filter(o=>!o.deletedAt && String(o.per)===String(per));
     const obsHoy=obsDelPer.filter(o=>o.doc===sesion.n || o.doc===sesion.u);
 
@@ -4591,6 +4596,13 @@ function renderObsAulaLista(){
       <div id="obsAulaHistorial_${e.id}">${totalHtml}</div>
     </div>`;
   }).join('');
+  // RONDA 82 — guard-check: este método se dispara automáticamente en cada
+  // navegación/sincronización de Observador de Aula (Ronda 81), pero la
+  // mayoría de las veces las observaciones no cambiaron desde la última
+  // vez. Reemplazar "wrap.innerHTML" con un HTML idéntico igual provoca
+  // reflow/scroll-reset — _actualizarHTMLSiCambio() se salta la escritura
+  // por completo cuando no hay ningún cambio real que mostrar.
+  _actualizarHTMLSiCambio(wrap,_htmlListaObsAula82);
   }catch(err){
     wrap.innerHTML=_htmlErrorCargaSkeleton('No se pudieron cargar las observaciones de aula. Intente nuevamente.');
   }finally{

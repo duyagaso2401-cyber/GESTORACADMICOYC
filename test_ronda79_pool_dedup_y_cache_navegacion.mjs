@@ -313,7 +313,7 @@ function instalarDB(dbObj) {
   _fetchDebeFallar = false;
 }
 
-check('_mostrarSkeletonYNavegar() CON datos ya cacheados en "db" (db.nombre poblado): renderiza el contenido REAL de inmediato (renderApp()), sin tapar la vista con el skeleton crudo', () => {
+check('RONDA 83 — _mostrarSkeletonYNavegar() CON datos ya cacheados en "db" (db.nombre poblado): AHORA pinta el skeleton de inmediato (universal, ver Ronda 83) y NO llama renderApp() de forma síncrona — el contenido real llega después, vía _navegarConCargaGranularSiAplica(true)', () => {
   const d = fixtureDB(); instalarDB(d);
   run(`
     window._contNav79 = document.createElement('div');
@@ -327,9 +327,8 @@ check('_mostrarSkeletonYNavegar() CON datos ya cacheados en "db" (db.nombre pobl
     pag = 'obs-aula';
     _mostrarSkeletonYNavegar();
   `);
-  assert.equal(run('window._renderAppLlamado79'), true, 'con datos ya en caché, renderApp() debe llamarse de inmediato, de forma síncrona');
-  assert.ok(!run('window._contNav79.innerHTML').includes('skel-wrap'), 'NO debe inyectarse el skeleton crudo cuando ya hay datos utilizables en "db"');
-  assert.ok(run('window._contNav79.innerHTML').includes('contenido-real'), 'debe verse el contenido real pintado por renderApp(), no un cascarón vacío');
+  assert.equal(run('window._renderAppLlamado79'), false, 'RONDA 83: ya no se llama renderApp() de forma síncrona — primero se pinta el skeleton universal, sin importar si "db" ya tenía datos');
+  assert.ok(run('window._contNav79.innerHTML').includes('skel-wrap'), 'RONDA 83: el skeleton universal SIEMPRE se pinta de inmediato al navegar, incluso con "db" ya poblado (evita el "brinco" reportado por el usuario)');
   run('renderApp = window._renderAppOriginal79; _navegarConCargaGranularSiAplica = window._navegarOriginal79;');
 });
 
