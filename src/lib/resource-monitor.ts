@@ -314,22 +314,63 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
       }
     }
 
+    // ──────────────────────────────────────────────────────────────────
+    // RONDA 92 — RESPALDO FINAL PARA PLAN FREE: ni el endpoint vigente
+    // (v2) ni el legacy de consumption_history están disponibles para
+    // cuentas en el plan Free de Neon (ambos exigen Launch/Scale/Agent/
+    // Business/Enterprise, según su documentación oficial) — de ahí que,
+    // aunque se configure NEON_ORG_ID correctamente, una cuenta Free sigue
+    // sin poder usarlos. Antes de rendirse, se intenta GET
+    // /projects/{project_id} — un endpoint de información BÁSICA del
+    // proyecto que SÍ está disponible en cualquier plan (incluido Free) y
+    // que expone, entre otros campos, `data_transfer_bytes`: el total de
+    // transferencia de red saliente del período de consumo ACTUAL
+    // (delimitado por `consumption_period_start`/`consumption_period_end`
+    // en la misma respuesta) — confirmado contra la referencia oficial de
+    // Neon (neon.com/docs/reference/api/projects/get-project). Es un
+    // número más agregado que el desglose público/privado que da
+    // consumption_history, pero es justo lo que necesita este panel (uso
+    // total vs. límite configurado) y no exige org_id ni un plan de pago.
+    // ──────────────────────────────────────────────────────────────────
+    if (transferBytes === null) {
+      const rProyecto = await _fetchJson(`${NEON_API_BASE}/projects/${encodeURIComponent(NEON_PROJECT_ID)}`, headers);
+      if (rProyecto.ok) {
+        transferBytes = sumarCamposNumericos(rProyecto.body, /^data_transfer_bytes$/i);
+      } else if (ultimoStatus === undefined) {
+        ultimoStatus = rProyecto.status;
+        cuerpoError = rProyecto.body ?? rProyecto.error ?? null;
+      }
+    }
+
     if (transferBytes === null) {
       // Log temporal pedido por el usuario para diagnosticar el mensaje
       // EXACTO que devuelve Neon — nunca se registran credenciales, solo
       // el status y el cuerpo de error que el propio proveedor envía.
-      console.error('[ResourceMonitor] Neon consumption_history falló. Status:', ultimoStatus ?? '(sin respuesta)', '— Cuerpo:', (() => { try { return JSON.stringify(cuerpoError).slice(0, 500); } catch { return String(cuerpoError); } })());
+      console.error('[ResourceMonitor] Neon: ningún endpoint de consumo respondió con datos utilizables. Último status:', ultimoStatus ?? '(sin respuesta)', '— Cuerpo:', (() => { try { return JSON.stringify(cuerpoError).slice(0, 500); } catch { return String(cuerpoError); } })());
 
-      if (ultimoStatus === 403) {
-        error = 'Tu plan de Neon no incluye este endpoint de consumo (Neon solo lo habilita en planes Launch/Scale/Agent/Business/Enterprise, no en el plan Free) — HTTP 403.';
+      // RONDA 92 — si el motivo de fondo es una restricción de PLAN (403
+      // explícito de Neon), se muestra un mensaje honesto y amigable en
+      // vez de un código HTTP crudo — no es un error del sistema, es una
+      // limitación documentada del plan Free de Neon para el historial de
+      // consumo detallado.
+      // Nota: un 400 sin NEON_ORG_ID configurada se deja como mensaje
+      // TÉCNICO específico (más abajo) en vez de agruparlo aquí — a
+      // diferencia de un 403 (rechazo explícito e inequívoco de Neon por
+      // el plan de la cuenta), un 400 por falta de `org_id` SÍ tiene una
+      // corrección concreta y barata (configurar esa variable), así que no
+      // conviene ocultarla detrás de un mensaje que asume sin certeza que
+      // el plan es la causa de fondo.
+      const esRestriccionDePlan = ultimoStatus === 403;
+      if (esRestriccionDePlan) {
+        error = 'Tu plan actual de Neon no incluye el historial detallado de consumo por API (limitación del plan Free/Launch, no un error del sistema). Puedes ver tu transferencia de red exacta entrando a console.neon.tech → tu proyecto → pestaña "Billing"/"Usage". El panel seguirá revisando automáticamente por si el acceso cambia (p. ej. al actualizar de plan).';
       } else if (ultimoStatus === 404) {
-        error = 'La cuenta no pertenece a la organización indicada en NEON_ORG_ID (HTTP 404) — revisa esa variable de entorno.';
+        error = 'La cuenta no pertenece a la organización indicada en NEON_ORG_ID (HTTP 404) — revisa esa variable de entorno, o el ID del proyecto (NEON_PROJECT_ID).';
       } else if (ultimoStatus === 406) {
         error = 'El rango de fechas solicitado no es válido para la granularidad usada (HTTP 406).';
       } else if (ultimoStatus === 400 && !NEON_ORG_ID) {
         error = 'HTTP 400 al consultar /consumption_history — falta configurar NEON_ORG_ID (obligatoria para el endpoint vigente de Neon).';
       } else if (ultimoStatus !== undefined) {
-        error = `HTTP ${ultimoStatus} al consultar /consumption_history/projects`;
+        error = `HTTP ${ultimoStatus} al consultar el consumo de Neon (ni /consumption_history ni /projects/{id} devolvieron un dato utilizable).`;
       } else {
         error = 'La respuesta de Neon no incluyó campos de transferencia de red reconocibles';
       }

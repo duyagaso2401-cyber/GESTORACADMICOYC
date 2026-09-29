@@ -6801,6 +6801,81 @@ function _forzarCierrePorTiempo(){
 }
 
 // ============================================================
+// RONDA 92 — CIERRE AUTOMÁTICO DE SESIÓN POR INACTIVIDAD (global)
+// ------------------------------------------------------------------------------
+// DIFERENCIA con el control de "Tiempo de Uso" de arriba
+// (_iniciarControlTiempoSesion/_limiteMinutosSesionActual): ese mecanismo
+// mide tiempo TOTAL transcurrido desde el login, sin importar si el usuario
+// sigue interactuando o no, y solo aplica a los roles/instituciones que el
+// rector configuró (por defecto docente/estudiante, 15 min) — el súper
+// admin y el modo gestor quedan explícitamente exentos (_limiteMinutosSesionActual
+// devuelve 0 para ellos). Este watcher es distinto y GLOBAL: se reinicia con
+// cualquier interacción real del usuario y cierra la sesión tras
+// INACTIVIDAD_TIMEOUT_MS de inactividad CONTINUA, sin excepciones de rol —
+// protege el caso de un equipo compartido (sala de cómputo, tableta del
+// colegio) donde alguien se aleja y deja la sesión abierta, incluso si el
+// límite de "Tiempo de Uso" está desactivado (0) para ese rol.
+// ============================================================
+const INACTIVIDAD_TIMEOUT_MS=10*60*1000; // 10 minutos — único parámetro a ajustar si se requiere otro tiempo
+const INACTIVIDAD_EVENTOS=['mousemove','keydown','click','scroll','touchstart'];
+const INACTIVIDAD_THROTTLE_MS=1000; // no reiniciar el contador en cada pixel de mousemove/scroll — ver _reiniciarTemporizadorInactividad
+
+let _inactTimeoutId=null;
+let _inactUltimoReset=0;
+
+function _reiniciarTemporizadorInactividad(){
+  const ahora=Date.now();
+  // Throttle: mousemove/scroll disparan decenas de eventos por segundo — sin
+  // esto, cada uno cancelaría y recrearía el setTimeout, sobrecargando el
+  // hilo principal del navegador para nada (el primer evento del lote ya
+  // demuestra que el usuario sigue activo; no hace falta reaccionar a cada
+  // uno de los siguientes dentro de la misma ventana de 1 segundo).
+  if(ahora-_inactUltimoReset<INACTIVIDAD_THROTTLE_MS) return;
+  _inactUltimoReset=ahora;
+  if(_inactTimeoutId) clearTimeout(_inactTimeoutId);
+  _inactTimeoutId=setTimeout(_cerrarSesionPorInactividad,INACTIVIDAD_TIMEOUT_MS);
+}
+
+async function _cerrarSesionPorInactividad(){
+  // Solo actúa si de verdad hay una sesión abierta (institucional, o el
+  // propio panel del Gestor Académico YC) — si nadie ha iniciado sesión, no
+  // hay nada que cerrar ni a dónde redirigir.
+  const haySesionActiva=!!((typeof sesion!=='undefined'&&sesion)||(typeof gestorSesion!=='undefined'&&gestorSesion));
+  if(!haySesionActiva) return;
+  const tokenActual=(typeof sesion!=='undefined'&&sesion&&sesion.jwt)?sesion.jwt:null;
+  // 1) Invocar el endpoint de cierre de sesión (auditoría en el servidor —
+  // ver POST /api/auth/logout en src/index.ts). "Mejor esfuerzo": si la red
+  // falla o el servidor no responde, el cierre LOCAL continúa de todas
+  // formas — nunca se deja a alguien con la sesión abierta en la pantalla
+  // solo porque esta llamada de auditoría no pudo completarse.
+  try{
+    await fetch((typeof API_BASE!=='undefined'?API_BASE:'')+'/api/auth/logout',{
+      method:'POST',
+      headers:Object.assign({'Content-Type':'application/json'},tokenActual?{'Authorization':'Bearer '+tokenActual}:{}),
+      body:JSON.stringify({motivo:'inactividad'})
+    });
+  }catch(e){ /* mejor esfuerzo — ver comentario arriba */ }
+  // 2) Limpiar los datos/token de la sesión local y redirigir al login —
+  // _cerrarSesionReal() ya hace exactamente esto (borra `sesion`, el
+  // storage de sesión, y llama a render(), que muestra el login al no
+  // haber sesión).
+  if(typeof _cerrarSesionReal==='function') _cerrarSesionReal();
+  // 3) Aviso flotante — DESPUÉS de _cerrarSesionReal() (que ya redibujó la
+  // pantalla de login) para que no quede tapado ni se pierda con ese
+  // redibujado del DOM. _showToast() es no bloqueante y se agrega
+  // directamente a document.body, así que sobrevive al render().
+  if(typeof _showToast==='function') _showToast('🔒 Tu sesión ha sido cerrada por inactividad para proteger tu cuenta','warning',7000);
+}
+
+function _instalarWatcherInactividad(){
+  INACTIVIDAD_EVENTOS.forEach(function(ev){
+    window.addEventListener(ev,_reiniciarTemporizadorInactividad,{passive:true});
+  });
+  _reiniciarTemporizadorInactividad(); // arranca el contador desde que carga la página, no solo tras la primera interacción
+}
+_instalarWatcherInactividad();
+
+// ============================================================
 // 📮 BUZÓN DE SUGERENCIAS
 // Disponible en TODOS los roles (Admin, Docente, Padre, Estudiante):
 // - Como ventana emergente OPCIONAL justo antes de cerrar sesión.

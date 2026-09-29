@@ -312,7 +312,7 @@ await checkAsync('obtenerEstadoRecursos(): HTTP 400 sin NEON_ORG_ID configurada 
   } finally { global.fetch = fetchOriginal; }
 });
 
-await checkAsync('obtenerEstadoRecursos(): HTTP 403 de Neon se traduce a un mensaje honesto sobre restricción de plan (no un "no disponible" genérico)', async () => {
+await checkAsync('obtenerEstadoRecursos(): HTTP 403 de Neon (y el respaldo /projects/{id} también fallando) se traduce a un mensaje honesto y amigable sobre restricción de plan — RONDA 92: ya no expone el código HTTP crudo', async () => {
   const fetchOriginal = global.fetch;
   global.fetch = async (url) => {
     if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
@@ -325,7 +325,8 @@ await checkAsync('obtenerEstadoRecursos(): HTTP 403 de Neon se traduce a un mens
     const estado = await m.obtenerEstadoRecursos(true);
     assert.equal(estado.neon.transfer.disponible, false);
     assert.match(estado.neon.transfer.error, /plan/i);
-    assert.match(estado.neon.transfer.error, /403/);
+    assert.match(estado.neon.transfer.error, /console\.neon\.tech/);
+    assert.doesNotMatch(estado.neon.transfer.error, /^HTTP 403/);
   } finally { global.fetch = fetchOriginal; }
 });
 
@@ -342,6 +343,53 @@ await checkAsync('obtenerEstadoRecursos(): si el endpoint v2 falla, cae al legac
     const estado = await m.obtenerEstadoRecursos(true);
     assert.equal(estado.neon.transfer.disponible, true);
     assert.equal(estado.neon.transfer.usadoBytes, 2 * 1024 ** 3);
+  } finally { global.fetch = fetchOriginal; }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 92 — respaldo final para cuentas de Neon en plan Free: ni el
+// endpoint vigente (v2) ni el legacy de consumption_history están
+// disponibles en ese plan (ambos exigen Launch/Scale/Agent/Business/
+// Enterprise) — antes de rendirse, se intenta GET /projects/{project_id},
+// que SÍ está disponible en cualquier plan y expone `data_transfer_bytes`.
+// Si ni siquiera eso funciona, se muestra un mensaje honesto y amigable en
+// vez de un código HTTP crudo.
+// ════════════════════════════════════════════════════════════════════════
+await checkAsync('obtenerEstadoRecursos(): si consumption_history falla por restricción de plan, recupera el dato con GET /projects/{id} (data_transfer_bytes) — funciona en plan Free', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/projects')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 1.2 * 1024 ** 3, consumption_period_start: '2026-09-01T00:00:00Z' } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, true);
+    assert.equal(estado.neon.transfer.usadoBytes, 1.2 * 1024 ** 3);
+    assert.equal(estado.neon.transfer.error, null);
+    assert.ok(urlsLlamadas.some((u) => u.includes('/projects/pk')), 'debe haber intentado GET /projects/{id} como respaldo');
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): si TODOS los intentos fallan por restricción de plan, el mensaje es honesto/amigable en vez de un HTTP crudo', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/projects')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
+    if (String(url).includes('/projects/pk')) return { ok: false, status: 403, json: async () => ({ message: 'Plan restriction' }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, false);
+    assert.doesNotMatch(estado.neon.transfer.error, /^HTTP 403/);
+    assert.match(estado.neon.transfer.error, /plan Free|plan actual/i);
+    assert.match(estado.neon.transfer.error, /console\.neon\.tech/);
   } finally { global.fetch = fetchOriginal; }
 });
 

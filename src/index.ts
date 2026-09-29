@@ -835,6 +835,65 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 92 — POST /api/auth/logout: cierre de sesión invocado por el cliente
+// (botón "Cerrar sesión", o el nuevo watcher de inactividad de 10 minutos en
+// 03-app-core.js — ver _cerrarSesionPorInactividad()).
+//
+// POR QUÉ EXISTE SI LA AUTENTICACIÓN ES STATELESS (JWT): este proyecto NUNCA
+// guardó sesiones del lado del servidor (ver comentario de cabecera de
+// POST /api/auth/login) — un JWT es válido hasta que expira por sí solo, sin
+// una lista de revocación. Por eso este endpoint NO puede "invalidar" el
+// token (no hay dónde revocarlo sin agregar una tabla de sesiones/blacklist,
+// cambio de arquitectura mucho mayor que lo pedido). Lo que SÍ hace, y es de
+// valor real: deja un registro de auditoría de seguridad (agent_audit_logs,
+// mismo mecanismo ya usado por AlertasInfraestructura/Tecnico) de cuándo y
+// por qué se cerró una sesión — en particular, distinguir un cierre MANUAL de
+// uno automático por inactividad es información útil para el Súper Admin si
+// investiga un incidente. El cierre real del lado del cliente (borrar
+// sesión/jwt de memoria y de sessionStorage, redirigir al login) lo hace
+// _cerrarSesionReal() en el frontend, como ya venía haciendo — este endpoint
+// es un complemento de auditoría, no la fuente de verdad del cierre.
+//
+// "NUNCA LANZA": se llama en el momento exacto en que el cliente está
+// cerrando la sesión (a veces sin conexión, a veces con el JWT ya vencido)
+// — exigir un JWT válido aquí solo arriesgaría bloquear/demorar un cierre de
+// sesión legítimo. Por eso SIEMPRE responde 200 {ok:true}, incluso si el
+// token falta o no es válido (en ese caso, simplemente no puede identificar
+// de quién era la sesión en el log de auditoría, y lo registra así).
+// ════════════════════════════════════════════════════════════════════════════
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const tokenJWT = extraerBearer(req.headers.authorization);
+    const payload = verificarJWT(tokenJWT);
+    const motivo = (req.body && typeof req.body.motivo === 'string' && req.body.motivo.trim()) ? req.body.motivo.trim().slice(0, 100) : 'manual';
+    try {
+      await db.insert(agentAuditLogs).values({
+        category: 'Seguridad',
+        issueDetected: motivo === 'inactividad'
+          ? 'Cierre de sesión automático por inactividad (10 min sin interacción del usuario).'
+          : 'Cierre de sesión manual.',
+        actionTaken: payload
+          ? `Sesión cerrada: usuario "${payload.sub}" (rol ${payload.rol}) de la institución ${payload.sk}.`
+          : 'Sesión cerrada (no se recibió un JWT válido para identificar al usuario).',
+        status: 'Informativo',
+        details: { motivo, sub: payload?.sub || null, sk: payload?.sk || null, rol: payload?.rol || null },
+      });
+    } catch (eAudit: any) {
+      // Un fallo registrando la auditoría NUNCA debe impedir que el cliente
+      // reciba su confirmación de cierre de sesión.
+      console.error('[Logout] No se pudo registrar la auditoría:', eAudit?.message || eAudit);
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    // Ni siquiera un error inesperado aquí debe bloquear el cierre de sesión
+    // del lado del cliente — se responde 200 igual (ver comentario de
+    // cabecera: este endpoint es auditoría, no la fuente de verdad).
+    console.error('POST /api/auth/logout', e);
+    return res.json({ ok: true });
+  }
+});
+
 app.get('/api/inetis/db', async (req, res) => {
   try {
     const sk = String(req.query.sk || '');
