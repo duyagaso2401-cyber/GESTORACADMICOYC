@@ -101,3 +101,49 @@ export function sumarCamposNumericos(obj: unknown, patronNombreCampo: RegExp, _v
 }
 
 export const CACHE_RECURSOS_TTL_MS = 20 * 60 * 1000; // 20 minutos — dentro del rango 15-30 min pedido por el usuario
+
+/**
+ * RONDA 90 — búsqueda tolerante para APIs que exponen sus métricas como
+ * PARES {nombre, valor} en vez de como una clave literal (p. ej. Neon
+ * devuelve `{ metric_name: "public_network_transfer_bytes", value: N }`
+ * dentro de `projects[].periods[].consumption[].metrics[]`, en lugar de
+ * `{ public_network_transfer_bytes: N }` directamente). `sumarCamposNumericos`
+ * (arriba) NUNCA puede encontrar este tipo de campo porque busca el nombre
+ * como CLAVE del objeto, no como VALOR de un campo "nombre" acompañado de un
+ * campo "valor" separado — de ahí que, aunque la respuesta HTTP sea exitosa,
+ * la extracción fallaba en silencio. Se aceptan varios alias de nombre de
+ * campo (`metric_name`/`metricName`/`name`) y de valor (`value`/`usageValue`
+ * /`amount`) para no depender de una única variante exacta, siguiendo la
+ * misma filosofía "búsqueda tolerante, nunca inventa un número" que ya usa
+ * `sumarCamposNumericos`.
+ */
+export function sumarMetricasPorNombre(obj: unknown, patronNombreMetrica: RegExp, _visto = new WeakSet<object>()): number | null {
+  if (obj === null || obj === undefined || typeof obj !== 'object') return null;
+  if (_visto.has(obj as object)) return null; // por si acaso hubiera referencias circulares
+  _visto.add(obj as object);
+
+  let total: number | null = null;
+  const acumular = (n: number) => { total = (total === null ? 0 : total) + n; };
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const sub = sumarMetricasPorNombre(item, patronNombreMetrica, _visto);
+      if (sub !== null) acumular(sub);
+    }
+    return total;
+  }
+
+  const registro = obj as Record<string, unknown>;
+  const nombreMetrica = registro.metric_name ?? registro.metricName ?? registro.name;
+  const valor = registro.value ?? registro.usageValue ?? registro.amount;
+  if (typeof nombreMetrica === 'string' && patronNombreMetrica.test(nombreMetrica) && typeof valor === 'number' && Number.isFinite(valor)) {
+    acumular(valor);
+  }
+  for (const v of Object.values(registro)) {
+    if (v && typeof v === 'object') {
+      const sub = sumarMetricasPorNombre(v, patronNombreMetrica, _visto);
+      if (sub !== null) acumular(sub);
+    }
+  }
+  return total;
+}

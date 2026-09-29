@@ -54,6 +54,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 import {
   calcularPorcentaje, nivelPorPorcentaje, estaServicioSuspendido, sumarCamposNumericos,
+  sumarMetricasPorNombre,
   formatearBytes, CACHE_RECURSOS_TTL_MS,
   type NivelCuota,
 } from './resource-quota-thresholds.js';
@@ -82,7 +83,15 @@ const NEON_TRANSFER_LIMITE_GB = Number(process.env.NEON_TRANSFER_LIMITE_GB) || 5
 // Permite fijar la base de la API de Neon (que ha versionado su API pública
 // entre v1/v2 con alias console.neon.tech/api.neon.tech) sin tener que
 // modificar código si el proveedor cambia de versión de nuevo.
-const NEON_API_BASE = (process.env.NEON_API_BASE_URL || 'https://api.neon.tech/v2').replace(/\/+$/, '');
+//
+// RONDA 90 — CORRECCIÓN: el host por defecto usado hasta la v20
+// (`https://api.neon.tech/v2`) es INCORRECTO — produce el "HTTP 0" que
+// reportó el usuario en producción (el fetch no logra resolver/completar la
+// conexión contra ese host para este endpoint). Se confirmó contra la
+// referencia oficial de Neon (api-docs.neon.tech/reference/
+// getconsumptionhistoryperproject) que el host+ruta real es
+// `https://console.neon.tech/api/v2`.
+const NEON_API_BASE = (process.env.NEON_API_BASE_URL || 'https://console.neon.tech/api/v2').replace(/\/+$/, '');
 const RENDER_API_BASE = (process.env.RENDER_API_BASE_URL || 'https://api.render.com/v1').replace(/\/+$/, '');
 
 if (!RENDER_CONFIGURADO) {
@@ -163,7 +172,24 @@ async function _consultarRender(): Promise<EstadoRecursos['render']> {
     if (servicios.length) {
       const rBw = await _fetchJson(`${RENDER_API_BASE}/metrics/bandwidth?${params.toString()}`, headers);
       if (rBw.ok) {
+        // RONDA 90 — Render no publica un ejemplo de payload de este
+        // endpoint (confirmado: su documentación oficial no incluye una
+        // respuesta de muestra), pero el resto de sus endpoints de métricas
+        // (cpu/memory/http-requests, de la misma familia "Enhanced service
+        // metrics") devuelven series de tiempo por recurso con la forma
+        // `[{ ..., values: [{ time, value }, ...] }]` — es decir, el número
+        // de bytes viaja en un campo llamado literalmente "value" (o
+        // "usageValue" en variantes previas de esa misma API), NO en una
+        // clave que contenga las palabras "bandwidth"/"bytes" como asumía
+        // la Ronda 88. Por eso cuentas Free/Workspace mostraban "no incluyó
+        // un campo de bytes reconocible": el campo SÍ estaba, con otro
+        // nombre. Se prueba primero el patrón original (por si alguna
+        // cuenta/versión sí nombra el campo con "bandwidth"/"bytes") y,
+        // si no aparece, se cae a los nombres genéricos de serie temporal.
         bandwidthBytes = sumarCamposNumericos(rBw.body, /bandwidth|bytes/i);
+        if (bandwidthBytes === null) {
+          bandwidthBytes = sumarCamposNumericos(rBw.body, /^value$|^usageValue$/i);
+        }
         if (bandwidthBytes === null) bandwidthError = 'La respuesta de Render no incluyó un campo de bytes reconocible';
       } else {
         bandwidthError = `HTTP ${rBw.status ?? '?'} al consultar /metrics/bandwidth`;
@@ -217,7 +243,19 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
     params.append('project_ids', NEON_PROJECT_ID);
     const r = await _fetchJson(`${NEON_API_BASE}/consumption_history/projects?${params.toString()}`, headers);
     if (r.ok) {
-      transferBytes = sumarCamposNumericos(r.body, /network_transfer_bytes$/i);
+      // RONDA 90 — el histórico real de consumo de Neon anida el nombre de
+      // la métrica como VALOR de un campo `metric_name` (no como clave del
+      // objeto): `projects[].periods[].consumption[].metrics[]` contiene
+      // entradas `{ metric_name: "public_network_transfer_bytes", value: N }`
+      // (confirmado con un ejemplo completo de respuesta en la guía oficial
+      // de Neon sobre la API de consumo). `sumarCamposNumericos` busca el
+      // nombre como CLAVE, así que nunca podía encontrarlo en la forma real
+      // — de ahí el "HTTP 0"/"no disponible" en producción incluso con
+      // credenciales válidas. Se usa `sumarMetricasPorNombre` para esa forma
+      // real y, por si una cuenta/versión distinta sí expone la clave
+      // literal, se conserva `sumarCamposNumericos` como respaldo.
+      transferBytes = sumarMetricasPorNombre(r.body, /network_transfer_bytes$/i);
+      if (transferBytes === null) transferBytes = sumarCamposNumericos(r.body, /network_transfer_bytes$/i);
       if (transferBytes === null) error = 'La respuesta de Neon no incluyó campos de transferencia de red reconocibles';
     } else {
       error = `HTTP ${r.status ?? '?'} al consultar /consumption_history/projects`;

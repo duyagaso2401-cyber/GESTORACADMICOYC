@@ -1,0 +1,70 @@
+BASE DE DATOS ACTUAL _ VIEJA: postgresql://neondb_owner:npg_lKr9SogE1CZL@ep-winter-silence-b4xtnhsx-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=verify-full
+BASE DE DATOS NUEVA: postgresql://neondb_owner:npg_bEoiVm7Gsyw5@ep-muddy-credit-b5sv4tvf-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=verify-full
+
+REPÚBUCA DE COLOMBIA DEPARTAMENTO DE BOLÍVAR INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO   Aprobada en los Niveles de: Educación Preescolar, Básica y Media Técnica, según                      Resolución No. 0006 del 20 de febrero del 2007 Expedida por la Secretaría de educación y cultura del                              Departamento de Bolívar. Dane: 213212000063 Nlt: 806.014.883 – 1 
+
+
+
+seleccionprofesoresmompox@unicaribe.edu.co
+
+seleccionprofesoresbetulia@unicaribe.edu.co
+
+seleccionprofesorestalaigua@unicaribe.edu.co
+
+seleccionprofesoresguamal@unicaribe.edu.co
+
+seleccionprofesoresdeloba@unicaribe.edu.co
+
+seleccionprofesoresbanco@unicaribe.edu.co
+
+seleccionprofesoressanjuannepomuceno@unicaribe.edu.co
+
+Señores: Unicaribe
+
+Cordial saludo.
+
+Soy el docente Adán Yesid Jiménez Cabrales, Me dirijo a ustedes con el fin de hacerles llegar mi hoja de vida con el fin de aplicar a una vacante en su prestigiosa universidad. Gracias por su atención y pronta respuesta.
+
+
+Mag. Adán Yesid Jiménez Cabrales
+Email. yadan3108@gmail.com
+Tel. 3205292337 - 3227483837 
+
+
+Cuando vayas a configurar Render (AUDITORACADEMICO > Settings > Environment Variables), solo debes ingresar estas 3 variables:
+
+TELEGRAM_ENABLED = true
+
+TELEGRAM_BOT_TOKEN = 8630665188:AAE4XOYpQnTeGFffSbTJvKwaQTSVvnPtMpo   
+
+TELEGRAM_ADMIN_CHAT_ID = 7497057349
+
+
+RENDER_API_KEY=rnd_vtXWbkEVlXLCv23BjcFJ0bAL2Jxp
+RENDER_WORKSPACE_ID=tea-d99i5ffaqgkc73885u10
+
+NEON_API_KEY=napi_8tph7nlod8abf2kmjy4ad45z72cvh3jgwh06yp0lceiq6tjekcah12fin7533yfd
+
+NEON_PROJECT_ID=still-tree-26611199
+
+
+Seguridad y Entorno: Uso adecuado de variables de entorno (
+TELEGRAM_ENABLED, 
+
+TELEGRAM_BOT_TOKEN, 
+
+TELEGRAM_ADMIN_CHAT_ID).
+
+
+
+Las variables que necesitarás registrar en el panel de Render (en la sección Environment Variables de tu proyecto) serán únicamente estas 5:
+
+WHATSAPP_ENABLED: true (Para activar o desactivar las alertas cuando quieras).
+
+WHATSAPP_ADMIN_PHONE: Tu número de teléfono personal con el código del país (por ejemplo, para Colombia: +57300XXXXXXX).
+
+TWILIO_ACCOUNT_SID: La clave de identificación de tu cuenta de Twilio.
+
+TWILIO_AUTH_TOKEN: El token secreto de tu cuenta de Twilio.
+
+TWILIO_WHATSAPP_NUMBER: El número automatizado de Twilio que te enviará los mensajes (ellos te asignan uno de pruebas al crear la cuenta).

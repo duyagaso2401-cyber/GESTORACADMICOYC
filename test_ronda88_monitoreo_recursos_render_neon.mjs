@@ -114,6 +114,47 @@ check('CACHE_RECURSOS_TTL_MS: está dentro del rango de 15 a 30 minutos pedido p
 });
 
 // ════════════════════════════════════════════════════════════════════════
+// RONDA 90 — sumarMetricasPorNombre(): búsqueda tolerante para APIs que
+// exponen la métrica como PAR {nombre, valor} (forma real de Neon) en vez
+// de como clave literal del objeto (lo único que sumarCamposNumericos podía
+// encontrar). Ver comentario de cabecera en resource-quota-thresholds.ts.
+// ════════════════════════════════════════════════════════════════════════
+check('sumarMetricasPorNombre(): encuentra y suma pares {metric_name, value} anidados — forma REAL de la API de consumo de Neon', () => {
+  const payload = {
+    projects: [{
+      project_id: 'p1',
+      periods: [{
+        consumption: [{
+          timeframe_start: '2026-09-01T00:00:00Z',
+          metrics: [
+            { metric_name: 'public_network_transfer_bytes', value: 3 * 1024 ** 3 },
+            { metric_name: 'private_network_transfer_bytes', value: 0 },
+            { metric_name: 'compute_time_seconds', value: 999999 },
+          ],
+        }, {
+          timeframe_start: '2026-09-02T00:00:00Z',
+          metrics: [{ metric_name: 'public_network_transfer_bytes', value: 1.6 * 1024 ** 3 }],
+        }],
+      }],
+    }],
+  };
+  assert.equal(thresholds.sumarMetricasPorNombre(payload, /network_transfer_bytes$/i), 4.6 * 1024 ** 3);
+});
+check('sumarMetricasPorNombre(): retorna null (no inventa 0) si ningún metric_name coincide — API cambió de forma', () => {
+  const payload = { projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'otra_cosa', value: 10 }] }] }] }] };
+  assert.equal(thresholds.sumarMetricasPorNombre(payload, /network_transfer_bytes$/i), null);
+});
+check('sumarMetricasPorNombre(): acepta los alias metricName/name y usageValue/amount, no solo metric_name/value', () => {
+  const payload = { data: [{ metricName: 'public_network_transfer_bytes', usageValue: 5 }, { name: 'public_network_transfer_bytes', amount: 2 }] };
+  assert.equal(thresholds.sumarMetricasPorNombre(payload, /network_transfer_bytes$/i), 7);
+});
+check('sumarMetricasPorNombre(): no revienta con referencias circulares (WeakSet de protección)', () => {
+  const payload = { metric_name: 'network_transfer_bytes', value: 5 };
+  payload.self = payload;
+  assert.equal(thresholds.sumarMetricasPorNombre(payload, /network_transfer_bytes$/i), 5);
+});
+
+// ════════════════════════════════════════════════════════════════════════
 // PARTE B — src/lib/resource-monitor.ts: hace I/O (fetch a Render/Neon,
 // process.env) pero NO depende de drizzle/pg/express (no toca la base de
 // datos), así que se puede importar directamente y probar con `fetch`
@@ -167,8 +208,12 @@ await checkAsync('obtenerEstadoRecursos(): con Render/Neon configurados y respue
   const fetchOriginal = global.fetch;
   global.fetch = async (url) => {
     if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [{ service: { id: 'srv1', name: 'gestor-backend', suspended: 'suspended' } }] };
-    if (String(url).includes('/metrics/bandwidth')) return { ok: true, status: 200, json: async () => ({ data: [{ resource: 'srv1', totalBytes: 90 * 1024 ** 3 }] }) };
-    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ project_id: 'p1', periods: [{ consumption: [{ public_network_transfer_bytes: 4.6 * 1024 ** 3, private_network_transfer_bytes: 0 }] }] }] }) };
+    // RONDA 90: mocks corregidos a la forma REAL confirmada por investigación
+    // — Render nombra el número "value" dentro de una serie temporal (no
+    // "totalBytes"/"bandwidth"), y Neon lo entrega como par
+    // {metric_name, value} dentro de metrics[], no como clave literal.
+    if (String(url).includes('/metrics/bandwidth')) return { ok: true, status: 200, json: async () => ([{ resource: 'srv1', unit: 'bytes', values: [{ time: '2026-09-01T00:00:00Z', value: 90 * 1024 ** 3 }] }]) };
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ project_id: 'p1', periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 4.6 * 1024 ** 3 }, { metric_name: 'private_network_transfer_bytes', value: 0 }] }] }] }] }) };
     return { ok: false, status: 404, json: async () => ({}) };
   };
   try {
@@ -180,6 +225,24 @@ await checkAsync('obtenerEstadoRecursos(): con Render/Neon configurados y respue
     assert.equal(estado.render.servicios[0].estado, 'Suspended');
     assert.equal(estado.neon.transfer.porcentajeUso, 92);
     assert.equal(estado.neon.transfer.nivel, 'critica');
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): sigue funcionando con la forma ANTIGUA de mock (clave literal totalBytes/public_network_transfer_bytes) gracias al respaldo con sumarCamposNumericos', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [{ service: { id: 'srv1', name: 'gestor-backend', suspended: false } }] };
+    if (String(url).includes('/metrics/bandwidth')) return { ok: true, status: 200, json: async () => ({ data: [{ resource: 'srv1', totalBytes: 50 * 1024 ** 3 }] }) };
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ project_id: 'p1', periods: [{ consumption: [{ public_network_transfer_bytes: 2.5 * 1024 ** 3 }] }] }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ RENDER_API_KEY: 'rk', RENDER_WORKSPACE_ID: 'wk', NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.render.bandwidth.usadoBytes, 50 * 1024 ** 3);
+    assert.equal(estado.render.bandwidth.disponible, true);
+    assert.equal(estado.neon.transfer.usadoBytes, 2.5 * 1024 ** 3);
+    assert.equal(estado.neon.transfer.disponible, true);
   } finally { global.fetch = fetchOriginal; }
 });
 
