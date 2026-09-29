@@ -166,7 +166,8 @@ check('sumarMetricasPorNombre(): no revienta con referencias circulares (WeakSet
 // solo cambia la extensión del import.
 // ════════════════════════════════════════════════════════════════════════
 async function _importarResourceMonitor(env) {
-  const previos = { RENDER_API_KEY: process.env.RENDER_API_KEY, RENDER_WORKSPACE_ID: process.env.RENDER_WORKSPACE_ID, NEON_API_KEY: process.env.NEON_API_KEY, NEON_PROJECT_ID: process.env.NEON_PROJECT_ID, RENDER_BANDWIDTH_LIMITE_GB: process.env.RENDER_BANDWIDTH_LIMITE_GB, NEON_TRANSFER_LIMITE_GB: process.env.NEON_TRANSFER_LIMITE_GB };
+  const previos = { RENDER_API_KEY: process.env.RENDER_API_KEY, RENDER_WORKSPACE_ID: process.env.RENDER_WORKSPACE_ID, NEON_API_KEY: process.env.NEON_API_KEY, NEON_PROJECT_ID: process.env.NEON_PROJECT_ID, NEON_ORG_ID: process.env.NEON_ORG_ID, RENDER_BANDWIDTH_LIMITE_GB: process.env.RENDER_BANDWIDTH_LIMITE_GB, NEON_TRANSFER_LIMITE_GB: process.env.NEON_TRANSFER_LIMITE_GB };
+  delete process.env.NEON_ORG_ID; // no heredar entre pruebas: cada una declara explícitamente si la necesita
   Object.assign(process.env, env);
   try {
     // "?t=" fuerza una nueva instancia del módulo en cada llamada (variables
@@ -243,6 +244,104 @@ await checkAsync('obtenerEstadoRecursos(): sigue funcionando con la forma ANTIGU
     assert.equal(estado.render.bandwidth.disponible, true);
     assert.equal(estado.neon.transfer.usadoBytes, 2.5 * 1024 ** 3);
     assert.equal(estado.neon.transfer.disponible, true);
+  } finally { global.fetch = fetchOriginal; }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 91 — corrección del HTTP 400 reportado en producción para Neon: el
+// endpoint vigente con métricas de red explícitas es
+// `/consumption_history/v2/projects` y EXIGE `org_id` + `metrics`; sin
+// NEON_ORG_ID configurada, el módulo cae al endpoint legacy (que sí
+// funcionaba antes para cuentas con ese acceso, pero no acepta `metrics`).
+// ════════════════════════════════════════════════════════════════════════
+await checkAsync('obtenerEstadoRecursos(): con NEON_ORG_ID configurada, consulta el endpoint VIGENTE /consumption_history/v2/projects con org_id y metrics', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/v2/projects')) {
+      return { ok: true, status: 200, json: async () => ({ projects: [{ project_id: 'p1', periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 3 * 1024 ** 3 }] }] }] }] }) };
+    }
+    // Si llegara a llamar al endpoint legacy en vez del vigente, esta rama
+    // respondería con un valor DISTINTO para que la prueba lo detecte.
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 999 * 1024 ** 3 }] }] }] }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk', NEON_ORG_ID: 'org-test-123' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, 3 * 1024 ** 3);
+    const urlV2 = urlsLlamadas.find((u) => u.includes('/consumption_history/v2/projects'));
+    assert.ok(urlV2, 'debe haber llamado al endpoint vigente v2');
+    assert.ok(urlV2.includes('org_id=org-test-123'));
+    assert.ok(urlV2.includes('metrics=public_network_transfer_bytes'));
+    assert.ok(urlV2.includes('metrics=private_network_transfer_bytes'));
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): sin NEON_ORG_ID, no llama al endpoint v2 y usa directamente el legacy (compatibilidad hacia atrás)', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 1 * 1024 ** 3 }] }] }] }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, 1 * 1024 ** 3);
+    assert.ok(!urlsLlamadas.some((u) => u.includes('/consumption_history/v2/projects')));
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): HTTP 400 sin NEON_ORG_ID configurada produce un error que señala explícitamente esa causa', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/projects')) return { ok: false, status: 400, json: async () => ({ message: 'Missing required parameter: org_id' }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, false);
+    assert.match(estado.neon.transfer.error, /NEON_ORG_ID/);
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): HTTP 403 de Neon se traduce a un mensaje honesto sobre restricción de plan (no un "no disponible" genérico)', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/v2/projects')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
+    if (String(url).includes('/consumption_history/projects')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk', NEON_ORG_ID: 'org-test-123' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, false);
+    assert.match(estado.neon.transfer.error, /plan/i);
+    assert.match(estado.neon.transfer.error, /403/);
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): si el endpoint v2 falla, cae al legacy como respaldo y puede recuperar el dato igual', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/consumption_history/v2/projects')) return { ok: false, status: 404, json: async () => ({ message: 'org not found' }) };
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 2 * 1024 ** 3 }] }] }] }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk', NEON_ORG_ID: 'org-equivocada' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, true);
+    assert.equal(estado.neon.transfer.usadoBytes, 2 * 1024 ** 3);
   } finally { global.fetch = fetchOriginal; }
 });
 

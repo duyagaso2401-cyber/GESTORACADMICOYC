@@ -68,6 +68,16 @@ const RENDER_API_KEY = process.env.RENDER_API_KEY || '';
 const RENDER_WORKSPACE_ID = process.env.RENDER_WORKSPACE_ID || '';
 const NEON_API_KEY = process.env.NEON_API_KEY || '';
 const NEON_PROJECT_ID = process.env.NEON_PROJECT_ID || '';
+// RONDA 91 — el endpoint VIGENTE de métricas de red de Neon
+// (`/consumption_history/v2/projects`, ver más abajo) exige `org_id` de
+// forma obligatoria (confirmado en la referencia oficial vigente). Todas
+// las cuentas de Neon están organizadas en una "organization" desde su
+// migración a facturación por organización, así que este valor SIEMPRE
+// existe en el panel de Neon (Settings → General → Org ID), aunque no se
+// use directamente en la consola de un solo proyecto. Es opcional a nivel
+// de configuración (si falta, el módulo se degrada al endpoint legacy en
+// vez de fallar) pero recomendado para que Neon devuelva datos reales.
+const NEON_ORG_ID = process.env.NEON_ORG_ID || '';
 
 export const RENDER_CONFIGURADO = !!(RENDER_API_KEY && RENDER_WORKSPACE_ID);
 export const NEON_CONFIGURADO = !!(NEON_API_KEY && NEON_PROJECT_ID);
@@ -99,6 +109,8 @@ if (!RENDER_CONFIGURADO) {
 }
 if (!NEON_CONFIGURADO) {
   console.warn('⚠️ NEON_API_KEY/NEON_PROJECT_ID no configuradas: el widget de "Estado de Servidor y Cuotas" mostrará Neon como no disponible.');
+} else if (!NEON_ORG_ID) {
+  console.warn('⚠️ NEON_ORG_ID no configurada: el endpoint vigente de consumo de Neon (/consumption_history/v2/projects) lo exige — el módulo intentará el endpoint legacy como respaldo, pero puede fallar según el plan de la cuenta. Configúrala en Neon: Settings → General → Org ID.');
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -133,8 +145,15 @@ function _cuotaNoDisponible(configurado: boolean, limiteBytes: number, error?: s
 async function _fetchJson(url: string, headers: Record<string, string>): Promise<{ ok: boolean; status?: number; body?: any; error?: string }> {
   try {
     const r = await fetch(url, { headers });
-    if (!r.ok) return { ok: false, status: r.status };
+    // RONDA 91 — se intenta leer el cuerpo SIEMPRE, incluso en respuestas de
+    // error (antes solo se leía en 200 OK), porque las APIs de Render/Neon
+    // devuelven un mensaje de error legible en el cuerpo (p. ej. Neon indica
+    // exactamente qué parámetro rechazó) — sin esto, un HTTP 400/403 era una
+    // caja negra que solo se podía diagnosticar adivinando. Nunca se asume
+    // que el cuerpo exista (`.catch(() => null)`), así que esto no cambia el
+    // comportamiento si el proveedor responde con texto plano o vacío.
     const body = await r.json().catch(() => null);
+    if (!r.ok) return { ok: false, status: r.status, body };
     return { ok: true, status: r.status, body };
   } catch (e: any) {
     return { ok: false, error: e?.message || 'Error de red' };
@@ -235,30 +254,85 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
   try {
     const hoy = new Date();
     const inicioMes = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), 1));
-    const params = new URLSearchParams({
-      from: inicioMes.toISOString(),
-      to: hoy.toISOString(),
-      granularity: 'daily',
-    });
-    params.append('project_ids', NEON_PROJECT_ID);
-    const r = await _fetchJson(`${NEON_API_BASE}/consumption_history/projects?${params.toString()}`, headers);
-    if (r.ok) {
-      // RONDA 90 — el histórico real de consumo de Neon anida el nombre de
-      // la métrica como VALOR de un campo `metric_name` (no como clave del
-      // objeto): `projects[].periods[].consumption[].metrics[]` contiene
-      // entradas `{ metric_name: "public_network_transfer_bytes", value: N }`
-      // (confirmado con un ejemplo completo de respuesta en la guía oficial
-      // de Neon sobre la API de consumo). `sumarCamposNumericos` busca el
-      // nombre como CLAVE, así que nunca podía encontrarlo en la forma real
-      // — de ahí el "HTTP 0"/"no disponible" en producción incluso con
-      // credenciales válidas. Se usa `sumarMetricasPorNombre` para esa forma
-      // real y, por si una cuenta/versión distinta sí expone la clave
-      // literal, se conserva `sumarCamposNumericos` como respaldo.
-      transferBytes = sumarMetricasPorNombre(r.body, /network_transfer_bytes$/i);
-      if (transferBytes === null) transferBytes = sumarCamposNumericos(r.body, /network_transfer_bytes$/i);
-      if (transferBytes === null) error = 'La respuesta de Neon no incluyó campos de transferencia de red reconocibles';
-    } else {
-      error = `HTTP ${r.status ?? '?'} al consultar /consumption_history/projects`;
+    const desdeIso = inicioMes.toISOString();
+    const hastaIso = hoy.toISOString();
+
+    let ultimoStatus: number | undefined;
+    let cuerpoError: any = null;
+    let huboIntentoV2 = false;
+
+    // ──────────────────────────────────────────────────────────────────
+    // RONDA 91 — CORRECCIÓN DEL HTTP 400: la ruta que se venía llamando
+    // (`/consumption_history/projects`, sin el segundo "/v2/") es un
+    // endpoint LEGACY restringido a planes Scale/Business/Enterprise
+    // (legacy) que además NO acepta el parámetro `metrics` — el endpoint
+    // VIGENTE para pedir explícitamente `public_network_transfer_bytes` /
+    // `private_network_transfer_bytes` es
+    // `/consumption_history/v2/projects` (sí, con "v2" duplicado en la
+    // ruta: `.../api/v2/consumption_history/v2/projects` — confirmado
+    // contra la referencia oficial vigente de Neon, no es un error de
+    // tipeo). Ese endpoint EXIGE `org_id` y `metrics` como parámetros
+    // obligatorios; llamarlo (o llamar al legacy) sin ellos es lo que
+    // producía el HTTP 400 reportado — no era un problema de credenciales
+    // inválidas, sino de parámetros faltantes/incorrectos para la forma
+    // real de la API.
+    // ──────────────────────────────────────────────────────────────────
+    if (NEON_ORG_ID) {
+      huboIntentoV2 = true;
+      const paramsV2 = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily', org_id: NEON_ORG_ID });
+      paramsV2.append('project_ids', NEON_PROJECT_ID);
+      paramsV2.append('metrics', 'public_network_transfer_bytes');
+      paramsV2.append('metrics', 'private_network_transfer_bytes');
+      const rV2 = await _fetchJson(`${NEON_API_BASE}/consumption_history/v2/projects?${paramsV2.toString()}`, headers);
+      if (rV2.ok) {
+        transferBytes = sumarMetricasPorNombre(rV2.body, /network_transfer_bytes$/i);
+        if (transferBytes === null) transferBytes = sumarCamposNumericos(rV2.body, /network_transfer_bytes$/i);
+      } else {
+        ultimoStatus = rV2.status;
+        cuerpoError = rV2.body ?? rV2.error ?? null;
+      }
+    }
+
+    // Respaldo: si no se configuró NEON_ORG_ID, o el endpoint vigente
+    // falló, se intenta el endpoint legacy (sin org_id/metrics) — por si
+    // la cuenta todavía tiene acceso a ese esquema anterior. Esto
+    // satisface el pedido explícito de un "intento alternativo" además de
+    // resolver el caso donde NEON_ORG_ID simplemente no está configurada.
+    if (transferBytes === null) {
+      const paramsLegacy = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily' });
+      paramsLegacy.append('project_ids', NEON_PROJECT_ID);
+      if (NEON_ORG_ID) paramsLegacy.append('org_id', NEON_ORG_ID);
+      const rLegacy = await _fetchJson(`${NEON_API_BASE}/consumption_history/projects?${paramsLegacy.toString()}`, headers);
+      if (rLegacy.ok) {
+        transferBytes = sumarMetricasPorNombre(rLegacy.body, /network_transfer_bytes$/i);
+        if (transferBytes === null) transferBytes = sumarCamposNumericos(rLegacy.body, /network_transfer_bytes$/i);
+      } else if (!huboIntentoV2 || cuerpoError === null) {
+        // Solo se sobreescribe el diagnóstico del intento v2 si ese intento
+        // ni siquiera se hizo, o no dejó un cuerpo de error más específico.
+        ultimoStatus = rLegacy.status ?? ultimoStatus;
+        cuerpoError = cuerpoError ?? rLegacy.body ?? rLegacy.error ?? null;
+      }
+    }
+
+    if (transferBytes === null) {
+      // Log temporal pedido por el usuario para diagnosticar el mensaje
+      // EXACTO que devuelve Neon — nunca se registran credenciales, solo
+      // el status y el cuerpo de error que el propio proveedor envía.
+      console.error('[ResourceMonitor] Neon consumption_history falló. Status:', ultimoStatus ?? '(sin respuesta)', '— Cuerpo:', (() => { try { return JSON.stringify(cuerpoError).slice(0, 500); } catch { return String(cuerpoError); } })());
+
+      if (ultimoStatus === 403) {
+        error = 'Tu plan de Neon no incluye este endpoint de consumo (Neon solo lo habilita en planes Launch/Scale/Agent/Business/Enterprise, no en el plan Free) — HTTP 403.';
+      } else if (ultimoStatus === 404) {
+        error = 'La cuenta no pertenece a la organización indicada en NEON_ORG_ID (HTTP 404) — revisa esa variable de entorno.';
+      } else if (ultimoStatus === 406) {
+        error = 'El rango de fechas solicitado no es válido para la granularidad usada (HTTP 406).';
+      } else if (ultimoStatus === 400 && !NEON_ORG_ID) {
+        error = 'HTTP 400 al consultar /consumption_history — falta configurar NEON_ORG_ID (obligatoria para el endpoint vigente de Neon).';
+      } else if (ultimoStatus !== undefined) {
+        error = `HTTP ${ultimoStatus} al consultar /consumption_history/projects`;
+      } else {
+        error = 'La respuesta de Neon no incluyó campos de transferencia de red reconocibles';
+      }
     }
   } catch (e: any) {
     error = e?.message || 'Error inesperado al consultar el consumo de Neon';
