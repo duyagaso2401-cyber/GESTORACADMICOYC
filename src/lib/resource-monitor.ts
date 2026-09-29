@@ -259,26 +259,57 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
 
     let ultimoStatus: number | undefined;
     let cuerpoError: any = null;
-    let huboIntentoV2 = false;
 
     // ──────────────────────────────────────────────────────────────────
-    // RONDA 91 — CORRECCIÓN DEL HTTP 400: la ruta que se venía llamando
-    // (`/consumption_history/projects`, sin el segundo "/v2/") es un
-    // endpoint LEGACY restringido a planes Scale/Business/Enterprise
-    // (legacy) que además NO acepta el parámetro `metrics` — el endpoint
-    // VIGENTE para pedir explícitamente `public_network_transfer_bytes` /
-    // `private_network_transfer_bytes` es
-    // `/consumption_history/v2/projects` (sí, con "v2" duplicado en la
-    // ruta: `.../api/v2/consumption_history/v2/projects` — confirmado
-    // contra la referencia oficial vigente de Neon, no es un error de
-    // tipeo). Ese endpoint EXIGE `org_id` y `metrics` como parámetros
-    // obligatorios; llamarlo (o llamar al legacy) sin ellos es lo que
-    // producía el HTTP 400 reportado — no era un problema de credenciales
-    // inválidas, sino de parámetros faltantes/incorrectos para la forma
-    // real de la API.
+    // RONDA 93 — CORRECCIÓN DEL "0 B usados" (dato incorrecto, no un
+    // error): en producción, con una cuenta en plan Free, el endpoint
+    // LEGACY de consumption_history (sin org_id) respondía 200 OK — NO un
+    // error — pero con una estructura vacía o en ceros para esa cuenta (el
+    // plan Free simplemente no tiene datos reales detrás de ese esquema).
+    // Como `transferBytes` quedaba en 0 (un número válido, no `null`), el
+    // código de la Ronda 92 daba ese 0 por bueno y SALTABA por completo el
+    // respaldo de GET /projects/{project_id} — que si tenía el dato real
+    // (3.14 GB) pero nunca llegaba a consultarse. Es decir: el respaldo
+    // existía, pero el intento anterior "fallaba en silencio" con éxito
+    // aparente en vez de con un error, y el guard `if(transferBytes===null)`
+    // no distinguía esos dos casos.
+    //
+    // FIX: se invierte el orden. GET /projects/{project_id} pasa a ser el
+    // PRIMER intento — confirmado en la guía oficial vigente de Neon
+    // (neon.com/docs/introduction/network-transfer): el campo
+    // `data_transfer_bytes` de este endpoint "is available on free plans"
+    // y es "a running total of network transfer for the current billing
+    // period", combinando exactamente lo que el panel de Neon muestra como
+    // "Public network transfer" + "Private network transfer". No exige
+    // org_id ni un plan de pago, a diferencia de consumption_history. Los
+    // endpoints de consumption_history (v2 y legacy) quedan como intento
+    // SOLO si este primero de verdad falla (error de red, HTTP no-2xx, o
+    // el campo no aparece en la respuesta) — nunca se usan para "corregir"
+    // un 0 que ya vino de aquí, porque este es ahora el más confiable.
     // ──────────────────────────────────────────────────────────────────
-    if (NEON_ORG_ID) {
-      huboIntentoV2 = true;
+    const rProyecto = await _fetchJson(`${NEON_API_BASE}/projects/${encodeURIComponent(NEON_PROJECT_ID)}`, headers);
+    // Log solicitado explícitamente por el usuario (punto 3 de su pedido):
+    // el objeto COMPLETO que devuelve la API de Neon, para poder confirmar
+    // de un vistazo bajo qué propiedad exacta viene la cifra si este
+    // endpoint llegara a cambiar de forma otra vez. No es información
+    // sensible (son solo estadísticas de consumo del propio proyecto, sin
+    // credenciales), así que se deja activo de forma permanente, no solo
+    // "temporalmente" — mismo criterio que ya usan otros módulos de este
+    // proyecto para diagnosticar problemas en producción sin acceso directo
+    // a los logs del proveedor externo.
+    console.log('[ResourceMonitor] Neon GET /projects/{id} → status:', rProyecto.status ?? '(sin respuesta)', '— body:', (() => { try { return JSON.stringify(rProyecto.body); } catch { return String(rProyecto.body); } })());
+    if (rProyecto.ok) {
+      transferBytes = sumarCamposNumericos(rProyecto.body, /^data_transfer_bytes$/i);
+    } else {
+      ultimoStatus = rProyecto.status;
+      cuerpoError = rProyecto.body ?? rProyecto.error ?? null;
+    }
+
+    // Respaldo (solo si /projects/{id} no dio un número utilizable): el
+    // endpoint VIGENTE con desglose público/privado, si hay NEON_ORG_ID
+    // configurada — ver RONDA 91 para el porqué exacto de esta URL y de
+    // exigir org_id/metrics.
+    if (transferBytes === null && NEON_ORG_ID) {
       const paramsV2 = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily', org_id: NEON_ORG_ID });
       paramsV2.append('project_ids', NEON_PROJECT_ID);
       paramsV2.append('metrics', 'public_network_transfer_bytes');
@@ -287,17 +318,19 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
       if (rV2.ok) {
         transferBytes = sumarMetricasPorNombre(rV2.body, /network_transfer_bytes$/i);
         if (transferBytes === null) transferBytes = sumarCamposNumericos(rV2.body, /network_transfer_bytes$/i);
-      } else {
+      } else if (ultimoStatus === undefined) {
         ultimoStatus = rV2.status;
         cuerpoError = rV2.body ?? rV2.error ?? null;
       }
     }
 
-    // Respaldo: si no se configuró NEON_ORG_ID, o el endpoint vigente
-    // falló, se intenta el endpoint legacy (sin org_id/metrics) — por si
-    // la cuenta todavía tiene acceso a ese esquema anterior. Esto
-    // satisface el pedido explícito de un "intento alternativo" además de
-    // resolver el caso donde NEON_ORG_ID simplemente no está configurada.
+    // Último respaldo: el endpoint legacy de consumption_history (sin
+    // org_id/metrics) — se mantiene por compatibilidad con cuentas que
+    // todavía tengan acceso a ese esquema anterior, pero ya NO puede
+    // enmascarar el dato real de /projects/{id}: si este devuelve 200 con
+    // una estructura vacía/en ceros para una cuenta Free (como ocurrió en
+    // producción), simplemente no encontrará campos que sumar y
+    // `transferBytes` seguirá en null en vez de fijarse en 0 por error.
     if (transferBytes === null) {
       const paramsLegacy = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily' });
       paramsLegacy.append('project_ids', NEON_PROJECT_ID);
@@ -306,39 +339,9 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
       if (rLegacy.ok) {
         transferBytes = sumarMetricasPorNombre(rLegacy.body, /network_transfer_bytes$/i);
         if (transferBytes === null) transferBytes = sumarCamposNumericos(rLegacy.body, /network_transfer_bytes$/i);
-      } else if (!huboIntentoV2 || cuerpoError === null) {
-        // Solo se sobreescribe el diagnóstico del intento v2 si ese intento
-        // ni siquiera se hizo, o no dejó un cuerpo de error más específico.
-        ultimoStatus = rLegacy.status ?? ultimoStatus;
-        cuerpoError = cuerpoError ?? rLegacy.body ?? rLegacy.error ?? null;
-      }
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // RONDA 92 — RESPALDO FINAL PARA PLAN FREE: ni el endpoint vigente
-    // (v2) ni el legacy de consumption_history están disponibles para
-    // cuentas en el plan Free de Neon (ambos exigen Launch/Scale/Agent/
-    // Business/Enterprise, según su documentación oficial) — de ahí que,
-    // aunque se configure NEON_ORG_ID correctamente, una cuenta Free sigue
-    // sin poder usarlos. Antes de rendirse, se intenta GET
-    // /projects/{project_id} — un endpoint de información BÁSICA del
-    // proyecto que SÍ está disponible en cualquier plan (incluido Free) y
-    // que expone, entre otros campos, `data_transfer_bytes`: el total de
-    // transferencia de red saliente del período de consumo ACTUAL
-    // (delimitado por `consumption_period_start`/`consumption_period_end`
-    // en la misma respuesta) — confirmado contra la referencia oficial de
-    // Neon (neon.com/docs/reference/api/projects/get-project). Es un
-    // número más agregado que el desglose público/privado que da
-    // consumption_history, pero es justo lo que necesita este panel (uso
-    // total vs. límite configurado) y no exige org_id ni un plan de pago.
-    // ──────────────────────────────────────────────────────────────────
-    if (transferBytes === null) {
-      const rProyecto = await _fetchJson(`${NEON_API_BASE}/projects/${encodeURIComponent(NEON_PROJECT_ID)}`, headers);
-      if (rProyecto.ok) {
-        transferBytes = sumarCamposNumericos(rProyecto.body, /^data_transfer_bytes$/i);
       } else if (ultimoStatus === undefined) {
-        ultimoStatus = rProyecto.status;
-        cuerpoError = rProyecto.body ?? rProyecto.error ?? null;
+        ultimoStatus = rLegacy.status;
+        cuerpoError = rLegacy.body ?? rLegacy.error ?? null;
       }
     }
 

@@ -316,8 +316,13 @@ await checkAsync('obtenerEstadoRecursos(): HTTP 403 de Neon (y el respaldo /proj
   const fetchOriginal = global.fetch;
   global.fetch = async (url) => {
     if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    // RONDA 93: /projects/{id} es ahora el PRIMER intento — se mockea con
+    // el mismo 403 para simular una cuenta donde ni siquiera ese endpoint
+    // básico está disponible (caso límite; en la práctica casi siempre
+    // responde 200 — ver la prueba dedicada del respaldo más abajo).
     if (String(url).includes('/consumption_history/v2/projects')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
     if (String(url).includes('/consumption_history/projects')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
+    if (String(url).includes('/projects/pk')) return { ok: false, status: 403, json: async () => ({ message: 'This endpoint is not available for your plan.' }) };
     return { ok: false, status: 404, json: async () => ({}) };
   };
   try {
@@ -344,6 +349,63 @@ await checkAsync('obtenerEstadoRecursos(): si el endpoint v2 falla, cae al legac
     assert.equal(estado.neon.transfer.disponible, true);
     assert.equal(estado.neon.transfer.usadoBytes, 2 * 1024 ** 3);
   } finally { global.fetch = fetchOriginal; }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 93 — CORRECCIÓN DEL BUG REPORTADO EN PRODUCCIÓN: con la v23, el
+// panel mostraba "0 B usados de 5 GB" (sin error) mientras el dashboard de
+// Neon mostraba 3.14 GB reales. Causa raíz: el endpoint legacy de
+// consumption_history respondía 200 OK (no un error) pero con una
+// estructura vacía/en ceros para esta cuenta Free — un `0` numérico
+// VÁLIDO, así que el código de la Ronda 92 lo daba por bueno y nunca
+// llegaba a intentar GET /projects/{id} (que sí tenía el dato real). Ahora
+// /projects/{id} es el PRIMER intento — estas pruebas reproducen
+// exactamente ese escenario.
+// ════════════════════════════════════════════════════════════════════════
+await checkAsync('obtenerEstadoRecursos(): usa el dato REAL de GET /projects/{id} en vez del "0" que devolvía consumption_history para una cuenta Free (bug reportado en producción con la v23)', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    // El endpoint legacy responde 200 OK, sin error — pero con una
+    // estructura vacía/en ceros para esta cuenta Free (exactamente lo que
+    // se vio en producción: la ausencia de error no significaba que el
+    // dato fuera correcto).
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 0 }, { metric_name: 'private_network_transfer_bytes', value: 0 }] }] }] }] }) };
+    // GET /projects/{id} sí tiene el dato real (3.14 GB, como reportó el usuario).
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: Math.round(3.14 * 1024 ** 3), consumption_period_start: '2026-09-01T00:00:00Z' } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, Math.round(3.14 * 1024 ** 3));
+    assert.equal(estado.neon.transfer.disponible, true);
+    // Confirma el nuevo orden de prioridad: /projects/{id} se llama PRIMERO
+    // y, como ya trae un dato utilizable, /consumption_history/projects NI
+    // SIQUIERA se llega a invocar (a diferencia del bug de la v23, donde
+    // ese endpoint legacy se consultaba primero y su "0" ganaba).
+    const idxProyecto = urlsLlamadas.findIndex((u) => u.includes('/projects/pk'));
+    assert.ok(idxProyecto !== -1, 'debe haber llamado a /projects/{id}');
+    assert.ok(!urlsLlamadas.some((u) => u.includes('/consumption_history/projects')), '/consumption_history/projects NO debe llamarse si /projects/{id} ya dio un dato utilizable');
+  } finally { global.fetch = fetchOriginal; }
+});
+await checkAsync('obtenerEstadoRecursos(): imprime en consola el objeto completo de GET /projects/{id} (pedido explícito del usuario para diagnóstico)', async () => {
+  const fetchOriginal = global.fetch;
+  const consoleLogOriginal = console.log;
+  const logs = [];
+  console.log = (...args) => { logs.push(args.join(' ')); };
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 12345 } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    await m.obtenerEstadoRecursos(true);
+    assert.ok(logs.some((l) => l.includes('/projects/{id}') && l.includes('12345')), 'debe loguear el cuerpo completo de la respuesta de /projects/{id}');
+  } finally { global.fetch = fetchOriginal; console.log = consoleLogOriginal; }
 });
 
 // ════════════════════════════════════════════════════════════════════════
