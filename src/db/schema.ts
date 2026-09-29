@@ -45,9 +45,37 @@ export const pushSubscriptions = pgTable('push_subscriptions', {
   endpoint: text('endpoint').notNull().unique(),
   subscription: jsonb('subscription').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // RONDA 89 — suscripciones del Súper Admin a las alertas de
+  // infraestructura (Render/Neon), completamente aparte de las
+  // suscripciones normales de institución (que siempre tienen
+  // isSuperadmin=false): "sk" para estas filas es un valor fijo
+  // ('__SUPERADMIN__', no una institución real), y solo se crean desde
+  // POST /api/admin/push/subscribe-superadmin, que exige el token de
+  // rescate del Súper Admin — ningún Rector/docente/estudiante puede
+  // marcarse a sí mismo con esta bandera. "deviceLabel" es el nombre que
+  // el propio Súper Admin le da al dispositivo (Laptop, Celular 1, etc.)
+  // para poder identificarlo y quitarlo individualmente después.
+  isSuperadmin: boolean('is_superadmin').notNull().default(false),
+  deviceLabel: text('device_label'),
 }, (t) => [
   index('push_subs_sk_idx').on(t.sk),
+  index('push_subs_superadmin_idx').on(t.isSuperadmin),
 ]);
+
+// ── RONDA 89 — Cooldown de alertas de infraestructura (Render/Neon) ────────────
+// Una fila por combinación "servicio:nivel" (ej. 'render:critica',
+// 'neon:advertencia') con la fecha/hora del último envío — así
+// infrastructure-alert-job.ts puede decidir "¿ya avisé esto en las últimas
+// 24 horas?" sin volver a mandar Push/WhatsApp repetidos mientras la
+// condición persiste, y SOBREVIVE a un reinicio del proceso Node (a
+// diferencia de la memoria en RAM que usa infraTelemetry.ts para su propio
+// anti-spam de correo, que sí puede permitirse reiniciarse en el peor caso
+// con un aviso de más — aquí se pidió explícitamente un cooldown de 24h
+// firme, así que se persiste en la base de datos).
+export const infraAlertCooldown = pgTable('infra_alert_cooldown', {
+  clave: text('clave').primaryKey(), // ej. 'render:critica', 'neon:advertencia'
+  ultimoEnvioEn: timestamp('ultimo_envio_en', { withTimezone: true }).notNull(),
+});
 
 // ── Módulo Repositorio ────────────────────────────────────────────────────────
 

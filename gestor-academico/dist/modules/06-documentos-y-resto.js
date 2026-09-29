@@ -1932,6 +1932,70 @@ function cargarPlanillaAsistencia(){
 // ============================================================
 // MÓDULO CENTROS DE INTERÉS
 // ============================================================
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 84 — FICHA DE INCLUSIÓN / PIAR (Decreto 1421 de 2017).
+//
+// Vista de SOLO LECTURA para Docente Orientador (además de Admin/Rector,
+// que ya ve todo desde "Gestión de Estudiantes"). El dato real (est.piar)
+// se administra EXCLUSIVAMENTE desde el panel de administrador — ver
+// _htmlCardPIARAdmin()/guardarFichaPIAR() en 03-app-core.js — esta función
+// solo LEE lo que ya existe en "db.ests[].piar" y lo presenta en tabla; no
+// expone ningún botón de edición/borrado, para que la restricción de
+// "solo lectura" del Orientador sea real y no dependa de que el usuario
+// simplemente "no vea" un botón que en realidad sigue ahí.
+// ════════════════════════════════════════════════════════════════════════
+function htmlFichaInclusion(){
+  if(sesion.r!=='admin'&&!_esDocenteOrientador()){
+    return '<div class="card">'+_htmlEstadoVacio('📭','Solo el administrador/rector o el Docente Orientador pueden consultar la Ficha de Inclusión / PIAR.')+'</div>';
+  }
+  // RONDA 86 — MATRIZ DE SEGUIMIENTO PIAR / DECRETO 1421: se agregan
+  // filtros por grado y por tipo de ajuste/categoría sobre la misma vista
+  // de solo lectura (sábana/resumen institucional). NOTA DE ALCANCE: el
+  // pedido original también mencionaba un filtro "por sede", pero el
+  // modelo de datos de este sistema no maneja múltiples sedes por
+  // institución (cada institución es un único registro/blob) — se deja
+  // fuera de forma explícita en vez de simularlo con un campo que no
+  // existe en ningún otro módulo del sistema.
+  var filtroGrado=window._piarFiltroGrado||'';
+  var filtroCategoria=window._piarFiltroCategoria||'';
+  var todosPIAR=(db.ests||[]).filter(function(e){ return e.piar&&e.piar.activo; });
+  var ests=todosPIAR
+    .filter(function(e){ return !filtroGrado||e.g===filtroGrado; })
+    .filter(function(e){ return !filtroCategoria||(e.piar.categoria||'')===filtroCategoria; })
+    .sort(function(a,b){ return (a.g||'').localeCompare(b.g||'')||(a.n||'').localeCompare(b.n||''); });
+  var gradosOpts=(db.grados||[]).map(function(g){ return '<option value="'+g.n+'"'+(g.n===filtroGrado?' selected':'')+'>'+g.n+'</option>'; }).join('');
+  var categoriasUnicas=Array.from(new Set(todosPIAR.map(function(e){ return e.piar.categoria; }).filter(Boolean)));
+  var categoriaOpts=categoriasUnicas.map(function(c){ return '<option'+(c===filtroCategoria?' selected':'')+'>'+c+'</option>'; }).join('');
+  var filas=ests.map(function(e){
+    var p=e.piar||{};
+    return '<tr>'+
+      '<td>'+(e.g||'')+'</td>'+
+      '<td style="text-align:left">'+(e.n||'')+'</td>'+
+      '<td style="text-align:left">'+(p.categoria||'—')+'</td>'+
+      '<td style="text-align:left;max-width:260px">'+(p.apoyos||'—')+'</td>'+
+      '<td style="text-align:left;max-width:260px">'+(p.observaciones||'—')+'</td>'+
+      '<td>'+(p.actualizadoPor||'—')+'</td>'+
+      '<td>'+(p.fecha||'—')+'</td>'+
+    '</tr>';
+  }).join('');
+  return '<h3 class="sec-title">🧩 Matriz de Seguimiento PIAR / Ficha de Inclusión — Decreto 1421 de 2017</h3>'+
+    '<div class="info-box" style="margin-bottom:14px">📖 Vista de solo lectura. El registro y la actualización de la Ficha de Inclusión / PIAR de cada estudiante se gestiona desde "Gestión de Estudiantes" (perfil de Administrador/Rector).</div>'+
+    '<div class="card" style="margin-bottom:14px">'+
+      '<h4 class="card-title">🔍 Filtros</h4>'+
+      '<div class="grid2">'+
+        '<div><label class="lbl">Grado</label><select id="piarFiltroGradoSel" onchange="window._piarFiltroGrado=this.value;renderApp()"><option value="">— Todos los grados —</option>'+gradosOpts+'</select></div>'+
+        '<div><label class="lbl">Tipo de Ajuste / Categoría</label><select id="piarFiltroCatSel" onchange="window._piarFiltroCategoria=this.value;renderApp()"><option value="">— Todas las categorías —</option>'+categoriaOpts+'</select></div>'+
+      '</div>'+
+    '</div>'+
+    '<div class="card">'+
+      '<h4 class="card-title">Estudiantes con PIAR activo ('+ests.length+' de '+todosPIAR.length+' en total)</h4>'+
+      (ests.length?('<div style="overflow-x:auto"><table style="table-layout:fixed;width:100%">'+
+        '<thead><tr><th style="width:8%">Grado</th><th style="width:18%">Estudiante</th><th style="width:14%">Categoría</th><th style="width:24%">Apoyos / Ajustes Razonables</th><th style="width:24%">Observaciones</th><th style="width:8%">Actualizado por</th><th style="width:8%">Fecha</th></tr></thead>'+
+        '<tbody>'+filas+'</tbody></table></div>'):
+        _htmlEstadoVacio('📭','Ningún estudiante con Ficha de Inclusión / PIAR activa coincide con los filtros seleccionados.'))+
+    '</div>';
+}
+
 function htmlCentrosInteres(){
   // RONDA 39: se extiende el acceso a Tutor PTA (vista aprobada b) — antes
   // era exclusivamente del administrador.
@@ -4942,6 +5006,7 @@ function htmlAlertaTemprana(){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn" style="background:#666;color:#fff;font-size:0.8rem;padding:6px 12px" onclick="toggleAllAlertas(true)">☑ Todo</button>
           <button class="btn" style="background:#999;color:#fff;font-size:0.8rem;padding:6px 12px" onclick="toggleAllAlertas(false)">☐ Ninguno</button>
+          <button class="btn" style="background:#1a3a5c;color:#fff;font-size:0.88rem;padding:8px 20px" onclick="generarPreinformesCitacionPDF()">📄 Pre-informe / Citación (PDF)</button>
           <button class="btn" style="background:#c0392b;color:#fff;font-size:0.88rem;padding:8px 20px" onclick="enviarAlertasSeleccionadas()">📨 Enviar Alertas</button>
         </div>
       </div>
@@ -5024,6 +5089,72 @@ function analizarAlertas(){
 
 function toggleAllAlertas(val){
   document.querySelectorAll('.at-chk').forEach(chk=>chk.checked=val);
+}
+// RONDA 86 — GENERACIÓN DE PRE-INFORME Y CITACIÓN A ACUDIENTES (PDF).
+// Hasta esta ronda, "Alertas Académicas" solo dejaba una notificación
+// interna y, si había correo, un email al acudiente — no existía ningún
+// documento formal para imprimir/entregar. Genera un PDF (uno por
+// estudiante seleccionado, en un solo archivo multi-página) con el
+// pre-informe de áreas perdidas y una citación a cita con Rectoría/Director
+// de Grupo, estampando las mismas firmas digitales que ya usan los
+// boletines (Rector vía db.firmaRectora, Director de Grupo vía
+// _firmaDeUsuario()).
+function generarPreinformesCitacionPDF(){
+  if(!(sesion.r==='admin'||_esDocenteOrientador())){customAlert('No autorizado.');return;}
+  const periodo=parseInt(document.getElementById('at-periodo')?.value||1);
+  const selIdxs=Array.from(document.querySelectorAll('.at-chk:checked')).map(chk=>parseInt(chk.dataset.idx));
+  if(!selIdxs.length){customAlert('No hay estudiantes seleccionados.');return;}
+  const{jsPDF}=window.jspdf;const doc=new jsPDF('p','mm','a4');
+  const W=210,CX=W/2;
+  selIdxs.forEach((idx,i)=>{
+    const c=_alertasAnalizadas[idx];if(!c) return;
+    if(i>0) doc.addPage();
+    const e=c.e;
+    const infoG=(db.grados||[]).find(g=>g.n===e.g)||{};
+    const areasList=getAreasPerdidasPeriodo(e.id,e.g,periodo);
+    let y=16;
+    doc.setFillColor(192,57,43);doc.rect(0,0,W,18,'F');
+    doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(11);
+    doc.text((db.nombre||'Institución Educativa').toUpperCase(),CX,8,{align:'center'});
+    doc.setFontSize(9);
+    doc.text('PRE-INFORME DE RIESGO ACADÉMICO Y CITACIÓN A ACUDIENTE',CX,15,{align:'center'});
+    doc.setTextColor(0);doc.setFont('helvetica','normal');doc.setFontSize(10);
+    y=28;
+    doc.text('Fecha: '+new Date().toLocaleDateString('es-CO'),14,y);
+    doc.text('Período: '+periodo+'  —  Año: '+(db.anio||''),W-14,y,{align:'right'});y+=8;
+    doc.text('Estudiante: '+(e.n||''),14,y);y+=6;
+    doc.text('Grado: '+(e.g||''),14,y);y+=6;
+    doc.text('Acudiente: '+(c.acudiente||'—'),14,y);y+=9;
+    doc.setFont('helvetica','bold');doc.setFontSize(10);
+    doc.setTextColor(192,57,43);
+    doc.text('Áreas con desempeño BAJO ('+c.areasP+'):',14,y);y+=6;
+    doc.setTextColor(0);doc.setFont('helvetica','normal');
+    const areasTxt=areasList.length?areasList.join(', '):'(ver planilla de notas)';
+    const areasLines=doc.splitTextToSize(areasTxt,W-28);
+    doc.text(areasLines,14,y);y+=areasLines.length*5+8;
+    doc.setFont('helvetica','bold');doc.setFontSize(9.5);
+    doc.text('CITACIÓN',14,y);y+=6;
+    doc.setFont('helvetica','normal');doc.setFontSize(9.5);
+    const citacionTxt='Respetado(a) acudiente, por medio del presente se le cita a una reunión con Rectoría y/o el Director(a) de Grupo, con el fin de establecer conjuntamente un plan de mejoramiento académico para el/la estudiante, dado el riesgo de reprobación identificado. Favor acercarse a la institución en el horario que le sea indicado, o comunicarse con Rectoría para concertar una fecha.';
+    const citLines=doc.splitTextToSize(citacionTxt,W-28);
+    doc.text(citLines,14,y);y+=citLines.length*5+16;
+    // Firmas — mismo patrón que boletines/actas
+    if(y>250)y=250;
+    doc.setLineWidth(0.4);doc.line(14,y,90,y);doc.line(W-90,y,W-14,y);
+    doc.setFontSize(8);
+    doc.text('Firma Rector(a):',14,y+4);
+    doc.text('Firma Director(a) de Grupo:',W-90,y+4);
+    if(db.firmaRectora){try{doc.addImage(db.firmaRectora,'PNG',20,y-13,40,11);}catch(err){}}
+    const _firmaDirGrupo=_firmaDeUsuario(infoG.d);
+    if(_firmaDirGrupo){try{doc.addImage(_firmaDirGrupo,'PNG',W-84,y-13,40,11);}catch(err){}}
+    y+=10;
+    doc.text('Nombre: '+(db.rectora||''),14,y);
+    doc.text('Nombre: '+(_nombreDirectorGrado(infoG.d)||''),W-90,y);
+    y+=14;
+    doc.setLineWidth(0.3);doc.line(14,y,100,y);
+    doc.setFontSize(8);doc.text('Firma y recibido del Acudiente',14,y+4);
+  });
+  doc.save('Preinforme_Citacion_P'+periodo+'_'+(db.anio||'')+'.pdf');
 }
 
 async function enviarAlertasSeleccionadas(){
@@ -5695,7 +5826,10 @@ function htmlComiteConvivencia(){
       <td><b style="color:${tipoColor[c.tipologia]||'#555'}">${c.tipologia||''}</b></td>
       <td style="text-align:left;font-size:0.78rem;max-width:260px">${(c.descripcion||'').slice(0,140)}${(c.descripcion||'').length>140?'…':''}</td>
       <td style="text-align:left;font-size:0.78rem">${c.seguimiento||'—'}</td>
-      <td><button class="btn-sm" style="background:#c0392b" onclick="_eliminarCasoConvivencia(${c.id})">🗑️</button></td>
+      <td>
+        <button class="btn-sm" style="background:#2980b9" onclick="_generarActaConvivenciaPDF(${c.id})">📄 Acta</button>
+        <button class="btn-sm" style="background:#c0392b" onclick="_eliminarCasoConvivencia(${c.id})">🗑️</button>
+      </td>
     </tr>`;
   }).join('');
   return `<h3 class="sec-title">⚖️ Comité de Convivencia y Ruta de Atención Integral</h3>
@@ -5737,6 +5871,393 @@ async function _eliminarCasoConvivencia(id){
   if(!await customConfirm('¿Eliminar este caso?')) return;
   updDB(d=>{d.casosConvivencia=(d.casosConvivencia||[]).filter(c=>c.id!==id);return d;});
   pag='comite-convivencia';renderApp();
+}
+// RONDA 85 — GESTOR DINÁMICO DE ACTAS DE CONVIVENCIA (LEY 1620 DE 2013).
+// Genera el acta disciplinaria/de atención en PDF para un caso ya
+// registrado en el Comité de Convivencia, y estampa automáticamente la
+// firma digital del usuario que la genera (normalmente el/la Docente
+// Orientador(a)) usando _firmaDeUsuario(sesion.u) — ver 03-app-core.js.
+// Se reutiliza el mismo patrón ya probado en todo el sistema (p.ej.
+// db.firmaRectora en imprimirActa*, certificados, etc.): doc.addImage()
+// recibe directamente la URL de Cloudinary devuelta por
+// fileToCloudinaryUrl(), envuelta en try/catch por si la firma no carga
+// (institución/usuario sin firma cargada aún, o sin conexión al host de
+// Cloudinary) — nunca se bloquea la generación del acta por esto.
+function _generarActaConvivenciaPDF(id){
+  if(!(sesion.r==='admin'||_esDocenteOrientador())){customAlert('No autorizado.');return;}
+  const caso=(db.casosConvivencia||[]).find(c=>c.id===id);
+  if(!caso){customAlert('Caso no encontrado.');return;}
+  const est=(db.ests||[]).find(e=>e.id===caso.estId);
+  const{jsPDF}=window.jspdf;const doc=new jsPDF('p','mm','a4');
+  const W=210,CX=W/2;let y=16;
+  doc.setFillColor(0,51,102);doc.rect(0,0,W,20,'F');
+  doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(11);
+  doc.text(db.nombre||'Institución Educativa',CX,9,{align:'center'});
+  doc.setFontSize(9);
+  doc.text('ACTA DE ATENCIÓN — COMITÉ ESCOLAR DE CONVIVENCIA (Ley 1620 de 2013 / Decreto 1965 de 2013)',CX,16,{align:'center',maxWidth:W-16});
+  const logoSrc=db.logo||'';if(logoSrc){try{doc.addImage(logoSrc,'JPEG',6,2,15,15);}catch(e){try{doc.addImage(logoSrc,'PNG',6,2,15,15);}catch(e2){}}}
+  y=30;doc.setTextColor(0);doc.setFont('helvetica','normal');doc.setFontSize(10);
+  doc.text('Fecha del reporte: '+(caso.fecha||''),14,y);y+=7;
+  const _estNom=est?(est.nom||est.n||''):'(no encontrado)';
+  const _estGrado=est?(est.grado||est.g||''):'';
+  doc.text('Estudiante: '+_estNom+(_estGrado?'  —  Grado: '+_estGrado:''),14,y);y+=7;
+  doc.setFont('helvetica','bold');
+  const tipoColor={'Tipología I':[39,174,96],'Tipología II':[230,126,34],'Tipología III':[192,57,43]};
+  const col=tipoColor[caso.tipologia]||[85,85,85];
+  doc.setTextColor(col[0],col[1],col[2]);
+  doc.text('Tipología (Dec. 1965/2013): '+(caso.tipologia||''),14,y);y+=9;
+  doc.setTextColor(0);doc.setFont('helvetica','bold');doc.setFontSize(9.5);
+  doc.text('DESCRIPCIÓN DEL CASO',14,y);y+=6;
+  doc.setFont('helvetica','normal');
+  const descLines=doc.splitTextToSize(caso.descripcion||'—',W-28);
+  doc.text(descLines,14,y);y+=descLines.length*5+6;
+  doc.setFont('helvetica','bold');doc.setFontSize(9.5);
+  doc.text('RUTA DE ATENCIÓN INTEGRAL / ACTA DE SEGUIMIENTO',14,y);y+=6;
+  doc.setFont('helvetica','normal');
+  const segLines=doc.splitTextToSize(caso.seguimiento||'—',W-28);
+  doc.text(segLines,14,y);y+=segLines.length*5+14;
+  if(y>250)y=250;
+  doc.setLineWidth(0.4);doc.line(14,y,90,y);doc.line(W-90,y,W-14,y);
+  doc.setFontSize(8);
+  doc.text('Firma Docente Orientador(a):',14,y+4);
+  doc.text('Firma Rector(a):',W-90,y+4);
+  const firmaOrientador=_firmaDeUsuario(caso.docente);
+  if(firmaOrientador){try{doc.addImage(firmaOrientador,'PNG',20,y-13,40,11);}catch(e){}}
+  if(db.firmaRectora){try{doc.addImage(db.firmaRectora,'PNG',W-84,y-13,40,11);}catch(e){}}
+  y+=10;
+  doc.text('Nombre: '+(caso.docenteNombre||caso.docente||''),14,y);
+  doc.text('Nombre: '+(db.rectora||''),W-90,y);
+  doc.save('Acta_Convivencia_'+(_estNom?_estNom.replace(/\s+/g,'_'):caso.estId)+'_'+(caso.fecha||'')+'.pdf');
+}
+// RONDA 86 — HISTORIAL INTEGRADO DE ATENCIONES PSICOPEDAGÓGICAS Y CASOS DE
+// CONVIVENCIA (LEY 1620), de uso exclusivo del Docente Orientador y del
+// Admin/Rector. Unifica en una sola vista los dos historiales que antes
+// vivían en pantallas separadas (Atenciones Psicopedagógicas y Comité de
+// Convivencia), con filtros por tipo de registro/estudiante/fecha y
+// descarga de acta en PDF (firmada digitalmente) para los casos de
+// convivencia — ver _generarActaConvivenciaPDF() (Ronda 85).
+function _datosHistorialOrientacion(){
+  const atenciones=(db.atencionesPsicopedagogicas||[]).map(a=>({
+    origen:'atencion',id:a.id,estId:a.estId,tipo:a.tipo||'Atención Psicopedagógica',
+    fecha:a.fecha||'',detalle:a.notas||'',responsable:a.docenteNombre||a.docente||'',
+  }));
+  const casos=(db.casosConvivencia||[]).map(c=>({
+    origen:'convivencia',id:c.id,estId:c.estId,tipo:c.tipologia||'Caso de Convivencia',
+    fecha:c.fecha||'',detalle:c.descripcion||'',responsable:c.docenteNombre||c.docente||'',
+  }));
+  return atenciones.concat(casos).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+}
+function htmlHistorialOrientacion(){
+  if(!(sesion.r==='admin'||_esDocenteOrientador())) return _htmlEstadoVacio('🔒','No autorizado.');
+  const filtroTipo=window._histOrientFiltroTipo||'';
+  const filtroEst=window._histOrientFiltroEst||'';
+  let datos=_datosHistorialOrientacion();
+  if(filtroTipo==='atencion'||filtroTipo==='convivencia') datos=datos.filter(d=>d.origen===filtroTipo);
+  if(filtroEst) datos=datos.filter(d=>String(d.estId)===String(filtroEst));
+  const estsOpts=(db.ests||[]).slice().sort((a,b)=>(a.n||'').localeCompare(b.n||'')).map(e=>`<option value="${e.id}"${String(e.id)===String(filtroEst)?' selected':''}>${e.n} — ${e.g||''}</option>`).join('');
+  const rows=datos.map(d=>{
+    const est=(db.ests||[]).find(e=>e.id===d.estId);
+    const badge=d.origen==='convivencia'?`<span style="background:#c0392b;color:#fff;border-radius:10px;padding:2px 8px;font-size:0.72rem">⚖️ Convivencia</span>`:`<span style="background:#2980b9;color:#fff;border-radius:10px;padding:2px 8px;font-size:0.72rem">🧑‍⚕️ Atención</span>`;
+    return `<tr>
+      <td>${d.fecha}</td>
+      <td>${badge}</td>
+      <td style="text-align:left">${est?est.n:'(no encontrado)'}</td>
+      <td>${d.tipo}</td>
+      <td style="text-align:left;font-size:0.78rem;max-width:260px">${(d.detalle||'').slice(0,140)}${(d.detalle||'').length>140?'…':''}</td>
+      <td style="text-align:left;font-size:0.78rem">${d.responsable}</td>
+      <td>${d.origen==='convivencia'?`<button class="btn-sm" style="background:#2980b9" onclick="_generarActaConvivenciaPDF(${d.id})">📄 Acta</button>`:'—'}</td>
+    </tr>`;
+  }).join('');
+  return `<h3 class="sec-title">📚 Historial de Atenciones y Convivencia (Docente Orientador)</h3>
+  <div class="info-box" style="margin-bottom:12px">Vista consolidada de las Atenciones Psicopedagógicas y los Casos de Convivencia (Ley 1620/Decreto 1965) registrados en la institución. Las actas de convivencia se descargan en PDF con firma digital de Orientación y Rectoría.</div>
+  <div class="card" style="margin-bottom:14px">
+    <h4 class="card-title">🔍 Filtros</h4>
+    <div class="grid2">
+      <div><label class="lbl">Tipo de Registro</label><select onchange="window._histOrientFiltroTipo=this.value;renderApp()">
+        <option value=""${filtroTipo===''?' selected':''}>— Todos —</option>
+        <option value="atencion"${filtroTipo==='atencion'?' selected':''}>Solo Atenciones Psicopedagógicas</option>
+        <option value="convivencia"${filtroTipo==='convivencia'?' selected':''}>Solo Casos de Convivencia</option>
+      </select></div>
+      <div><label class="lbl">Estudiante</label><select onchange="window._histOrientFiltroEst=this.value;renderApp()"><option value="">— Todos —</option>${estsOpts}</select></div>
+    </div>
+  </div>
+  <div class="card">
+    <h4 class="card-title">📋 Registros (${datos.length})</h4>
+    ${datos.length?`<div class="over"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Estudiante</th><th>Clasificación</th><th>Detalle</th><th>Responsable</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:_htmlEstadoVacio('📭','No hay registros que coincidan con los filtros.')}
+  </div>`;
+}
+// RONDA 86 — CONSOLIDADO DE GESTIÓN PEDAGÓGICA (TUTOR PTA). Cruza las
+// asignaciones docente/grado/área (db.carga) con lo efectivamente cargado
+// en Planes de Área (db.planesArea), Planeaciones/secuencias didácticas
+// (db.planeaciones) y evidencias del Drive PTA (db.drivePTA, Ronda 85)
+// para mostrar quién está al día y quién no, exportable a PDF/Excel.
+function _datosConsolidadoPedagogicoPTA(){
+  const combos=[];
+  const vistos=new Set();
+  (db.carga||[]).forEach(c=>{
+    const key=(c.dn||'')+'|'+(c.g||'');
+    if(vistos.has(key)) return;
+    vistos.add(key);
+    const tienePlanArea=(db.planesArea||[]).some(p=>p.docente===c.dn&&p.grado===c.g);
+    const tienePlaneacion=(db.planeaciones||[]).some(p=>p.docente===c.dn&&p.grado===c.g);
+    const tieneEvidencia=(db.drivePTA||[]).some(ev=>ev.docenteNombre===c.dn);
+    const completos=[tienePlanArea,tienePlaneacion,tieneEvidencia].filter(Boolean).length;
+    combos.push({docente:c.dn,docenteUser:c.d,grado:c.g,tienePlanArea,tienePlaneacion,tieneEvidencia,completos,alDia:completos===3});
+  });
+  return combos;
+}
+function htmlConsolidadoPedagogicoPTA(){
+  const isAdmin=sesion.r==='admin';
+  if(!(isAdmin||_esTutorPTA())) return _htmlEstadoVacio('🔒','No autorizado.');
+  const datos=_datosConsolidadoPedagogicoPTA();
+  const alDia=datos.filter(d=>d.alDia).length;
+  const pctAlDia=datos.length?Math.round((alDia/datos.length)*100):0;
+  const rows=datos.map(d=>`<tr>
+    <td style="text-align:left">${d.docente}</td>
+    <td>${d.grado}</td>
+    <td>${d.tienePlanArea?'✅':'❌'}</td>
+    <td>${d.tienePlaneacion?'✅':'❌'}</td>
+    <td>${d.tieneEvidencia?'✅':'❌'}</td>
+    <td>${d.alDia?'<b style="color:#27ae60">Al día</b>':'<span style="color:#e67e22">Pendiente</span>'}</td>
+  </tr>`).join('');
+  return `<h3 class="sec-title">📊 Consolidado de Gestión Pedagógica (Tutor PTA)</h3>
+  <div class="info-box" style="margin-bottom:12px">Estado de avance de los proyectos pedagógicos: Planes de Área, Planeaciones/Secuencias Didácticas y evidencias del Drive PTA, cruzados por docente y grado.</div>
+  <div class="card" style="margin-bottom:14px">
+    <h4 class="card-title">📈 Cumplimiento General</h4>
+    <div style="font-size:2rem;font-weight:900;color:${pctAlDia>=80?'#27ae60':pctAlDia>=50?'#e67e22':'#c0392b'}">${pctAlDia}%</div>
+    <div style="font-size:0.85rem;color:#555">${alDia} de ${datos.length} combinaciones docente/grado al día (Plan de Área + Planeación + Evidencia)</div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" style="background:#1a3a5c;color:#fff" onclick="pdfConsolidadoPedagogicoPTA()">📄 Exportar PDF</button>
+      <button class="btn" style="background:#217346;color:#fff" onclick="xlsxConsolidadoPedagogicoPTA()">📊 Exportar Excel</button>
+    </div>
+  </div>
+  <div class="card">
+    <h4 class="card-title">📋 Detalle por Docente / Grado (${datos.length})</h4>
+    ${datos.length?`<div class="over"><table><thead><tr><th>Docente</th><th>Grado</th><th>Plan de Área</th><th>Planeación</th><th>Evidencia PTA</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table></div>`:_htmlEstadoVacio('📭','No hay asignaciones académicas (db.carga) registradas todavía.')}
+  </div>`;
+}
+function pdfConsolidadoPedagogicoPTA(){
+  if(!(sesion.r==='admin'||_esTutorPTA())){customAlert('No autorizado.');return;}
+  const datos=_datosConsolidadoPedagogicoPTA();
+  const{jsPDF}=window.jspdf;const doc=new jsPDF('l','mm','a4');
+  const W=297,CX=W/2;let y=16;
+  doc.setFillColor(0,51,102);doc.rect(0,0,W,16,'F');
+  doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(12);
+  doc.text((db.nombre||'Institución Educativa')+' — Reporte de Cumplimiento Pedagógico (PTA)',CX,10,{align:'center'});
+  doc.setTextColor(0);doc.setFont('helvetica','normal');doc.setFontSize(9);y=24;
+  doc.text('Generado: '+new Date().toLocaleDateString('es-CO'),14,y);y+=8;
+  doc.setFont('helvetica','bold');
+  doc.text('Docente',14,y);doc.text('Grado',110,y);doc.text('Plan de Área',140,y);doc.text('Planeación',180,y);doc.text('Evidencia',215,y);doc.text('Estado',250,y);y+=5;
+  doc.setLineWidth(0.3);doc.line(14,y,283,y);y+=5;
+  doc.setFont('helvetica','normal');
+  datos.forEach(d=>{
+    if(y>190){doc.addPage();y=16;}
+    doc.text(d.docente||'',14,y,{maxWidth:92});doc.text(d.grado||'',110,y);
+    doc.text(d.tienePlanArea?'Sí':'No',140,y);doc.text(d.tienePlaneacion?'Sí':'No',180,y);doc.text(d.tieneEvidencia?'Sí':'No',215,y);
+    doc.setTextColor(d.alDia?39:192,d.alDia?174:57,d.alDia?96:43);
+    doc.text(d.alDia?'Al día':'Pendiente',250,y);doc.setTextColor(0);
+    y+=6;
+  });
+  doc.save('Reporte_Cumplimiento_PTA_'+(db.anio||'')+'.pdf');
+}
+function xlsxConsolidadoPedagogicoPTA(){
+  if(!(sesion.r==='admin'||_esTutorPTA())){customAlert('No autorizado.');return;}
+  if(typeof XLSX==='undefined'){customAlert('Librería Excel no cargada. Recargue la página.');return;}
+  const datos=_datosConsolidadoPedagogicoPTA();
+  const encab=['Docente','Grado','Plan de Área','Planeación','Evidencia PTA','Estado'];
+  const filas=datos.map(d=>[d.docente||'',d.grado||'',d.tienePlanArea?'Sí':'No',d.tienePlaneacion?'Sí':'No',d.tieneEvidencia?'Sí':'No',d.alDia?'Al día':'Pendiente']);
+  const wb=XLSX.utils.book_new();
+  const ws=XLSX.utils.aoa_to_sheet([[(db.nombre||'')+' — Reporte de Cumplimiento Pedagógico (PTA)'],[],encab,...filas]);
+  ws['!cols']=[{wch:28},{wch:10},{wch:14},{wch:14},{wch:14},{wch:12}];
+  XLSX.utils.book_append_sheet(wb,ws,'Cumplimiento PTA');
+  _xlsxDescargarBlob(wb,'Reporte_Cumplimiento_PTA_'+(db.anio||'')+'.xlsx');
+}
+// RONDA 85 — REPOSITORIO DE EVIDENCIAS / DRIVE DEL TUTOR PTA.
+// Cualquier docente puede subir sus evidencias (secuencias didácticas,
+// planes de área, evidencias de Centros de Interés) a db.drivePTA[]; el
+// Tutor PTA y el Admin/Rector ven además un filtro de cumplimiento en
+// tiempo real (quién ya subió evidencia de cada tipo y quién no).
+function htmlDrivePTA(){
+  const isAdmin=sesion.r==='admin';
+  const esPTA=_esTutorPTA();
+  const esDocente=sesion.r==='docente';
+  if(!(isAdmin||esPTA||esDocente)) return _htmlEstadoVacio('🔒','No autorizado.');
+  const TIPOS_EVIDENCIA=['Secuencia Didáctica','Plan de Área','Evidencia Centro de Interés'];
+  const lista=(db.drivePTA||[]).slice().sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const misEvidencias=esDocente&&!isAdmin?lista.filter(e=>e.docente===sesion.u):lista;
+  // RONDA 86 — RETROALIMENTACIÓN PEDAGÓGICA: el Tutor PTA (o Admin) puede
+  // dejar observaciones/sugerencias sobre una evidencia ya subida, en modo
+  // lectura/comentario — esto NUNCA toca calificaciones ni el arreglo
+  // "nts" de ningún estudiante, solo agrega texto a comentariosPTA[] de la
+  // evidencia misma (db.drivePTA), a través del único punto de mutación
+  // updDB() — igual que cualquier otro cambio del sistema.
+  const rows=misEvidencias.map(e=>{
+    const comentarios=(e.comentariosPTA||[]).map(c=>`<div style="font-size:0.75rem;color:#555;border-left:3px solid #8e44ad;padding:3px 8px;margin-top:3px">💬 <b>${c.autor||''}</b> (${c.fecha||''}): ${c.txt||''}</div>`).join('');
+    const puedeComentar=isAdmin||esPTA;
+    return `<tr>
+    <td>${e.fecha||''}</td>
+    <td style="text-align:left">${e.docenteNombre||e.docente||''}</td>
+    <td>${e.tipo||''}</td>
+    <td style="text-align:left">${e.titulo||''}${comentarios}
+      ${puedeComentar?`<div style="margin-top:5px;display:flex;gap:4px"><input id="cmtPTA_${e.id}" placeholder="Retroalimentación pedagógica..." style="flex:1;font-size:0.75rem;padding:4px 6px"><button class="btn-sm" style="background:#8e44ad" onclick="_agregarComentarioPTA(${e.id})">💬</button></div>`:''}
+    </td>
+    <td>${e.url?`<a href="${e.url}" target="_blank">📎 Ver</a>`:'—'}</td>
+    <td>${(isAdmin||esPTA||e.docente===sesion.u)?`<button class="btn-sm" style="background:#c0392b" onclick="_eliminarEvidenciaDrivePTA(${e.id})">🗑️</button>`:''}</td>
+  </tr>`;
+  }).join('');
+  let panelCumplimiento='';
+  if(isAdmin||esPTA){
+    const docentes=(db.users||[]).filter(u=>u.r==='docente');
+    const filasCump=docentes.map(u=>{
+      const suyas=lista.filter(e=>e.docente===u.u);
+      const tiposSubidos=new Set(suyas.map(e=>e.tipo));
+      const faltantes=TIPOS_EVIDENCIA.filter(t=>!tiposSubidos.has(t));
+      const estado=faltantes.length===0?'<b style="color:#27ae60">✅ Completo</b>':`<span style="color:#e67e22">⚠️ Falta: ${faltantes.join(', ')}</span>`;
+      return `<tr><td style="text-align:left">${u.n||u.u}</td><td>${suyas.length}</td><td style="text-align:left">${estado}</td></tr>`;
+    }).join('');
+    panelCumplimiento=`<div class="card" style="margin-bottom:14px;border-left:4px solid #8e44ad">
+      <h4 class="card-title">📊 Filtro de Cumplimiento (Tutor PTA / Admin)</h4>
+      <div class="over"><table><thead><tr><th>Docente</th><th>Evidencias subidas</th><th>Estado</th></tr></thead><tbody>${filasCump||''}</tbody></table></div>
+    </div>`;
+  }
+  return `<h3 class="sec-title">📂 Drive PTA / Repositorio de Evidencias</h3>
+  <div class="info-box" style="margin-bottom:12px">Espacio institucional para cargar secuencias didácticas, planes de área y evidencias de los Centros de Interés del Programa de Transformación de la Calidad Educativa (PTA).${(isAdmin||esPTA)?' Vea también el <a href="javascript:void(0)" onclick="navTo(\'consolidado-pedagogico-pta\')">📊 Consolidado de Gestión Pedagógica</a> para el reporte de cumplimiento exportable.':''}</div>
+  ${panelCumplimiento}
+  ${esDocente||isAdmin?`<div class="card">
+    <h4 class="card-title">⬆️ Subir Nueva Evidencia</h4>
+    <label class="lbl">Tipo de Evidencia</label>
+    <select id="dpta_tipo">${TIPOS_EVIDENCIA.map(t=>`<option>${t}</option>`).join('')}</select>
+    <label class="lbl">Título / Descripción Breve</label>
+    <input id="dpta_titulo" placeholder="Ej: Secuencia didáctica — Matemáticas, Grado 5°">
+    <label class="lbl">Archivo</label>
+    <input type="file" id="dpta_file" accept=".pdf,.doc,.docx,image/*">
+    <div id="dptaStatus" style="font-size:0.8rem;margin-top:4px"></div>
+    <button class="btn btn-green" style="margin-top:10px" onclick="_subirEvidenciaDrivePTA()">💾 Subir Evidencia</button>
+  </div>`:''}
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">📋 Evidencias ${esDocente&&!isAdmin?'Propias':'Registradas'} (${misEvidencias.length})</h4>
+    ${misEvidencias.length?`<div class="over"><table><thead><tr><th>Fecha</th><th>Docente</th><th>Tipo</th><th>Título</th><th>Archivo</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:_htmlEstadoVacio('📭','Aún no hay evidencias registradas.')}
+  </div>`;
+}
+function _subirEvidenciaDrivePTA(){
+  const tipo=document.getElementById('dpta_tipo')?.value||'';
+  const titulo=document.getElementById('dpta_titulo')?.value.trim()||'';
+  const inp=document.getElementById('dpta_file');
+  const status=document.getElementById('dptaStatus');
+  if(!titulo){customAlert('Escriba un título para la evidencia.');return;}
+  if(!inp||!inp.files||!inp.files[0]){customAlert('Seleccione un archivo.');return;}
+  if(status) status.textContent='⏳ Subiendo...';
+  fileToCloudinaryUrlTipo(inp.files[0],function(url){
+    if(!url){ if(status) status.textContent='❌ No se pudo subir.'; return; }
+    const reg={id:Date.now(),tipo,titulo,url,docente:sesion.u,docenteNombre:sesion.n,fecha:new Date().toISOString().slice(0,10)};
+    updDB(d=>{if(!d.drivePTA)d.drivePTA=[];d.drivePTA.push(reg);return d;});
+    customAlert('✅ Evidencia subida.');
+    pag='drive-pta';renderApp();
+  },'drive-pta','raw');
+}
+async function _eliminarEvidenciaDrivePTA(id){
+  if(!await customConfirm('¿Eliminar esta evidencia?')) return;
+  updDB(d=>{d.drivePTA=(d.drivePTA||[]).filter(e=>e.id!==id);return d;});
+  pag='drive-pta';renderApp();
+}
+// RONDA 86 — Retroalimentación del Tutor PTA sobre una evidencia ya
+// subida. Modo lectura/comentario exclusivamente: agrega texto a
+// comentariosPTA[] de la evidencia, nunca modifica notas ni ningún otro
+// dato académico del estudiante.
+function _agregarComentarioPTA(evidenciaId){
+  if(!(sesion.r==='admin'||_esTutorPTA())){customAlert('No autorizado.');return;}
+  const input=document.getElementById('cmtPTA_'+evidenciaId);
+  const txt=(input&&input.value||'').trim();
+  if(!txt){customAlert('Escriba una observación o sugerencia pedagógica.');return;}
+  updDB(d=>{
+    const ev=(d.drivePTA||[]).find(e=>e.id===evidenciaId);
+    if(ev){
+      if(!ev.comentariosPTA) ev.comentariosPTA=[];
+      ev.comentariosPTA.push({txt,autor:sesion.n,fecha:new Date().toISOString().slice(0,10)});
+    }
+    return d;
+  });
+  pag='drive-pta';renderApp();
+}
+// RONDA 85 — PANEL DE COMUNICACIÓN Y ALERTAS (TUTOR PTA / DOCENTE
+// ORIENTADOR). Reutiliza el mismo patrón wa.me ya usado en el resto del
+// sistema (ver _generarEnlacesMasivos() en 03-app-core.js) para generar
+// enlaces directos de WhatsApp y de correo (mailto:) hacia docentes,
+// acudientes y directivos — sin enviar nada automáticamente: cada enlace
+// abre el canal correspondiente ya con el mensaje pre-armado, y el envío
+// final lo confirma la persona usuaria desde su propia cuenta.
+function htmlComunicacionPTAOrientador(){
+  const isAdmin=sesion.r==='admin';
+  if(!(isAdmin||_esTutorPTA()||_esDocenteOrientador())) return _htmlEstadoVacio('🔒','No autorizado.');
+  const docentes=(db.users||[]).filter(u=>u.r==='docente');
+  const directivos=(db.users||[]).filter(u=>u.r==='admin');
+  const filaContacto=(u,rolLbl)=>{
+    const tel=(u.tel||'').replace(/\D/g,'');
+    const mail=u.email||'';
+    const waHref=tel?`https://wa.me/57${tel}?text=${encodeURIComponent('Saludo '+(u.n||'')+', le escribe '+(sesion.n||'')+' ('+(sesion.rolEspecifico||'Docente')+').')}`:'';
+    const mailHref=mail?`mailto:${mail}?subject=${encodeURIComponent('Comunicación institucional')}&body=${encodeURIComponent('Saludo '+(u.n||'')+',\n\n')}`:'';
+    return `<tr>
+      <td style="text-align:left">${u.n||u.u}</td>
+      <td>${rolLbl}</td>
+      <td>${waHref?`<a class="btn-sm" style="background:#25d366;text-decoration:none;color:#fff" target="_blank" href="${waHref}">💬 WhatsApp</a>`:'—'}</td>
+      <td>${mailHref?`<a class="btn-sm" style="background:#2980b9;text-decoration:none;color:#fff" href="${mailHref}">✉️ Correo</a>`:'—'}</td>
+    </tr>`;
+  };
+  const filasDocentes=docentes.map(u=>filaContacto(u,'Docente')).join('');
+  const filasDirectivos=directivos.map(u=>filaContacto(u,'Directivo')).join('');
+  // RONDA 86 — MÓDULO DE COMUNICACIÓN MASIVA E INTEGRADA: se agrega una
+  // plantilla de comunicado EDITABLE (reutilizable para cualquier
+  // destinatario) y un panel de Acudientes real — antes solo remitía al
+  // botón de WhatsApp ya existente en la ficha del estudiante, sin
+  // plantilla ni opción de correo. Los enlaces se arman en el momento del
+  // clic (_enviarComunicadoAcudienteWA/_Email), leyendo el texto que la
+  // persona usuaria haya escrito en la plantilla.
+  const estsOpts=(db.ests||[]).slice().sort((a,b)=>(a.n||'').localeCompare(b.n||'')).map(e=>`<option value="${e.id}">${e.n} — ${e.g||''}</option>`).join('');
+  const plantillaDefault=`Estimado(a) acudiente, le escribe ${sesion.n||'la institución'} de ${db.nombre||'la institución educativa'}.\n\n`;
+  return `<h3 class="sec-title">📣 Comunicación y Alertas — PTA / Orientador</h3>
+  <div class="info-box" style="margin-bottom:12px">Canal directo de comunicación con docentes, acudientes y directivos. Cada botón abre WhatsApp o el correo con el mensaje pre-armado — el envío lo confirma usted desde su propia cuenta.</div>
+  <div class="card">
+    <h4 class="card-title">📝 Plantilla del Comunicado</h4>
+    <textarea id="cptaPlantilla" style="height:80px">${plantillaDefault}</textarea>
+    <div style="font-size:0.75rem;color:#888;margin-top:4px">Este texto se usa para los botones de WhatsApp y Correo de Docentes, Directivos y Acudientes de esta página.</div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">👩‍🏫 Docentes (${docentes.length})</h4>
+    ${docentes.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Rol</th><th>WhatsApp</th><th>Correo</th></tr></thead><tbody>${filasDocentes}</tbody></table></div>`:_htmlEstadoVacio('📭','No hay docentes registrados.')}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">🏛️ Directivos (${directivos.length})</h4>
+    ${directivos.length?`<div class="over"><table><thead><tr><th>Nombre</th><th>Rol</th><th>WhatsApp</th><th>Correo</th></tr></thead><tbody>${filasDirectivos}</tbody></table></div>`:_htmlEstadoVacio('📭','No hay directivos registrados.')}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4 class="card-title">👨‍👩‍👧 Acudientes</h4>
+    <label class="lbl">Estudiante</label>
+    <select id="cptaEstSel"><option value="">— Seleccione —</option>${estsOpts}</select>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <button class="btn" style="background:#25d366;color:#fff" onclick="_enviarComunicadoAcudienteWA()">💬 WhatsApp</button>
+      <button class="btn" style="background:#2980b9;color:#fff" onclick="_enviarComunicadoAcudienteEmail()">✉️ Correo</button>
+    </div>
+  </div>`;
+}
+function _plantillaComunicadoActual(){
+  return (document.getElementById('cptaPlantilla')?.value||'').trim();
+}
+function _enviarComunicadoAcudienteWA(){
+  const estId=document.getElementById('cptaEstSel')?.value;
+  const est=(db.ests||[]).find(e=>String(e.id)===String(estId));
+  if(!est){customAlert('Seleccione un estudiante.');return;}
+  const tel=(est.telAcud||'').replace(/\D/g,'');
+  if(!tel){customAlert('Este estudiante no tiene teléfono de acudiente registrado.');return;}
+  const msg=_plantillaComunicadoActual()||('Estimado(a) acudiente de '+(est.n||'')+', le escribe '+(sesion.n||'')+' de '+(db.nombre||'')+'.');
+  window.open('https://wa.me/57'+tel+'?text='+encodeURIComponent(msg),'_blank');
+}
+function _enviarComunicadoAcudienteEmail(){
+  const estId=document.getElementById('cptaEstSel')?.value;
+  const est=(db.ests||[]).find(e=>String(e.id)===String(estId));
+  if(!est){customAlert('Seleccione un estudiante.');return;}
+  if(!est.email){customAlert('Este estudiante no tiene correo de acudiente registrado.');return;}
+  const msg=_plantillaComunicadoActual()||('Estimado(a) acudiente de '+(est.n||'')+',');
+  window.location.href='mailto:'+est.email+'?subject='+encodeURIComponent('Comunicación institucional — '+(db.nombre||''))+'&body='+encodeURIComponent(msg);
 }
 function imprimirPermisoH03(id){
   const sol=(db.ausentismos||[]).find(s=>s.id===id);
@@ -6969,6 +7490,18 @@ function generarManualPDF(rol){
 // NOTIFICACIONES EN TIEMPO REAL (POLLING)
 // ============================================================
 let _notifPoll=null;let _lastNotifId=0;let _notifBadge=0;
+// RONDA 87 — SUPRESIÓN DE ALERTAS DE INICIO DE SESIÓN (UX). Este polling
+// corría para CUALQUIER sesión (ver el "if(sesion) iniciarPollingNotificaciones()"
+// más abajo — sin distinguir rol) y mostraba un banner emergente por CADA
+// notificación nueva, incluyendo kind==='login' — con 20 docentes entrando,
+// eso eran 20 banners para todo el mundo conectado, no solo para el
+// Administrador. Los eventos de tipo "login" siguen contándose para avanzar
+// _lastNotifId (así nunca se vuelven a procesar si algún día cambia el
+// orden de llegada), pero se excluyen explícitamente de lo que dispara el
+// badge/banner — la auditoría de accesos queda exclusivamente para consulta
+// silenciosa del Administrador en su panel (htmlContacto()/cargarNotificaciones(),
+// ya restringido a sesion.r==='admin').
+const TIPOS_NOTIF_SIN_BANNER=new Set(['login']);
 function iniciarPollingNotificaciones(){
   if(_notifPoll) clearInterval(_notifPoll);
   _notifPoll=setInterval(async()=>{
@@ -6976,11 +7509,13 @@ function iniciarPollingNotificaciones(){
       const r=await fetch('/api/inetis/notifications?sk='+encodeURIComponent(_skActual()||''));
       if(!r.ok) return;
       const j=await r.json();
-      const nuevas=(j.notifications||[]).filter(n=>n.id>_lastNotifId);
-      if(nuevas.length){
-        _lastNotifId=Math.max(...nuevas.map(n=>n.id));
-        _notifBadge+=nuevas.length;
-        mostrarNotifBanner(nuevas);
+      const todasNuevas=(j.notifications||[]).filter(n=>n.id>_lastNotifId);
+      if(!todasNuevas.length) return;
+      _lastNotifId=Math.max(...todasNuevas.map(n=>n.id));
+      const nuevasVisibles=todasNuevas.filter(n=>!TIPOS_NOTIF_SIN_BANNER.has(n.kind));
+      if(nuevasVisibles.length){
+        _notifBadge+=nuevasVisibles.length;
+        mostrarNotifBanner(nuevasVisibles);
       }
     }catch(e){}
   },15000); // cada 15 segundos

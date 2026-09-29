@@ -167,6 +167,7 @@ ctx.fetch = fetchStub;
 ctx.AbortController = AbortControllerStub;
 ctx.console = console;
 ctx.MutationObserver = MutationObserverStub; ctx.IntersectionObserver = IntersectionObserverStub; ctx.ResizeObserver = ResizeObserverStub;
+ctx._getElementByIdOriginal = _getElementByIdOriginal;
 ctx.setTimeout = (fn, ms, ...a) => { const t = setTimeout(fn, ms, ...a); if (t.unref) t.unref(); return t; };
 ctx.clearTimeout = clearTimeout;
 ctx.setInterval = (fn, ms, ...a) => { const t = setInterval(fn, ms, ...a); if (t.unref) t.unref(); return t; };
@@ -238,7 +239,7 @@ for (const escenario of [
     const d = fixtureDB({ nombre: escenario.dbNombre }); instalarDB(d);
     run(`
       window._contSkel83 = document.createElement('div');
-      document.getElementById = (id) => (id === 'contenido' ? window._contSkel83 : elementosPorId[id] || null);
+      document.getElementById = (id) => (id === 'contenido' ? window._contSkel83 : _getElementByIdOriginal(id));
       window._navegarLlamadoSkel83 = false;
       window._navegarOriginalSkel83 = _navegarConCargaGranularSiAplica;
       _navegarConCargaGranularSiAplica = function(){ window._navegarLlamadoSkel83 = true; return Promise.resolve(); };
@@ -256,7 +257,7 @@ await checkAsync('_mostrarSkeletonYNavegar(): tras pintar el skeleton, SIEMPRE a
   const d = fixtureDB(); instalarDB(d); // db.nombre YA poblado
   run(`
     window._contSkel83b = document.createElement('div');
-    document.getElementById = (id) => (id === 'contenido' ? window._contSkel83b : elementosPorId[id] || null);
+    document.getElementById = (id) => (id === 'contenido' ? window._contSkel83b : _getElementByIdOriginal(id));
     window._navegarArgSkel83b = 'NO-LLAMADO';
     window._navegarOriginalSkel83b = _navegarConCargaGranularSiAplica;
     _navegarConCargaGranularSiAplica = function(arg){ window._navegarArgSkel83b = arg; return Promise.resolve(); };

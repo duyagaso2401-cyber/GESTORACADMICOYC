@@ -47,6 +47,8 @@ import { sseClients, broadcastChange } from './lib/sync-bus.js';
 import { registrarActividadPlataforma, iniciarKeepAliveInteligente, estadoActividadReciente } from './lib/keep-alive.js';
 import { PRIMARY_MODEL, ALL_CANDIDATE_MODELS, llamarGeminiConResiliencia, generarContenidoConResiliencia, mensajeAmigablePorError, formatearErrorGeminiParaLog } from './lib/gemini-config.js';
 import * as infraTelemetry from './services/infraTelemetry.js';
+import { obtenerEstadoRecursos } from './lib/resource-monitor.js';
+import { iniciarJobAlertasInfraestructura, verificarYNotificarCuotas } from './lib/infrastructure-alert-job.js';
 import agentRouter from './routes/agent.js';
 import * as ecosystemAgent from './services/ecosystemAgent.js';
 // RONDA 40 — Blindaje JWT/servidor (ver src/lib/jwt-auth.ts para el porqué
@@ -1719,6 +1721,42 @@ function _tieneAnotacionDisciplinariaNuevaDeTutorPTA(dataNueva: any, dataVieja: 
   }
 }
 
+// RONDA 84 — defensa en profundidad para DOCENTE_ORIENTADOR y TUTOR_PTA:
+// ambos son, por diseño (Rondas 39/40, ver _bloqueadoNotasPlanillas() /
+// _esDocenteOrientador() / _esTutorPTA() en 03-app-core.js), roles de SOLO
+// LECTURA para notas, matrícula/promoción y la Ficha de Inclusión / PIAR
+// (Decreto 1421) — el frontend ya les oculta cualquier botón de edición
+// para esos datos. Este chequeo es la versión de SERVIDOR de esa misma
+// regla: como este endpoint recibe el blob COMPLETO de la institución,
+// alguien que edite el HTML/JS del navegador (o llame al endpoint
+// directamente) podría, en teoría, enviar un blob con esos campos ya
+// modificados — este chequeo lo detecta comparando estudiante por
+// estudiante contra el valor que ya existía en el servidor ANTES de este
+// guardado, y solo se activa cuando el propio cliente se identifica como
+// uno de esos 2 roles (mismo patrón ya usado arriba por
+// _tieneAnotacionDisciplinariaNuevaDeTutorPTA). Las observaciones del
+// Observador NO se revisan aquí — esas ya tienen su propio chequeo
+// dedicado, arriba.
+function _tieneCambioAcademicoNoPermitidoParaRolLimitado(dataNueva: any, dataVieja: any): boolean {
+  try {
+    const estsViejos: any[] = (dataVieja && dataVieja.ests) || [];
+    const viejosPorId = new Map<string, any>();
+    for (const e of estsViejos) viejosPorId.set(String(e.id), e);
+    const estsNuevos: any[] = (dataNueva && dataNueva.ests) || [];
+    for (const eNuevo of estsNuevos) {
+      const eViejo = viejosPorId.get(String(eNuevo.id));
+      if (!eViejo) continue; // estudiante nuevo (matrícula) — cubierto por su propio flujo de creación, no por este guardado genérico de un rol limitado
+      if (JSON.stringify(eNuevo.nts || {}) !== JSON.stringify(eViejo.nts || {})) return true;
+      if (JSON.stringify(eNuevo.piar || null) !== JSON.stringify(eViejo.piar || null)) return true;
+      if ((eNuevo.g || '') !== (eViejo.g || '')) return true; // traslado/promoción de grado
+      if ((eNuevo.estadoMatricula || '') !== (eViejo.estadoMatricula || '')) return true;
+    }
+    return false;
+  } catch {
+    return false; // mismo criterio que el chequeo de anotaciones: ante datos inesperados, no se bloquea el autoguardado de toda la institución
+  }
+}
+
 app.post('/api/inetis/db', async (req, res) => {
   try {
     const { sk, data, baseVersion, actorRolEspecifico } = req.body as { sk: string; data: unknown; baseVersion?: string | null; actorRolEspecifico?: string };
@@ -1762,11 +1800,15 @@ app.post('/api/inetis/db', async (req, res) => {
     // como Tutor PTA — para cualquier otro guardado (la inmensa mayoría del
     // tráfico de este endpoint) el comportamiento y el rendimiento quedan
     // exactamente iguales a antes de esta ronda.
-    if (actorRolEspecifico === 'Tutor PTA') {
+    if (actorRolEspecifico === 'Tutor PTA' || actorRolEspecifico === 'Docente Orientador') {
       const existingParaObs = await db.select().from(kvStore).where(eq(kvStore.key, sk));
       const dataVieja = existingParaObs.length ? existingParaObs[0].value : null;
-      if (_tieneAnotacionDisciplinariaNuevaDeTutorPTA(data, dataVieja)) {
+      if (actorRolEspecifico === 'Tutor PTA' && _tieneAnotacionDisciplinariaNuevaDeTutorPTA(data, dataVieja)) {
         return res.status(403).json({ error: 'El rol Tutor PTA no tiene permiso para registrar anotaciones de tipo DISCIPLINARIA o CONVIVENCIAL en el Observador del Estudiante.' });
+      }
+      // RONDA 84 — ver _tieneCambioAcademicoNoPermitidoParaRolLimitado() arriba.
+      if (_tieneCambioAcademicoNoPermitidoParaRolLimitado(data, dataVieja)) {
+        return res.status(403).json({ error: 'El rol ' + actorRolEspecifico + ' es de solo lectura para notas, matrícula/promoción y la Ficha de Inclusión / PIAR — no tiene permiso para modificar esta información.' });
       }
     }
 
@@ -3362,7 +3404,22 @@ app.post('/api/inetis/notify', async (req, res) => {
       meta: (meta || null) as any,
       seen: false,
     });
-    if (sk) enviarPushParaNotificacion(sk, kind || 'info', message || '', meta).catch(() => {});
+    // RONDA 87 — SUPRESIÓN DE ALERTAS DE INICIO DE SESIÓN (UX). Antes de
+    // esta ronda, CADA login de un docente (kind==='login', ver las 4
+    // llamadas a este mismo endpoint en 03-app-core.js/06-documentos-y-resto.js)
+    // disparaba un push a TODOS los dispositivos suscritos de la
+    // institución — sin distinguir rol, porque enviarPushParaNotificacion()
+    // solo filtra por institución/grado/estudiante, nunca por rol. Con 20
+    // docentes entrando en la mañana, eso eran 20 notificaciones push
+    // emergentes para todo el mundo (docentes incluidos). El registro en
+    // la tabla "notifications" (arriba) SIEMPRE se guarda igual — eso es
+    // lo que alimenta la auditoría de accesos, de consulta exclusiva del
+    // Administrador/Rector en su panel (ver htmlContacto()/cargarNotificaciones()
+    // en 06-documentos-y-resto.js, ya restringido a sesion.r==='admin').
+    // Lo único que se suprime aquí es el PUSH emergente — un evento de
+    // login no amerita interrumpir a nadie, ni siquiera al Administrador,
+    // que ya puede consultarlo cuando quiera en su bandeja.
+    if (sk && kind !== 'login') enviarPushParaNotificacion(sk, kind || 'info', message || '', meta).catch(() => {});
     return res.json({ ok: true });
   } catch (e) {
     console.error('POST /api/inetis/notify', e);
@@ -5249,6 +5306,131 @@ app.get('/api/admin/infrastructure-status', async (req, res) => {
   }
 });
 
+// ============================================================
+// RONDA 88 — MONITOREO DE RECURSOS Y CUOTAS (Render API & Neon API)
+// ------------------------------------------------------------------------------
+// Control de acceso: MISMO patrón que /api/admin/infrastructure-status de la
+// Ronda 49, y por el mismo motivo — este endpoint también se sondea
+// repetidamente (carga inicial de la pestaña, botón "🔄 Recargar") desde el
+// panel del Súper Admin, así que se reutiliza el token de rescate firmado
+// (`_tieneRescateValido`) en vez de pedir usuario/clave en cada sondeo.
+//
+// ALCANCE (Súper Admin, no Admin/Rector de cada institución): Render
+// (ancho de banda saliente) y Neon (transferencia de red) son UN servicio y
+// UN proyecto compartidos por TODA la plataforma, no por institución — se
+// consultó esto explícitamente con el usuario (ver comentario de cabecera
+// en src/lib/resource-monitor.ts) y se confirmó que debía vivir aquí, junto
+// al resto de controles de plataforma del Súper Admin, y NO detrás de
+// sesion.r==='admin' (que es un rol por-institución y expondría costos de
+// infraestructura compartida entre distintos clientes/colegios).
+//
+// `?forzar=1` salta la caché de 20 minutos — lo usa el botón "🔄 Recargar"
+// del panel; la carga normal de la pestaña NO lo manda, para no gastar la
+// cuota de consultas de las propias APIs de Render/Neon.
+// ============================================================
+app.get('/api/admin/resource-quotas-status', async (req, res) => {
+  if (!_tieneRescateValido(req)) {
+    return res.status(401).json({ ok: false, error: 'NO_AUTORIZADO', mensaje: 'Esta ruta requiere una sesión válida de Súper Admin.' });
+  }
+  try {
+    const forzar = req.query?.forzar === '1' || req.query?.forzar === 'true';
+    const estado = await obtenerEstadoRecursos(forzar);
+    return res.json({ ok: true, ...estado });
+  } catch (e: any) {
+    console.error('GET /api/admin/resource-quotas-status', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al consultar las cuotas de Render/Neon.' });
+  }
+});
+
+// ============================================================
+// RONDA 89 — ALERTAS PROACTIVAS DE CUOTAS: suscripciones Push del Súper
+// Admin (multidispositivo) + disparo manual del job.
+// ------------------------------------------------------------------------------
+// Los 3 endpoints siguientes usan EXACTAMENTE el mismo control de acceso
+// que /api/admin/resource-quotas-status (_tieneRescateValido) — es la
+// razón de fondo pedida en el requerimiento #4 ("ningún Rector/docente/
+// estudiante debe poder suscribirse a las alertas de infraestructura"):
+// esos roles NUNCA obtienen un token de rescate válido (ver
+// POST /api/inetis/rescate/verificar, que solo lo emite con las
+// credenciales reales de gestorDB.superAdmin), así que no hay forma de que
+// una sesión de institución llegue siquiera a intentar suscribirse aquí —
+// no se necesita (ni se agrega) una verificación adicional de rol, porque
+// el rol de institución no tiene NINGÚN camino hacia un token válido.
+// ============================================================
+app.post('/api/admin/push/subscribe-superadmin', async (req, res) => {
+  if (!_tieneRescateValido(req)) {
+    return res.status(401).json({ ok: false, error: 'NO_AUTORIZADO', mensaje: 'Esta ruta requiere una sesión válida de Súper Admin.' });
+  }
+  try {
+    const { label, subscription } = req.body as { label?: string; subscription?: { endpoint: string } };
+    if (!subscription || !subscription.endpoint) {
+      return res.status(400).json({ ok: false, error: 'Falta la suscripción Push del navegador.' });
+    }
+    await db.insert(pushSubscriptions).values({
+      sk: '__SUPERADMIN__', userU: 'superadmin', rol: 'superadmin', estId: null,
+      endpoint: subscription.endpoint, subscription: subscription as any,
+      isSuperadmin: true, deviceLabel: String(label || '').slice(0, 60) || null,
+    }).onConflictDoUpdate({
+      target: pushSubscriptions.endpoint,
+      set: { sk: '__SUPERADMIN__', userU: 'superadmin', rol: 'superadmin', estId: null, subscription: subscription as any, isSuperadmin: true, deviceLabel: String(label || '').slice(0, 60) || null },
+    });
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('POST /api/admin/push/subscribe-superadmin', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al registrar el dispositivo.' });
+  }
+});
+
+app.get('/api/admin/push/superadmin-devices', async (req, res) => {
+  if (!_tieneRescateValido(req)) {
+    return res.status(401).json({ ok: false, error: 'NO_AUTORIZADO', mensaje: 'Esta ruta requiere una sesión válida de Súper Admin.' });
+  }
+  try {
+    const filas = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.isSuperadmin, true));
+    return res.json({ ok: true, dispositivos: filas.map((f) => ({ id: f.id, label: f.deviceLabel || '(sin nombre)', creadoEn: f.createdAt })) });
+  } catch (e: any) {
+    console.error('GET /api/admin/push/superadmin-devices', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al listar los dispositivos.' });
+  }
+});
+
+app.post('/api/admin/push/unsubscribe-superadmin', async (req, res) => {
+  if (!_tieneRescateValido(req)) {
+    return res.status(401).json({ ok: false, error: 'NO_AUTORIZADO', mensaje: 'Esta ruta requiere una sesión válida de Súper Admin.' });
+  }
+  try {
+    const id = Number((req.body && req.body.id) || 0);
+    if (!id) return res.status(400).json({ ok: false, error: 'Falta el id del dispositivo a quitar.' });
+    // "and(...)" restringe el borrado a filas isSuperadmin=true — defensa en
+    // profundidad para que este endpoint NUNCA pueda usarse para borrar la
+    // suscripción push de un docente/acudiente por id, aunque alguien
+    // adivinara un id ajeno.
+    await db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.id, id), eq(pushSubscriptions.isSuperadmin, true)));
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('POST /api/admin/push/unsubscribe-superadmin', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al quitar el dispositivo.' });
+  }
+});
+
+// Disparo manual del job de alertas de cuotas (ej. para que el Súper Admin
+// pueda probar que Push/Telegram de verdad le llegan sin tener que esperar
+// hasta 2 horas, o para forzar una revisión inmediata tras cambiar
+// credenciales) — respeta el MISMO cooldown de 24h que el ciclo automático,
+// así que no sirve para espamear la misma alerta a propósito.
+app.post('/api/admin/push/probar-alertas-cuotas', async (req, res) => {
+  if (!_tieneRescateValido(req)) {
+    return res.status(401).json({ ok: false, error: 'NO_AUTORIZADO', mensaje: 'Esta ruta requiere una sesión válida de Súper Admin.' });
+  }
+  try {
+    const resultados = await verificarYNotificarCuotas();
+    return res.json({ ok: true, resultados });
+  } catch (e: any) {
+    console.error('POST /api/admin/push/probar-alertas-cuotas', e);
+    return res.status(500).json({ ok: false, error: 'Error interno al evaluar las alertas.' });
+  }
+});
+
 // Ronda 20: bitácora de conflictos de sincronización — ver
 // src/routes/sync-log.js. Reutiliza agent_audit_logs (categoría
 // "Sincronizacion"), por eso las filas aparecen solas en el mismo panel
@@ -5685,4 +5867,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('💓 Keep-Alive Inteligente activo — GET /api/health se autopingea cada 15–30 min si hubo actividad reciente, y espacia el intervalo hasta 2 horas en ventanas de inactividad prolongada (madrugada sin uso).');
   infraTelemetry.iniciarMonitoreoInfraestructura();
   console.log('🖥️  Monitoreo de Infraestructura activo — RAM/Disco/Conexiones de BD evaluados cada 15 minutos, con alerta preventiva (>80%) y crítica (>90%). GET /api/admin/infrastructure-status disponible en el panel de Súper Admin.');
+  iniciarJobAlertasInfraestructura();
+  console.log('📡 Alertas proactivas de cuotas (Render/Neon) activas — se evalúan cada 2 horas, con aviso por Push (todos los dispositivos del Súper Admin) y Telegram al 85% (advertencia) y 90% (crítico), con cooldown de 24h por alerta.');
 });

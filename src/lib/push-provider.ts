@@ -116,3 +116,50 @@ export async function enviarPushADocente(cedula: string, titulo: string, mensaje
     console.error('enviarPushADocente', e);
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 89 — Push de ALERTAS DE INFRAESTRUCTURA (Render/Neon) hacia TODOS los
+// dispositivos que el Súper Admin haya registrado (columna
+// pushSubscriptions.isSuperadmin = true — ver src/db/schema.ts). Se manda a
+// TODOS a la vez (Laptop, Celular 1, Celular 2, ...): a diferencia de
+// enviarPushParaNotificacion (que sí filtra por institución/grado/
+// estudiante), aquí no hay ningún filtro que aplicar — es un solo Súper
+// Admin con varios dispositivos, todos deben enterarse.
+//
+// MISMAS GARANTÍAS DE RESILIENCIA que el resto de este archivo: si
+// PUSH_HABILITADO es false, o el Súper Admin no ha activado Push en ningún
+// dispositivo todavía, no hace nada; si el envío a un dispositivo falla
+// porque la suscripción expiró (404/410), esa fila se borra SIN afectar los
+// demás dispositivos (cada uno se envía en su propio try/catch dentro del
+// Promise.all); nunca lanza.
+// ════════════════════════════════════════════════════════════════════════════
+export async function enviarPushATodosLosSuperAdmins(titulo: string, mensaje: string, kind: string): Promise<{ enviados: number; total: number }> {
+  if (!PUSH_HABILITADO) return { enviados: 0, total: 0 };
+  try {
+    const subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.isSuperadmin, true));
+    if (!subs.length) return { enviados: 0, total: 0 };
+    const payload = JSON.stringify({
+      title: String(titulo || 'Gestor Académico YC').slice(0, 120),
+      body: String(mensaje || '').slice(0, 200),
+      kind,
+    });
+    let enviados = 0;
+    await Promise.all(subs.map(async (s) => {
+      try {
+        await webpush.sendNotification(s.subscription as any, payload);
+        enviados++;
+      } catch (err: any) {
+        // Suscripción vencida/inválida en ESTE dispositivo puntual: se
+        // limpia solo esa fila — los demás dispositivos del Súper Admin
+        // siguen registrados e intactos.
+        if (err && (err.statusCode === 404 || err.statusCode === 410)) {
+          await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, s.id));
+        }
+      }
+    }));
+    return { enviados, total: subs.length };
+  } catch (e) {
+    console.error('enviarPushATodosLosSuperAdmins', e);
+    return { enviados: 0, total: 0 };
+  }
+}

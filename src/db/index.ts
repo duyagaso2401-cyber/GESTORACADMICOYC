@@ -121,6 +121,16 @@ async function initDb() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS push_subs_sk_idx ON push_subscriptions(sk);
+      -- RONDA 89: suscripciones Push del Súper Admin a las alertas de
+      -- infraestructura (Render/Neon) — ver comentario extenso junto a
+      -- pushSubscriptions en src/db/schema.ts.
+      ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS is_superadmin BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS device_label TEXT;
+      CREATE INDEX IF NOT EXISTS push_subs_superadmin_idx ON push_subscriptions(is_superadmin);
+      CREATE TABLE IF NOT EXISTS infra_alert_cooldown (
+        clave TEXT PRIMARY KEY,
+        ultimo_envio_en TIMESTAMPTZ NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS repositorio_resources (
         id SERIAL PRIMARY KEY,
         institucion_id TEXT NOT NULL DEFAULT 'default',

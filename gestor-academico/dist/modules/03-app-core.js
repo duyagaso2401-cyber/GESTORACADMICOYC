@@ -625,6 +625,54 @@ function _combinarValorMerge(base,mine,theirs,path,detalles){
   if(detalles) detalles.push({path:path||'(raíz)',tipo:'valor_en_conflicto',base:_resumirValorBitacora(base),mine:_resumirValorBitacora(mine),theirs:_resumirValorBitacora(theirs),gano:'theirs'});
   return {v:theirs,conf:1};
 }
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 85 — mergeGlobalData(localData, incomingData): fusión NO
+// DESTRUCTIVA genérica para los 2 puntos donde datos EXTERNOS (un respaldo
+// JSON que alguien carga a mano, o una respuesta fresca del servidor)
+// podían antes reemplazar de golpe el trabajo local pendiente de un
+// docente: no existía ningún "ancestro común" rastreado en esos casos (a
+// diferencia de un conflicto 409 normal, que sí tiene "window._dbBaseSnapshot"
+// — ver _resolverConflictoDB() arriba), así que un _merge3way() de 3
+// argumentos no se puede llamar directamente ahí sin inventar una base.
+//
+// La solución reutiliza el MISMO motor de fusión de 3 vías ya probado desde
+// la Ronda 20 (_merge3way, id-aware para arreglos vía _mergeArregloPorId)
+// en vez de escribir un mecanismo de comparación nuevo y sin probar:
+// "incomingData" se usa como base Y como "theirs" al mismo tiempo. Con
+// base===theirs, cualquier campo donde "localData" difiera de la base se
+// interpreta, correctamente, como un cambio genuino hecho solo localmente
+// (nunca "ambos lados cambiaron", porque "theirs" es idéntico a la base) —
+// así que ese cambio local se conserva sin marcarlo como conflicto; donde
+// coincidan, se toma sin cambios el valor de "incomingData".
+//
+// Solo se activa esta protección cuando localData de verdad tiene trabajo
+// pendiente sin confirmar (localData._syncMeta.pending_sync===true, sellado
+// por _sellarSyncMetaCambios() en updDB() — ver arriba). Si no hay nada
+// pendiente, no hay nada que proteger y se toma "incomingData" tal cual
+// (mismo comportamiento que antes de esta ronda). Y si la propia nube trae
+// una marca de tiempo EXPLÍCITAMENTE más nueva que la del cambio local
+// pendiente, esa versión más reciente prevalece — tal como se especificó.
+function mergeGlobalData(localData, incomingData){
+  try{
+    if(!incomingData) return localData;
+    if(!localData) return incomingData;
+    const localPendiente=!!(localData._syncMeta&&localData._syncMeta.pending_sync);
+    if(!localPendiente) return incomingData;
+    const incomingUpdatedAt=incomingData._syncMeta&&incomingData._syncMeta.updated_at;
+    const localUpdatedAt=localData._syncMeta&&localData._syncMeta.updated_at;
+    if(incomingUpdatedAt&&localUpdatedAt&&incomingUpdatedAt>localUpdatedAt){
+      return incomingData; // la nube es explícitamente más reciente que el cambio local pendiente
+    }
+    const {result}=_merge3way(incomingData, localData, incomingData);
+    return result;
+  }catch(e){
+    // Ante cualquier forma de dato inesperada, nunca se bloquea la
+    // operación (importar respaldo / sincronizar) — se cae al
+    // comportamiento anterior a esta ronda (lo entrante reemplaza lo
+    // local), igual criterio que el resto de fusiones de este archivo.
+    return incomingData;
+  }
+}
 function _merge3way(base,mine,theirs){
   // Ronda 20: "detalles" acumula, por referencia, cada conflicto real
   // encontrado durante la fusión (campo exacto + qué valor traía cada lado +
@@ -1038,6 +1086,19 @@ async function _pushDB(){
       // debe seguir encendida hasta que ESA se confirme.
       if(_json===_lastDbJson){
         window._hayCambiosSinSincronizar=false;
+        // RONDA 85 — mismo criterio: solo se apaga "pending_sync" cuando lo
+        // que el servidor acaba de confirmar es exactamente lo mismo que
+        // "db" tiene AHORA mismo (si no, hay una edición más nueva todavía
+        // sin confirmar — ver el razonamiento completo arriba). Se limpia a
+        // nivel de blob y de cada entidad que estaba marcada pendiente.
+        try{
+          if(db._syncMeta) db._syncMeta.pending_sync=false;
+          ['ests','actas'].forEach(function(coleccion){
+            if(Array.isArray(db[coleccion])){
+              db[coleccion].forEach(function(e){ if(e&&e._syncMeta) e._syncMeta.pending_sync=false; });
+            }
+          });
+        }catch(_eSync){}
       }
     }
   }catch(e){
@@ -2002,12 +2063,25 @@ async function _navegarConCargaGranularSiAplica(yaHabiaDatosEnCache){
   // es exactamente el mismo en todo el sistema. Cuando NO había caché previa
   // (primera carga real, con skeleton) este chequeo no aplica — siempre se
   // renderiza, igual que siempre.
-  if(yaHabiaDatosEnCache && _dbAntesNav81 && _profundamenteIgual(_dbAntesNav81, db)){
-    const _cAct = document.getElementById('contenido');
-    const _todaviaTieneSkeleton = _cAct && (_cAct.getAttribute('aria-busy')==='true' || (_cAct.innerHTML && _cAct.innerHTML.includes('skel-wrap')));
-    if(!_todaviaTieneSkeleton){
-      return;
-    }
+  //
+  // FIX (integrado desde Antigravity) — ESTE ERA EL BUG DEL CONGELAMIENTO:
+  // la Ronda 83 cambió el punto de partida de esta función — ahora SIEMPRE
+  // se llega aquí con el skeleton universal ya pintado (antes, este "return"
+  // temprano solo era alcanzable cuando yaHabiaDatosEnCache===true, es decir
+  // cuando YA había contenido REAL visible, nunca un skeleton). Al no
+  // actualizarse esa premisa, si la comparación profunda encontraba que la
+  // red no trajo nada distinto de "_dbAntesNav81", este "return" se
+  // ejecutaba SIN llamar nunca a renderApp() — dejando el skeleton pegado en
+  // pantalla para siempre. La corrección: solo se permite este atajo si el
+  // contenedor YA NO tiene el skeleton (es decir, si algo más — ver el
+  // nuevo renderApp() inmediato en _mostrarSkeletonYNavegar() más abajo —
+  // ya reemplazó el skeleton por contenido real). Si el skeleton sigue
+  // presente, se fuerza el render aunque "nada haya cambiado" en la
+  // comparación profunda.
+  const _cAct=document.getElementById('contenido');
+  const _todaviaTieneSkeleton=_cAct&&(_cAct.getAttribute('aria-busy')==='true'||(_cAct.innerHTML&&_cAct.innerHTML.includes('skel-wrap')));
+  if(yaHabiaDatosEnCache && _dbAntesNav81 && _profundamenteIgual(_dbAntesNav81, db) && !_todaviaTieneSkeleton){
+    return;
   }
   renderApp();
   }finally{
@@ -2052,7 +2126,46 @@ function updDB(fn){
   const _dbAntes=db;
   db=_medirPerf('updDB (clonar+mutar)', function(){ return fn(_clonarDB(db)); });
   if(_profundamenteIgual(_dbAntes,db)) return; // dirty-check: nada cambió de verdad -> no se guarda ni se toca la red
+  // RONDA 85 — LOCAL-FIRST / ANTIDESASTRE: como updDB() es el único punto
+  // por el que pasa CUALQUIER mutación real de "db" (comentario de Ronda 24
+  // arriba), es también el lugar correcto para sellar "esto cambió
+  // localmente y todavía no está confirmado por el servidor" — sin tener
+  // que tocar cada módulo (notas, asistencia, descriptores, observador,
+  // convivencia, actas...) uno por uno. Se sella en 2 niveles:
+  //   (a) a nivel de todo el blob (db._syncMeta) — es el nivel en el que
+  //       este sistema YA sincroniza de verdad (una fila por institución en
+  //       kv_store, ver POST /api/inetis/db) y coincide con la bandera
+  //       equivalente ya existente desde antes, window._hayCambiosSinSincronizar.
+  //   (b) a nivel de cada ENTIDAD que realmente cambió dentro de "ests"/
+  //       "actas" (comparando _dbAntes vs "db", que ya se tenían en memoria
+  //       para el dirty-check de arriba — no cuesta una lectura extra), para
+  //       poder proteger registro por registro en mergeGlobalData() más
+  //       abajo, en vez de solo a nivel de todo el blob.
+  _sellarSyncMetaCambios(_dbAntes, db);
   saveDB();
+}
+// RONDA 85 — ver comentario en updDB() arriba. Función separada (en vez de
+// código inline) para poder probarla de forma aislada.
+function _isoUtcNow(){ return new Date().toISOString(); }
+function _sellarSyncMetaCambios(dbAntes, dbNuevo){
+  try{
+    const _sello={pending_sync:true, updated_at:_isoUtcNow()};
+    dbNuevo._syncMeta=_sello;
+    ['ests','actas'].forEach(function(coleccion){
+      if(!Array.isArray(dbNuevo[coleccion])) return;
+      const viejosPorId=new Map();
+      (Array.isArray(dbAntes&&dbAntes[coleccion])?dbAntes[coleccion]:[]).forEach(function(e){ viejosPorId.set(String(e.id), e); });
+      dbNuevo[coleccion].forEach(function(eNuevo){
+        const eViejo=viejosPorId.get(String(eNuevo.id));
+        // Compara ignorando el propio "_syncMeta" para no auto-detectarse como cambio.
+        const _sinMetaNuevo=Object.assign({},eNuevo); delete _sinMetaNuevo._syncMeta;
+        const _sinMetaViejo=eViejo?Object.assign({},eViejo):undefined; if(_sinMetaViejo) delete _sinMetaViejo._syncMeta;
+        if(!eViejo || !_profundamenteIgual(_sinMetaViejo,_sinMetaNuevo)){
+          eNuevo._syncMeta={pending_sync:true, updated_at:_sello.updated_at};
+        }
+      });
+    });
+  }catch(e){/* nunca debe bloquear un guardado real por un fallo al sellar metadatos de sincronización */}
 }
 
 // ============================================================
@@ -2108,6 +2221,24 @@ const TODOS_MODULOS=[
   {id:'comunicado-general',label:'📢 Comunicado General'},
   {id:'contacto',label:'💬 Contacto / Notificaciones'},
   {id:'centros-interes',label:'🎯 Centros de Interés'},
+  // RONDA 84 — Ficha de Inclusión / PIAR (Decreto 1421): consulta de solo
+  // lectura para Docente Orientador (además de Admin/Rector, que ya ve todo).
+  {id:'ficha-inclusion',label:'🧩 Ficha de Inclusión / PIAR'},
+  // RONDA 85 — Repositorio de Evidencias / Drive del Tutor PTA: espacio
+  // para que los docentes suban secuencias didácticas, planes de área y
+  // evidencias de los Centros de Interés; el Tutor PTA y el Admin/Rector
+  // ven además un filtro de cumplimiento en tiempo real.
+  {id:'drive-pta',label:'📂 Drive PTA / Evidencias'},
+  // RONDA 86 — Consolidado de Gestión Pedagógica (Tutor PTA) e Historial
+  // integrado de Atenciones/Convivencia (Docente Orientador): completan
+  // los cimientos RBAC de la Ronda 84/85 con las vistas de cierre que
+  // faltaban.
+  {id:'consolidado-pedagogico-pta',label:'📊 Consolidado Gestión Pedagógica'},
+  {id:'historial-orientacion',label:'📚 Historial Atenciones y Convivencia'},
+  // RONDA 85 — Panel de Comunicación y Alertas para Tutor PTA y Docente
+  // Orientador: enlaces directos de WhatsApp y correo hacia docentes,
+  // acudientes y directivos, reutilizando el patrón wa.me ya existente.
+  {id:'comunicacion-pta-orientador',label:'📣 Comunicación PTA / Orientador'},
   {id:'elecciones-admin',label:'🗳️ Elecciones / Democracia Escolar'},
   {id:'pre-matricula',label:'📝 Pre-Matrícula Online'},
   {id:'recepcion-permisos',label:'📋 Recepción de Permisos'},
@@ -3030,6 +3161,12 @@ function moduloActivo(modId,platId){
     // antes de que estos existieran. El rol ya lo controla en el menu.push
     // (solo admin/Docente Orientador los ve).
     if(modId==='atenciones-psico'||modId==='comite-convivencia') return true;
+    // RONDA 85 — Drive PTA / Evidencias y Comunicación PTA/Orientador: mismo
+    // motivo que los módulos anteriores — nuevos, quedarían ocultos en
+    // instituciones ya existentes. El rol ya lo controla en el menu.push.
+    if(modId==='drive-pta'||modId==='comunicacion-pta-orientador') return true;
+    if(modId==='ficha-inclusion') return true;
+    if(modId==='consolidado-pedagogico-pta'||modId==='historial-orientacion') return true;
     // El Gestor admin dentro de una plataforma siempre ve todos los módulos
     if(gestorSesion&&gestorEnPlataforma) return true;
     const pid=platId||window._currentPlatId;if(!pid){
@@ -3069,6 +3206,17 @@ function _esTutorPTA(){
 // de los dos tiene entre sus vistas aprobadas la carga/edición de notas.
 function _bloqueadoNotasPlanillas(){
   return _esDocenteOrientador()||_esTutorPTA();
+}
+// RONDA 84 — Firma Digital de usuario ("Mi Perfil" → editarDocente()).
+// Helper de LECTURA para cuando futuras rondas estampen esta firma en
+// actas/observadores/boletines/informes (esta ronda SOLO agrega la carga y
+// el almacenamiento del dato — ver editarDocente()/_guardarEdicionDocente()
+// más abajo — la estampación en cada documento generado queda para una
+// ronda posterior, módulo por módulo, para no arriesgar los generadores de
+// PDF ya existentes y probados).
+function _firmaDeUsuario(u){
+  const user=(db.users||[]).find(function(x){ return x.u===u; });
+  return (user&&user.firma)||'';
 }
 let _entrandoAPlataforma=false;
 async function entrarPlataforma(platId,pagDestino,btnEl){
@@ -3809,6 +3957,7 @@ function renderGestorAdmin(){
   else if(_gestorPag==='salud') contenido=htmlGestorSalud();
   else if(_gestorPag==='agenteia') contenido=htmlGestorAgenteIA();
   else if(_gestorPag==='infraestructura') contenido=htmlGestorInfraestructura();
+  else if(_gestorPag==='recursoscuotas') contenido=htmlGestorRecursosCuotas();
   else if(_gestorPag==='etc') contenido=htmlGestorETC();
   else if(_gestorPag==='universidades') contenido=htmlGestorUniversidades();
   document.getElementById('app').innerHTML=`
@@ -3834,6 +3983,7 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#922b21" onclick="_gestorPag='salud';renderGestorAdmin()" title="Detectar instituciones con problemas de guardado o papelera creciendo sin control">🏥 Salud del Sistema</button>
         <button class="tbtn" style="background:#16a085" onclick="_gestorPag='agenteia';renderGestorAdmin()" title="Historial del Agente Administrador y Auditor Supremo del ecosistema: rendimiento académico, inasistencias, integridad técnica y sincronización">🤖 Auditoría IA / Agente</button>
         <button class="tbtn" style="background:#34495e" onclick="_gestorPag='infraestructura';renderGestorAdmin()" title="RAM, CPU, disco y conexiones a la base de datos del servidor, con alertas automáticas">🖥️ Estado del Servidor</button>
+        <button class="tbtn" style="background:#7d3c98" onclick="_gestorPag='recursoscuotas';renderGestorAdmin()" title="Consumo de ancho de banda de Render y transferencia de red de Neon, con alertas al acercarse al límite del plan">📡 Recursos y Cuotas</button>
         <button class="tbtn" style="background:${gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE?'#6c3483':'#5d4037'}" onclick="_gestorPag='etc';renderGestorAdmin()" title="Gestión Documental, Contratación y Permisos para Entidades Territoriales Certificadas (ETC)">🏛️ Entidades Territoriales</button>
         <button class="tbtn" style="background:${gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE?'#1a5276':'#5d4037'}" onclick="_gestorPag='universidades';renderGestorAdmin()" title="Catálogo de Universidades / Educación Superior">🎓 Universidades</button>
         <button class="tbtn" style="background:#2980b9;position:relative" onclick="_gestorPag='notificaciones';renderGestorAdmin()">🔔 <span id="notifBadgeTxt">Notif</span><span id="notifBadge" style="display:none;background:#e74c3c;color:#fff;border-radius:10px;font-size:0.65rem;padding:1px 5px;margin-left:2px;font-weight:bold">0</span></button>
@@ -3864,6 +4014,7 @@ function renderGestorAdmin(){
   if(_gestorPag==='salud') setTimeout(_refrescarSaludSistemaGranular,150);
   if(_gestorPag==='agenteia'){ setTimeout(_refrescarAgenteIA,150); if(_controlProcesosCargado===null) setTimeout(_refrescarControlProcesosIA,150); }
   if(_gestorPag==='infraestructura') setTimeout(_refrescarInfraestructura,150);
+  if(_gestorPag==='recursoscuotas'){ setTimeout(_refrescarRecursosCuotas,150); setTimeout(_refrescarDispositivosSuperAdmin,150); }
   if(_gestorPag==='etc'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_ETC_CONTRACTING_MODULE){ setTimeout(_refrescarEtcEntidades,120); if(_smsGlobalHabilitado===null) setTimeout(_refrescarEstadoSms,120); }
   if(_gestorPag==='universidades'&&gestorDB.featureFlags&&gestorDB.featureFlags.ENABLE_UNIVERSITIES_MODULE) setTimeout(_refrescarUniversidades,120);
 }
@@ -5620,6 +5771,176 @@ async function _refrescarInfraestructura(){
     cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">⚠️ No se pudo cargar el estado del servidor: '+(e&&e.message?e.message:'error desconocido')+'</p></div>';
   }finally{
     if(btn){ btn.disabled=false; btn.textContent='🔄 Recargar Telemetría'; }
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 88 — "📡 Recursos y Cuotas": widget de Render (Outbound Bandwidth) y
+// Neon (Net Transfer), EXCLUSIVO del panel de Súper Admin (ver decisión de
+// alcance documentada en src/lib/resource-monitor.ts). Consume
+// GET /api/admin/resource-quotas-status, que usa el MISMO token de rescate
+// que ya viaja automáticamente con cualquier fetch hacia esta URL (ver
+// _envolverFetchParaRescate más abajo en este archivo) — reutiliza también
+// _htmlBarraKpi/_colorPorPorcentaje ya definidos arriba para las barras de
+// progreso, con el mismo criterio visual (ámbar ≥80%, rojo ≥90%) que el
+// resto del panel de Súper Admin.
+// ════════════════════════════════════════════════════════════════════════════
+function htmlGestorRecursosCuotas(){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:6px">
+    <h3 style="color:#003366;margin:0">📡 Estado de Servidor y Cuotas (Render &amp; Neon)</h3>
+    <button class="btn" id="btnRecargarRecursosCuotas" style="background:#7d3c98" onclick="_refrescarRecursosCuotas(true)">🔄 Recargar</button>
+  </div>
+  <p style="font-size:0.83rem;color:#666;margin-bottom:14px">Consumo de Ancho de Banda saliente (Outbound Bandwidth) de Render y de Transferencia de Red (Net Transfer) de Neon Postgres del mes en curso, para evitar bloqueos o sobrecostos inesperados en la facturación. Estos datos se cachean hasta 20 minutos en el servidor — use "Recargar" para forzar una consulta nueva a las APIs de Render/Neon.</p>
+  <div id="recursosCuotasResultado"><div class="card"><p class="empty" style="padding:30px">⏳ Consultando Render y Neon...</p></div></div>
+  ${htmlNotificacionesEmergenciaCuotas()}`;
+}
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 89 — "🔔 Notificaciones de Emergencia": alertas proactivas (Push
+// multidispositivo + Telegram) cuando Render/Neon llegan al 85%/90% de su
+// cuota. Exclusivo del panel de Súper Admin (misma sección que el widget de
+// cuotas de la Ronda 88) — las suscripciones se guardan con
+// isSuperadmin=true en la MISMA tabla push_subscriptions que ya usan
+// docentes/acudientes para sus propias notificaciones normales, pero por un
+// endpoint completamente aparte (/api/admin/push/subscribe-superadmin,
+// protegido por el token de rescate), así que un docente jamás puede
+// terminar registrado aquí.
+// ════════════════════════════════════════════════════════════════════════════
+function htmlNotificacionesEmergenciaCuotas(){
+  return `<h4 style="color:#003366;margin:22px 0 8px">🔔 Notificaciones de Emergencia</h4>
+  <div class="card" style="margin-bottom:14px">
+    <p style="font-size:0.83rem;color:#666;margin:0 0 10px">Reciba un aviso inmediato por Notificación Push (en cada dispositivo que active aquí) y por Telegram cuando Render o Neon lleguen al 85% (advertencia) o 90% (crítico) de su cuota mensual. Se revisa automáticamente cada 2 horas, con un máximo de un aviso cada 24h por la misma alerta.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn" style="background:#c0392b" onclick="_activarAlertasPushSuperAdmin()">🔔 Activar Alertas Push en este dispositivo</button>
+      <button class="btn btn-gray" onclick="_refrescarDispositivosSuperAdmin()">🔄 Actualizar lista</button>
+    </div>
+    <div id="dispositivosSuperAdminResultado"><p class="empty" style="padding:10px 0">Cargando dispositivos registrados...</p></div>
+  </div>`;
+}
+async function _activarAlertasPushSuperAdmin(){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)){
+    customAlert('Este navegador no soporta notificaciones push. Pruebe con Chrome, Edge o Firefox actualizados.');
+    return;
+  }
+  try{
+    const etiqueta = await customPrompt('¿Cómo quiere llamar a este dispositivo? (ej. "Laptop", "Celular personal")','','🔔 Activar Alertas Push');
+    if(etiqueta===null) return; // canceló
+    const permiso=await Notification.requestPermission();
+    if(permiso!=='granted'){
+      customAlert('No se activaron las notificaciones. Debe permitirlas cuando el navegador lo pregunte (puede cambiarlo luego en la configuración del sitio).');
+      return;
+    }
+    const registro=await navigator.serviceWorker.ready;
+    let suscripcion=await registro.pushManager.getSubscription();
+    if(!suscripcion){
+      suscripcion=await registro.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:_base64urlAUint8Array(VAPID_PUBLIC_KEY_FRONT)
+      });
+    }
+    const r=await fetch(API_BASE+'/api/admin/push/subscribe-superadmin',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({label:etiqueta||'Dispositivo sin nombre',subscription:suscripcion.toJSON?suscripcion.toJSON():suscripcion})});
+    if(r.ok){
+      customAlert('🔔 ¡Listo! Este dispositivo recibirá alertas de infraestructura aunque tenga la pestaña cerrada.');
+      _refrescarDispositivosSuperAdmin();
+    } else if(r.status===401){
+      customAlert('Esta acción requiere una sesión válida de Súper Admin. Si acaba de entrar, recargue la página e inicie sesión de nuevo.');
+    } else {
+      customAlert('No se pudo completar el registro con el servidor. Intente nuevamente en unos minutos.');
+    }
+  }catch(e){
+    customAlert('No se pudieron activar las notificaciones: '+e.message);
+  }
+}
+async function _refrescarDispositivosSuperAdmin(){
+  const cont=document.getElementById('dispositivosSuperAdminResultado');
+  if(!cont) return;
+  try{
+    const r=await fetch(API_BASE+'/api/admin/push/superadmin-devices');
+    const j=await r.json().catch(function(){return null;});
+    if(r.status===401){
+      cont.innerHTML='<p class="empty" style="padding:10px 0;color:#c0392b">🔒 Requiere una sesión válida de Súper Admin.</p>';
+      return;
+    }
+    if(!j||!j.ok){
+      cont.innerHTML='<p class="empty" style="padding:10px 0;color:#c0392b">⚠️ No se pudo cargar la lista de dispositivos.</p>';
+      return;
+    }
+    const dispositivos=j.dispositivos||[];
+    cont.innerHTML = dispositivos.length ? `<table style="width:100%"><tbody>${dispositivos.map(function(d){
+      return `<tr><td style="padding:4px 0;font-size:0.85rem">📱 ${String(d.label||'').replace(/</g,'&lt;')}</td>
+        <td style="text-align:right"><button class="btn btn-gray" style="padding:2px 10px;font-size:0.75rem" onclick="_quitarDispositivoSuperAdmin(${d.id})">✕ Quitar</button></td></tr>`;
+    }).join('')}</tbody></table>` : '<p class="empty" style="padding:10px 0">Ningún dispositivo activado todavía en esta cuenta de Súper Admin.</p>';
+  }catch(e){
+    cont.innerHTML='<p class="empty" style="padding:10px 0;color:#c0392b">⚠️ No se pudo cargar la lista de dispositivos.</p>';
+  }
+}
+async function _quitarDispositivoSuperAdmin(id){
+  const ok=await customConfirm('¿Quitar este dispositivo de las alertas de infraestructura? Dejará de recibir Push en él.',{titulo:'Quitar dispositivo'});
+  if(!ok) return;
+  try{
+    const r=await fetch(API_BASE+'/api/admin/push/unsubscribe-superadmin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+    if(r.ok) _refrescarDispositivosSuperAdmin();
+    else customAlert('No se pudo quitar el dispositivo. Intente de nuevo.');
+  }catch(e){
+    customAlert('No se pudo quitar el dispositivo: '+e.message);
+  }
+}
+function _htmlEstadoNoDisponible(titulo,motivo){
+  return `<div class="card" style="flex:1;min-width:200px">
+    <span style="font-size:0.82rem;color:#666;font-weight:bold">${titulo}</span>
+    <div style="font-size:0.78rem;color:#888;margin-top:8px">⚠️ No disponible${motivo?(' — '+motivo):''}</div>
+  </div>`;
+}
+async function _refrescarRecursosCuotas(forzar){
+  const cont=document.getElementById('recursosCuotasResultado');
+  if(!cont) return;
+  const btn=document.getElementById('btnRecargarRecursosCuotas');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Consultando...'; }
+  try{
+    const url=API_BASE+'/api/admin/resource-quotas-status'+(forzar?'?forzar=1':'');
+    const r=await fetch(url);
+    const j=await r.json().catch(function(){return null;});
+    if(r.status===401){
+      cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">🔒 Esta sección requiere una sesión válida de Súper Admin. Si acaba de entrar, recargue la página e inicie sesión de nuevo.</p></div>';
+      return;
+    }
+    if(!j||!j.ok){
+      cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">⚠️ No se pudo consultar el estado de recursos: '+(j&&j.error?j.error:'error desconocido')+'</p></div>';
+      return;
+    }
+    const render=j.render||{};
+    const neon=j.neon||{};
+    const bw=render.bandwidth||{};
+    const tr=neon.transfer||{};
+
+    const barraRender = render.configurado
+      ? (bw.disponible ? _htmlBarraKpi('☁️ Render — Outbound Bandwidth',bw.porcentajeUso,bw.usadoLegible+' usados de '+bw.limiteLegible+' este mes') : _htmlEstadoNoDisponible('☁️ Render — Outbound Bandwidth',bw.error))
+      : _htmlEstadoNoDisponible('☁️ Render — Outbound Bandwidth','RENDER_API_KEY/RENDER_WORKSPACE_ID no configuradas en el servidor');
+    const barraNeon = neon.configurado
+      ? (tr.disponible ? _htmlBarraKpi('🐘 Neon — Net Transfer',tr.porcentajeUso,tr.usadoLegible+' usados de '+tr.limiteLegible+' este mes') : _htmlEstadoNoDisponible('🐘 Neon — Net Transfer',tr.error))
+      : _htmlEstadoNoDisponible('🐘 Neon — Net Transfer','NEON_API_KEY/NEON_PROJECT_ID no configuradas en el servidor');
+
+    const kpisHtml=`<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">${barraRender}${barraNeon}</div>`;
+
+    const servicios=render.servicios||[];
+    const serviciosHtml = servicios.length ? `<div class="card" style="margin-bottom:14px"><div class="over"><table><thead><tr style="background:#34495e;color:#fff">
+      <th style="text-align:left">Servicio (Render)</th><th>Estado</th>
+    </tr></thead><tbody>${servicios.map(function(s){
+      const online=s.estado!=='Suspended';
+      return `<tr>
+        <td style="text-align:left;font-size:0.82rem">${String(s.nombre||s.id||'').replace(/</g,'&lt;')}</td>
+        <td><span style="background:${online?'#27ae60':'#c0392b'};color:#fff;padding:2px 8px;border-radius:10px;font-size:0.72rem;font-weight:bold;white-space:nowrap">${online?'🟢 Online':'🔴 Suspended'}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table></div></div>` : (render.configurado?'<div class="card" style="margin-bottom:14px"><p class="empty" style="padding:14px">Sin servicios encontrados en este workspace de Render.</p></div>':'');
+
+    const actualizado = j.timestamp ? new Date(j.timestamp).toLocaleString('es-CO',{dateStyle:'short',timeStyle:'short'}) : '—';
+    const piePagina = `<p style="font-size:0.74rem;color:#999;margin-top:4px">Última consulta a las APIs de Render/Neon: ${actualizado} (se reutiliza en caché hasta 20 minutos salvo que use "Recargar").</p>`;
+
+    cont.innerHTML = kpisHtml + serviciosHtml + piePagina;
+  }catch(e){
+    cont.innerHTML='<div class="card"><p class="empty" style="padding:30px;color:#c0392b">⚠️ No se pudo cargar el estado de recursos: '+(e&&e.message?e.message:'error desconocido')+'</p></div>';
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='🔄 Recargar'; }
   }
 }
 
@@ -7853,7 +8174,13 @@ async function _pedirTokenRescate(body){
       // RONDA 49: se agregó /api/admin/infrastructure-status a la lista —
       // ese endpoint nuevo usa el MISMO token de rescate como control de
       // acceso (ver el comentario junto a app.get('/api/admin/infrastructure-status') en src/index.ts).
-      if(url.indexOf('/api/inetis/db')!==-1||url.indexOf('/api/admin/infrastructure-status')!==-1){
+      // RONDA 88: mismo criterio para /api/admin/resource-quotas-status
+      // (monitoreo de Render/Neon) — ver el comentario junto a esa ruta en
+      // src/index.ts.
+      // RONDA 89: mismo criterio para los 4 endpoints de alertas
+      // proactivas de cuotas (suscripción/lista/baja de dispositivos Push
+      // del Súper Admin y el disparo manual de prueba).
+      if(url.indexOf('/api/inetis/db')!==-1||url.indexOf('/api/admin/infrastructure-status')!==-1||url.indexOf('/api/admin/resource-quotas-status')!==-1||url.indexOf('/api/admin/push/subscribe-superadmin')!==-1||url.indexOf('/api/admin/push/superadmin-devices')!==-1||url.indexOf('/api/admin/push/unsubscribe-superadmin')!==-1||url.indexOf('/api/admin/push/probar-alertas-cuotas')!==-1){
         const token=_tokenRescateSuperAdmin();
         if(token){
           init=init||{};
@@ -8767,27 +9094,96 @@ function _actualizarHTMLSiCambio(elemento, htmlNuevo){
 }
 function _mostrarSkeletonYNavegar(){
   const cont = document.getElementById('contenido');
-  // Asegurar que el Skeleton se dibuje DE INMEDIATO con min-height: 500px
-  // para evitar cualquier colapso a 0px al hacer clic en el menú.
+  // ══════════════════════════════════════════════════════════════════════
+  // RONDA 79 — CACHÉ-PRIMERO (STALE-WHILE-REVALIDATE) EN NAVEGACIÓN EN
+  // CALIENTE. Antes de esta ronda, ENTRAR a cualquier módulo (Planilla,
+  // Notas de Actividades, Asistencia, Permisos, Actividades, etc. — este es
+  // el ÚNICO punto de entrada compartido por toda la navegación por menú)
+  // SIEMPRE tapaba la vista con el skeleton y esperaba la respuesta de
+  // _navegarConCargaGranularSiAplica() (que hace la petición de red) antes
+  // de mostrar cualquier contenido real — aunque "db" ya tuviera, en
+  // memoria, datos perfectamente utilizables de una consulta anterior en
+  // esta misma sesión. Con Neon lento/en cold start, eso significa una
+  // pantalla en blanco/skeleton más tiempo del necesario para datos que, la
+  // gran mayoría de las veces, ya están disponibles localmente.
+  //
+  // Si "db" ya tiene datos reales (db.nombre poblado — no es el objeto
+  // DDB en blanco de una sesión nunca sincronizada), se pinta el contenido
+  // REAL de inmediato con lo que ya hay en memoria (renderApp(), la misma
+  // función de siempre) y la actualización de red se dispara en segundo
+  // plano exactamente igual que antes — _navegarConCargaGranularSiAplica()
+  // ya vuelve a llamar a renderApp() en cuanto esa actualización granular
+  // termina (ver el final de esa función), así que cualquier dato nuevo se
+  // refleja igual, solo que sin bloquear la primera vista.
+  //
+  // RONDA 83 — SKELETON UNIVERSAL: el usuario reportó (con evidencia
+  // concreta de la causa) que casi todos los módulos seguían "brincando"
+  // pese a las Rondas 79-82: el camino "db.nombre ya poblado" de arriba
+  // saltaba DIRECTO a renderApp() sin ningún skeleton — y aunque "db" tenga
+  // datos GENERALES de la institución, la vista destino puede depender de
+  // datos ESPECÍFICOS de ese módulo que todavía no llegaron (p. ej. la
+  // lista de estudiantes de Observador, que se resuelve en un segundo paso
+  // asíncrono vía cargarListaObservador()) — el primer render(), en ese
+  // instante, podía verse casi vacío/corto, y momentos después la tabla
+  // completa lo reemplazaba de golpe: exactamente el "colapsa a 0px y luego
+  // empuja el diseño" que describió el usuario. Solo Observador de Aula,
+  // Observador del Estudiante y Notas de Actividades conservaban un
+  // skeleton propio (por tener su propia carga asíncrona secundaria).
+  //
+  // La solución ahora es incondicional: SIEMPRE se pinta el skeleton
+  // primero (con una altura mínima garantizada — .skel-wrap tiene
+  // min-height:500px, ver portal.html — así el contenedor nunca colapsa a
+  // 0px en ningún punto de la transición), y el contenido real (desde
+  // caché o desde la red, no importa cuál llegue primero) lo reemplaza a
+  // través de _actualizarHTMLSiCambio (Ronda 82): sin reflow/parpadeo
+  // extra si el resultado es idéntico a lo ya pintado, y con su propio
+  // min-height estabilizador (basado en la altura real del skeleton) si
+  // cambia de verdad.
   if(cont){
-    if(cont.style) cont.style.minHeight = '500px';
     _actualizarHTMLSiCambio(cont, _htmlSkeletonPorTipo(_tipoVistaPorPagina(pag)));
     cont.setAttribute('aria-busy','true');
-    // Inmediatamente después de dibujar el Skeleton, ejecutar de forma asíncrona pero sin bloqueos
-    // la función de renderizado real de la vista seleccionada (renderApp), para que el contenido
-    // real o en caché reemplace al Skeleton sin quedarse esperando indefinidamente.
+    // FIX (integrado desde Antigravity) — refuerzo defensivo: además del
+    // min-height que ya trae .skel-wrap por CSS (portal.html), se fija
+    // también inline por si algún tema/override de CSS lo redujera.
+    if(cont.style) cont.style.minHeight='500px';
+    // "true": ya hay ALGO pintado (el skeleton, con su propia altura
+    // mínima) — habilita el indicador de sincronización sutil y el
+    // guard-check de la Ronda 81/82 para el reemplazo por el contenido
+    // real, en vez del "renderApp() incondicional" que usaba el antiguo
+    // camino "sin caché".
+    //
+    // FIX (integrado desde Antigravity) — CAUSA RAÍZ DEL CONGELAMIENTO: antes
+    // de esta corrección, el ÚNICO camino para reemplazar el skeleton era
+    // _navegarConCargaGranularSiAplica(true) → (eventualmente) renderApp().
+    // Si esa cadena se demoraba (red lenta) o su propio "dirty check" de la
+    // Ronda 81 decidía "nada cambió, no renderizo" (ver el fix ya aplicado
+    // arriba, en _navegarConCargaGranularSiAplica), el skeleton se quedaba
+    // en pantalla indefinidamente. Ahora se llama a renderApp() de forma
+    // INCONDICIONAL e inmediata (con lo que YA haya en memoria — o, si "db"
+    // todavía está vacío, con un intento de restaurarlo desde el respaldo
+    // local en localStorage) apenas termina de pintarse el skeleton — así el
+    // contenedor SIEMPRE tiene contenido real antes de que
+    // _navegarConCargaGranularSiAplica(true) siquiera empiece a correr en
+    // segundo plano. Esto NO reintroduce el "brinco" de las Rondas 81-83:
+    // este renderApp() y el que eventualmente dispare la actualización
+    // granular pasan igual por el guard-check de _actualizarHTMLSiCambio
+    // (Ronda 82) — si el contenido granular termina siendo idéntico al que
+    // ya se pintó aquí, no se vuelve a tocar el DOM.
     requestAnimationFrame(function(){
       setTimeout(function(){
-        // Si db aún no tiene datos en memoria, asegurar carga desde caché local (localStorage)
-        if(typeof db === 'undefined' || !db || !(db.nombre || (db.users && db.users.length))){
+        // Si "db" todavía no tiene datos en memoria (ej. primera pintura
+        // tras refrescar la página), se intenta restaurar desde el respaldo
+        // local en localStorage ANTES de renderizar — mismo objeto/función
+        // de migración que ya usa el resto del sistema (_migrateDB/DDB).
+        if(typeof db==='undefined'||!db||!(db.nombre||(db.users&&db.users.length))){
           try{
-            const _sk = typeof _skActual === 'function' ? _skActual() : (window._currentPlatSK || null);
-            if(_sk && typeof localStorage !== 'undefined'){
-              const _s = localStorage.getItem(_sk);
+            const _sk=typeof _skActual==='function'?_skActual():(window._currentPlatSK||null);
+            if(_sk&&typeof localStorage!=='undefined'){
+              const _s=localStorage.getItem(_sk);
               if(_s){
-                const _p = JSON.parse(_s);
-                if(_p && (_p.nombre || (_p.users && _p.users.length))){
-                  db = (typeof _migrateDB === 'function') ? _migrateDB(_p) : Object.assign({}, DDB, _p);
+                const _p=JSON.parse(_s);
+                if(_p&&(_p.nombre||(_p.users&&_p.users.length))){
+                  db=(typeof _migrateDB==='function')?_migrateDB(_p):Object.assign({},DDB,_p);
                 }
               }
             }
@@ -8796,10 +9192,10 @@ function _mostrarSkeletonYNavegar(){
         try{
           renderApp();
         }catch(e){
-          console.error('Error al renderizar vista tras skeleton:', e);
+          console.error('Error al renderizar vista tras skeleton:',e);
         }
-        const c = document.getElementById('contenido');
-        if(c && c.removeAttribute) c.removeAttribute('aria-busy');
+        const c=document.getElementById('contenido');
+        if(c&&c.removeAttribute) c.removeAttribute('aria-busy');
         _navegarConCargaGranularSiAplica(true);
       }, 0);
     });
@@ -9294,6 +9690,11 @@ function renderApp(){
   // RONDA 39: Centros de Interés — vista aprobada (b) de Tutor PTA, se extiende
   // el acceso además de isAdmin.
   if((isAdmin||_esTutorPTA())&&_ma('centros-interes')) menu.push({id:'centros-interes',label:'🎯 Centros de Interés'});
+  // RONDA 84 — Ficha de Inclusión / PIAR (Decreto 1421): vista de SOLO
+  // LECTURA para Docente Orientador (Admin/Rector ya administra el dato real
+  // desde "Gestión de Estudiantes" → sección PIAR). Ningún botón de edición
+  // se expone en la vista de Orientador — ver htmlFichaInclusion() más abajo.
+  if((isAdmin||_esDocenteOrientador())&&_ma('ficha-inclusion')) menu.push({id:'ficha-inclusion',label:'🧩 Ficha de Inclusión / PIAR'});
   if(isAdmin&&db.nivelEducativo!=='UNIVERSIDAD'&&_ma('elecciones-admin')) menu.push({id:'elecciones-admin',label:'🗳️ Elecciones'});
   if(isAdmin&&_ma('pre-matricula')) menu.push({id:'pre-matricula-admin',label:'📝 Pre-Matrículas'});
   if((isAdmin||sesion.r==='docente')&&_ma('actividades-docente')&&!_bloqueadoNotasPlanillas()) menu.push({id:'actividades-docente',label:'📝 Actividades'});
@@ -9306,6 +9707,20 @@ function renderApp(){
   // _autorizarActorAdmin(), ver src/index.ts).
   if(isAdmin) menu.push({id:'traslado-institucional',label:'🔄 Traslado Inter-Institucional'});
   if((isAdmin||_esDocenteOrientador())&&_ma('comite-convivencia')) menu.push({id:'comite-convivencia',label:'⚖️ Comité de Convivencia'});
+  // RONDA 85 — Drive PTA / Repositorio de Evidencias: cualquier docente
+  // puede subir sus evidencias (secuencias didácticas, planes de área,
+  // evidencias de Centros de Interés); el Tutor PTA y el Admin/Rector ven
+  // además el filtro de cumplimiento en tiempo real (ver htmlDrivePTA()).
+  if((isAdmin||_esTutorPTA()||sesion.r==='docente')&&_ma('drive-pta')) menu.push({id:'drive-pta',label:'📂 Drive PTA / Evidencias'});
+  // RONDA 86 — Consolidado de Gestión Pedagógica: exclusivo de Tutor PTA/Admin
+  // (los docentes de aula ya ven su propio avance dentro de "Drive PTA").
+  if((isAdmin||_esTutorPTA())&&_ma('consolidado-pedagogico-pta')) menu.push({id:'consolidado-pedagogico-pta',label:'📊 Consolidado Gestión Pedagógica'});
+  // RONDA 86 — Historial integrado de Atenciones/Convivencia: exclusivo de
+  // Docente Orientador/Admin (mismo control que atenciones-psico/comite-convivencia).
+  if((isAdmin||_esDocenteOrientador())&&_ma('historial-orientacion')) menu.push({id:'historial-orientacion',label:'📚 Historial Atenciones y Convivencia'});
+  // RONDA 85 — Panel de Comunicación y Alertas, de uso exclusivo del Tutor
+  // PTA y del Docente Orientador (Admin/Rector también puede supervisarlo).
+  if((isAdmin||_esTutorPTA()||_esDocenteOrientador())&&_ma('comunicacion-pta-orientador')) menu.push({id:'comunicacion-pta-orientador',label:'📣 Comunicación PTA / Orientador'});
   if(isAdmin&&_ma('seguimiento-eval-docente')) menu.push({id:'seguimiento-eval-docente',label:'📁 Eval. Desempeño Docente'});
   if(sesion.r==='docente'&&_ma('seguimiento-eval-docente')){
     const _usrFullED=db.users.find(x=>x.u===sesion.u)||sesion;
@@ -9370,6 +9785,7 @@ function renderApp(){
   else if(pag==='asistencia') contenido=htmlAsistencia();
   else if(pag==='contacto') contenido=htmlContacto();
   else if(pag==='centros-interes'&&(isAdmin||_esTutorPTA())) contenido=htmlCentrosInteres();
+  else if(pag==='ficha-inclusion'&&(isAdmin||_esDocenteOrientador())) contenido=htmlFichaInclusion();
   else if(pag==='elecciones-admin') contenido=htmlEleccionesAdmin();
   else if(pag==='pre-matricula-admin'&&isAdmin) contenido=htmlGestionPreMatriculas();
   else if(pag==='recepcion-permisos'&&isAdmin) contenido=htmlRecepcionPermisos();
@@ -9385,6 +9801,10 @@ function renderApp(){
   // RONDA 39 — vistas nuevas de Docente Orientador
   else if(pag==='atenciones-psico'&&(isAdmin||_esDocenteOrientador())) contenido=htmlAtencionesPsico();
   else if(pag==='comite-convivencia'&&(isAdmin||_esDocenteOrientador())) contenido=htmlComiteConvivencia();
+  else if(pag==='drive-pta'&&(isAdmin||_esTutorPTA()||sesion.r==='docente')) contenido=htmlDrivePTA();
+  else if(pag==='consolidado-pedagogico-pta'&&(isAdmin||_esTutorPTA())) contenido=htmlConsolidadoPedagogicoPTA();
+  else if(pag==='historial-orientacion'&&(isAdmin||_esDocenteOrientador())) contenido=htmlHistorialOrientacion();
+  else if(pag==='comunicacion-pta-orientador'&&(isAdmin||_esTutorPTA()||_esDocenteOrientador())) contenido=htmlComunicacionPTAOrientador();
   // RONDA 42 — Traslado Inter-Institucional (solo Rector/Admin)
   else if(pag==='traslado-institucional'&&isAdmin){
     contenido=htmlTrasladoInterinstitucional();
@@ -9581,6 +10001,13 @@ function renderApp(){
   // reemplaza por el mismo patrón ya usado arriba para 'menciones-honor'/
   // 'actas': una llamada real de JS después de inyectar el HTML.
   if(pag==='obs-aula') setTimeout(renderObsAulaLista,80);
+  // FIX (integrado desde Antigravity) — Observador del Estudiante (admin)
+  // era el único módulo con carga asíncrona secundaria que NO tenía este
+  // disparador automático: antes solo cargaba al cambiar el <select> de
+  // grado o pulsar "🔍 Cargar Estudiantes" a mano (ver cargarListaObservador()
+  // más abajo), así que la primera pintura de la vista se quedaba en el
+  // skeleton hasta esa interacción manual. Se agrega el mismo patrón ya
+  // usado para 'obs-aula'/'actas'/'menciones-honor'.
   if(pag==='observador') setTimeout(function(){ if(typeof cargarListaObservador==='function') cargarListaObservador(); },80);
   // Si el docente/admin ya había escrito algo en "Buscar módulo...", el
   // valor se conserva (ver el input más arriba), pero el filtro (qué
@@ -10030,7 +10457,21 @@ function cargarRespaldo(inp){
       // _migrateDB agrega todos los campos nuevos con sus valores por defecto
       // y conserva íntegramente todos los datos del respaldo anterior.
       const _sk=window._currentPlatSK||SK;
-      db=_migrateDB(data);
+      const _dbMigrado=_migrateDB(data);
+      // RONDA 85 — ANTIDESASTRE: antes de esta ronda, esta línea era
+      // "db=_migrateDB(data)" — un reemplazo TOTAL e incondicional de "db"
+      // por el contenido del archivo cargado, sin importar si el docente
+      // tenía trabajo hecho DESPUÉS de la fecha de ese respaldo y todavía
+      // sin confirmar por el servidor (window._hayCambiosSinSincronizar).
+      // Cargar un respaldo viejo por error (o el más reciente disponible,
+      // pero de ayer) borraba silenciosamente cualquier nota/observación/
+      // asistencia registrada desde entonces. Ahora se pasa por
+      // mergeGlobalData() (ver arriba): si "db" no tenía nada pendiente sin
+      // sincronizar, el respaldo se aplica exactamente igual que antes; si
+      // SÍ lo tenía, el trabajo local se conserva y solo se completa con lo
+      // que el respaldo trae de nuevo (institución distinta, restauración
+      // tras perder el dispositivo, etc.).
+      db=mergeGlobalData(db, _dbMigrado);
       try{localStorage.setItem(_sk,JSON.stringify(db));}catch(e){}
       // ── Sincronizar con la nube ──
       let _cloudOk=false;
@@ -11316,12 +11757,27 @@ function editarDocente(u,opts){
         </div>
       </div>
     </div>
+    <div style="margin-bottom:14px">
+      <label class="lbl">✍️ Firma Digital (opcional)</label>
+      <p style="font-size:0.76rem;color:#666;margin:2px 0 6px">Se usará para estampar automáticamente su firma en actas, observadores, boletines e informes oficiales donde usted sea firmante. Suba una imagen PNG o JPG, preferiblemente con fondo transparente.</p>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div id="_edFirmaPreview" style="width:120px;height:60px;border:2px dashed #aac;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#f0f4ff;flex-shrink:0;color:#1a1a2e">
+          ${user.firma?`<img src="${user.firma}" style="width:100%;height:100%;object-fit:contain">`:'<span style="font-size:1.3rem">✍️</span>'}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <input type="file" id="_edFirmaFile" accept="image/png,image/jpeg" style="display:none" onchange="(function(inp){const prev=document.getElementById('_edFirmaPreview');if(prev)prev.innerHTML='<span style=\\'font-size:0.7rem\\'>⏳...</span>';fileToCloudinaryUrl(inp.files[0],function(url){if(!url)return;window._editDocFirma=url;if(prev)prev.innerHTML='<img src=\\''+url+'\\' style=\\'width:100%;height:100%;object-fit:contain\\'>';},'firmas-usuarios');})(this)">
+          <button onclick="document.getElementById('_edFirmaFile').click()" style="background:#7f8c8d;color:#fff;border:none;border-radius:5px;padding:7px 12px;cursor:pointer;font-size:0.82rem">✍️ ${user.firma?'Cambiar firma':'Subir firma'}</button>
+          ${user.firma?`<button onclick="window._editDocFirma=null;const p=document.getElementById('_edFirmaPreview');if(p)p.innerHTML='<span style=\\'font-size:1.3rem\\'>✍️</span>';" style="background:#c0392b;color:#fff;border:none;border-radius:5px;padding:7px 12px;cursor:pointer;font-size:0.82rem">🗑️ Quitar firma</button>`:''}
+        </div>
+      </div>
+    </div>
     <div style="display:flex;gap:8px">
       <button onclick="_guardarEdicionDocente('${u}',${modoPerfil?'true':'false'})" style="flex:1;background:#27ae60;color:#fff;border:none;padding:11px;border-radius:7px;cursor:pointer;font-weight:bold">💾 Guardar Cambios</button>
-      <button onclick="window._editDocFoto=undefined;document.getElementById('_editDocOv').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer;color:#1a1a2e">Cancelar</button>
+      <button onclick="window._editDocFoto=undefined;window._editDocFirma=undefined;document.getElementById('_editDocOv').remove()" style="flex:1;background:#eee;border:none;padding:11px;border-radius:7px;cursor:pointer;color:#1a1a2e">Cancelar</button>
     </div>
   </div>`;
   window._editDocFoto=undefined;
+  window._editDocFirma=undefined;
   document.body.appendChild(ov);
 }
 async function _guardarEdicionDocente(u,modoPerfilPropio){
@@ -11356,6 +11812,7 @@ async function _guardarEdicionDocente(u,modoPerfilPropio){
   }
   const pHash=passNueva?await _hashPassword(passNueva):null;
   let fotoAnteriorDoc=null,fotoNuevaDoc=null;
+  let firmaAnteriorDoc=null,firmaNuevaDoc=null;
   const rolEspecifico=document.getElementById('_edRolEsp')?.value||'';
   const tipoDecretoNormativo=document.getElementById('_edDecreNorm')?.value||'';
   const cvTemp=window._cvPerfilTemp&&window._cvPerfilTemp['_ed'];
@@ -11371,6 +11828,8 @@ async function _guardarEdicionDocente(u,modoPerfilPropio){
     if(idx!==-1){
       fotoAnteriorDoc=d.users[idx].foto;
       fotoNuevaDoc=window._editDocFoto!==undefined?window._editDocFoto:d.users[idx].foto;
+      firmaAnteriorDoc=d.users[idx].firma;
+      firmaNuevaDoc=window._editDocFirma!==undefined?window._editDocFirma:d.users[idx].firma;
       gradoEscalafonGuardado=document.getElementById('_edEscala')?.value||d.users[idx].gradoEscalafon||'';
       d.users[idx]={...d.users[idx],
       n:n.toUpperCase(),
@@ -11390,6 +11849,7 @@ async function _guardarEdicionDocente(u,modoPerfilPropio){
       tituloPosgrado:document.getElementById('_edNivPos')?.value?(document.getElementById('_edTitPos')?.value.trim()||d.users[idx].tituloPosgrado||''):'',
       gradoEscalafon:gradoEscalafonGuardado,
       foto:fotoNuevaDoc,
+      firma:firmaNuevaDoc,
       rolEspecifico,tipoDecretoNormativo,esDocenteOrientador,esTutorPta,cvUrl,cvNombreArchivo
     };
     }
@@ -11412,9 +11872,11 @@ async function _guardarEdicionDocente(u,modoPerfilPropio){
   if(window._cvPerfilTemp) window._cvPerfilTemp['_ed']=null;
   if(window._cvPerfilUrlAnterior) window._cvPerfilUrlAnterior['_ed']=null;
   window._editDocFoto=undefined;
+  window._editDocFirma=undefined;
   document.getElementById('_editDocOv').remove();
   renderApp();
   if(fotoAnteriorDoc&&fotoAnteriorDoc!==fotoNuevaDoc) _cloudinaryEliminar(fotoAnteriorDoc);
+  if(firmaAnteriorDoc&&firmaAnteriorDoc!==firmaNuevaDoc) _cloudinaryEliminar(firmaAnteriorDoc);
   if(cvUrlAnteriorParaBorrar) _cloudinaryEliminar(cvUrlAnteriorParaBorrar);
 }
 async function eliminarDocente(u){
@@ -11598,6 +12060,25 @@ RODRÍGUEZ MARIA"></textarea>
     </div>
     <div id="promoVista" style="margin-top:14px"></div>
   </div>
+  <div class="card" style="border-left:4px solid #2980b9">
+    <h4 class="card-title">🧩 Ficha de Inclusión / PIAR (Decreto 1421 de 2017)</h4>
+    <div class="info-box" style="margin-bottom:10px">Registre o actualice la Ficha de Inclusión / PIAR de un estudiante. El Docente Orientador puede CONSULTAR esta información en modo solo lectura desde su propio menú "🧩 Ficha de Inclusión / PIAR" — no puede editarla desde ahí.</div>
+    <div class="grid2" style="margin-bottom:10px">
+      <div><label class="lbl">Grado</label><select id="piarGrado" onchange="_refrescarSelectEstPIAR()">${gradOpts}</select></div>
+      <div><label class="lbl">Estudiante</label><select id="piarEst" onchange="_cargarFichaPIAREnFormulario()">${_optsEstudiantesGrado(fgrado)}</select></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="piarActivo" style="width:18px;height:18px">
+      <span><b>PIAR activo</b> para este estudiante</span>
+    </label>
+    <div class="grid2" style="margin-bottom:10px">
+      <div><label class="lbl">Categoría / Tipo de discapacidad o condición</label><input id="piarCategoria" placeholder="Ej: Discapacidad cognitiva, TEA, Baja visión..."></div>
+      <div><label class="lbl">Apoyos / Ajustes Razonables</label><input id="piarApoyos" placeholder="Ej: Tiempo adicional, material en braille..."></div>
+    </div>
+    <div style="margin-bottom:10px"><label class="lbl">Observaciones</label><textarea id="piarObservaciones" style="height:70px;width:100%"></textarea></div>
+    <button class="btn btn-navy" onclick="guardarFichaPIAR()">💾 Guardar Ficha PIAR</button>
+    <div id="piarStatus" style="font-size:0.82rem;color:#16a085;margin-top:6px"></div>
+  </div>
   <div class="card">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
       <h4 class="card-title" style="margin:0">Listado de Estudiantes</h4>
@@ -11613,6 +12094,60 @@ RODRÍGUEZ MARIA"></textarea>
 }
 let _estTablaPagina=1;
 let _estTablaGradoPrevio=null;
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 84 — FICHA DE INCLUSIÓN / PIAR (Decreto 1421 de 2017).
+// Panel de EDICIÓN, exclusivo del panel de Administrador (dentro de
+// "Gestión de Estudiantes" — htmlEstudiantes() más arriba). El Docente
+// Orientador consulta este mismo dato, pero en SOLO LECTURA, desde
+// htmlFichaInclusion() (06-documentos-y-resto.js) — no comparte HTML/botón
+// alguno con este panel, para que la restricción de solo-lectura sea real.
+// ════════════════════════════════════════════════════════════════════════
+function _optsEstudiantesGrado(grado){
+  return db.ests.filter(function(e){ return e.g===grado; })
+    .sort(function(a,b){ return fmtNombreEst(a).localeCompare(fmtNombreEst(b)); })
+    .map(function(e){ return '<option value="'+e.id+'">'+fmtNombreEst(e)+'</option>'; })
+    .join('');
+}
+function _refrescarSelectEstPIAR(){
+  const selGrado=document.getElementById('piarGrado');
+  const selEst=document.getElementById('piarEst');
+  if(!selGrado||!selEst) return;
+  selEst.innerHTML=_optsEstudiantesGrado(selGrado.value);
+  _cargarFichaPIAREnFormulario();
+}
+function _cargarFichaPIAREnFormulario(){
+  const estId=document.getElementById('piarEst')?.value;
+  const est=(db.ests||[]).find(function(e){ return String(e.id)===String(estId); });
+  const p=(est&&est.piar)||{};
+  const elActivo=document.getElementById('piarActivo');
+  const elCategoria=document.getElementById('piarCategoria');
+  const elApoyos=document.getElementById('piarApoyos');
+  const elObs=document.getElementById('piarObservaciones');
+  if(elActivo) elActivo.checked=!!p.activo;
+  if(elCategoria) elCategoria.value=p.categoria||'';
+  if(elApoyos) elApoyos.value=p.apoyos||'';
+  if(elObs) elObs.value=p.observaciones||'';
+  const st=document.getElementById('piarStatus');
+  if(st) st.textContent=p.fecha?('Última actualización: '+p.fecha+(p.actualizadoPor?(' — '+p.actualizadoPor):'')):'';
+}
+function guardarFichaPIAR(){
+  const estId=document.getElementById('piarEst')?.value;
+  if(!estId){ customAlert('Seleccione un estudiante.'); return; }
+  const activo=!!document.getElementById('piarActivo')?.checked;
+  const categoria=(document.getElementById('piarCategoria')?.value||'').trim();
+  const apoyos=(document.getElementById('piarApoyos')?.value||'').trim();
+  const observaciones=(document.getElementById('piarObservaciones')?.value||'').trim();
+  const fecha=new Date().toISOString().slice(0,10);
+  const actualizadoPor=(sesion&&(sesion.n||sesion.u))||'Administrador';
+  updDB(function(d){
+    const est=(d.ests||[]).find(function(e){ return String(e.id)===String(estId); });
+    if(est) est.piar={activo,categoria,apoyos,observaciones,actualizadoPor,fecha};
+    return d;
+  });
+  const st=document.getElementById('piarStatus');
+  if(st) st.textContent='✅ Ficha PIAR guardada — '+fecha+' — '+actualizadoPor;
+  _showToast('✅ Ficha de Inclusión / PIAR guardada.','success',2500);
+}
 function htmlEstTabla(grado){
   if(grado!==_estTablaGradoPrevio){ _estTablaPagina=1; _estTablaGradoPrevio=grado; }
   const todosEsts=db.ests.filter(x=>x.g===grado).sort((a,b)=>fmtNombreEst(a).localeCompare(fmtNombreEst(b)));
@@ -18922,6 +19457,14 @@ async function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     const _fR1=_fMid+12,_fR2=_rm-6,_fRcx=(_fR1+_fR2)/2;
     // Firma digital del rector(a)
     if(db.firmaRectora){try{doc.addImage(db.firmaRectora,'PNG',_fLcx-18,firmaY-12,36,10);}catch(_fe){}}
+    // RONDA 86 — Estampación automática de la firma digital del Director(a)
+    // de Grupo, guardada en su propio "Mi Perfil" (_firmaDeUsuario(), Ronda
+    // 84). Antes, el boletín solo imprimía su NOMBRE sobre la línea de
+    // firma (sin ninguna imagen), a diferencia del Rector(a), que sí
+    // estampaba su firma cargada en db.firmaRectora — se completa la
+    // paridad entre ambas firmas, reutilizando el mismo patrón addImage().
+    const _firmaDirGrupoImg=_firmaDeUsuario(infoG.d);
+    if(_firmaDirGrupoImg){try{doc.addImage(_firmaDirGrupoImg,'PNG',_fRcx-18,firmaY-12,36,10);}catch(_fe2){}}
     doc.setLineWidth(0.4);
     doc.line(_fL1,firmaY,_fL2,firmaY);
     doc.line(_fR1,firmaY,_fR2,firmaY);
