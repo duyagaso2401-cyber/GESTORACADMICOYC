@@ -8,7 +8,10 @@
 // "network-first" -> si hay red, se usa y se refresca la caché;
 // si falla, se sirve la última copia guardada en caché.
 // ============================================================
-const CACHE_NAME = 'gestor-yc-shell-v2-20260906';
+// RONDA 94 — AUDITORÍA OFFLINE-FIRST: CACHE_NAME se sube de versión para que
+// todos los dispositivos ya instalados descarten su caché vieja (incompleta)
+// y precarguen la lista corregida de abajo en su próxima visita con señal.
+const CACHE_NAME = 'gestor-yc-shell-v3-20260929';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',
@@ -21,7 +24,16 @@ const CORE_ASSETS = [
   '/modules/03-app-core.js',
   '/modules/04-ficha-matricula.js',
   '/modules/05-pdf-ficha-blanco.js',
-  '/modules/06-documentos-y-resto.js'
+  '/modules/06-documentos-y-resto.js',
+  // RONDA 94 — faltaban estos dos módulos en la precarga de instalación:
+  // 07-sync-engine.js y 08-outbox-notas.js son justamente los que implementan
+  // la cola de sincronización y el reintento offline de notas/actividades.
+  // Sin estar precargados, un dispositivo que instala la PWA y abre la app
+  // por PRIMERA vez ya sin señal (antes de que el "network-first" del fetch
+  // handler alcance a guardarlos en caché por su cuenta) se queda sin esta
+  // lógica — justo la que más falta hace estando offline.
+  '/modules/07-sync-engine.js',
+  '/modules/08-outbox-notas.js'
 ];
 
 self.addEventListener('install', function(event){

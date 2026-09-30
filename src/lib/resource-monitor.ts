@@ -89,6 +89,12 @@ export const NEON_CONFIGURADO = !!(NEON_API_KEY && NEON_PROJECT_ID);
 // ajuste a su plan real sin tocar código.
 const RENDER_BANDWIDTH_LIMITE_GB = Number(process.env.RENDER_BANDWIDTH_LIMITE_GB) || 100; // Render: 100 GB/mes incluidos en la mayoría de planes pagos
 const NEON_TRANSFER_LIMITE_GB = Number(process.env.NEON_TRANSFER_LIMITE_GB) || 5; // Neon: 5 GB/mes en el plan Free
+// RONDA 96 — límite de ALMACENAMIENTO (no de transferencia): se usa solo
+// como respaldo informativo cuando la transferencia de red no está
+// disponible (ver _consultarNeon). Neon documenta 0.5 GB de storage para el
+// plan Free — mismo valor que el propio proyecto reporta en el campo
+// "branch_logical_size_limit_bytes" de GET /projects/{id} (536870912 B).
+const NEON_STORAGE_LIMITE_GB = Number(process.env.NEON_STORAGE_LIMITE_GB) || 0.5;
 
 // Permite fijar la base de la API de Neon (que ha versionado su API pública
 // entre v1/v2 con alias console.neon.tech/api.neon.tech) sin tener que
@@ -110,7 +116,13 @@ if (!RENDER_CONFIGURADO) {
 if (!NEON_CONFIGURADO) {
   console.warn('⚠️ NEON_API_KEY/NEON_PROJECT_ID no configuradas: el widget de "Estado de Servidor y Cuotas" mostrará Neon como no disponible.');
 } else if (!NEON_ORG_ID) {
-  console.warn('⚠️ NEON_ORG_ID no configurada: el endpoint vigente de consumo de Neon (/consumption_history/v2/projects) lo exige — el módulo intentará el endpoint legacy como respaldo, pero puede fallar según el plan de la cuenta. Configúrala en Neon: Settings → General → Org ID.');
+  // RONDA 95 — ya no es un bloqueo real: el org_id necesario para el
+  // histórico detallado (/consumption_history/v2/projects) se descubre
+  // automáticamente desde la propia respuesta de GET /projects/{id} (trae
+  // un campo "org_id"), así que el respaldo funciona igual sin esta
+  // variable configurada. Se deja como advertencia informativa nada más,
+  // por si el Súper Admin prefiere fijarlo explícitamente.
+  console.warn('ℹ️ NEON_ORG_ID no configurada: el módulo la descubrirá automáticamente desde la respuesta de GET /projects/{id} (campo "org_id"). Puedes configurarla igual en Neon: Settings → General → Org ID, si prefieres no depender de ese autodescubrimiento.');
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -131,7 +143,13 @@ export interface CuotaInfo {
 export interface EstadoRecursos {
   timestamp: string;
   render: { configurado: boolean; servicios: ServicioRender[]; algunoSuspendido: boolean; bandwidth: CuotaInfo; erroresApi?: string | null };
-  neon: { configurado: boolean; transfer: CuotaInfo; erroresApi?: string | null };
+  // RONDA 96 — "almacenamiento" (opcional): métrica de respaldo, SOLO
+  // storage (synthetic_storage_size), que el panel puede mostrar cuando la
+  // transferencia de red de verdad no está disponible por la API de Neon
+  // para el plan de la cuenta (ver comentario extenso en _consultarNeon).
+  // NUNCA sustituye a "transfer" en el mismo campo — son métricas distintas
+  // (bytes almacenados vs. bytes transferidos) y mezclarlas sería engañoso.
+  neon: { configurado: boolean; transfer: CuotaInfo; almacenamiento?: CuotaInfo | null; erroresApi?: string | null };
 }
 
 function _cuotaNoDisponible(configurado: boolean, limiteBytes: number, error?: string | null): CuotaInfo {
@@ -251,6 +269,17 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
 
   let transferBytes: number | null = null;
   let error: string | null = null;
+  // RONDA 96 — se registra si el número final de `transferBytes` viene
+  // CONFIRMADO por un endpoint de histórico real (v2 o legacy), o si es
+  // solo el valor "tal cual" de /projects/{id} sin que ningún histórico lo
+  // haya podido confirmar/corregir. Un 0 confirmado por el histórico es un
+  // 0 real; un 0 que viene SOLO de /projects/{id} (sin histórico disponible)
+  // es sospechoso en cuentas free_v3 recién creadas (ver hallazgo del
+  // usuario, más abajo) y no debe mostrarse como un 0% de uso sin contexto.
+  let confirmadoPorHistorico = false;
+  let storageBytes: number | null = null;
+  let planGratuito = false;
+  let noDisponiblePorPlanGratuito = false;
   try {
     const hoy = new Date();
     const inicioMes = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), 1));
@@ -298,26 +327,77 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
     // proyecto para diagnosticar problemas en producción sin acceso directo
     // a los logs del proveedor externo.
     console.log('[ResourceMonitor] Neon GET /projects/{id} → status:', rProyecto.status ?? '(sin respuesta)', '— body:', (() => { try { return JSON.stringify(rProyecto.body); } catch { return String(rProyecto.body); } })());
+    // RONDA 95 — DIAGNÓSTICO CONFIRMADO CON EL JSON REAL DE PRODUCCIÓN QUE
+    // EL USUARIO PEGÓ: el campo "data_transfer_bytes" SÍ es el nombre
+    // correcto (ver RONDA 93) y SÍ vino presente en el body — pero su valor
+    // real es 0, igual que "data_storage_bytes_hour", "written_data_bytes",
+    // "compute_time_seconds", etc. Es decir: NO es un problema de nombre de
+    // campo (ya no hay un 5° campo que adivinar); es que este "running
+    // total" que expone /projects/{id} viene desactualizado/no poblado
+    // todavía para este proyecto en el plan Free (el proyecto tiene solo un
+    // par de días de creado — "created_at":"2026-09-28" — y Neon actualiza
+    // este contador agregado con retraso respecto al histórico detallado
+    // que sí alimenta en tiempo real la consola console.neon.tech, que es
+    // de donde sale el 3.14 GB que el usuario ve). Ninguno de los campos de
+    // ese JSON, ni siquiera "synthetic_storage_size" (36962304 B ≈ 35 MB,
+    // que además es ALMACENAMIENTO, no transferencia de red), se acerca a
+    // 3.14 GB — así que mapear cualquiera de ellos como si fuera la
+    // transferencia real sería inventar un número, no corregirlo.
+    //
+    // LA CORRECCIÓN REAL: el mismo JSON trae, sin que nadie lo pidiera,
+    // "org_id":"org-spring-water-05689033" — exactamente el dato que el
+    // respaldo de abajo (el histórico detallado /consumption_history/v2,
+    // que SÍ es la fuente en tiempo real que alimenta la consola) necesita
+    // y que hasta ahora dependía de que el Súper Admin configurara
+    // NEON_ORG_ID a mano (con la advertencia de que si faltaba, este
+    // respaldo simplemente no se intentaba). A partir de ahora se descubre
+    // automáticamente desde esta misma respuesta cuando la variable de
+    // entorno no está configurada, así que el histórico real SÍ se
+    // consulta aunque nadie haya tocado esa variable.
+    let transferBytesProyecto: number | null = null;
+    let orgIdDescubierto: string | null = null;
     if (rProyecto.ok) {
-      transferBytes = sumarCamposNumericos(rProyecto.body, /^data_transfer_bytes$/i);
+      transferBytesProyecto = sumarCamposNumericos(rProyecto.body, /^data_transfer_bytes$/i);
+      const proyectoBody = (rProyecto.body && typeof rProyecto.body === 'object' && rProyecto.body.project) ? rProyecto.body.project : rProyecto.body;
+      if (proyectoBody && typeof proyectoBody.org_id === 'string' && proyectoBody.org_id) {
+        orgIdDescubierto = proyectoBody.org_id;
+      }
+      // RONDA 96 — HALLAZGO CONFIRMADO POR EL USUARIO CON UNA CUENTA REAL
+      // free_v3: /projects/{id} no expone la transferencia de red real para
+      // este plan (siempre 0 en "data_transfer_bytes", sin importar el
+      // consumo real — no es un retraso momentáneo de caché, es una
+      // limitación de lo que ese endpoint reporta para free_v3). En cambio
+      // SÍ expone correctamente "synthetic_storage_size" (almacenamiento) y
+      // "owner.subscription_type" (para saber si es un plan Free). Ambos se
+      // guardan aparte para usarlos como respaldo/contexto si el histórico
+      // de transferencia tampoco da un dato utilizable (ver más abajo).
+      storageBytes = sumarCamposNumericos(rProyecto.body, /^synthetic_storage_size$/i);
+      const subscriptionType = proyectoBody?.owner?.subscription_type;
+      if (typeof subscriptionType === 'string' && /free/i.test(subscriptionType)) planGratuito = true;
+      transferBytes = transferBytesProyecto;
     } else {
       ultimoStatus = rProyecto.status;
       cuerpoError = rProyecto.body ?? rProyecto.error ?? null;
     }
+    const orgIdEfectivo = NEON_ORG_ID || orgIdDescubierto || '';
 
-    // Respaldo (solo si /projects/{id} no dio un número utilizable): el
-    // endpoint VIGENTE con desglose público/privado, si hay NEON_ORG_ID
-    // configurada — ver RONDA 91 para el porqué exacto de esta URL y de
-    // exigir org_id/metrics.
-    if (transferBytes === null && NEON_ORG_ID) {
-      const paramsV2 = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily', org_id: NEON_ORG_ID });
+    // Respaldo — RONDA 95: ahora se intenta también cuando /projects/{id}
+    // respondió un 0 (no solo cuando faltó por completo), precisamente
+    // porque ese 0 quedó confirmado como no confiable para este caso real.
+    // Si este histórico SÍ trae un número (aunque sea 0 también, sería un 0
+    // confirmado por dos fuentes independientes), se usa ese; si falla o no
+    // trae nada, más abajo se restaura el valor de /projects/{id} tal cual
+    // (mejor un 0 del proyecto que "no disponible").
+    if ((transferBytes === null || transferBytes === 0) && orgIdEfectivo) {
+      const paramsV2 = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily', org_id: orgIdEfectivo });
       paramsV2.append('project_ids', NEON_PROJECT_ID);
       paramsV2.append('metrics', 'public_network_transfer_bytes');
       paramsV2.append('metrics', 'private_network_transfer_bytes');
       const rV2 = await _fetchJson(`${NEON_API_BASE}/consumption_history/v2/projects?${paramsV2.toString()}`, headers);
       if (rV2.ok) {
-        transferBytes = sumarMetricasPorNombre(rV2.body, /network_transfer_bytes$/i);
-        if (transferBytes === null) transferBytes = sumarCamposNumericos(rV2.body, /network_transfer_bytes$/i);
+        let transferBytesV2 = sumarMetricasPorNombre(rV2.body, /network_transfer_bytes$/i);
+        if (transferBytesV2 === null) transferBytesV2 = sumarCamposNumericos(rV2.body, /network_transfer_bytes$/i);
+        if (transferBytesV2 !== null) { transferBytes = transferBytesV2; confirmadoPorHistorico = true; }
       } else if (ultimoStatus === undefined) {
         ultimoStatus = rV2.status;
         cuerpoError = rV2.body ?? rV2.error ?? null;
@@ -326,26 +406,55 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
 
     // Último respaldo: el endpoint legacy de consumption_history (sin
     // org_id/metrics) — se mantiene por compatibilidad con cuentas que
-    // todavía tengan acceso a ese esquema anterior, pero ya NO puede
-    // enmascarar el dato real de /projects/{id}: si este devuelve 200 con
-    // una estructura vacía/en ceros para una cuenta Free (como ocurrió en
-    // producción), simplemente no encontrará campos que sumar y
-    // `transferBytes` seguirá en null en vez de fijarse en 0 por error.
-    if (transferBytes === null) {
+    // todavía tengan acceso a ese esquema anterior. RONDA 95: mismo
+    // criterio que el respaldo de arriba — se intenta también si lo único
+    // que hay hasta ahora es un 0.
+    if (transferBytes === null || transferBytes === 0) {
       const paramsLegacy = new URLSearchParams({ from: desdeIso, to: hastaIso, granularity: 'daily' });
       paramsLegacy.append('project_ids', NEON_PROJECT_ID);
-      if (NEON_ORG_ID) paramsLegacy.append('org_id', NEON_ORG_ID);
+      if (orgIdEfectivo) paramsLegacy.append('org_id', orgIdEfectivo);
       const rLegacy = await _fetchJson(`${NEON_API_BASE}/consumption_history/projects?${paramsLegacy.toString()}`, headers);
       if (rLegacy.ok) {
-        transferBytes = sumarMetricasPorNombre(rLegacy.body, /network_transfer_bytes$/i);
-        if (transferBytes === null) transferBytes = sumarCamposNumericos(rLegacy.body, /network_transfer_bytes$/i);
+        let transferBytesLegacy = sumarMetricasPorNombre(rLegacy.body, /network_transfer_bytes$/i);
+        if (transferBytesLegacy === null) transferBytesLegacy = sumarCamposNumericos(rLegacy.body, /network_transfer_bytes$/i);
+        if (transferBytesLegacy !== null) { transferBytes = transferBytesLegacy; confirmadoPorHistorico = true; }
       } else if (ultimoStatus === undefined) {
         ultimoStatus = rLegacy.status;
         cuerpoError = rLegacy.body ?? rLegacy.error ?? null;
       }
     }
 
-    if (transferBytes === null) {
+    // Si ningún respaldo dio un número mejor que el de /projects/{id}
+    // (incluyendo el caso de que ninguno de los dos siquiera respondiera),
+    // se restaura ese valor tal cual.
+    if (transferBytes === null) transferBytes = transferBytesProyecto;
+
+    // ──────────────────────────────────────────────────────────────────
+    // RONDA 96 — HALLAZGO CONFIRMADO POR EL USUARIO (cuenta real free_v3):
+    // /projects/{id} SIEMPRE reporta "data_transfer_bytes":0 para este plan
+    // — no es una limitación momentánea, la API REST de Neon simplemente no
+    // expone la transferencia de red real ahí para free_v3, y el histórico
+    // detallado (v2/legacy) tampoco está disponible en ese plan (ambos
+    // devuelven 403/plan restriction). Mostrar ese "0" tal cual, sin más
+    // contexto, es literalmente un 0% falso: el usuario reportó 3.14 GB
+    // reales en console.neon.tech mientras el panel decía "0 B de 5 GB".
+    //
+    // Por eso, si se cumplen las TRES condiciones (0 en el resultado final,
+    // NINGÚN histórico lo confirmó, y la cuenta es de plan Free), la
+    // transferencia de red se marca explícitamente como NO DISPONIBLE por
+    // limitación del plan (no como "0% de uso") y, si Neon sí reportó el
+    // almacenamiento (synthetic_storage_size, que confirmadamente SÍ viene
+    // correcto en free_v3), se expone esa métrica aparte como respaldo
+    // informativo — nunca mezclada con el campo de transferencia, para no
+    // hacerle creer al Súper Admin que son la misma cosa.
+    // ──────────────────────────────────────────────────────────────────
+    if (transferBytes === 0 && !confirmadoPorHistorico && planGratuito) {
+      transferBytes = null;
+      noDisponiblePorPlanGratuito = true;
+      error = 'El plan Free de Neon (free_v3) no expone la transferencia de red real a través de su API REST — ni en GET /projects/{id} (siempre reporta 0, sin importar el consumo real) ni en el historial detallado de consumo (requiere un plan de pago). Para ver tu transferencia de red exacta, entra a console.neon.tech → tu proyecto → pestaña "Billing"/"Usage". Mientras tanto, este panel muestra tu almacenamiento (Storage) como referencia, que sí es exacto en este plan.';
+    }
+
+    if (transferBytes === null && !noDisponiblePorPlanGratuito) {
       // Log temporal pedido por el usuario para diagnosticar el mensaje
       // EXACTO que devuelve Neon — nunca se registran credenciales, solo
       // el status y el cuerpo de error que el propio proveedor envía.
@@ -391,7 +500,32 @@ async function _consultarNeon(): Promise<EstadoRecursos['neon']> {
     porcentajeUso, nivel: nivelPorPorcentaje(porcentajeUso),
     disponible: transferBytes !== null, error,
   };
-  return { configurado: true, transfer, erroresApi: transfer.disponible ? null : error };
+
+  // RONDA 96 — "almacenamiento" solo se arma (y solo tiene sentido mostrarlo
+  // en el panel) cuando la transferencia de red terminó NO disponible por la
+  // limitación del plan Free/free_v3 — es el respaldo pedido explícitamente
+  // por el usuario ("muestra la métrica de Storage... para evitar mostrar un
+  // falso 0% sin contexto"). Si la transferencia SÍ está disponible, no hace
+  // falta este respaldo — se deja como null para no saturar el panel con una
+  // métrica que nadie pidió ver en ese caso.
+  let almacenamiento: CuotaInfo | null = null;
+  if (noDisponiblePorPlanGratuito && storageBytes !== null) {
+    const limiteAlmacenamientoBytes = NEON_STORAGE_LIMITE_GB * 1024 ** 3;
+    const porcentajeAlmacenamiento = calcularPorcentaje(storageBytes, limiteAlmacenamientoBytes);
+    almacenamiento = {
+      configurado: true,
+      usadoBytes: storageBytes,
+      usadoLegible: formatearBytes(storageBytes),
+      limiteBytes: limiteAlmacenamientoBytes,
+      limiteLegible: formatearBytes(limiteAlmacenamientoBytes),
+      porcentajeUso: porcentajeAlmacenamiento,
+      nivel: nivelPorPorcentaje(porcentajeAlmacenamiento),
+      disponible: true,
+      error: null,
+    };
+  }
+
+  return { configurado: true, transfer, almacenamiento, erroresApi: transfer.disponible ? null : error };
 }
 
 // ────────────────────────────────────────────────────────────────────────

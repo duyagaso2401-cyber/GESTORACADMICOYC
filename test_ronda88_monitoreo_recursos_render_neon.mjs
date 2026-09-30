@@ -437,6 +437,184 @@ await checkAsync('obtenerEstadoRecursos(): si consumption_history falla por rest
   } finally { global.fetch = fetchOriginal; }
 });
 
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 95 — CORRECCIÓN CON EL JSON REAL DE PRODUCCIÓN QUE EL USUARIO PEGÓ:
+// GET /projects/{id} SÍ trae "data_transfer_bytes" (nombre de campo
+// correcto, confirmado) pero con valor 0, mientras la consola de Neon
+// mostraba 3.14 GB reales — es decir, el 0 de esta fuente NO era confiable
+// para esta cuenta. El mismo JSON real traía, sin configurarlo nadie,
+// "org_id" — el dato exacto que el histórico detallado (v2) necesita. Estas
+// pruebas reproducen ESE escenario exacto: reproducen el bug reportado.
+// ════════════════════════════════════════════════════════════════════════
+await checkAsync('obtenerEstadoRecursos(): RONDA 95 — reproduce el JSON real reportado (data_transfer_bytes:0 pero org_id presente) y usa el org_id descubierto para consultar el histórico v2, recuperando el dato real aunque NEON_ORG_ID no esté configurada', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    // JSON real (recortado a lo relevante) pegado por el usuario en producción.
+    if (String(url).includes('/projects/pk')) {
+      return {
+        ok: true, status: 200, json: async () => ({
+          project: {
+            data_storage_bytes_hour: 0, data_transfer_bytes: 0, written_data_bytes: 0,
+            compute_time_seconds: 0, active_time_seconds: 0, cpu_used_sec: 0,
+            id: 'pk', synthetic_storage_size: 36962304,
+            consumption_period_start: '2026-09-01T00:00:00Z', consumption_period_end: '2026-10-01T00:00:00Z',
+            org_id: 'org-spring-water-05689033',
+            owner: { subscription_type: 'free_v3' },
+          },
+        }),
+      };
+    }
+    if (String(url).includes('/consumption_history/v2/projects')) {
+      return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: Math.round(3.14 * 1024 ** 3) }, { metric_name: 'private_network_transfer_bytes', value: 0 }] }] }] }] }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    // Deliberadamente SIN configurar NEON_ORG_ID — el punto de esta ronda es
+    // que ya no hace falta: se descubre desde la propia respuesta de /projects/{id}.
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, Math.round(3.14 * 1024 ** 3), 'debe usar el dato real del histórico v2, no el 0 de /projects/{id}');
+    assert.equal(estado.neon.transfer.disponible, true);
+    const urlV2 = urlsLlamadas.find((u) => u.includes('/consumption_history/v2/projects'));
+    assert.ok(urlV2, 'debe haber intentado el histórico v2 aunque /projects/{id} respondió 200 (con un 0 no confiable)');
+    assert.ok(urlV2.includes('org_id=org-spring-water-05689033'), 'debe usar el org_id DESCUBIERTO automáticamente desde /projects/{id}, no uno configurado a mano');
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): RONDA 95 — si /projects/{id} da 0 y el histórico v2 tampoco encuentra nada mejor (ni siquiera con el org_id descubierto), se muestra el 0 del proyecto en vez de "no disponible" (mejor un 0 confirmado que ningún dato)', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 0, org_id: 'org-real' } }) };
+    if (String(url).includes('/consumption_history/v2/projects')) return { ok: true, status: 200, json: async () => ({ otroFormato: true }) };
+    if (String(url).includes('/consumption_history/projects')) return { ok: true, status: 200, json: async () => ({ otroFormato: true }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, 0);
+    assert.equal(estado.neon.transfer.disponible, true, 'un 0 numérico es un dato válido, no "no disponible"');
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): RONDA 95 — con NEON_ORG_ID configurada explícitamente, esa variable tiene prioridad sobre el org_id descubierto en /projects/{id}', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 0, org_id: 'org-descubierto-no-usar' } }) };
+    if (String(url).includes('/consumption_history/v2/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 7 * 1024 ** 3 }] }] }] }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk', NEON_ORG_ID: 'org-configurada-a-mano' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, 7 * 1024 ** 3);
+    const urlV2 = urlsLlamadas.find((u) => u.includes('/consumption_history/v2/projects'));
+    assert.ok(urlV2.includes('org_id=org-configurada-a-mano'));
+    assert.ok(!urlV2.includes('org-descubierto-no-usar'));
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): RONDA 95 — si /projects/{id} ya trae un dato DISTINTO de cero, no se molesta en llamar al histórico (evita gastar cuota de API innecesariamente)', async () => {
+  const fetchOriginal = global.fetch;
+  const urlsLlamadas = [];
+  global.fetch = async (url) => {
+    urlsLlamadas.push(String(url));
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 555, org_id: 'org-real' } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.usadoBytes, 555);
+    assert.ok(!urlsLlamadas.some((u) => u.includes('/consumption_history')), 'no debe llamar a ningún endpoint de consumption_history si ya hay un dato distinto de cero');
+  } finally { global.fetch = fetchOriginal; }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 96 — HALLAZGO DEFINITIVO CONFIRMADO POR EL USUARIO CON UNA CUENTA
+// REAL free_v3: /projects/{id} SIEMPRE reporta "data_transfer_bytes":0 para
+// este plan (no es un retraso de caché, es una limitación real de lo que
+// expone esa API para free_v3), y el histórico detallado tampoco está
+// disponible en ese plan. En vez de mostrar un "0%" falso y sin contexto,
+// el panel debe (a) marcar la transferencia como NO disponible con un
+// aviso transparente que dirija a console.neon.tech, y (b) mostrar el
+// almacenamiento (synthetic_storage_size) como métrica de respaldo, ya que
+// ese SÍ viene correcto en este plan.
+// ════════════════════════════════════════════════════════════════════════
+await checkAsync('obtenerEstadoRecursos(): RONDA 96 — cuenta free_v3 real (0 sin confirmar por ningún histórico): transferencia se marca NO disponible con aviso transparente, y se expone el almacenamiento como respaldo', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    // JSON real (recortado) que pegó el usuario: 0 en todos los contadores
+    // de consumo, pero storage y plan correctos. Sin org_id esta vez, para
+    // cubrir también el caso donde el histórico ni siquiera se puede intentar.
+    if (String(url).includes('/projects/pk')) {
+      return {
+        ok: true, status: 200, json: async () => ({
+          project: {
+            data_transfer_bytes: 0, synthetic_storage_size: 36962304,
+            owner: { subscription_type: 'free_v3' },
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, false, 'un 0 sin confirmar en plan Free NO debe mostrarse como uso real');
+    assert.equal(estado.neon.transfer.usadoBytes, null);
+    assert.match(estado.neon.transfer.error, /free_v3|plan Free/i);
+    assert.match(estado.neon.transfer.error, /console\.neon\.tech/);
+    assert.ok(estado.neon.almacenamiento, 'debe exponer el respaldo de almacenamiento');
+    assert.equal(estado.neon.almacenamiento.usadoBytes, 36962304);
+    assert.equal(estado.neon.almacenamiento.disponible, true);
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): RONDA 96 — si el histórico SÍ confirma el 0 (endpoint respondió con datos, no solo falló), se respeta ese 0 como real y NO se activa el aviso de plan Free', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 0, synthetic_storage_size: 1000, org_id: 'org-x', owner: { subscription_type: 'free_v3' } } }) };
+    if (String(url).includes('/consumption_history/v2/projects')) return { ok: true, status: 200, json: async () => ({ projects: [{ periods: [{ consumption: [{ metrics: [{ metric_name: 'public_network_transfer_bytes', value: 0 }, { metric_name: 'private_network_transfer_bytes', value: 0 }] }] }] }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, true, 'un 0 CONFIRMADO por el histórico sí es un dato real, no una limitación de plan');
+    assert.equal(estado.neon.transfer.usadoBytes, 0);
+    assert.equal(estado.neon.almacenamiento, null, 'no hace falta el respaldo de almacenamiento si la transferencia sí está disponible');
+  } finally { global.fetch = fetchOriginal; }
+});
+
+await checkAsync('obtenerEstadoRecursos(): RONDA 96 — cuenta NO identificada como plan Free (sin owner.subscription_type reconocible): se mantiene el criterio anterior (0 de /projects/{id} se acepta tal cual, sin el aviso de plan Free)', async () => {
+  const fetchOriginal = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/services')) return { ok: true, status: 200, json: async () => [] };
+    if (String(url).includes('/projects/pk')) return { ok: true, status: 200, json: async () => ({ project: { id: 'pk', data_transfer_bytes: 0, synthetic_storage_size: 1000 } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const m = await _importarResourceMonitor({ NEON_API_KEY: 'nk', NEON_PROJECT_ID: 'pk' });
+    const estado = await m.obtenerEstadoRecursos(true);
+    assert.equal(estado.neon.transfer.disponible, true);
+    assert.equal(estado.neon.transfer.usadoBytes, 0);
+    assert.ok(!estado.neon.almacenamiento, 'sin evidencia de plan Free, no se activa el respaldo de almacenamiento');
+  } finally { global.fetch = fetchOriginal; }
+});
+
 await checkAsync('obtenerEstadoRecursos(): si TODOS los intentos fallan por restricción de plan, el mensaje es honesto/amigable en vez de un HTTP crudo', async () => {
   const fetchOriginal = global.fetch;
   global.fetch = async (url) => {
@@ -594,6 +772,15 @@ check('htmlGestorRecursosCuotas()/_refrescarRecursosCuotas(): usan _htmlBarraKpi
   const bloque = srcFront.slice(idxFn, idxFin);
   assert.match(bloque, /_htmlBarraKpi\('☁️ Render/);
   assert.match(bloque, /_htmlBarraKpi\('🐘 Neon/);
+});
+check('RONDA 96 — _refrescarRecursosCuotas(): si el backend envía neon.almacenamiento (transferencia no disponible por plan Free), dibuja una tarjeta APARTE y claramente rotulada como Storage/referencia, nunca mezclada con el rótulo de Net Transfer', () => {
+  const idxFn = srcFront.indexOf('async function _refrescarRecursosCuotas');
+  const idxFin = srcFront.indexOf('\n}\n', idxFn);
+  const bloque = srcFront.slice(idxFn, idxFin);
+  assert.match(bloque, /neon\.almacenamiento/);
+  assert.match(bloque, /_htmlBarraKpi\('💾 Neon — Storage/);
+  // Debe quedar claro en el propio rótulo que NO es la métrica de red.
+  assert.match(bloque, /no es transferencia de red/);
 });
 check('_refrescarRecursosCuotas(): el botón "Recargar" pide ?forzar=1 (salta la caché), la carga automática de la pestaña no', () => {
   const idxFn = srcFront.indexOf('async function _refrescarRecursosCuotas');

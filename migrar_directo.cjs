@@ -1,8 +1,8 @@
 const { Pool } = require('pg');
 
 // ⚠️ PEGA AQUÍ TUS DOS STRINGS DE CONEXIÓN EXACTOS DE NEON
-const OLD_DB_URL = "postgresql://neondb_owner:npg_lKr9SogE1CZL@ep-winter-silence-b4xtnhsx-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=verify-full";
-const NEW_DB_URL = "postgresql://neondb_owner:npg_bEoiVm7Gsyw5@ep-muddy-credit-b5sv4tvf-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=verify-full";
+const OLD_DB_URL = "postgresql://neondb_owner:npg_bEoiVm7Gsyw5@ep-muddy-credit-b5sv4tvf-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=verify-full";
+const NEW_DB_URL = "postgresql://neondb_owner:npg_pGOMY9tc1kem@ep-red-flower-b4q5t8l1-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=verify-full";
 
 const poolOld = new Pool({ connectionString: OLD_DB_URL, ssl: { rejectUnauthorized: false } });
 const poolNew = new Pool({ connectionString: NEW_DB_URL, ssl: { rejectUnauthorized: false } });

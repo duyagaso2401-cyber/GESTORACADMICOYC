@@ -43,6 +43,26 @@ export async function enviarPushParaNotificacion(sk: string, kind: string, messa
       const estIdsDelGrado = new Set((data.ests || []).filter((e: any) => e.g === meta.grado).map((e: any) => String(e.id)));
       subs = subs.filter(s => s.estId && estIdsDelGrado.has(s.estId));
     }
+    // RONDA 97 — BLINDAJE ("defense in depth"): el usuario pidió
+    // explícitamente que el estado de los estudiantes (inasistencias, notas
+    // bajas, novedades) NUNCA llegue como notificación push del sistema
+    // operativo/navegador a un Docente — debe verse solo dentro de la
+    // plataforma (ver el panel de novedades del Dashboard, en
+    // htmlPanelDocente(), 03-app-core.js). Los filtros de arriba (por
+    // estId/grado) YA excluyen en la práctica a los docentes, porque sus
+    // suscripciones se crean con estId=null (ver activarNotificacionesPush()
+    // en 03-app-core.js, que solo la usan padres/estudiantes). Pero eso es
+    // un efecto colateral de cómo se arma la suscripción, no una regla
+    // explícita — un cambio futuro en ese flujo podría filtrar mal y volver
+    // a mandarle push de estudiantes a un docente sin que nadie lo note. Por
+    // eso, para los "kind" que son específicamente alertas de ESTADO DE UN
+    // ESTUDIANTE, se excluye aquí, de forma explícita e incondicional,
+    // cualquier suscripción cuyo rol guardado sea 'docente' — sin importar
+    // qué estId/grado tenga esa fila.
+    const KINDS_ESTADO_ESTUDIANTE = new Set(['ausencia', 'alerta-inasistencia', 'alerta-academica', 'alerta-observador']);
+    if (KINDS_ESTADO_ESTUDIANTE.has(kind)) {
+      subs = subs.filter(s => s.rol !== 'docente');
+    }
     if (!subs.length) return;
     const payload = JSON.stringify({
       title: 'Gestor Académico YC',

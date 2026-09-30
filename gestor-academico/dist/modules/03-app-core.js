@@ -1040,6 +1040,12 @@ async function _pushDB(){
     if(r.ok){
       _fallosConsecutivosGuardado=0;
       _saludYaReportadaEstaEpisodio=false;
+      // RONDA 94 — si había un backoff de reintento programado por un fallo
+      // anterior, se cancela: este guardado que sí tuvo éxito ya cubrió lo
+      // pendiente (o, si algo más nuevo quedó sin confirmar, el propio
+      // saveDB() de ese cambio ya habrá reprogramado su propio _pushDB()).
+      if(_pushDBReintentoTimer){ clearTimeout(_pushDBReintentoTimer); _pushDBReintentoTimer=null; }
+      _pushDBReintentoIntentos=0;
       _updateSyncChip('ok');
       _lastSyncTs=Date.now();
       const j=await r.json().catch(()=>({}));
@@ -1104,11 +1110,26 @@ async function _pushDB(){
   }catch(e){
     // Sin conexión (o el servidor no respondió): el cambio ya quedó guardado
     // localmente (localStorage, hecho en saveDB()) y NO se pierde. Queda
-    // marcado como pendiente y se reintentará solo, sin que el docente
-    // tenga que hacer nada, en cuanto vuelva la conexión (ver el listener
-    // de 'online' más abajo) o en la próxima sincronización periódica.
+    // marcado como pendiente y se reintenta solo, sin que el docente tenga
+    // que hacer nada, por TRES vías independientes (ver RONDA 94 más abajo):
+    // (1) el listener de 'online' de más abajo, (2) un backoff exponencial
+    // propio programado aquí mismo (1s→16s, igual que OutboxNotas en
+    // 08-outbox-notas.js), y (3) el barrido periódico de bajo costo que
+    // _syncInterval hace cada 3 minutos como red de seguridad final.
     _updateSyncChip('offline');
     _fallosConsecutivosGuardado++;
+    // RONDA 94 — AUDITORÍA OFFLINE-FIRST: antes de esta ronda, si el evento
+    // 'online' del navegador no disparaba (común en redes móviles/rurales,
+    // ver el mismo comentario ya existente en 08-outbox-notas.js) o si su
+    // único reintento volvía a fallar, el cambio quedaba "pendiente" de
+    // forma indefinida — sin ningún reintento automático posterior — hasta
+    // que el docente volviera a editar algo (lo cual reprograma _pushDB por
+    // su cuenta) o abriera el panel de sincronización manualmente. Como TODO
+    // el frontend (asistencia, descriptores, logros, observaciones,
+    // planeaciones, etc.) pasa por este único punto de guardado (ver
+    // comentario de updDB), este backoff exponencial cubre a todos esos
+    // módulos de una sola vez, sin necesidad de una cola por módulo.
+    _pushDBProgramarReintento();
     // Si fallan varias veces SEGUIDAS (no solo un corte pasajero de
     // internet), se avisa una sola vez al panel de "Salud del Sistema"
     // del súper admin, para que pueda detectar el problema antes de que
@@ -1133,6 +1154,30 @@ async function _pushDB(){
 }
 let _fallosConsecutivosGuardado=0;
 let _saludYaReportadaEstaEpisodio=false;
+// RONDA 94 — backoff exponencial de reintento para _pushDB(), mirroring del
+// patrón ya probado en OutboxNotas (08-outbox-notas.js, BACKOFF_MS). Antes
+// de esta ronda, el ÚNICO reintento automático tras un fallo de red era el
+// listener de 'online' (una sola vez, y solo si ese evento llega a disparar
+// — en redes móviles/rurales no siempre lo hace, mismo problema ya conocido
+// y documentado para el outbox de notas). Esto cubre TODOS los módulos que
+// guardan a través del blob único (updDB→_pushDB): asistencia, descriptores,
+// logros, observaciones, planeaciones, matrícula, configuración, etc.
+const _PUSHDB_BACKOFF_MS=[1000,2000,4000,8000,16000];
+let _pushDBReintentoTimer=null;
+let _pushDBReintentoIntentos=0;
+function _pushDBProgramarReintento(){
+  if(_pushDBReintentoTimer) return; // ya hay uno en camino, no duplicar
+  const espera=_PUSHDB_BACKOFF_MS[Math.min(_pushDBReintentoIntentos,_PUSHDB_BACKOFF_MS.length-1)];
+  _pushDBReintentoIntentos++;
+  _pushDBReintentoTimer=setTimeout(function(){
+    _pushDBReintentoTimer=null;
+    // Solo tiene sentido reintentar si de verdad sigue habiendo algo sin
+    // confirmar — si mientras tanto otro _pushDB() (disparado por 'online',
+    // por el barrido periódico, o por una edición nueva) ya tuvo éxito, no
+    // hace falta duplicar el envío.
+    if(window._hayCambiosSinSincronizar) _pushDB();
+  },espera);
+}
 // Se ejecuta cuando el servidor avisa que alguien más guardó primero
 // (ver POST /api/inetis/db en el backend). Combina el cambio local
 // pendiente con lo que ya quedó guardado, usando como referencia
@@ -5912,6 +5957,13 @@ async function _refrescarRecursosCuotas(forzar){
     const neon=j.neon||{};
     const bw=render.bandwidth||{};
     const tr=neon.transfer||{};
+    // RONDA 96 — respaldo de almacenamiento: el backend solo lo llena cuando
+    // la transferencia de red de Neon terminó no disponible por limitación
+    // real del plan Free/free_v3 (ver resource-monitor.ts). Se muestra como
+    // una tarjeta APARTE, nunca sustituyendo el rótulo de "Net Transfer" por
+    // el de almacenamiento — son métricas distintas y mezclarlas confundiría
+    // al Súper Admin sobre qué se está midiendo.
+    const almacenamiento=neon.almacenamiento||null;
 
     const barraRender = render.configurado
       ? (bw.disponible ? _htmlBarraKpi('☁️ Render — Outbound Bandwidth',bw.porcentajeUso,bw.usadoLegible+' usados de '+bw.limiteLegible+' este mes') : _htmlEstadoNoDisponible('☁️ Render — Outbound Bandwidth',bw.error))
@@ -5919,8 +5971,14 @@ async function _refrescarRecursosCuotas(forzar){
     const barraNeon = neon.configurado
       ? (tr.disponible ? _htmlBarraKpi('🐘 Neon — Net Transfer',tr.porcentajeUso,tr.usadoLegible+' usados de '+tr.limiteLegible+' este mes') : _htmlEstadoNoDisponible('🐘 Neon — Net Transfer',tr.error))
       : _htmlEstadoNoDisponible('🐘 Neon — Net Transfer','NEON_API_KEY/NEON_PROJECT_ID no configuradas en el servidor');
+    // RONDA 96 — solo se dibuja cuando el backend lo envía (transferencia no
+    // disponible por plan Free): un rótulo claro de "Storage (referencia)"
+    // para que quede evidente que NO es la misma métrica de red que faltó.
+    const barraAlmacenamiento = (neon.configurado && almacenamiento && almacenamiento.disponible)
+      ? _htmlBarraKpi('💾 Neon — Storage (referencia, no es transferencia de red)',almacenamiento.porcentajeUso,almacenamiento.usadoLegible+' usados de '+almacenamiento.limiteLegible+' — mostrado porque la API de Neon no expone la transferencia de red en tu plan actual')
+      : '';
 
-    const kpisHtml=`<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">${barraRender}${barraNeon}</div>`;
+    const kpisHtml=`<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">${barraRender}${barraNeon}${barraAlmacenamiento}</div>`;
 
     const servicios=render.servicios||[];
     const serviciosHtml = servicios.length ? `<div class="card" style="margin-bottom:14px"><div class="over"><table><thead><tr style="background:#34495e;color:#fff">
@@ -7940,6 +7998,19 @@ let _syncInterval=setInterval(function(){
   if(document.visibilityState==='hidden') return;
   const haySesionActiva=!!((typeof sesion!=='undefined'&&sesion)||(typeof gestorSesion!=='undefined'&&gestorSesion));
   if(!haySesionActiva) return;
+  // RONDA 94 — AUDITORÍA OFFLINE-FIRST: este barrido periódico es la red de
+  // seguridad FINAL para cualquier cambio que haya quedado pendiente y que,
+  // por lo que sea, ni el listener de 'online' ni el backoff exponencial
+  // propio de _pushDB() (ver _pushDBProgramarReintento más arriba) hayan
+  // logrado reenviar todavía. Antes de esta ronda, un comentario en
+  // _pushDB() afirmaba (incorrectamente) que este intervalo ya reintentaba
+  // el guardado — en realidad solo hacía _syncAll(false), que es de solo
+  // LECTURA (trae cambios de otras personas) y nunca reenvía lo pendiente.
+  // Igual que el guardado (ver el listener de 'online'), este reenvío NUNCA
+  // debe depender del interruptor de sincronización automática — ese
+  // interruptor es solo para la sincronización en segundo plano (traer
+  // cambios ajenos), no para dejar de intentar guardar lo propio.
+  if(window._hayCambiosSinSincronizar) _pushDB();
   if(!_sincronizacionAutoHabilitadaAhora()) return;
   _syncAll(false);
 },180000); // antes cada 20s — se subió a 3 minutos: los cambios propios ya se guardan de inmediato (ver saveDB), esto solo trae lo que OTRAS personas hayan cambiado mientras tanto, y no hace falta que sea tan frecuente — cada sincronización de fondo interrumpía lo que la persona estuviera haciendo en pantalla en ese momento (formularios, pestañas activas, etc.), y era la causa de varios de los problemas reportados
@@ -8313,24 +8384,36 @@ setInterval(function(){
 },60000);
 
 // ============================================================
-// ── NOTIFICACIONES DEL NAVEGADOR (Push visual) ─────────────────────────────
-// Muestra una notificación nativa del navegador si el usuario dio permiso.
-// Solicita permiso la primera vez de forma no intrusiva.
-function _solicitarYMostrarNotifNavegador(titulo, cuerpo){
-  if(!('Notification' in window)) return;
-  const _mostrar=function(){
-    try{
-      new Notification(titulo,{body:cuerpo,icon:'/favicon.svg',tag:'gestor-academico-notif'});
-    }catch(ex){}
-  };
-  if(Notification.permission==='granted'){
-    _mostrar();
-  } else if(Notification.permission!=='denied'){
-    Notification.requestPermission().then(function(perm){
-      if(perm==='granted') _mostrar();
-    }).catch(function(){});
-  }
-}
+// RONDA 97 — ELIMINADA A PEDIDO EXPLÍCITO DEL USUARIO:
+// _solicitarYMostrarNotifNavegador(titulo, cuerpo).
+//
+// Esta función llamaba a Notification.requestPermission() — el permiso
+// NATIVO del navegador para notificaciones emergentes del sistema
+// operativo — y, una vez concedido, disparaba new Notification(...) en cada
+// guardado de asistencia con ausentes (ver guardarAsistencia(), en
+// 06-documentos-y-resto.js). El usuario reportó exactamente este síntoma:
+// "al iniciar sesión como docente, el navegador lanza notificaciones
+// emergentes del sistema sobre el estado de los estudiantes" — porque
+// tomar asistencia suele ser lo primero que hace un docente tras entrar, el
+// permiso nativo (y luego el popup) aparecía justo después del login, sin
+// que nadie lo pidiera ni lo esperara. Se confirmó (grep en todo
+// gestor-academico/dist/modules/*.js) que esta función NO tenía ningún otro
+// punto de llamada — era la única causa de este comportamiento para el rol
+// Docente — así que se elimina por completo en vez de solo desactivarla,
+// para no dejar código muerto que alguien pueda volver a conectar por error.
+//
+// La información de ausencias ahora se ve DENTRO de la plataforma: el
+// _showToast() que ya confirmaba el guardado, y el nuevo panel de
+// novedades del Dashboard del docente (ver _htmlPanelNovedades(), más
+// abajo, e htmlPanelDocente() donde se inserta) — nunca como notificación
+// push del sistema operativo/navegador. Los demás flujos de push que ya
+// existían en el sistema (el de padres/estudiantes, y el de alertas de
+// infraestructura del Súper Admin — ver la sección "Notificaciones de
+// Emergencia" del panel de Recursos y Cuotas) se dejan intactos: ambos son
+// 100% opt-in, detrás de un botón explícito que el propio usuario hace
+// clic — nunca disparados en el login ni en ninguna acción de guardado —
+// así que no forman parte de este bug.
+// ============================================================
 
 // SINCRONIZACIÓN EN TIEMPO REAL — Server-Sent Events (SSE)
 // Se mantienen DOS conexiones independientes y persistentes:
@@ -14988,6 +15071,115 @@ async function _lmsEnviarEntrega(actividadId,estId,cargaId){
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 97 — PANEL DE NOVEDADES (widget interno del Dashboard), reemplazando
+// las notificaciones push emergentes del navegador que el usuario pidió
+// eliminar (ver el comentario extenso junto a la eliminación de
+// _solicitarYMostrarNotifNavegador(), más arriba en este mismo archivo).
+//
+// Reúne, DENTRO de la plataforma, las tres señales que antes solo se veían
+// como popup del sistema operativo o dispersas en módulos separados:
+//   1) Ausencias registradas en los últimos 7 días.
+//   2) Notas bajas (<3.0) del período actual.
+//   3) Novedades del Observador (gravedad Moderada/Grave) recientes.
+//
+// `docenteU` (opcional) acota el panel al ÁMBITO de ESE docente (sus propias
+// asignaturas/grados) — se usa en htmlPanelDocente(). Sin argumento, el
+// panel es institucional (todos los grados/asignaturas) — se usa en
+// htmlTablero(), visible para el Admin/Rector. Esto satisface el pedido
+// explícito del usuario de que el panel sea "visible o configurable para
+// los roles correspondientes (Admin / Docente en su respectivo ámbito)".
+// ════════════════════════════════════════════════════════════════════════════
+function _htmlPanelNovedades(docenteU){
+  const cargasAmbito = docenteU ? (db.carga||[]).filter(function(c){return c.d===docenteU;}) : (db.carga||[]);
+  const gradosAmbito = new Set(cargasAmbito.map(function(c){return c.g;}));
+  const estsAmbito = docenteU ? (db.ests||[]).filter(function(e){return gradosAmbito.has(e.g);}) : (db.ests||[]);
+  const cargaIdsAmbito = new Set(cargasAmbito.map(function(c){return String(c.id);}));
+
+  // 1) Ausencias recientes (últimos 7 días naturales según la fecha del
+  // registro de asistencia).
+  const haceUnaSemana = new Date(Date.now()-7*24*60*60*1000);
+  const ausenciasRecientes=[];
+  (db.asistencia||[]).forEach(function(reg){
+    if(reg.deletedAt) return;
+    if(docenteU && !cargaIdsAmbito.has(String(reg.cargaId))) return;
+    const f=new Date(reg.fecha);
+    if(isNaN(f.getTime())||f<haceUnaSemana) return;
+    (reg.ausentes||[]).forEach(function(estId){
+      const est=(db.ests||[]).find(function(e){return String(e.id)===String(estId);});
+      if(!est) return;
+      const carga=(db.carga||[]).find(function(c){return String(c.id)===String(reg.cargaId);});
+      ausenciasRecientes.push({est:est,fecha:reg.fecha,grado:reg.grado,asignatura:carga?(carga.m||carga.a||'Asignatura'):'—'});
+    });
+  });
+  ausenciasRecientes.sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
+  const ausenciasTop=ausenciasRecientes.slice(0,8);
+
+  // 2) Notas bajas del período actual, dentro del ámbito.
+  const perActual=(typeof _periodoActualPorFecha==='function')?_periodoActualPorFecha():1;
+  const notasBajas=[];
+  estsAmbito.forEach(function(e){
+    cargasAmbito.filter(function(c){return c.g===e.g;}).forEach(function(c){
+      const nota=calcNotaDef(e.nts,c.id,perActual);
+      if(nota>0&&nota<3.0) notasBajas.push({est:e,carga:c,nota:nota});
+    });
+  });
+  notasBajas.sort(function(a,b){return a.nota-b.nota;});
+  const notasBajasTop=notasBajas.slice(0,8);
+
+  // 3) Novedades del Observador (gravedad Moderada/Grave), dentro del ámbito.
+  const observacionesRecientes=[];
+  estsAmbito.forEach(function(e){
+    (e.observaciones||[]).forEach(function(o){
+      if(o.gravedad==='Moderada'||o.gravedad==='Grave') observacionesRecientes.push({est:e,obs:o});
+    });
+  });
+  observacionesRecientes.sort(function(a,b){return String(b.obs.fecha||'').localeCompare(String(a.obs.fecha||''));});
+  const observacionesTop=observacionesRecientes.slice(0,8);
+
+  const totalNovedades=ausenciasTop.length+notasBajasTop.length+observacionesTop.length;
+
+  function _filaNovedad(ico,txt){
+    return '<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid #eee;font-size:0.82rem">'
+      +'<span style="font-size:1rem;flex-shrink:0">'+ico+'</span><span style="color:#333">'+txt+'</span></div>';
+  }
+
+  const seccionAusencias = ausenciasTop.length ? (
+    '<h5 style="color:#922b21;margin:10px 0 4px;font-size:0.85rem">📅 Ausencias recientes (últimos 7 días)</h5>'
+    + ausenciasTop.map(function(a){
+        return _filaNovedad('🔸','<b>'+(a.est.n||'Estudiante')+'</b> ('+a.grado+') — ausente el '+a.fecha+' en '+a.asignatura);
+      }).join('')
+  ) : '';
+
+  const seccionNotas = notasBajasTop.length ? (
+    '<h5 style="color:#b7770d;margin:14px 0 4px;font-size:0.85rem">📉 Notas bajas — Período '+perActual+'</h5>'
+    + notasBajasTop.map(function(n){
+        return _filaNovedad('🔻','<b>'+(n.est.n||'Estudiante')+'</b> ('+n.est.g+') — '+(n.carga.m||n.carga.a||'Asignatura')+': <b style="color:#c0392b">'+n.nota.toFixed(1)+'</b>');
+      }).join('')
+  ) : '';
+
+  const seccionObs = observacionesTop.length ? (
+    '<h5 style="color:#6c3483;margin:14px 0 4px;font-size:0.85rem">📝 Novedades recientes (Observador)</h5>'
+    + observacionesTop.map(function(x){
+        const badge=x.obs.gravedad==='Grave'?'🔴':'🟠';
+        const txt=String(x.obs.txt||'');
+        return _filaNovedad(badge,'<b>'+(x.est.n||'Estudiante')+'</b> ('+x.est.g+') — '+(x.obs.tipo||'Observación')+': '+txt.slice(0,80)+(txt.length>80?'…':''));
+      }).join('')
+  ) : '';
+
+  if(!totalNovedades){
+    return '<div class="card" style="margin-bottom:14px;border-left:4px solid #1e8449">'
+      +'<h4 style="color:#1a3a5c;margin:0 0 4px;font-size:0.93rem">🔔 Panel de Novedades'+(docenteU?' — Mis Asignaturas':' — Institucional')+'</h4>'
+      +'<p style="color:#888;font-size:0.82rem;margin:6px 0 0">🎉 Sin novedades recientes'+(docenteU?' en sus asignaturas.':' en la institución.')+'</p></div>';
+  }
+
+  return '<div class="card" style="margin-bottom:14px;border-left:4px solid #c0392b">'
+    + '<h4 style="color:#1a3a5c;margin:0 0 4px;font-size:0.93rem">🔔 Panel de Novedades'+(docenteU?' — Mis Asignaturas':' — Institucional')+'</h4>'
+    + '<p style="color:#888;font-size:0.76rem;margin:0 0 4px">Estado de los estudiantes dentro de la plataforma — sin notificaciones push emergentes del navegador.</p>'
+    + seccionAusencias + seccionNotas + seccionObs
+    + '</div>';
+}
+
 function htmlPanelDocente(){
   const mats=db.carga.filter(c=>c.d===sesion.u);
   const perActual=_periodoActualPorFecha();
@@ -15038,6 +15230,7 @@ function htmlPanelDocente(){
     ${mats.length?tarjetas:_htmlEstadoVacio('📭','No tiene asignaturas a cargo todavía. Contacte al rector(a) para que le asigne cursos.')}
     ${mats.length?`<h4 style="color:#1a3a5c;margin:14px 0 10px;font-size:0.93rem">📝 Planillas pendientes por completar</h4>${listaPend}`:''}
   </div>
+  ${mats.length&&typeof _htmlPanelNovedades==='function'?_htmlPanelNovedades(sesion.u):''}
   ${db.nivelEducativo==='UNIVERSIDAD'&&mats.length?`<div class="card" style="border-left:4px solid #003366;margin-top:14px">
     <h4 class="card-title">💻 Mis Aulas Virtuales</h4>
     <div class="over"><table><thead><tr><th>Asignatura</th><th>Grado</th><th></th></tr></thead><tbody>

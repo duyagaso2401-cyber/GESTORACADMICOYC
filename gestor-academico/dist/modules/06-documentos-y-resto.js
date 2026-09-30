@@ -1265,12 +1265,22 @@ function guardarAsistencia(){
           }
         }catch(ex){}
       });
-      if(typeof _solicitarYMostrarNotifNavegador === 'function'){
-        _solicitarYMostrarNotifNavegador(
-          '📅 Ausencias registradas',
-          ausentes.length+' estudiante(s) ausente(s) en '+asistGrado+' — '+asistFecha+'. Los padres han sido notificados en el sistema.'
-        );
-      }
+      // RONDA 97 — ELIMINADO A PEDIDO EXPLÍCITO DEL USUARIO: aquí se llamaba
+      // a _solicitarYMostrarNotifNavegador(), que disparaba
+      // Notification.requestPermission() (el permiso NATIVO del navegador)
+      // la primera vez que un docente guardaba asistencia con al menos un
+      // ausente, y a partir de ahí mostraba una notificación emergente del
+      // SISTEMA OPERATIVO en cada guardado posterior. El usuario reportó
+      // esto como "actividad no deseada": el docente no pidió ni esperaba
+      // ese permiso/popup nativo justo después de iniciar sesión y empezar
+      // a trabajar. La confirmación del guardado y el aviso a los padres ya
+      // ocurren DENTRO de la plataforma (el _showToast() de abajo, y el
+      // fetch a /api/inetis/notify de arriba, que es una notificación
+      // interna del sistema — no un push del sistema operativo). Ver además
+      // el nuevo panel de novedades en el Dashboard del docente
+      // (htmlPanelDocente() → _htmlPanelNovedades(), 03-app-core.js)
+      // que ahora es el lugar pedido para ver inasistencias/notas bajas/
+      // novedades, en vez de una notificación push.
     }
 
     _showToast('✅ Asistencia guardada: '+presentes.length+' presentes, '+ausentes.length+' ausentes, '+justificados.length+' justificados.', 'success', 3500);
@@ -3805,6 +3815,8 @@ function htmlTablero(){
   </div>
 
   ${tarjetas}
+
+  ${typeof _htmlPanelNovedades==='function'?_htmlPanelNovedades():''}
 
   <div style="display:grid;grid-template-columns:3fr 2fr;gap:14px;margin-bottom:14px;flex-wrap:wrap">
     <div class="card">
