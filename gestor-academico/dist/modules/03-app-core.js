@@ -14660,25 +14660,68 @@ function _matsFiltradasAdmin(matsBase){
   }
   return out;
 }
-function _onFiltroCargaAdminDocente(v){_filtroCargaAdminDocente=v;renderApp();}
-function _onFiltroCargaAdminGrado(v){_filtroCargaAdminGrado=v;renderApp();}
+// RONDA 99-HOTFIX — corrige el "Focus Loss Bug" reportado: los 3 handlers
+// de abajo ANTES llamaban a renderApp() (reconstruye TODA la app, incluido
+// el propio <input> de búsqueda — al recrearse el nodo del DOM en cada
+// tecla presionada, el navegador pierde el foco y el cursor, obligando al
+// usuario a hacer clic de nuevo después de cada letra). Ahora, en vez de
+// renderApp(), se llama a _refrescarOpcionesCargaAdmin(selectId), que
+// SOLO reconstruye las <option> del <select> de Asignatura correspondiente
+// (Planilla usa "planCId", Notas de Actividades usa "notaActCIdSel") sin
+// tocar el <input> de texto en absoluto — el foco y el cursor quedan
+// intactos mientras el usuario sigue escribiendo.
+function _onFiltroCargaAdminDocente(v,selectId){_filtroCargaAdminDocente=v;_refrescarOpcionesCargaAdmin(selectId);}
+function _onFiltroCargaAdminGrado(v,selectId){_filtroCargaAdminGrado=v;_refrescarOpcionesCargaAdmin(selectId);}
 let _filtroCargaAdminTextoTimer=null;
-function _onFiltroCargaAdminTexto(v){
+function _onFiltroCargaAdminTexto(v,selectId){
   _filtroCargaAdminTexto=v;
   if(_filtroCargaAdminTextoTimer) clearTimeout(_filtroCargaAdminTextoTimer);
-  _filtroCargaAdminTextoTimer=setTimeout(renderApp,220);
+  _filtroCargaAdminTextoTimer=setTimeout(()=>_refrescarOpcionesCargaAdmin(selectId),150);
+}
+// Texto del placeholder que se muestra en el <select> de Asignatura del
+// admin cuando todavía no ha elegido ni buscado nada — "Estado Inicial
+// Limpio" pedido explícitamente: antes, el sistema auto-seleccionaba
+// SIEMPRE la primera carga académica de la institución (mats[0], la que
+// hubiera quedado primera en el arreglo db.carga — en la práctica, la de
+// cualquier docente cuya carga se haya registrado primero, ej. "Eliécer
+// González"), mostrando de entrada los datos de un docente arbitrario sin
+// que el admin hubiera pedido verlos. Ahora, para el rol admin, el select
+// arranca vacío con esta opción y la tabla de abajo espera la selección.
+const PLACEHOLDER_CARGA_ADMIN='Seleccione o busque Docente / Grado...';
+// Reconstruye ÚNICAMENTE las <option> del <select> de Asignatura indicado
+// (recalculando el filtro rápido vigente), sin togar ningún otro nodo del
+// DOM — en particular, sin tocar el <input> de búsqueda, que es lo que
+// evita el "Focus Loss Bug".
+function _refrescarOpcionesCargaAdmin(selectId){
+  const sel=selectId&&document.getElementById(selectId);
+  if(!sel) return;
+  const mats=db.carga.filter(x=>sesion.r==='admin'||x.d===sesion.u);
+  const visibles=_matsFiltradasAdmin(mats);
+  const valorActual=sel.value;
+  const placeholder=(sesion&&sesion.r==='admin')?`<option value="">${PLACEHOLDER_CARGA_ADMIN}</option>`:'';
+  sel.innerHTML=placeholder+visibles.map(c=>`<option value="${c.id}">${c.m} (${c.g})</option>`).join('');
+  // Si la asignatura que ya estaba elegida sigue entre las opciones
+  // visibles tras el filtro, se conserva su selección (no se pierde lo que
+  // el admin ya había elegido solo por escribir en el buscador); si ya no
+  // aparece (el filtro la excluyó), cae de vuelta al placeholder vacío —
+  // NUNCA se autoselecciona la primera opción de la lista filtrada.
+  if(visibles.some(c=>String(c.id)===String(valorActual))) sel.value=valorActual;
+  else sel.value='';
 }
 // matsBase = la carga YA filtrada por permisos (sesion.r==='admin' ? toda
 // la institución : solo la del docente) — este helper NO vuelve a
-// filtrar por permisos, solo agrega el filtrado rápido visual.
-function _htmlFiltrosCargaAdmin(matsBase){
+// filtrar por permisos, solo agrega el filtrado rápido visual. selectId =
+// id del <select> de Asignatura de ESA pantalla ("planCId" en Planilla,
+// "notaActCIdSel" en Notas de Actividades), para que el refresco puntual
+// (ver _refrescarOpcionesCargaAdmin) sepa cuál reconstruir.
+function _htmlFiltrosCargaAdmin(matsBase,selectId){
   if(!(sesion&&sesion.r==='admin')||matsBase.length<6) return '';
   const docentesUnicos=[...new Map(matsBase.map(c=>[c.d,c.dn||c.d])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
   const gradosUnicos=[...new Set(matsBase.map(c=>c.g))].sort((a,b)=>String(a).localeCompare(String(b),'es',{numeric:true}));
   return `<div class="grid3" style="margin-bottom:10px;background:#f7f9fb;border:1px solid #dfe6ec;border-radius:8px;padding:10px">
-    <div><label class="lbl">🔎 Filtrar por Docente</label><select onchange="_onFiltroCargaAdminDocente(this.value)"><option value="">Todos los docentes</option>${docentesUnicos.map(([u,n])=>`<option value="${u}"${_filtroCargaAdminDocente===u?' selected':''}>${n}</option>`).join('')}</select></div>
-    <div><label class="lbl">🔎 Filtrar por Grado</label><select onchange="_onFiltroCargaAdminGrado(this.value)"><option value="">Todos los grados</option>${gradosUnicos.map(g=>`<option value="${g}"${_filtroCargaAdminGrado===g?' selected':''}>${g}</option>`).join('')}</select></div>
-    <div><label class="lbl">🔎 Buscar (docente, grado o asignatura)</label><input value="${_escAttrNAC(_filtroCargaAdminTexto)}" placeholder="Ej: Adán, 11°, Programación..." oninput="_onFiltroCargaAdminTexto(this.value)"></div>
+    <div><label class="lbl">🔎 Filtrar por Docente</label><select onchange="_onFiltroCargaAdminDocente(this.value,'${selectId}')"><option value="">Todos los docentes</option>${docentesUnicos.map(([u,n])=>`<option value="${u}"${_filtroCargaAdminDocente===u?' selected':''}>${n}</option>`).join('')}</select></div>
+    <div><label class="lbl">🔎 Filtrar por Grado</label><select onchange="_onFiltroCargaAdminGrado(this.value,'${selectId}')"><option value="">Todos los grados</option>${gradosUnicos.map(g=>`<option value="${g}"${_filtroCargaAdminGrado===g?' selected':''}>${g}</option>`).join('')}</select></div>
+    <div><label class="lbl">🔎 Buscar (docente, grado o asignatura)</label><input value="${_escAttrNAC(_filtroCargaAdminTexto)}" placeholder="Ej: Adán, 11°, Programación..." oninput="_onFiltroCargaAdminTexto(this.value,'${selectId}')"></div>
   </div>`;
 }
 // ============================================================
@@ -15582,10 +15625,17 @@ function htmlPanelDocente(){
 function htmlPlanilla(){
   const _numPer=_getNumPer();
   const mats=db.carga.filter(x=>sesion.r==='admin'||x.d===sesion.u);
-  if(!planCId&&mats.length) planCId=String(mats[0].id);
-  const _filtrosCargaHtml=_htmlFiltrosCargaAdmin(mats);
+  // RONDA 99-HOTFIX — "Estado Inicial Limpio": el admin YA NO hereda
+  // automáticamente la primera carga académica de la institución (antes,
+  // "mats[0]" podía ser la de cualquier docente, mostrando su nombre y sus
+  // notas de entrada sin que el admin hubiera elegido nada). El docente sí
+  // conserva el auto-selección de su propia (única o primera) carga,
+  // porque para él no hay nada que "buscar" — solo ve lo suyo.
+  if(!planCId&&mats.length&&sesion.r!=='admin') planCId=String(mats[0].id);
+  const _filtrosCargaHtml=_htmlFiltrosCargaAdmin(mats,'planCId');
   const matsVisibles=_matsFiltradasAdmin(mats);
-  const matsOpts=matsVisibles.map(c=>`<option value="${c.id}"${planCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
+  const _placeholderPlanCId=(sesion.r==='admin')?`<option value=""${!planCId?' selected':''}>${PLACEHOLDER_CARGA_ADMIN}</option>`:'';
+  const matsOpts=_placeholderPlanCId+matsVisibles.map(c=>`<option value="${c.id}"${planCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
   const carga=_cargaSiPermitida(planCId);
   const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
   // RONDA 74 — columna de Inasistencias, controlada por el switch global
@@ -17738,10 +17788,13 @@ function htmlNotasActividades(){
   _cargarAutoGuardar();
   const isAdmin=sesion.r==='admin';
   const mats=db.carga.filter(x=>isAdmin||x.d===sesion.u);
-  if(!notaActCId&&mats.length) notaActCId=String(mats[0].id);
-  const _filtrosCargaHtmlNAC=_htmlFiltrosCargaAdmin(mats);
+  // RONDA 99-HOTFIX — mismo "Estado Inicial Limpio" que en Planilla: el
+  // admin ya no hereda automáticamente la primera carga de la institución.
+  if(!notaActCId&&mats.length&&!isAdmin) notaActCId=String(mats[0].id);
+  const _filtrosCargaHtmlNAC=_htmlFiltrosCargaAdmin(mats,'notaActCIdSel');
   const matsVisibles=_matsFiltradasAdmin(mats);
-  const matsOpts=matsVisibles.map(c=>`<option value="${c.id}"${notaActCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
+  const _placeholderNotaActCId=isAdmin?`<option value=""${!notaActCId?' selected':''}>${PLACEHOLDER_CARGA_ADMIN}</option>`:'';
+  const matsOpts=_placeholderNotaActCId+matsVisibles.map(c=>`<option value="${c.id}"${notaActCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
   const carga=_cargaSiPermitida(notaActCId);
   const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
   const numPer=_getNumPer();

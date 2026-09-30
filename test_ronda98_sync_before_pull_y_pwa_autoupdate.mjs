@@ -173,8 +173,13 @@ check("sw.js: 'activate' sigue purgando cachés de versiones anteriores (borra t
   const bloque = srcSw.slice(idxActivate, idxActivate + 400);
   assert.match(bloque, /keys\.filter\(function\(k\)\{\s*return k!==CACHE_NAME;\s*\}\)\.map\(function\(k\)\{\s*return caches\.delete\(k\);\s*\}\)/);
 });
-check('sw.js: CACHE_NAME se subió de versión en esta ronda (v4) — necesario para que el propio cambio sea detectable por registration.update()', () => {
-  assert.match(srcSw, /const CACHE_NAME = 'gestor-yc-shell-v4-/);
+check('sw.js: CACHE_NAME se subió de versión en esta ronda (v4 o superior en rondas posteriores) — necesario para que el propio cambio sea detectable por registration.update()', () => {
+  // RONDA 99-HOTFIX: igual que ya se generalizó en el test de la Ronda 94,
+  // esta aserción ya no fija "v4" a mano — cada ronda que vuelve a tocar
+  // sw.js (como el hotfix que sube a v5) sube el número, nunca lo baja.
+  const m = srcSw.match(/const CACHE_NAME = 'gestor-yc-shell-v(\d+)-/);
+  assert.ok(m, 'CACHE_NAME debe seguir el patrón de versión "gestor-yc-shell-vN-..."');
+  assert.ok(Number(m[1]) >= 4, 'la versión debe haber subido desde la v4 de esta ronda (o más, en rondas posteriores)');
 });
 
 console.log('\n' + '='.repeat(70));

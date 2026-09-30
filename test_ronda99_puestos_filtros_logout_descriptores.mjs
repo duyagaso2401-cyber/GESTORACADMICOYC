@@ -68,23 +68,23 @@ const srcCore = fs.readFileSync(new URL('./gestor-academico/dist/modules/03-app-
 // llamadas — no requiere ejecución real).
 // ════════════════════════════════════════════════════════════════════════
 check('_htmlFiltrosCargaAdmin(): existe y solo se activa para el rol admin (el docente ya ve nada más su propia carga)', () => {
-  const idx = srcCore.indexOf('function _htmlFiltrosCargaAdmin(matsBase){');
+  const idx = srcCore.indexOf('function _htmlFiltrosCargaAdmin(matsBase,selectId){');
   assert.ok(idx !== -1, 'debe existir la función _htmlFiltrosCargaAdmin');
   const bloque = srcCore.slice(idx, idx + 400);
   assert.match(bloque, /sesion&&sesion\.r===['"]admin['"]/);
 });
 check('_htmlFiltrosCargaAdmin(): ofrece filtro por Docente, por Grado y buscador de texto libre', () => {
-  const idx = srcCore.indexOf('function _htmlFiltrosCargaAdmin(matsBase){');
+  const idx = srcCore.indexOf('function _htmlFiltrosCargaAdmin(matsBase,selectId){');
   const bloque = srcCore.slice(idx, idx + 2200);
   assert.match(bloque, /Filtrar por Docente/);
   assert.match(bloque, /Filtrar por Grado/);
-  assert.match(bloque, /oninput="_onFiltroCargaAdminTexto\(this\.value\)"/);
+  assert.match(bloque, /oninput="_onFiltroCargaAdminTexto\(this\.value,'\$\{selectId\}'\)"/);
 });
 check('htmlPlanilla(): agrega los filtros rápidos del admin SIN quitar el <select> completo de asignatura de siempre', () => {
   const idx = srcCore.indexOf('function htmlPlanilla(){');
   const idxFin = srcCore.indexOf('function cambiarPlanPer', idx);
   const bloque = srcCore.slice(idx, idxFin);
-  assert.match(bloque, /_htmlFiltrosCargaAdmin\(mats\)/, 'debe insertar la fila de filtros construida a partir de "mats" (la carga ya filtrada por permisos)');
+  assert.match(bloque, /_htmlFiltrosCargaAdmin\(mats,'planCId'\)/, 'debe insertar la fila de filtros construida a partir de "mats" (la carga ya filtrada por permisos)');
   assert.match(bloque, /<select id="planCId" onchange="cambiarPlanCId\(this\.value\)">\$\{matsOpts\}<\/select>/, 'el <select> original de Asignatura debe seguir intacto');
   assert.match(bloque, /const matsVisibles=_matsFiltradasAdmin\(mats\);/, 'las <option> del select deben construirse a partir de la carga YA filtrada por los controles rápidos');
 });
@@ -92,7 +92,7 @@ check('htmlNotasActividades(): misma mejora aplicada — filtros rápidos del ad
   const idx = srcCore.indexOf('function htmlNotasActividades(){');
   const idxFin = srcCore.indexOf('async function cambiarNotaActPer', idx);
   const bloque = srcCore.slice(idx, idxFin);
-  assert.match(bloque, /_htmlFiltrosCargaAdmin\(mats\)/);
+  assert.match(bloque, /_htmlFiltrosCargaAdmin\(mats,'notaActCIdSel'\)/);
   assert.match(bloque, /<select id="notaActCIdSel" onchange="cambiarNotaActCId\(this\.value\)">\$\{matsOpts\}<\/select>/);
 });
 

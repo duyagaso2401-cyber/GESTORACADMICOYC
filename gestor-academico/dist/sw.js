@@ -21,7 +21,18 @@
 // self.clients.claim() (en 'activate') YA estaban activos desde antes — lo
 // que faltaba era forzar la revisión, no la toma de control; ver el
 // comentario extenso en portal.html.
-const CACHE_NAME = 'gestor-yc-shell-v4-20260930';
+// RONDA 99-HOTFIX — se sube de versión OTRA VEZ: el usuario reportó, tras
+// instalar el paquete de la Ronda 99, que la pantalla de Consolidados
+// seguía mostrando el comportamiento viejo del PUESTO (columna = número de
+// fila) aun cuando el código fuente de esa ronda YA calculaba el puesto
+// correcto (verificado con una prueba dirigida que reproduce el caso
+// exacto reportado — ver test_ronda99b_hotfix_...). La causa más probable
+// es precisamente el mecanismo de caché de este Service Worker: sin un
+// cambio de bytes en sw.js, "registration.update()" (Ronda 98) no tiene
+// nada nuevo que detectar y el navegador puede seguir sirviendo, en
+// "network-first" con fallback a caché, una copia de 03-app-core.js
+// anterior a este paquete. Este bump es el que fuerza esa detección.
+const CACHE_NAME = 'gestor-yc-shell-v5-20260930';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',
