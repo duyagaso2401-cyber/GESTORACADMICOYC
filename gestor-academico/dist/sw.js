@@ -32,7 +32,15 @@
 // nada nuevo que detectar y el navegador puede seguir sirviendo, en
 // "network-first" con fallback a caché, una copia de 03-app-core.js
 // anterior a este paquete. Este bump es el que fuerza esa detección.
-const CACHE_NAME = 'gestor-yc-shell-v5-20260930';
+// RONDA 99-HOTFIX2 — se sube de versión OTRA VEZ: esta ronda corrige un
+// bug de raíz GENUINO (no de caché) en el algoritmo de PUESTO — ver el
+// comentario extenso junto a _calcularRankingGrado() en 03-app-core.js —
+// más la reactividad automática del módulo de Consolidados. Se mantiene
+// la misma disciplina de subir CACHE_NAME en cada paquete que toca
+// 03-app-core.js, para que cualquier dispositivo con la PWA ya instalada
+// reciba la versión nueva de inmediato en vez de quedarse con una copia
+// en caché.
+const CACHE_NAME = 'gestor-yc-shell-v6-20260930';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

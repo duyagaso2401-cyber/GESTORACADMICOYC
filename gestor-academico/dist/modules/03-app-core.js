@@ -7321,21 +7321,70 @@ function _areasBajoBasicoCount(estId,grado){
     return nivel==='bajo'||nivel==='basico';
   }).length;
 }
-// Ranking automático completo de un grado (sin overrides manuales) —
-// usado tanto por puestoEst() como por _estudianteEmpatadoEnGrado()
-// para detectar cuándo ofrecer el ajuste manual al docente/admin.
-function _rankingAutomaticoGrado(grado){
-  return db.ests.filter(e=>!e.deletedAt&&e.g===grado).map(e=>({
-    id:e.id,
-    prom:calcPromedioEst(e.id,grado),
-    inas:_inasistenciasAnualesEst(e.id,grado),
-    bajos:_areasBajoBasicoCount(e.id,grado)
-  })).sort((a,b)=>{
+// ============================================================
+// RONDA 99-HOTFIX2 — CORRECCIÓN DEL ALGORITMO DE PUESTOS (inversiones y
+// falsos empates). Se detectó que varias pantallas "por periodo"
+// (Consolidado, Consolidado General, Seguimiento/Dirección y sus PDF/XLSX)
+// muestran una columna PROM calculada como el promedio simple de ESE
+// periodo (`mats.map(m=>calcNotaDef(...,per))`), pero seguían pidiéndole
+// el PUESTO a puestoEst()/calcPromedioEst(), que es el promedio ANUAL
+// ponderado por áreas — un número DISTINTO. Esto producía "inversiones"
+// como un 4.53 apareciendo en mejor puesto que un 4.58 (porque sus
+// promedios anuales, no los mostrados en pantalla, estaban invertidos), y
+// falsos "empates" (el botón ✏️ apareciendo entre promedios visualmente
+// distintos, porque sus promedios ANUALES sí coincidían aunque los del
+// periodo no).
+//
+// FIX: se separa el cálculo del ranking del cálculo del promedio. Toda
+// pantalla que ya calculó su propio arreglo de {id, prom} (el MISMO
+// número que pinta en su columna PROM, sea anual o de un periodo
+// específico) se lo pasa a _calcularRankingGrado(), que aplica el
+// desempate en cascada (promedio -> inasistencias -> áreas bajo/básico)
+// SOBRE ESOS MISMOS VALORES, nunca sobre un promedio recalculado aparte.
+// puestoEst()/_estudianteEmpatadoEnGrado() siguen existiendo para las
+// pantallas que sí necesitan el ranking ANUAL (boletines finales,
+// Consolidado Completo) — construyen su propio arreglo con
+// calcPromedioEst() y llaman al mismo motor.
+//
+// Los promedios se redondean a 2 decimales ANTES de compararse
+// (_promRedondeado, con parseFloat+toFixed) para que el ordenamiento sea
+// una comparación decimal estricta y nunca dependa de arrastres de punto
+// flotante, y el botón ✏️ de empate manual solo aparece cuando, tras ese
+// redondeo, dos o más estudiantes quedan EXACTAMENTE iguales en los 3
+// criterios — nunca entre promedios distintos.
+// ============================================================
+function _promRedondeado(v){
+  return parseFloat((Number(v)||0).toFixed(2));
+}
+function _ordenarConDesempate(entradas){
+  return entradas.slice().sort((a,b)=>{
     if(b.prom!==a.prom) return b.prom-a.prom;
     if(a.inas!==b.inas) return a.inas-b.inas;
     if(a.bajos!==b.bajos) return a.bajos-b.bajos;
     return 0; // empate total en los 3 criterios automáticos — requiere ajuste manual pedagógico
   });
+}
+// entradasBase = [{id, prom}, ...] YA calculado por la pantalla llamante
+// con el promedio que ella misma muestra (anual o de un periodo
+// concreto) — esta función NUNCA recalcula el promedio por su cuenta, solo
+// aplica el desempate y arma el mapa final de puestos + el conjunto de
+// estudiantes en empate matemático exacto (para el botón ✏️).
+function _calcularRankingGrado(entradasBase,grado){
+  const entradas=entradasBase.map(e=>({
+    id:e.id,
+    prom:_promRedondeado(e.prom),
+    inas:_inasistenciasAnualesEst(e.id,grado),
+    bajos:_areasBajoBasicoCount(e.id,grado)
+  }));
+  const orden=_ordenarConDesempate(entradas);
+  const mapaPuestos={};
+  orden.forEach((r,i)=>{ mapaPuestos[r.id]=i+1; });
+  const empatados=new Set();
+  orden.forEach((r,i)=>{
+    const tieneGemelo=orden.some((o,j)=>j!==i&&o.prom===r.prom&&o.inas===r.inas&&o.bajos===r.bajos);
+    if(tieneGemelo) empatados.add(String(r.id));
+  });
+  return {mapaPuestos,empatados,orden};
 }
 function _clavePuestoOverride(estId,grado){ return estId+'_'+grado; }
 // Lee el ajuste manual de puesto vigente para un estudiante en un
@@ -7361,21 +7410,41 @@ function _setPuestoManual(estId,grado,valor){
     return d;
   });
 }
-// Indica si un estudiante quedó empatado (en los 3 criterios
-// automáticos) con al menos otro estudiante de su grado — se usa
-// para decidir cuándo mostrar el control de ajuste manual en la
-// columna PUESTO de la planilla/sábana.
-function _estudianteEmpatadoEnGrado(estId,grado){
-  const list=_rankingAutomaticoGrado(grado);
-  const me=list.find(e=>e.id===estId);
-  if(!me) return false;
-  return list.some(o=>o.id!==estId&&o.prom===me.prom&&o.inas===me.inas&&o.bajos===me.bajos);
+// Construye el ranking ANUAL (calcPromedioEst) para un grado completo —
+// usado por puestoEst()/_estudianteEmpatadoEnGrado(), las funciones que
+// necesitan el puesto del AÑO completo (boletines finales, Consolidado
+// Completo), a diferencia de las pantallas "por periodo" que arman su
+// propio arreglo {id,prom} con el promedio de ESE periodo y llaman
+// directamente a _calcularRankingGrado (ver comentario RONDA 99-HOTFIX2
+// más arriba).
+function _rankingAnualGrado(grado){
+  const ests=(db.ests||[]).filter(e=>e.g===grado);
+  const entradasBase=ests.map(e=>({id:e.id,prom:calcPromedioEst(e.id,grado)}));
+  return _calcularRankingGrado(entradasBase,grado);
 }
+// Indica si un estudiante quedó empatado (en los 3 criterios
+// automáticos, sobre el ranking ANUAL) con al menos otro estudiante de
+// su grado — se usa para decidir cuándo mostrar el control de ajuste
+// manual en la columna PUESTO de la planilla/sábana/boletines.
+function _estudianteEmpatadoEnGrado(estId,grado){
+  return _rankingAnualGrado(grado).empatados.has(String(estId));
+}
+// Devuelve el puesto ANUAL (con ajuste manual, si existe, con prioridad
+// absoluta) de un estudiante en su grado.
 function puestoEst(estId,grado){
   const manual=_puestoManualDe(estId,grado);
   if(manual!=null) return manual;
-  const list=_rankingAutomaticoGrado(grado);
-  return list.findIndex(e=>e.id===estId)+1;
+  return _rankingAnualGrado(grado).mapaPuestos[estId]||0;
+}
+// Aplica el ajuste manual (si existe) sobre un puesto AUTOMÁTICO ya
+// calculado por la pantalla llamante (anual o de un periodo específico)
+// — con prioridad ABSOLUTA sobre el cálculo automático, igual que
+// puestoEst() pero reutilizable desde cualquier ranking {mapaPuestos}
+// (por ejemplo el que arma _calcularRankingGrado a partir del PROM que
+// se muestra en pantalla).
+function _puestoConOverride(estId,grado,puestoAutomatico){
+  const manual=_puestoManualDe(estId,grado);
+  return manual!=null?manual:puestoAutomatico;
 }
 // Botón "✏️" de la columna PUESTO — abre el diálogo para fijar/borrar
 // el ajuste manual (customPrompt, el mismo componente accesible que
@@ -7399,9 +7468,17 @@ async function _abrirAjustePuestoManual(estId,grado,puestoActual){
 // un ajuste manual vigente (para poder revisarlo/quitarlo), de modo
 // que la mayoría de las filas (sin empate) se vean exactamente igual
 // que antes de esta ronda.
-function _celdaPuestoConAjuste(estId,grado,puestoMostrado){
+function _celdaPuestoConAjuste(estId,grado,puestoMostrado,empatadoForzado){
   const puManual=_puestoManualDe(estId,grado)!=null;
-  const empatado=_estudianteEmpatadoEnGrado(estId,grado);
+  // Si la pantalla llamante YA calculó el empate sobre SUS PROPIOS
+  // valores {id,prom} (por ejemplo el PROM de un periodo específico, vía
+  // _calcularRankingGrado), se respeta ese resultado tal cual — nunca se
+  // recalcula por separado sobre el ranking ANUAL, para no reintroducir
+  // el desfase promedio-mostrado vs promedio-usado-para-empatar. Solo si
+  // la pantalla NO pasó ese dato (parámetro ausente, caso de las
+  // pantallas que sí usan el ranking anual, como boletines/Consolidado
+  // Completo) se recurre al cálculo anual de siempre.
+  const empatado=(typeof empatadoForzado==='boolean')?empatadoForzado:_estudianteEmpatadoEnGrado(estId,grado);
   if(!empatado&&!puManual) return `${puestoMostrado}°`;
   const titulo=puManual?'Puesto ajustado manualmente por el docente/admin (empate) — clic para cambiar o quitar':'Empate detectado con otro estudiante — clic para asignar el puesto manualmente';
   return `<span style="display:inline-flex;align-items:center;gap:4px;justify-content:center">${puestoMostrado}°<button type="button" class="puesto-ajuste-btn" title="${titulo}" onclick="event.stopPropagation();_abrirAjustePuestoManual('${estId}','${grado.replace(/'/g,"\\'")}',${puestoMostrado})" style="border:none;background:${puManual?'#6c3483':'#f0f0f0'};color:${puManual?'#fff':'#333'};border-radius:6px;padding:0 5px;cursor:pointer;font-size:0.72rem;line-height:1.6">✏️${puManual?'*':''}</button></span>`;
@@ -18571,6 +18648,20 @@ function htmlInformes(){
         if(_btn) mostrarTabInforme(_tabARestaurar,_btn);
       },0);
     }
+    // RONDA 99-HOTFIX3 — REACTIVIDAD AUTOMÁTICA: antes había que tocar
+    // "Ver en Pantalla" incluso la PRIMERA vez que se entraba a este
+    // módulo, aunque ya hubiera un Grado/Periodo preseleccionado por
+    // defecto (el primero de cada <select>) — la tabla quedaba vacía
+    // hasta ese clic manual. Ahora se dispara automáticamente en cuanto
+    // el HTML queda insertado en el DOM (setTimeout 0, igual que el
+    // patrón ya usado en "Todas las Asignaturas" — se agenda ANTES del
+    // return porque acá no hay callback de "ya se insertó el HTML": el
+    // setTimeout(0) simplemente pasa a la cola de tareas y corre apenas
+    // el navegador termina de insertar el innerHTML que arma este mismo
+    // string), y el onchange agregado en los <select> hace que cualquier
+    // cambio posterior de Grado o Periodo recalcule y repinte solo, sin
+    // tocar ningún botón.
+    setTimeout(verConsolidado,0);
     return `<h3 class="sec-title">Consolidados de Calificaciones</h3>
     <div class="tab-btns">
       <button class="tab-btn active" onclick="mostrarTabInforme('consolidado',this)">📊 Consolidado</button>
@@ -18583,8 +18674,8 @@ function htmlInformes(){
         <h4 class="card-title">Consolidado — Solo mis asignaturas y grados</h4>
         <div class="warn-box">Solo verá los grados y asignaturas asignadas a su carga académica.</div>
         <div class="grid2" style="margin-bottom:12px">
-          <div><label class="lbl">Grado</label><select id="infGrado">${gradOpts}</select></div>
-          <div><label class="lbl">Periodo</label><select id="infPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
+          <div><label class="lbl">Grado</label><select id="infGrado" onchange="verConsolidado()">${gradOpts}</select></div>
+          <div><label class="lbl">Periodo</label><select id="infPer" onchange="verConsolidado()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
         </div>
         <div class="flex-gap">
           <button class="btn btn-navy" onclick="verConsolidado()">📊 Ver en Pantalla</button>
@@ -18594,6 +18685,9 @@ function htmlInformes(){
       <div id="consolidadoWrap"></div>
     </div>`;
   }
+  // RONDA 99-HOTFIX3 — misma reactividad automática que arriba, para la
+  // vista de Admin/Rector (pestaña "Consolidado" inicial).
+  setTimeout(verConsolidado,0);
   return `<h3 class="sec-title">Informes y Consolidados</h3>
   <div class="tab-btns">
     <button class="tab-btn active" onclick="mostrarTabInforme('consolidado',this)">📊 Consolidado</button>
@@ -18609,8 +18703,8 @@ function htmlInformes(){
   <div id="tabInformeContenido">
     <div class="card">
       <div class="grid2" style="margin-bottom:12px">
-        <div><label class="lbl">Grado</label><select id="infGrado">${gradOpts}</select></div>
-        <div><label class="lbl">Periodo</label><select id="infPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
+        <div><label class="lbl">Grado</label><select id="infGrado" onchange="verConsolidado()">${gradOpts}</select></div>
+        <div><label class="lbl">Periodo</label><select id="infPer" onchange="verConsolidado()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
       </div>
       <div class="flex-gap">
         <button class="btn btn-navy" onclick="verConsolidado()">📊 Ver Consolidado</button>
@@ -18636,14 +18730,15 @@ function mostrarTabInforme(tab,btn){
   if(tab==='consolidado'){
     wrap.innerHTML=`<div class="card"><h4 class="card-title">Consolidado de Calificaciones</h4>
       <div class="grid2" style="margin-bottom:12px">
-        <div><label class="lbl">Grado</label><select id="infGrado">${gradOpts}</select></div>
-        <div><label class="lbl">Periodo</label><select id="infPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
+        <div><label class="lbl">Grado</label><select id="infGrado" onchange="verConsolidado()">${gradOpts}</select></div>
+        <div><label class="lbl">Periodo</label><select id="infPer" onchange="verConsolidado()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
       </div>
       <div class="flex-gap">
         <button class="btn btn-navy" onclick="verConsolidado()">📊 Ver</button>
         <button class="btn btn-blue" onclick="pdfConsolidado()">📥 PDF</button>
         <button class="btn" style="background:#16a085;color:#fff" onclick="xlsxConsolidado()">📊 Excel</button>
       </div></div><div id="consolidadoWrap"></div>`;
+    verConsolidado();
   } else if(tab==='consolidado-completo'){
     // Ronda 23 — ver comentario junto a _datosConsolidadoCompletoEstudiante()
     // más abajo para el detalle completo de esta funcionalidad.
@@ -18735,27 +18830,29 @@ function mostrarTabInforme(tab,btn){
       <h4 class="card-title">📈 Consolidado General — Todas las Áreas por Grado</h4>
       <div class="info-box">Muestra el rendimiento de <b>TODAS</b> las asignaturas y áreas de cada grado, con estadísticas completas.</div>
       <div class="grid2" style="margin-bottom:12px">
-        <div><label class="lbl">Grado</label><select id="infGradoGen">${gradOpts}</select></div>
-        <div><label class="lbl">Periodo</label><select id="infPerGen"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
+        <div><label class="lbl">Grado</label><select id="infGradoGen" onchange="verConsolidadoGeneral()">${gradOpts}</select></div>
+        <div><label class="lbl">Periodo</label><select id="infPerGen" onchange="verConsolidadoGeneral()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
       </div>
       <div class="flex-gap">
         <button class="btn btn-navy" onclick="verConsolidadoGeneral()">📊 Ver en Pantalla</button>
         <button class="btn btn-blue" onclick="pdfConsolidadoGeneral()">📥 Descargar PDF</button>
       </div></div>
       <div id="consolidadoGeneralWrap"></div>`;
+    verConsolidadoGeneral();
   } else if(tab==='estadisticas'){
     wrap.innerHTML=`<div class="card">
       <h4 class="card-title">📉 Estadísticas por Grado — Todas las Áreas</h4>
       <div class="info-box">Estadísticas académicas completas: promedios, porcentajes de aprobación, áreas críticas.</div>
       <div class="grid2" style="margin-bottom:12px">
-        <div><label class="lbl">Grado</label><select id="infGradoEst">${gradOpts}</select></div>
-        <div><label class="lbl">Periodo</label><select id="infPerEst"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
+        <div><label class="lbl">Grado</label><select id="infGradoEst" onchange="verEstadisticasGrado()">${gradOpts}</select></div>
+        <div><label class="lbl">Periodo</label><select id="infPerEst" onchange="verEstadisticasGrado()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
       </div>
       <div class="flex-gap">
         <button class="btn btn-navy" onclick="verEstadisticasGrado()">📊 Ver Estadísticas</button>
         <button class="btn btn-blue" onclick="pdfEstadisticasGrado()">📥 PDF</button>
       </div></div>
       <div id="estadisticasWrap"></div>`;
+    verEstadisticasGrado();
   } else if(tab==='seguimiento-dir'){
     const gradosDirLocal=db.grados.filter(g=>_gradoDirigidoPor(g.d,{u:sesion.u,n:sesion.n})).map(g=>g.n);
     const gradOptsDirLocal=gradosDirLocal.map(g=>`<option value="${g}">${g}</option>`).join('');
@@ -18767,14 +18864,15 @@ function mostrarTabInforme(tab,btn){
       <h4 class="card-title">📋 Seguimiento Académico — Mi Grupo (Director de Grupo)</h4>
       <div class="info-box">Como Director(a) de Grupo puede ver y descargar el consolidado de <b>TODAS</b> las asignaturas de su(s) grupo(s).</div>
       <div class="grid2" style="margin-bottom:12px">
-        <div><label class="lbl">Grado a cargo</label><select id="infGradoDir">${gradOptsDirLocal}</select></div>
-        <div><label class="lbl">Periodo</label><select id="infPerDir"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
+        <div><label class="lbl">Grado a cargo</label><select id="infGradoDir" onchange="verConsolidadoDir()">${gradOptsDirLocal}</select></div>
+        <div><label class="lbl">Periodo</label><select id="infPerDir" onchange="verConsolidadoDir()"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select></div>
       </div>
       <div class="flex-gap">
         <button class="btn btn-navy" onclick="verConsolidadoDir()">📊 Ver en Pantalla</button>
         <button class="btn btn-blue" onclick="pdfConsolidadoDir()">📥 PDF Seguimiento</button>
       </div></div>
       <div id="consolidadoDirWrap"></div>`;
+    verConsolidadoDir();
   }
 }
 
@@ -19088,6 +19186,15 @@ function verConsolidado(){
     const prom=notas.length?parseFloat((notas.reduce((a,b)=>a+b,0)/notas.length).toFixed(2)):0;
     return{e,notas,prom};
   });
+  // RONDA 99-HOTFIX2 — el PUESTO se calcula ahora con el MISMO promedio que
+  // esta pantalla muestra en la columna PROM (el de ESTE periodo), no con el
+  // promedio ANUAL de puestoEst()/calcPromedioEst(). Antes, un estudiante
+  // podía verse con PROM 4.58 en pantalla pero ser clasificado internamente
+  // con su promedio anual (una cifra distinta, calculada sobre TODOS los
+  // periodos con pesos por área), produciendo "inversiones" como que un
+  // 4.53 apareciera en mejor puesto que un 4.58 — ver _calcularRankingGrado
+  // más arriba.
+  const _rankingP=_calcularRankingGrado(filas.map(f=>({id:f.e.id,prom:f.prom})),grado);
   const total=filas.length,aprobados=filas.filter(f=>f.prom>=3).length;
   const promG=total?parseFloat((filas.reduce((a,f)=>a+f.prom,0)/total).toFixed(2)):0;
   const statsHtml=`<div class="flex-gap" style="margin-bottom:15px">
@@ -19099,12 +19206,13 @@ function verConsolidado(){
   const matHeads=mats.map(m=>`<th title="${m.m} — ${m.dn}">${m.m.substring(0,8)}<br><small style="font-weight:normal;font-size:0.65rem">${m.dn.split(' ')[0]}</small></th>`).join('');
   const rows=filas.map((f,i)=>{
     const notasCells=f.notas.map(n=>`<td style="color:${n<3?'#c0392b':'#333'}">${n.toFixed(1)}</td>`).join('');
-    const pu=puestoEst(f.e.id,grado);
+    const pu=_puestoConOverride(f.e.id,grado,_rankingP.mapaPuestos[f.e.id]);
+    const empatado=_rankingP.empatados.has(String(f.e.id));
     const promBg=f.prom<3?'#fdecea':'#eafaf1';const promCol=f.prom<3?'#c0392b':'#1a7531';
     return `<tr><td>${i+1}</td><td style="text-align:left;font-size:0.8rem">${f.e.n}</td>${notasCells}
       <td style="font-weight:bold;background:${promBg};color:${promCol}">${f.prom.toFixed(2)}</td>
       <td style="text-align:center">${escBadge(f.prom,esGradoInicial(grado))}</td>
-      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu)}</td></tr>`;
+      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu,empatado)}</td></tr>`;
   }).join('');
   const chartId='chartConsolidado_'+Date.now();
   if(wrap) wrap.innerHTML=`<div class="card">
@@ -19162,7 +19270,11 @@ function verConsolidadoGeneral(){
   const total=filas.length;
   const aprobados=filas.filter(f=>f.prom>=3).length;
   const promG=total?parseFloat((filas.reduce((a,f)=>a+f.prom,0)/total).toFixed(2)):0;
-  
+  // RONDA 99-HOTFIX2 — mismo fix que verConsolidado(): el PUESTO se calcula
+  // con el MISMO promedio de este periodo que se muestra en la columna
+  // PROM, nunca con el anual de puestoEst().
+  const _rankingP=_calcularRankingGrado(filas.map(f=>({id:f.e.id,prom:f.prom})),grado);
+
   // Stats per subject
   const matStats=mats.map(m=>{
     const ns=ests.map(e=>calcNotaDef(e.nts,m.id,per));
@@ -19170,7 +19282,7 @@ function verConsolidadoGeneral(){
     const perd=ns.filter(n=>n<3).length;
     return{m,prom,perd,total:ns.length};
   });
-  
+
   const statsHtml=`<div class="flex-gap" style="margin-bottom:15px">
     <span class="stat-box" style="background:#27ae60">✅ Aprob.: <b>${aprobados}</b></span>
     <span class="stat-box" style="background:#c0392b">❌ Reprob.: <b>${total-aprobados}</b></span>
@@ -19184,12 +19296,13 @@ function verConsolidadoGeneral(){
   const matHeads=mats.map(m=>`<th title="${m.m} — ${m.dn}" style="font-size:0.68rem">${m.m.substring(0,7)}<br><small style="font-weight:normal;font-size:0.6rem">${(m.a||'').substring(0,6)}</small></th>`).join('');
   const rows=filas.map((f,i)=>{
     const notasCells=f.notas.map(n=>`<td style="color:${n<3?'#c0392b':'#333'};font-size:0.79rem">${n.toFixed(1)}</td>`).join('');
-    const pu=puestoEst(f.e.id,grado);
+    const pu=_puestoConOverride(f.e.id,grado,_rankingP.mapaPuestos[f.e.id]);
+    const empatado=_rankingP.empatados.has(String(f.e.id));
     const promBg=f.prom<3?'#fdecea':'#eafaf1';const promCol=f.prom<3?'#c0392b':'#1a7531';
     return `<tr><td>${i+1}</td><td style="text-align:left;font-size:0.79rem">${f.e.n}</td>${notasCells}
       <td style="font-weight:bold;background:${promBg};color:${promCol}">${f.prom.toFixed(2)}</td>
       <td style="font-weight:bold;color:${f.apAreas>0?'#c0392b':'#27ae60'}">${f.apAreas}</td>
-      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu)}</td></tr>`;
+      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu,empatado)}</td></tr>`;
   }).join('');
   
   if(wrap) wrap.innerHTML=`<div class="card">
@@ -19213,11 +19326,20 @@ function pdfConsolidadoGeneral(){
   doc.setFontSize(7.5);doc.setFont('helvetica','normal');doc.setTextColor(0);
   doc.text('Grado: '+grado+' | Periodo: '+per+' | Año: '+db.anio+' | Rector(a): '+db.rectora,148,16,{align:'center',maxWidth:270});
   const head=[['#','ESTUDIANTE',...mats.map(m=>m.m.substring(0,7)),'PROM','ÁREAS PERD.','PUESTO']];
+  // RONDA 99-HOTFIX2 — el PUESTO impreso en el PDF debe coincidir con el
+  // PROM impreso justo al lado (el de ESTE periodo), no con el anual.
+  const _entradasPdf=ests.map(e=>{
+    const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
+    const prom=notas.length?notas.reduce((a,b)=>a+b,0)/notas.length:0;
+    return{id:e.id,prom};
+  });
+  const _rankingPdf=_calcularRankingGrado(_entradasPdf,grado);
   const body=ests.map((e,i)=>{
     const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per).toFixed(1));
     const prom=notas.length?(notas.reduce((a,b)=>a+parseFloat(b),0)/notas.length).toFixed(2):'0.00';
     const perd=mats.filter(m=>calcNotaDef(e.nts,m.id,per)<3).length;
-    return[i+1,e.n,...notas,prom,perd,puestoEst(e.id,grado)+'°'];
+    const pu=_puestoConOverride(e.id,grado,_rankingPdf.mapaPuestos[e.id]);
+    return[i+1,e.n,...notas,prom,perd,pu+'°'];
   });
   doc.autoTable({head,body,startY:20,styles:{fontSize:6.5,cellPadding:1.5,halign:'center'},
     headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold'},
@@ -19345,22 +19467,25 @@ function verConsolidadoDir(){
   const total=filas.length;
   const aprobados=filas.filter(f=>f.prom>=3).length;
   const promG=total?parseFloat((filas.reduce((a,f)=>a+f.prom,0)/total).toFixed(2)):0;
-  
+  // RONDA 99-HOTFIX2 — mismo fix: ranking con el PROM del periodo mostrado.
+  const _rankingP=_calcularRankingGrado(filas.map(f=>({id:f.e.id,prom:f.prom})),grado);
+
   const statsHtml=`<div class="flex-gap" style="margin-bottom:15px">
     <span class="stat-box" style="background:#27ae60">✅ Aprob.: <b>${aprobados}</b></span>
     <span class="stat-box" style="background:#c0392b">❌ Reprob.: <b>${total-aprobados}</b></span>
     <span class="stat-box" style="background:#003366">📊 Prom.: <b>${promG}</b></span>
   </div>`;
-  
+
   const matHeads=mats.map(m=>`<th title="${m.m} — ${m.dn}" style="font-size:0.68rem">${m.m.substring(0,7)}<br><small style="font-weight:normal;font-size:0.6rem">${m.dn.split(' ')[0]}</small></th>`).join('');
   const rows=filas.map((f,i)=>{
     const notasCells=f.notas.map(n=>`<td style="color:${n<3?'#c0392b':'#333'};font-size:0.79rem">${n.toFixed(1)}</td>`).join('');
-    const pu=puestoEst(f.e.id,grado);
+    const pu=_puestoConOverride(f.e.id,grado,_rankingP.mapaPuestos[f.e.id]);
+    const empatado=_rankingP.empatados.has(String(f.e.id));
     const promBg=f.prom<3?'#fdecea':'#eafaf1';const promCol=f.prom<3?'#c0392b':'#1a7531';
     return `<tr><td>${i+1}</td><td style="text-align:left;font-size:0.79rem">${f.e.n}</td>${notasCells}
       <td style="font-weight:bold;background:${promBg};color:${promCol}">${f.prom.toFixed(2)}</td>
       <td style="font-weight:bold;color:${f.areasPerd>0?'#c0392b':'#27ae60'}">${f.areasPerd}</td>
-      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu)}</td></tr>`;
+      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu,empatado)}</td></tr>`;
   }).join('');
 
   if(wrap) wrap.innerHTML=`<div class="card">
@@ -19385,11 +19510,19 @@ function pdfConsolidadoDir(){
   doc.setFontSize(7.5);doc.setFont('helvetica','normal');doc.setTextColor(0);
   doc.text('Grado: '+grado+' | Director(a): '+(_nombreDirectorGrado(infoG.d)||sesion.n)+' | Periodo: '+per+' | Año: '+db.anio,148,16,{align:'center',maxWidth:270});
   const head=[['#','ESTUDIANTE',...mats.map(m=>m.m.substring(0,7)),'PROM','PERD.','PUESTO']];
+  // RONDA 99-HOTFIX2 — puesto consistente con el PROM del periodo mostrado.
+  const _entradasPdf=ests.map(e=>{
+    const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
+    const prom=notas.length?notas.reduce((a,b)=>a+b,0)/notas.length:0;
+    return{id:e.id,prom};
+  });
+  const _rankingPdf=_calcularRankingGrado(_entradasPdf,grado);
   const body=ests.map((e,i)=>{
     const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per).toFixed(1));
     const prom=notas.length?(notas.reduce((a,b)=>a+parseFloat(b),0)/notas.length).toFixed(2):'0.00';
     const perd=mats.filter(m=>calcNotaDef(e.nts,m.id,per)<3).length;
-    return[i+1,e.n,...notas,prom,perd,puestoEst(e.id,grado)+'°'];
+    const pu=_puestoConOverride(e.id,grado,_rankingPdf.mapaPuestos[e.id]);
+    return[i+1,e.n,...notas,prom,perd,pu+'°'];
   });
   doc.autoTable({head,body,startY:20,styles:{fontSize:6.5,cellPadding:1.5,halign:'center'},
     headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold'},
@@ -19716,10 +19849,17 @@ function xlsxConsolidado(){
   const inst=db.nombre||getROT3();const anio=db.anio||new Date().getFullYear();
   // Encabezado: #, Estudiante, [asignatura por docente], PROMEDIO, PUESTO, SITUACIÓN
   const encab=['#','ESTUDIANTE',...mats.map(m=>m.m.toUpperCase()+'\n('+m.dn.split(' ')[0]+')'),'PROMEDIO','PUESTO','SITUACIÓN'];
+  // RONDA 99-HOTFIX2 — puesto consistente con el PROM del periodo mostrado
+  // en esta misma hoja (no el anual).
+  const _entradasXlsx=ests.map(e=>{
+    const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
+    return{id:e.id,prom:notas.length?notas.reduce((a,b)=>a+b,0)/notas.length:0};
+  });
+  const _rankingXlsx=_calcularRankingGrado(_entradasXlsx,grado);
   const filas=ests.map((e,i)=>{
     const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
     const promAll=notas.reduce((a,b)=>a+b,0);const prom=notas.length?parseFloat((promAll/notas.length).toFixed(2)):0;
-    const pu=puestoEst(e.id,grado);
+    const pu=_puestoConOverride(e.id,grado,_rankingXlsx.mapaPuestos[e.id]);
     const sit=prom>=4.7?'SUPERIOR':prom>=4.0?'ALTO':prom>=3.0?'BÁSICO':'BAJO';
     return [i+1,e.n,...notas.map(n=>parseFloat(n.toFixed(1))),prom,pu+'°',sit];
   });
@@ -19768,10 +19908,17 @@ function pdfConsolidado(){
   doc.text(`CONSOLIDADO — GRADO ${grado} — PERIODO ${per} — AÑO ${db.anio}`,148,10,{align:'center'});
   doc.text(`${getROT3()} | Rector(a): ${db.rectora}`,148,16,{align:'center',maxWidth:270});
   const head=[['#','ESTUDIANTE',...mats.map(m=>m.m.substring(0,8)),'PROM','PUESTO']];
+  // RONDA 99-HOTFIX2 — puesto consistente con el PROM del periodo mostrado.
+  const _entradasPdfC=ests.map(e=>{
+    const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per));
+    return{id:e.id,prom:notas.length?notas.reduce((a,b)=>a+b,0)/notas.length:0};
+  });
+  const _rankingPdfC=_calcularRankingGrado(_entradasPdfC,grado);
   const body=ests.map((e,i)=>{
     const notas=mats.map(m=>calcNotaDef(e.nts,m.id,per).toFixed(1));
     const prom=notas.length?(notas.reduce((a,b)=>a+parseFloat(b),0)/notas.length).toFixed(2):'0.00';
-    return[i+1,e.n,...notas,prom,`${puestoEst(e.id,grado)}°`];
+    const pu=_puestoConOverride(e.id,grado,_rankingPdfC.mapaPuestos[e.id]);
+    return[i+1,e.n,...notas,prom,`${pu}°`];
   });
   doc.autoTable({head,body,startY:20,styles:{fontSize:7,cellPadding:2,halign:'center'},
     headStyles:{fillColor:[0,51,102],textColor:255,fontStyle:'bold'},
@@ -19814,6 +19961,16 @@ async function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     return{...e,promPer:n?s/n:0};
   }).sort((a,b)=>b.promPer-a.promPer);
   if(!ests.length){customAlert('No hay estudiantes.');return;}
+  // RONDA 99-HOTFIX2 — el PUESTO impreso en el boletín debe coincidir con
+  // el PROM de ESTE periodo (promPer, el mismo que se imprime), calculado
+  // sobre TODO el grado (no solo el subconjunto de estsBase, que puede ser
+  // un único estudiante cuando se genera un boletín individual) para que
+  // el puesto sea el real dentro del grado completo.
+  const _entradasBol=db.ests.filter(x=>x.g===grado).map(e2=>{
+    let s2=0,n2=0;mats.forEach(c=>{s2+=calcNotaDef(e2.nts,c.id,per);n2++;});
+    return{id:e2.id,prom:n2?s2/n2:0};
+  });
+  const _rankingBol=_calcularRankingGrado(_entradasBol,grado);
   const infoG=db.grados.find(x=>x.n===grado)||{d:'SIN ASIGNAR',n:grado};
   // Tamaño CARTA (216×279.4mm) — antes era Oficio (216×330mm). Se cambió
   // porque Oficio es más alto que el papel que la mayoría de impresoras
@@ -19901,7 +20058,7 @@ async function _generarBoletinesPDF(grado,per,incluirResumenFinal){
     doc.text(_titLines,_hCX2,_titY,{align:'center'});
     doc.setTextColor(0);
     const _tableStart=Math.max(52,_titY+(_titLines.length*5)+2);
-    const pu=puestoEst(e.id,grado);
+    const pu=_puestoConOverride(e.id,grado,_rankingBol.mapaPuestos[e.id]);
     const _cx=(_lm+_rm)/2; // centro horizontal
     // ── Fila del estudiante ──
     doc.setFillColor(220,232,255);doc.rect(_lm,_tableStart-6,_tw,6,'F');
