@@ -1315,10 +1315,54 @@ async function _pullDB(){
   if(window._pullDBEnVuelo) return window._pullDBEnVuelo;
   window._pullDBEnVuelo=(async()=>{
     try{
+      // ══════════════════════════════════════════════════════════════════
+      // RONDA 98 — PATRÓN "SYNC-BEFORE-PULL" (pedido explícito del usuario,
+      // detectado en pruebas de campo): antes de esta ronda, _pullDB()
+      // SOBREESCRIBÍA "db" por completo con lo que trajera el servidor, sin
+      // fijarse si "db" tenía cambios locales todavía sin confirmar
+      // (window._hayCambiosSinSincronizar) — por ejemplo, asistencia o notas
+      // que un docente guardó sin conexión y que quedaron pendientes en
+      // localStorage. Si esta función corría ANTES de que esos cambios
+      // lograran subir (el escenario típico: el docente abre la app ya con
+      // internet, y el arranque en frío llama a _pullDB() antes de que el
+      // reintento de _pushDB() termine), el pull ganaba la carrera y el
+      // cambio local quedaba borrado de la memoria (seguía en localStorage,
+      // pero "db" en memoria — y lo que se pintaba en pantalla — ya no lo
+      // tenía), exactamente el síntoma reportado.
+      //
+      // FIX, en dos partes:
+      //   1) Si hay cambios locales sin sincronizar, se intenta subirlos
+      //      PRIMERO (await _pushDB()) — igual que ya hacían el listener de
+      //      'online' y el barrido periódico (ver más abajo en este mismo
+      //      archivo) — antes de siquiera pedir el blob al servidor.
+      //   2) Sin importar si ese intento de subida tuvo éxito o no, el pull
+      //      que sigue YA NO sobreescribe "db" a ciegas: se combina con
+      //      _merge3way() (el mismo motor de fusión de 3 vías que ya usa
+      //      _syncAll() para las sincronizaciones periódicas), usando como
+      //      base window._dbBaseSnapshot (la última versión confirmada por
+      //      el servidor). Así, si el push del paso 1 falló (seguía sin
+      //      internet de verdad, o el servidor tardó), el cambio local
+      //      pendiente sigue protegido por la fusión en vez de perderse.
+      if(window._hayCambiosSinSincronizar){
+        try{ await _pushDB(); }catch(e){}
+      }
       const _sk=window._currentPlatSK||SK||GESTOR_SK;
       const r=await _fetchConTimeout(API_BASE+'/api/inetis/db?sk='+encodeURIComponent(_sk));
       if(r.ok){const j=await r.json();if(j&&j.data){
-        db=_migrateDB(j.data);
+        const _pulled=_migrateDB(j.data);
+        if(window._hayCambiosSinSincronizar){
+          // Todavía hay algo pendiente (el push de arriba no lo confirmó) —
+          // se fusiona en vez de sobreescribir, con la misma base de 3 vías
+          // que usa el resto del sistema.
+          const _base=window._dbBaseSnapshot||_pulled;
+          const _fus=_merge3way(_base,db,_pulled);
+          db=_fus.result;
+          try{ _registrarConflictoBitacora(_sk,_fus.conflictos,_fus.detalles,'pull-arranque'); }catch(e){}
+        } else {
+          // Sin nada pendiente (o el push de arriba ya lo confirmó): es
+          // seguro adoptar el blob del servidor tal cual, igual que antes.
+          db=_pulled;
+        }
         window._dbVersion=j.version||null;
         window._dbBaseSnapshot=_clonarDB(db);
         // RONDA 58 — _pullDB() siempre trae el blob COMPLETO: a partir de aquí
@@ -7421,6 +7465,33 @@ function render(){
 // instante y luego "saltaría" al portal normal antes de poder usarlo.
 (async()=>{try{
   if(pag==='restablecer-password')return;
+  // ══════════════════════════════════════════════════════════════════════
+  // RONDA 98 — "BOOT CHECK" DE COLA PENDIENTE (pedido explícito del
+  // usuario, Frente 1, punto 1): ANTES de cualquier descarga/actualización
+  // desde el servidor — sea el _pullDB() de más abajo, o cualquiera de los
+  // adaptadores granulares (Planilla, Notas de Actividades, Asistencia,
+  // Observador, etc.) — se revisa si quedaron registros pendientes de
+  // sincronizar en las DOS colas locales que existen en este sistema:
+  //   1) El blob compartido (localStorage + "db", banderas
+  //      window._hayCambiosSinSincronizar / db._syncMeta.pending_sync) —
+  //      cubre Asistencia, Descriptores, Observador, Logros, Planeaciones,
+  //      etc. (ver updDB()/_pushDB()).
+  //   2) OutboxNotas (IndexedDB) — cubre Notas/Calificaciones y Actividades
+  //      en clase (ver 08-outbox-notas.js).
+  // Si hay algo pendiente en cualquiera de las dos Y hay conexión, se
+  // dispara su reintento AQUÍ MISMO, sin esperar al debounce/backoff
+  // habitual, para que la subida quede en camino lo antes posible dentro
+  // del arranque — _pullDB() (más abajo) además vuelve a esperar por este
+  // mismo motivo justo antes de aceptar el blob del servidor, así que este
+  // adelanto es una optimización de latencia, no la única protección.
+  try{
+    if(navigator.onLine!==false){
+      if(window._hayCambiosSinSincronizar) _pushDB();
+      if(typeof OutboxNotas!=='undefined'&&OutboxNotas&&typeof OutboxNotas.procesarCola==='function'){
+        OutboxNotas.procesarCola();
+      }
+    }
+  }catch(_eBootCheck){}
   // Ronda 35 — rehidratar sesión/vista guardadas (ver _restaurarSesionDesdeStorage)
   // ANTES de decidir qué pantalla mostrar: si hay una sesión guardada válida,
   // un F5 debe reabrir la misma vista en la que la persona estaba, no la landing.
@@ -8022,6 +8093,16 @@ setInterval(function(){_updateSyncChip('ok');},30000);
 document.addEventListener('visibilitychange',function(){
   if(document.visibilityState==='visible'){
     _updateSyncChip('ok');
+    // RONDA 98 — mismo criterio de "sync-before-pull" que ya aplican el
+    // listener de 'online' y el barrido periódico (_syncInterval, más
+    // abajo): al volver a la pestaña, si quedó algo pendiente de guardar
+    // (por ejemplo, se perdió la señal mientras la pestaña estaba en
+    // segundo plano), se reintenta ESE guardado antes de pedir/aceptar
+    // cambios del servidor — nunca al revés. El guardado (push) nunca debe
+    // depender del interruptor de sincronización automática (eso es solo
+    // para el pull en segundo plano) — mismo criterio ya documentado junto
+    // al listener de 'online'.
+    if(window._hayCambiosSinSincronizar) _pushDB();
     if(_sincronizacionAutoHabilitadaAhora()) _syncAll(false);
   }
 });

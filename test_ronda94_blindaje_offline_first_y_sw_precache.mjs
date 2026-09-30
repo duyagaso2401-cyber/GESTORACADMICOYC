@@ -149,7 +149,13 @@ check('sw.js: CORE_ASSETS ahora incluye los 8 módulos reales del bundle (antes 
   }
 });
 check('sw.js: CACHE_NAME se actualizó de versión (fuerza a los dispositivos ya instalados a descartar la caché vieja/incompleta)', () => {
-  assert.match(srcSw, /const CACHE_NAME\s*=\s*'gestor-yc-shell-v3-/);
+  // RONDA 98: el número de versión sigue subiendo con cada ronda que cambia
+  // sw.js (ahora v4, por el mecanismo de auto-actualización agregado en esa
+  // ronda) — esta prueba ya no fija "v3" a mano, solo exige que sea v3 o
+  // superior (nunca la v1/v2 de antes de la Ronda 94).
+  const m = srcSw.match(/const CACHE_NAME\s*=\s*'gestor-yc-shell-v(\d+)-/);
+  assert.ok(m, 'CACHE_NAME debe seguir el patrón de versión "gestor-yc-shell-vN-..."');
+  assert.ok(Number(m[1]) >= 3, 'la versión debe haber subido desde la v3 de la Ronda 94 (o más, en rondas posteriores)');
 });
 check('sw.js: sigue excluyendo /api/* del cacheo (no debe servir datos desactualizados de la API) — verificado intacto', () => {
   assert.match(srcSw, /if\(url\.pathname\.startsWith\('\/api\/'\)\)\s*return;/);

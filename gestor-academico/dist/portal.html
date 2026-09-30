@@ -32,9 +32,61 @@
 <script>
 // Registrar el Service Worker (habilita instalación como PWA y
 // una capa básica de resiliencia si la conexión falla momentáneamente).
+//
+// RONDA 98 — ACTUALIZACIÓN AUTOMÁTICA DE LA PWA (pedido explícito del
+// usuario, Frente 2): antes de esta ronda, una vez instalado, el Service
+// Worker solo se enteraba de una versión nueva cuando el navegador decidía
+// revisar por su cuenta (típicamente en la siguiente navegación completa, o
+// cada ~24h) — con la PWA instalada y abierta como app (sin recargas de
+// navegación normales), eso podía tardar mucho en notarse, y el usuario
+// terminaba desinstalando/reinstalando para "forzar" la actualización.
+// sw.js YA llamaba a self.skipWaiting() en 'install' y self.clients.claim()
+// en 'activate' (así que, una vez que el navegador SÍ revisaba, el nuevo
+// Service Worker tomaba control sin esperar a que se cerraran todas las
+// pestañas) — lo que faltaba era, precisamente, FORZAR esa revisión.
+//
+// Este bloque agrega, de forma puramente aditiva (nada de lo de arriba
+// cambia):
+//   1) registration.update() al cargar, al recuperar el foco
+//      ('visibilitychange'/'pageshow' — cubre tanto la pestaña normal como
+//      la PWA instalada reabierta) y cada 60 minutos mientras la pestaña
+//      siga abierta — cualquiera de estos puede detectar una versión nueva
+//      en el servidor.
+//   2) Un refresco transparente de la página cuando el navegador confirma
+//      que YA HAY un Service Worker nuevo en control (evento
+//      'controllerchange') — así el cliente pasa a usar la versión nueva
+//      de inmediato, sin que la persona tenga que desinstalar/reinstalar
+//      ni recargar manualmente. Se protege con una bandera para no entrar
+//      en un bucle de recargas si el evento llegara a dispararse más de
+//      una vez.
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
-    navigator.serviceWorker.register('/sw.js').catch(function(){});
+    navigator.serviceWorker.register('/sw.js').then(function(registration){
+      function _revisarActualizacion(){
+        registration.update().catch(function(){});
+      }
+      // Revisión inmediata (además de la que el propio navegador hace al
+      // registrar) y cada vez que la pestaña/PWA recupera el foco.
+      _revisarActualizacion();
+      document.addEventListener('visibilitychange', function(){
+        if(document.visibilityState==='visible') _revisarActualizacion();
+      });
+      window.addEventListener('pageshow', function(){ _revisarActualizacion(); });
+      // Red de seguridad para sesiones muy largas sin cambiar de pestaña:
+      // una revisión de bajo costo cada hora.
+      setInterval(_revisarActualizacion, 60*60*1000);
+    }).catch(function(){});
+
+    // Refresco transparente en cuanto un Service Worker nuevo toma control
+    // (gracias a self.skipWaiting()+self.clients.claim() en sw.js, esto
+    // ocurre apenas termina de instalarse/activarse la versión nueva, sin
+    // esperar a que la persona cierre todas las pestañas).
+    var _yaSeRecargoPorActualizacion=false;
+    navigator.serviceWorker.addEventListener('controllerchange', function(){
+      if(_yaSeRecargoPorActualizacion) return;
+      _yaSeRecargoPorActualizacion=true;
+      window.location.reload();
+    });
   });
 }
 </script>

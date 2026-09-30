@@ -11,7 +11,17 @@
 // RONDA 94 — AUDITORÍA OFFLINE-FIRST: CACHE_NAME se sube de versión para que
 // todos los dispositivos ya instalados descarten su caché vieja (incompleta)
 // y precarguen la lista corregida de abajo en su próxima visita con señal.
-const CACHE_NAME = 'gestor-yc-shell-v3-20260929';
+// RONDA 98 — ACTUALIZACIÓN AUTOMÁTICA DE LA PWA: se sube de versión otra vez
+// junto con el nuevo mecanismo de registration.update() proactivo agregado
+// en portal.html — cualquier cambio de bytes en este archivo (como este
+// mismo bump) es justo lo que dispara la detección de "hay una versión
+// nueva" en el navegador — sin este cambio, esa revisión hasta ahora era
+// pasiva (solo cuando el navegador decidía hacerla por su cuenta).
+// self.skipWaiting() (más abajo, en 'install') y
+// self.clients.claim() (en 'activate') YA estaban activos desde antes — lo
+// que faltaba era forzar la revisión, no la toma de control; ver el
+// comentario extenso en portal.html.
+const CACHE_NAME = 'gestor-yc-shell-v4-20260930';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

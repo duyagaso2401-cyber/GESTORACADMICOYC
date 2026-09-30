@@ -236,6 +236,24 @@
       const p = await _outboxListarPendientes();
       if (p && p.length) _outboxProcesarCola();
     }, 20000);
+    // RONDA 98 — "BOOT CHECK" (pedido explícito del usuario, Frente 1):
+    // antes de esta ronda, un dispositivo que abría la app YA CON INTERNET
+    // pero con notas/actividades todavía pendientes en esta cola (de una
+    // sesión offline anterior) esperaba hasta 20s (el primer disparo del
+    // poll de arriba) antes de que el reintento siquiera empezara — durante
+    // esa ventana, cualquier pantalla que pidiera datos frescos al servidor
+    // corría sin que el envío pendiente estuviera todavía en camino. Ahora
+    // se revisa la cola UNA vez, de inmediato, al cargar este módulo (no
+    // hace falta esperar ni al evento 'online' ni al primer tick del poll).
+    // Sin conexión real, _outboxProcesarCola() simplemente fallará su envío
+    // y se reprogramará con el backoff de siempre — no hay riesgo de
+    // duplicar envíos ni de bloquear la carga de la página (se llama sin
+    // "await" a propósito).
+    if (typeof global.navigator === 'undefined' || global.navigator.onLine !== false) {
+      _outboxListarPendientes().then(function (p) {
+        if (p && p.length) _outboxProcesarCola();
+      }).catch(function () {});
+    }
   }
 
   global.OutboxNotas = {
