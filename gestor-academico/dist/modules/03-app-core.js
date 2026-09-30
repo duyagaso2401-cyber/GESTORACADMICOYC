@@ -7274,9 +7274,137 @@ function _reprobaraElAnio(estId,grado,per){
   return _areasPerdidasDefinitivo(estId,grado,per).length>=limRepro;
 }
 function calcAreasPerdPeriodo(estId,grado,per){return getAreasPerdidasPeriodo(estId,grado,Number(per)).length;}
+// ============================================================
+// RONDA 99 — AUDITORÍA GLOBAL DE PUESTOS Y DESEMPATE (con control
+// pedagógico). Antes, puestoEst() ordenaba únicamente por promedio
+// (`.sort((a,b)=>b.p-a.p)`), así que dos estudiantes con el mismo
+// promedio exacto quedaban ordenados por casualidad (orden de
+// inserción en db.ests) en vez de por un criterio pedagógico
+// explícito. Ahora el ranking automático aplica, en este orden
+// estricto de prioridad:
+//   1° Promedio general/ponderado (calcPromedioEst) — mayor a menor.
+//   2° Desempate por inasistencias del periodo/año — menor a mayor
+//      (ver _inasistenciasAnualesEst).
+//   3° Desempate por cantidad de áreas en nivel Bajo/Básico — menor
+//      a mayor (ver _areasBajoBasicoCount).
+// Si aun así persiste el empate, el docente/admin puede fijar un
+// puesto MANUAL (ver _setPuestoManual/_puestoManualDe), guardado en
+// db.puestoOverrides con prioridad ABSOLUTA sobre el cálculo
+// automático — puestoEst() sigue siendo el único punto de entrada
+// que usan Situación Académica, Sábana, Boletines, Consolidados y
+// Reportes de Dirección, así que el ajuste se propaga a todos ellos
+// sin tocar cada vista por separado.
+//
+// REGLA DE ORO DE INTERFAZ: nada de esto reordena las FILAS de
+// ninguna tabla — las tablas de estudiantes siguen y deben seguir
+// ordenadas alfabéticamente (Apellidos/Nombres); solo cambia el
+// VALOR impreso en la columna PUESTO.
+// ============================================================
+function _inasistenciasAnualesEst(estId,grado){
+  const numPer=_getNumPer();
+  const cargas=db.carga.filter(c=>c.g===grado);
+  let total=0;
+  cargas.forEach(c=>{
+    for(let p=1;p<=numPer;p++){
+      const clases=_obtenerClasesAsistenciaPeriodo(db,c.id,p,grado);
+      total+=_inasistenciasEnClases(clases,estId);
+    }
+  });
+  return total;
+}
+function _areasBajoBasicoCount(estId,grado){
+  const areas=_areasPorGrado(grado);
+  return Object.keys(areas).filter(area=>{
+    const tieneNota=areas[area].some(m=>calcPromedioMat(estId,m.id)>0);
+    if(!tieneNota) return false;
+    const nivel=escNorm(_calcAreaNotaAnual(estId,area,areas[area]));
+    return nivel==='bajo'||nivel==='basico';
+  }).length;
+}
+// Ranking automático completo de un grado (sin overrides manuales) —
+// usado tanto por puestoEst() como por _estudianteEmpatadoEnGrado()
+// para detectar cuándo ofrecer el ajuste manual al docente/admin.
+function _rankingAutomaticoGrado(grado){
+  return db.ests.filter(e=>!e.deletedAt&&e.g===grado).map(e=>({
+    id:e.id,
+    prom:calcPromedioEst(e.id,grado),
+    inas:_inasistenciasAnualesEst(e.id,grado),
+    bajos:_areasBajoBasicoCount(e.id,grado)
+  })).sort((a,b)=>{
+    if(b.prom!==a.prom) return b.prom-a.prom;
+    if(a.inas!==b.inas) return a.inas-b.inas;
+    if(a.bajos!==b.bajos) return a.bajos-b.bajos;
+    return 0; // empate total en los 3 criterios automáticos — requiere ajuste manual pedagógico
+  });
+}
+function _clavePuestoOverride(estId,grado){ return estId+'_'+grado; }
+// Lee el ajuste manual de puesto vigente para un estudiante en un
+// grado, o null si no hay ninguno (cae al cálculo automático).
+function _puestoManualDe(estId,grado){
+  const ov=db.puestoOverrides&&db.puestoOverrides[_clavePuestoOverride(estId,grado)];
+  return (ov&&typeof ov.puesto==='number'&&ov.puesto>0)?ov.puesto:null;
+}
+// Fija (o borra, si valor es null/''/undefined) el ajuste manual de
+// puesto de un estudiante en un grado. Se persiste dentro del blob
+// db (db.puestoOverrides) igual que cualquier otro dato de la
+// institución — updDB() se encarga de marcarlo como pendiente de
+// sincronizar y de subirlo al servidor.
+function _setPuestoManual(estId,grado,valor){
+  updDB(d=>{
+    if(!d.puestoOverrides) d.puestoOverrides={};
+    const key=_clavePuestoOverride(estId,grado);
+    if(valor===null||valor===''||valor===undefined){
+      delete d.puestoOverrides[key];
+    }else{
+      d.puestoOverrides[key]={puesto:Number(valor),fecha:_isoUtcNow()};
+    }
+    return d;
+  });
+}
+// Indica si un estudiante quedó empatado (en los 3 criterios
+// automáticos) con al menos otro estudiante de su grado — se usa
+// para decidir cuándo mostrar el control de ajuste manual en la
+// columna PUESTO de la planilla/sábana.
+function _estudianteEmpatadoEnGrado(estId,grado){
+  const list=_rankingAutomaticoGrado(grado);
+  const me=list.find(e=>e.id===estId);
+  if(!me) return false;
+  return list.some(o=>o.id!==estId&&o.prom===me.prom&&o.inas===me.inas&&o.bajos===me.bajos);
+}
 function puestoEst(estId,grado){
-  const list=db.ests.filter(e=>e.g===grado).map(e=>({id:e.id,p:calcPromedioEst(e.id,grado)})).sort((a,b)=>b.p-a.p);
+  const manual=_puestoManualDe(estId,grado);
+  if(manual!=null) return manual;
+  const list=_rankingAutomaticoGrado(grado);
   return list.findIndex(e=>e.id===estId)+1;
+}
+// Botón "✏️" de la columna PUESTO — abre el diálogo para fijar/borrar
+// el ajuste manual (customPrompt, el mismo componente accesible que
+// usa el resto del sistema en vez del prompt() nativo del navegador).
+async function _abrirAjustePuestoManual(estId,grado,puestoActual){
+  const actual=_puestoManualDe(estId,grado);
+  const val=await customPrompt('Se detectó un empate en el promedio para este estudiante. Ingrese el puesto que el docente/admin desea asignar manualmente (deje vacío para volver a dejarlo en manos del cálculo automático):', actual!=null?String(actual):String(puestoActual), '✏️ Ajustar puesto manualmente (empate)');
+  if(val===null) return; // cancelado
+  const limpio=String(val).trim();
+  if(limpio===''){
+    _setPuestoManual(estId,grado,null);
+  }else{
+    const n=parseInt(limpio,10);
+    if(!n||n<1){ if(typeof customAlert==='function') customAlert('Ingrese un número de puesto válido (1 o mayor).'); return; }
+    _setPuestoManual(estId,grado,n);
+  }
+  renderApp();
+}
+// Genera el HTML de la celda PUESTO: el número siempre visible, y
+// además el botón de ajuste manual SOLO si hay empate o si ya existe
+// un ajuste manual vigente (para poder revisarlo/quitarlo), de modo
+// que la mayoría de las filas (sin empate) se vean exactamente igual
+// que antes de esta ronda.
+function _celdaPuestoConAjuste(estId,grado,puestoMostrado){
+  const puManual=_puestoManualDe(estId,grado)!=null;
+  const empatado=_estudianteEmpatadoEnGrado(estId,grado);
+  if(!empatado&&!puManual) return `${puestoMostrado}°`;
+  const titulo=puManual?'Puesto ajustado manualmente por el docente/admin (empate) — clic para cambiar o quitar':'Empate detectado con otro estudiante — clic para asignar el puesto manualmente';
+  return `<span style="display:inline-flex;align-items:center;gap:4px;justify-content:center">${puestoMostrado}°<button type="button" class="puesto-ajuste-btn" title="${titulo}" onclick="event.stopPropagation();_abrirAjustePuestoManual('${estId}','${grado.replace(/'/g,"\\'")}',${puestoMostrado})" style="border:none;background:${puManual?'#6c3483':'#f0f0f0'};color:${puManual?'#fff':'#333'};border-radius:6px;padding:0 5px;cursor:pointer;font-size:0.72rem;line-height:1.6">✏️${puManual?'*':''}</button></span>`;
 }
 function esc(v){const c=db.config||{};const es=c.escalaS||4.7,ea=c.escalaA||4.0,eb=c.escalaB||3.0;return v>=es?'SUPERIOR':v>=ea?'ALTO':v>=eb?'BÁSICO':'BAJO';}
 function escEmoji(v){const n=esc(v);return n==='SUPERIOR'?'😄':n==='ALTO'?'😊':n==='BÁSICO'?'😐':'😢';}
@@ -8792,6 +8920,12 @@ async function doLogin(){
   // vieja ocultaba de golpe la mayoría de los módulos. Mismo fix que ya
   // tenían _cerrarSesionReal() y doLoginPortal() — aquí faltaba.
   window._sbSearchQuery='';
+  // RONDA 99 — segundo seguro de _purgarEstadoDeVistaEntreSesiones(): por si
+  // algún camino de login llegara a ejecutarse sin haber pasado antes por
+  // _cerrarSesionReal() (ej. login directo tras cargar la página), este
+  // nuevo login jamás debe heredar la asignatura/grado que hubiera quedado
+  // seleccionada de un intento o sesión anterior en este mismo navegador.
+  _purgarEstadoDeVistaEntreSesiones();
   if(rol==='elecciones'){
     if(u==='elecciones'&&p==='inetis2026'){sesion={u:'elecciones',p:'inetis2026',r:'elecciones',n:'MÓDULO ELECCIONES'};pag='elecciones';render();return;}
     customAlert('Credenciales incorrectas.');return;
@@ -10538,8 +10672,44 @@ function toggleSidebar(open){
   if(open){sb.classList.add('open');ov.classList.add('open');}
   else{sb.classList.remove('open');ov.classList.remove('open');}
 }
+// ============================================================
+// RONDA 99 — FRENTE 3: LIMPIEZA TOTAL DE SESIÓN AL CERRAR SESIÓN
+// (aislamiento entre docentes en el mismo equipo). Antes, cerrar sesión
+// limpiaba `sesion`, el snapshot de sessionStorage para F5, el buscador
+// del menú y los temporizadores — pero NUNCA las variables globales que
+// recuerdan la ÚLTIMA asignatura/grado/periodo que el docente anterior
+// tenía abierto (planCId, notaActCId, asistGrado, asistCId, etc.). Como
+// este sistema es un SPA que NUNCA recarga la página entre un logout y
+// el login siguiente, esas variables seguían vivas en memoria del
+// navegador: si el Docente B entraba y alguno de esos valores viejos
+// coincidía por casualidad con una opción válida de SU propia carga, la
+// tabla se pintaba con datos que en realidad correspondían a la sesión
+// anterior. Se llama tanto al cerrar sesión como al inicio de un login
+// nuevo (doble seguro), reiniciando toda variable de "vista/selección
+// actual" a su valor neutro de fábrica. Como defensa adicional, además
+// se centralizó la resolución de "carga por id" en _cargaSiPermitida()
+// (ver más arriba), que nunca deja pasar una carga que no sea del
+// usuario activo, incluso si alguna variable quedara sucia por otra vía.
+// ============================================================
+function _purgarEstadoDeVistaEntreSesiones(){
+  try{
+    planCId=''; planPer='1'; planPagina=1;
+    notaActCId=''; notaActPer='1';
+    if(typeof asistGrado!=='undefined') asistGrado='';
+    if(typeof asistCId!=='undefined') asistCId='';
+    if(typeof asistTabActivo!=='undefined') asistTabActivo='reg';
+    if(typeof asistPeriodo!=='undefined') asistPeriodo='P1';
+    _filtroCargaAdminDocente=''; _filtroCargaAdminGrado=''; _filtroCargaAdminTexto='';
+    if(typeof _logNotasFiltroCId!=='undefined') _logNotasFiltroCId='';
+    if(typeof _logNotasFiltroPer!=='undefined') _logNotasFiltroPer='';
+    if(typeof _logNotasBusq!=='undefined') _logNotasBusq='';
+    if(typeof descPerActivo!=='undefined') descPerActivo='1';
+    window._lmsCache={}; window._lmsTabActiva='avisos';
+  }catch(_ePurgaVista){ /* nunca lanza — una variable ausente en algún build no debe romper el logout/login */ }
+}
 function _cerrarSesionReal(){
   sesion=null;
+  _purgarEstadoDeVistaEntreSesiones();
   _borrarSesionDeStorage(); // Ronda 35 — cerrar sesión también borra la vista/sesión guardada para F5
   // Limpiar la búsqueda de módulos guardada — de lo contrario, lo último
   // que se buscó (incluso de una sesión/persona anterior en el mismo
@@ -13779,6 +13949,17 @@ async function _papeleraDescriptoresHuerfanos(i){
   });
   renderApp();
 }
+// RONDA 99 — FRENTE 4: PERSISTENCIA DEL PERIODO EN DESCRIPTORES. Antes, el
+// <select id="descPer"> se armaba siempre con las mismas 3 opciones
+// estáticas y NINGUNA marcada `selected` — así que tras cada renderApp()
+// (por ejemplo, justo después de "Guardar") el navegador volvía a mostrar
+// la primera opción (P1) sin importar en qué periodo estuviera trabajando
+// el docente. Este `let` guarda el periodo activo del formulario, con el
+// mismo patrón ya usado por planPer/notaActPer en Planilla/Notas de
+// Actividades: se lee para marcar el `option` correcto al reconstruir el
+// HTML, y se actualiza ANTES de llamar a renderApp() (tanto al cambiarlo
+// manualmente como al guardar/editar un descriptor).
+let descPerActivo='1';
 function htmlDescriptores(){
   const isAdmin=sesion.r==='admin';
   const docentes=db.users.filter(u=>u.r==='docente');
@@ -13934,7 +14115,7 @@ function htmlDescriptores(){
     <h4 class="card-title">+ Nuevo Descriptor</h4>
     ${isAdmin ? `<div style="margin-bottom:10px"><label class="lbl">Docente</label><select id="descDoc" onchange="actualizarMatsDesc()">${docsOpts}</select></div>` : `<input type="hidden" id="descDoc" value="${sesion.u}">`}
     <div class="grid4" style="margin-bottom:10px">
-      <div><label class="lbl">Periodo</label><select id="descPer"><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></div>
+      <div><label class="lbl">Periodo</label><select id="descPer" onchange="descPerActivo=this.value">${['1','2','3'].map(p=>`<option value="${p}"${descPerActivo===p?' selected':''}>P${p}</option>`).join('')}</select></div>
       <div><label class="lbl">Grado</label><select id="descGra" onchange="actualizarMatsDesc()">${gradOpts}</select></div>
       <div><label class="lbl">Asignatura</label><select id="descMat" onchange="actualizarGruposReplicaDesc()">${matOptsIniciales}</select></div>
     </div>
@@ -14117,6 +14298,13 @@ function guardarDesc(){
   const per = document.getElementById('descPer')?.value || '1';
   const gra = document.getElementById('descGra')?.value || '';
   const mat = document.getElementById('descMat')?.value || '';
+  // RONDA 99 — FRENTE 4: sincronizar el periodo ANTES de renderApp() (más
+  // abajo), para que htmlDescriptores() marque de nuevo el mismo Periodo
+  // como `selected` al reconstruir el formulario — antes, "per" solo se
+  // usaba para guardar el descriptor, nunca se guardaba de vuelta en
+  // ninguna variable persistente, así que el <select> siempre reiniciaba a
+  // P1 tras guardar.
+  descPerActivo = per;
 
   const inputs = Array.from(document.querySelectorAll('.descTxtInput')).map(i => i.value.trim()).filter(Boolean);
   if (!mat || !inputs.length) {
@@ -14247,6 +14435,9 @@ function replicarUltimosDescs(){
   const per = document.getElementById('descPer')?.value || '1';
   const mat = document.getElementById('descMat')?.value || '';
   const gradSrc = document.getElementById('descGra')?.value || '';
+  // RONDA 99 — FRENTE 4: mismo motivo que en guardarDesc() — sincronizar
+  // ANTES de renderApp() para que el formulario no vuelva a P1.
+  descPerActivo = per;
 
   const chks = Array.from(document.querySelectorAll('input[name="chkRepDest"]:checked'));
   const gradsDest = chks.map(c => c.value).filter(g => g !== gradSrc);
@@ -14425,6 +14616,71 @@ function descargarDescriptoresPDF(){
   doc.save('Descriptores.pdf');
 }
 
+// ============================================================
+// RONDA 99 — FRENTE 2: FILTRO DIRECTO Y BUSCADOR PREDICTIVO PARA EL
+// ADMIN/RECTOR (Planilla y Notas de Actividades en Clase). Antes, el
+// <select> de "Asignatura" en estas dos pantallas mostraba, para el
+// admin, TODA la carga académica de la institución de un solo tirón
+// (todas las asignaturas, todos los grados, todos los docentes),
+// obligando a revisar un desplegable plano y masivo para encontrar un
+// curso puntual. Ahora se agrega, SOLO para el rol admin (el docente ya
+// ve nada más su propia carga) y solo si hay suficientes opciones para
+// justificarlo, una fila de filtros rápidos (Docente / Grado / texto
+// libre) que acota las opciones del MISMO <select> de siempre — el
+// desplegable completo sigue existiendo intacto como alternativa para
+// quien prefiera navegar la lista general.
+// ============================================================
+// RONDA 99 — FRENTE 3 (defensa en profundidad): resuelve una carga por id
+// SOLO si pertenece al usuario de la sesión actual (o si es admin). Antes,
+// `db.carga.find(x=>x.id===Number(planCId))` buscaba en TODA la carga de
+// la institución sin volver a validar propiedad — si planCId/notaActCId
+// quedaban con el valor de un docente anterior (logout sin purgar, ver
+// _purgarEstadoDeVistaEntreSesiones), y ese id coincidía por casualidad con
+// una carga real (aunque fuera de otro docente), la tabla la mostraba
+// igual. Ahora TODO punto que resuelve una carga por id pasa por aquí.
+function _cargaSiPermitida(id){
+  if(id===null||id===undefined||id==='') return null;
+  const c=db.carga.find(x=>String(x.id)===String(id));
+  if(!c) return null;
+  if(sesion&&sesion.r==='admin') return c;
+  if(sesion&&c.d===sesion.u) return c;
+  return null; // pertenece a otro docente — nunca se muestra, aunque el id haya quedado "pegado" de una sesión anterior
+}
+let _filtroCargaAdminDocente='', _filtroCargaAdminGrado='', _filtroCargaAdminTexto='';
+function _normalizarTextoFiltroCarga(s){
+  return String(s||'').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+}
+function _matsFiltradasAdmin(matsBase){
+  let out=matsBase;
+  if(_filtroCargaAdminDocente) out=out.filter(c=>c.d===_filtroCargaAdminDocente);
+  if(_filtroCargaAdminGrado) out=out.filter(c=>c.g===_filtroCargaAdminGrado);
+  if(_filtroCargaAdminTexto){
+    const q=_normalizarTextoFiltroCarga(_filtroCargaAdminTexto);
+    out=out.filter(c=>_normalizarTextoFiltroCarga(c.m+' '+c.g+' '+(c.dn||'')+' '+(c.a||'')).includes(q));
+  }
+  return out;
+}
+function _onFiltroCargaAdminDocente(v){_filtroCargaAdminDocente=v;renderApp();}
+function _onFiltroCargaAdminGrado(v){_filtroCargaAdminGrado=v;renderApp();}
+let _filtroCargaAdminTextoTimer=null;
+function _onFiltroCargaAdminTexto(v){
+  _filtroCargaAdminTexto=v;
+  if(_filtroCargaAdminTextoTimer) clearTimeout(_filtroCargaAdminTextoTimer);
+  _filtroCargaAdminTextoTimer=setTimeout(renderApp,220);
+}
+// matsBase = la carga YA filtrada por permisos (sesion.r==='admin' ? toda
+// la institución : solo la del docente) — este helper NO vuelve a
+// filtrar por permisos, solo agrega el filtrado rápido visual.
+function _htmlFiltrosCargaAdmin(matsBase){
+  if(!(sesion&&sesion.r==='admin')||matsBase.length<6) return '';
+  const docentesUnicos=[...new Map(matsBase.map(c=>[c.d,c.dn||c.d])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
+  const gradosUnicos=[...new Set(matsBase.map(c=>c.g))].sort((a,b)=>String(a).localeCompare(String(b),'es',{numeric:true}));
+  return `<div class="grid3" style="margin-bottom:10px;background:#f7f9fb;border:1px solid #dfe6ec;border-radius:8px;padding:10px">
+    <div><label class="lbl">🔎 Filtrar por Docente</label><select onchange="_onFiltroCargaAdminDocente(this.value)"><option value="">Todos los docentes</option>${docentesUnicos.map(([u,n])=>`<option value="${u}"${_filtroCargaAdminDocente===u?' selected':''}>${n}</option>`).join('')}</select></div>
+    <div><label class="lbl">🔎 Filtrar por Grado</label><select onchange="_onFiltroCargaAdminGrado(this.value)"><option value="">Todos los grados</option>${gradosUnicos.map(g=>`<option value="${g}"${_filtroCargaAdminGrado===g?' selected':''}>${g}</option>`).join('')}</select></div>
+    <div><label class="lbl">🔎 Buscar (docente, grado o asignatura)</label><input value="${_escAttrNAC(_filtroCargaAdminTexto)}" placeholder="Ej: Adán, 11°, Programación..." oninput="_onFiltroCargaAdminTexto(this.value)"></div>
+  </div>`;
+}
 // ============================================================
 // PLANILLA
 // ============================================================
@@ -15327,8 +15583,10 @@ function htmlPlanilla(){
   const _numPer=_getNumPer();
   const mats=db.carga.filter(x=>sesion.r==='admin'||x.d===sesion.u);
   if(!planCId&&mats.length) planCId=String(mats[0].id);
-  const matsOpts=mats.map(c=>`<option value="${c.id}"${planCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
-  const carga=planCId?db.carga.find(x=>x.id===Number(planCId)):null;
+  const _filtrosCargaHtml=_htmlFiltrosCargaAdmin(mats);
+  const matsVisibles=_matsFiltradasAdmin(mats);
+  const matsOpts=matsVisibles.map(c=>`<option value="${c.id}"${planCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
+  const carga=_cargaSiPermitida(planCId);
   const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
   // RONDA 74 — columna de Inasistencias, controlada por el switch global
   // db.config.mostrarInasistenciasEnPlanilla (por defecto false/oculta).
@@ -15486,6 +15744,7 @@ function htmlPlanilla(){
     ${_panelPeriodos}
     ${_perCerradoAlert}
     ${_perCerradoAdminAlert}
+    ${_filtrosCargaHtml}
     <div class="grid2" style="margin-bottom:15px">
       <div><label class="lbl">Periodo</label><select id="planPer" onchange="cambiarPlanPer(this.value)">
         ${Array.from({length:_numPer},(_,i)=>i+1).map(n=>`<option value="${n}"${planPer===String(n)?' selected':''}>Periodo ${n} ${(_perAct[n-1]!==false)?'🔓':'🔒'}</option>`).join('')}
@@ -16535,7 +16794,7 @@ function _dispararAutoSyncAsistSERSiAplica(cId,per){
 function _refrescarFilaPlanilla(estId){
   const e=db.ests.find(x=>String(x.id)===String(estId));
   if(!e) return;
-  const carga=planCId?db.carga.find(x=>x.id===Number(planCId)):null;
+  const carga=_cargaSiPermitida(planCId);
   if(!carga) return;
   const _numPer=_getNumPer();
   const nc=Number(planCId),np=Number(planPer);
@@ -16624,7 +16883,7 @@ function _refrescarFilaPlanilla(estId){
 function _refrescarEstadisticaPlanilla(){
   const wrap=document.getElementById('_planChartWrap');
   if(!wrap) return;
-  const carga=planCId?db.carga.find(x=>x.id===Number(planCId)):null;
+  const carga=_cargaSiPermitida(planCId);
   if(!carga){wrap.innerHTML='';return;}
   const ests=db.ests.filter(x=>x.g===carga.g);
   if(!ests.length){wrap.innerHTML='';return;}
@@ -16662,7 +16921,7 @@ function _refrescarEstadisticaPlanilla(){
 // quedar reflejados en pantalla, pero sin el parpadeo/tambaleo que
 // renderApp() produciría al reconstruir toda la tabla.
 function _refrescarTodoPlanillaGranular(){
-  const carga=planCId?db.carga.find(x=>x.id===Number(planCId)):null;
+  const carga=_cargaSiPermitida(planCId);
   if(!carga) return;
   db.ests.filter(x=>x.g===carga.g).forEach(function(e){ _refrescarFilaPlanilla(e.id); });
   _refrescarEstadisticaPlanilla();
@@ -17480,8 +17739,10 @@ function htmlNotasActividades(){
   const isAdmin=sesion.r==='admin';
   const mats=db.carga.filter(x=>isAdmin||x.d===sesion.u);
   if(!notaActCId&&mats.length) notaActCId=String(mats[0].id);
-  const matsOpts=mats.map(c=>`<option value="${c.id}"${notaActCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
-  const carga=notaActCId?db.carga.find(x=>x.id===Number(notaActCId)):null;
+  const _filtrosCargaHtmlNAC=_htmlFiltrosCargaAdmin(mats);
+  const matsVisibles=_matsFiltradasAdmin(mats);
+  const matsOpts=matsVisibles.map(c=>`<option value="${c.id}"${notaActCId==c.id?' selected':''}>${c.m} (${c.g})</option>`).join('');
+  const carga=_cargaSiPermitida(notaActCId);
   const ests=carga?db.ests.filter(x=>x.g===carga.g).sort((a,b)=>a.n.localeCompare(b.n)):[];
   const numPer=_getNumPer();
   const cId=Number(notaActCId),per=Number(notaActPer);
@@ -17529,6 +17790,7 @@ function htmlNotasActividades(){
   return `<h3 class="sec-title">📝 Notas de Actividades en Clase</h3>
   <div class="card">
     <p style="font-size:0.82rem;color:#666;margin-bottom:12px">Registre aquí notas de actividades cotidianas (talleres, participación, actividades en casa/clase, evaluaciones) con fecha y hora. El promedio resultante puede sincronizarse, si usted lo desea, con la columna que elija en la Planilla de Calificaciones — si no lo hace, la Planilla sigue funcionando exactamente igual que siempre.</p>
+    ${_filtrosCargaHtmlNAC}
     <div class="grid2" style="margin-bottom:15px">
       <div><label class="lbl">Periodo</label><select id="notaActPerSel" onchange="cambiarNotaActPer(this.value)">
         ${Array.from({length:numPer},(_,i)=>i+1).map(n=>`<option value="${n}"${notaActPer===String(n)?' selected':''}>Periodo ${n}</option>`).join('')}
@@ -17921,7 +18183,7 @@ function _refrescarCeldaNotaAct(estId,colId){
 // esta pantalla abierta.
 function _refrescarTodoNotasActGranular(){
   const cId=Number(notaActCId),per=Number(notaActPer);
-  const carga=notaActCId?db.carga.find(x=>x.id===Number(notaActCId)):null;
+  const carga=_cargaSiPermitida(notaActCId);
   if(!carga) return;
   const ests=db.ests.filter(x=>x.g===carga.g);
   const cols=_colsActAsignadas(cId,per);
@@ -18789,7 +19051,7 @@ function verConsolidado(){
     return `<tr><td>${i+1}</td><td style="text-align:left;font-size:0.8rem">${f.e.n}</td>${notasCells}
       <td style="font-weight:bold;background:${promBg};color:${promCol}">${f.prom.toFixed(2)}</td>
       <td style="text-align:center">${escBadge(f.prom,esGradoInicial(grado))}</td>
-      <td style="font-weight:bold;color:#6c3483">${pu}°</td></tr>`;
+      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu)}</td></tr>`;
   }).join('');
   const chartId='chartConsolidado_'+Date.now();
   if(wrap) wrap.innerHTML=`<div class="card">
@@ -18874,7 +19136,7 @@ function verConsolidadoGeneral(){
     return `<tr><td>${i+1}</td><td style="text-align:left;font-size:0.79rem">${f.e.n}</td>${notasCells}
       <td style="font-weight:bold;background:${promBg};color:${promCol}">${f.prom.toFixed(2)}</td>
       <td style="font-weight:bold;color:${f.apAreas>0?'#c0392b':'#27ae60'}">${f.apAreas}</td>
-      <td style="font-weight:bold;color:#6c3483">${pu}°</td></tr>`;
+      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu)}</td></tr>`;
   }).join('');
   
   if(wrap) wrap.innerHTML=`<div class="card">
@@ -19045,9 +19307,9 @@ function verConsolidadoDir(){
     return `<tr><td>${i+1}</td><td style="text-align:left;font-size:0.79rem">${f.e.n}</td>${notasCells}
       <td style="font-weight:bold;background:${promBg};color:${promCol}">${f.prom.toFixed(2)}</td>
       <td style="font-weight:bold;color:${f.areasPerd>0?'#c0392b':'#27ae60'}">${f.areasPerd}</td>
-      <td style="font-weight:bold;color:#6c3483">${pu}°</td></tr>`;
+      <td style="font-weight:bold;color:#6c3483">${_celdaPuestoConAjuste(f.e.id,grado,pu)}</td></tr>`;
   }).join('');
-  
+
   if(wrap) wrap.innerHTML=`<div class="card">
     <h4 class="card-title">Seguimiento Académico — Grado ${grado} — Periodo ${per} — Todas las asignaturas</h4>
     ${statsHtml}
@@ -19153,7 +19415,7 @@ function _cargarListaConsolidadoCompleto(){
         <td>${i+1}</td>
         <td style="text-align:left;color:#003366;font-weight:600;text-decoration:underline">${e.n}</td>
         <td style="font-weight:bold;color:${prom<3?'#c0392b':'#1a7531'}">${prom.toFixed(2)}</td>
-        <td>${puestoEst(e.id,grado)}°</td>
+        <td>${_celdaPuestoConAjuste(e.id,grado,puestoEst(e.id,grado))}</td>
       </tr>`;
     }).join('')}
   </tbody></table></div>`;
