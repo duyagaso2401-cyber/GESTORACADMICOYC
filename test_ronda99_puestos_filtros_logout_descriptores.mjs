@@ -221,7 +221,13 @@ function fixtureDB() {
   return {
     nombre: 'INSTITUCIÓN DE PRUEBA RONDA 99', anio: '2026',
     config: { numPeriodos: 1, pctSer: 1, pctSaber: 0, pctHacer: 0, escalaS: 4.7, escalaA: 4.0, escalaB: 3.0, pesosArea: {}, pesosAsig: {} },
-    grados: [{ n: '10°' }, { n: '11°' }, { n: '9°' }],
+    // RONDA 100 — se agrega "d" (Director de Grupo/titular) a los grados
+    // 10°/11° porque doc1 es quien ejecuta los ajustes manuales de puesto
+    // en las pruebas de este archivo (_setPuestoManual/_celdaPuestoConAjuste
+    // más abajo) y, desde Ronda 100, esa acción exige ser el Director de
+    // Grupo/titular del grado — ver test_ronda100_permisos_ajuste_manual_puesto.mjs
+    // para la cobertura dedicada de esa restricción de permisos.
+    grados: [{ n: '10°', d: 'doc1' }, { n: '11°', d: 'doc1' }, { n: '9°' }],
     users: [{ u: 'doc1', r: 'docente', n: 'Docente Uno', p: 'x' }, { u: 'doc2', r: 'docente', n: 'Docente Dos', p: 'x' }],
     carga: [
       { id: 201, g: '10°', m: 'Area1', a: 'Area1', d: 'doc1', dn: 'Docente Uno', ih: 5 },

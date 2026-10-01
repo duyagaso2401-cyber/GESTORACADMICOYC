@@ -40,7 +40,11 @@
 // 03-app-core.js, para que cualquier dispositivo con la PWA ya instalada
 // reciba la versión nueva de inmediato en vez de quedarse con una copia
 // en caché.
-const CACHE_NAME = 'gestor-yc-shell-v6-20260930';
+// RONDA 100 — se sube de versión OTRA VEZ: se restringió por permisos
+// (Director de Grupo/titular del grado, o Admin) quién puede VER y USAR
+// el botón ✏️ de ajuste manual de puesto — ver _puedeEditarPuestoManual()
+// en 03-app-core.js.
+const CACHE_NAME = 'gestor-yc-shell-v7-20261001';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

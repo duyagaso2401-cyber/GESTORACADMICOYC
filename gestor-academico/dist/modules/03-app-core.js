@@ -7398,7 +7398,19 @@ function _puestoManualDe(estId,grado){
 // db (db.puestoOverrides) igual que cualquier otro dato de la
 // institución — updDB() se encarga de marcarlo como pendiente de
 // sincronizar y de subirlo al servidor.
+// RONDA 100 — PUNTO ÚNICO DE VALIDACIÓN DE PERMISOS PARA EL GUARDADO: esta
+// es la ÚNICA función de todo el código que efectivamente escribe en
+// db.puestoOverrides (tanto _abrirAjustePuestoManual como cualquier otro
+// punto de entrada presente o futuro pasan por aquí), así que se verifica
+// el permiso de _puedeEditarPuestoManual(grado) JUSTO ANTES de persistir,
+// sin excepción — "nunca lanza": si no hay permiso, simplemente no guarda
+// nada (no revienta la pantalla) y deja constancia en consola para
+// auditoría.
 function _setPuestoManual(estId,grado,valor){
+  if(!_puedeEditarPuestoManual(grado)){
+    console.error('[_setPuestoManual] Guardado RECHAZADO por falta de permisos — usuario sin autoridad de Director de Grupo/titular/admin sobre el grado:',{usuario:sesion&&sesion.u,rol:sesion&&sesion.r,estId,grado,valor});
+    return;
+  }
   updDB(d=>{
     if(!d.puestoOverrides) d.puestoOverrides={};
     const key=_clavePuestoOverride(estId,grado);
@@ -7446,10 +7458,51 @@ function _puestoConOverride(estId,grado,puestoAutomatico){
   const manual=_puestoManualDe(estId,grado);
   return manual!=null?manual:puestoAutomatico;
 }
+// ============================================================
+// RONDA 100 — AUDITORÍA DE PERMISOS: ajuste manual de puesto (✏️) SOLO
+// para quien tiene autoridad pedagógica sobre ESE grado específico —
+// antes, cualquier docente con acceso de lectura a un Consolidado (ej. un
+// docente de área que solo dicta una asignatura en ese curso) también
+// podía ver y usar el botón ✏️ en grados de los que no es responsable,
+// violando la soberanía del Director de Grupo/titular.
+//
+// MATRIZ DE PERMISOS:
+//   • admin/Rectoría           → autorizado en TODOS los grados y sedes.
+//   • Transición a 5° (primaria/preescolar) → solo el docente TITULAR de
+//     ese grado/grupo específico.
+//   • 6° a 11° (secundaria/media)           → solo el DIRECTOR DE GRUPO
+//     asignado a ese grado específico.
+//   • Cualquier otro docente (de área, no titular/director en ese curso)
+//     → puede CONSULTAR notas/consolidados/puestos de cualquier grado,
+//     pero NUNCA ve el ícono ✏️ ni puede guardar un ajuste manual.
+//
+// La plataforma ya modela "titular de primaria" y "Director de Grupo de
+// secundaria" con el MISMO campo (grado.d, comparado con _gradoDirigidoPor)
+// — es el único dato de "responsable pedagógico de este grado" que existe
+// en el sistema, independientemente del nivel — así que una sola función
+// cubre ambos casos de la matriz sin necesitar lógica separada por nivel.
+function _puedeEditarPuestoManual(grado){
+  try{
+    if(!sesion||!sesion.r) return false;
+    if(sesion.r==='admin') return true; // Rectoría/Admin: todos los grados y sedes
+    const g=(db.grados||[]).find(x=>x.n===grado);
+    if(!g) return false;
+    return _gradoDirigidoPor(g.d,{u:sesion.u,n:sesion.n}); // titular (primaria) o Director de Grupo (secundaria) de ESE grado
+  }catch(e){ console.error('[_puedeEditarPuestoManual] Error inesperado:',e,{grado}); return false; }
+}
 // Botón "✏️" de la columna PUESTO — abre el diálogo para fijar/borrar
 // el ajuste manual (customPrompt, el mismo componente accesible que
 // usa el resto del sistema en vez del prompt() nativo del navegador).
+// RONDA 100 — segunda barrera de seguridad (además de que el botón ya no
+// se dibuja para quien no tiene permiso, ver _celdaPuestoConAjuste): si de
+// todos modos se invoca esta función (ej. llamándola directamente desde la
+// consola del navegador), se verifica el permiso de nuevo aquí y se corta
+// de raíz antes de abrir el diálogo o tocar db.puestoOverrides.
 async function _abrirAjustePuestoManual(estId,grado,puestoActual){
+  if(!_puedeEditarPuestoManual(grado)){
+    if(typeof customAlert==='function') customAlert('No tiene permiso para ajustar manualmente el puesto de este grado. Solo el Director de Grupo/titular asignado a este grado, o Admin/Rectoría, pueden hacerlo.');
+    return;
+  }
   const actual=_puestoManualDe(estId,grado);
   const val=await customPrompt('Se detectó un empate en el promedio para este estudiante. Ingrese el puesto que el docente/admin desea asignar manualmente (deje vacío para volver a dejarlo en manos del cálculo automático):', actual!=null?String(actual):String(puestoActual), '✏️ Ajustar puesto manualmente (empate)');
   if(val===null) return; // cancelado
@@ -7480,6 +7533,15 @@ function _celdaPuestoConAjuste(estId,grado,puestoMostrado,empatadoForzado){
   // Completo) se recurre al cálculo anual de siempre.
   const empatado=(typeof empatadoForzado==='boolean')?empatadoForzado:_estudianteEmpatadoEnGrado(estId,grado);
   if(!empatado&&!puManual) return `${puestoMostrado}°`;
+  // RONDA 100 — AUDITORÍA DE PERMISOS: aunque haya empate (o ya exista un
+  // ajuste manual vigente para revisar/quitar), el botón ✏️ SOLO se dibuja
+  // si quien está viendo la pantalla tiene autoridad pedagógica sobre ESTE
+  // grado específico (admin/Rectoría, o el Director de Grupo/titular
+  // asignado a él) — ver _puedeEditarPuestoManual(). Un docente de área
+  // que solo dicta una asignatura en el curso (sin ser su titular/director)
+  // puede seguir viendo el consolidado y el número de puesto con total
+  // normalidad, pero nunca el control de edición manual.
+  if(!_puedeEditarPuestoManual(grado)) return `${puestoMostrado}°`;
   const titulo=puManual?'Puesto ajustado manualmente por el docente/admin (empate) — clic para cambiar o quitar':'Empate detectado con otro estudiante — clic para asignar el puesto manualmente';
   return `<span style="display:inline-flex;align-items:center;gap:4px;justify-content:center">${puestoMostrado}°<button type="button" class="puesto-ajuste-btn" title="${titulo}" onclick="event.stopPropagation();_abrirAjustePuestoManual('${estId}','${grado.replace(/'/g,"\\'")}',${puestoMostrado})" style="border:none;background:${puManual?'#6c3483':'#f0f0f0'};color:${puManual?'#fff':'#333'};border-radius:6px;padding:0 5px;cursor:pointer;font-size:0.72rem;line-height:1.6">✏️${puManual?'*':''}</button></span>`;
 }

@@ -211,7 +211,13 @@ function instalarCasoGrado5(){
   const db = {
     nombre: 'INSTITUCIÓN EDUCATIVA TÉCNICA EN INFORMÁTICA DE SINCELEJITO', anio: '2026',
     config: { numPeriodos: 2, pctSer: 1, pctSaber: 0, pctHacer: 0, escalaS: 4.7, escalaA: 4.0, escalaB: 3.0, pesosArea: {}, pesosAsig: {} },
-    grados: [{ n: '5°' }],
+    // RONDA 100 — "d" (Director de Grupo/titular) se agrega aquí porque
+    // Ángel Gómez ejecuta un ajuste manual de puesto más abajo
+    // (_puestoConOverride/_setPuestoManual) y, desde Ronda 100, esa acción
+    // exige ser el Director de Grupo/titular del grado — ver
+    // test_ronda100_permisos_ajuste_manual_puesto.mjs para la cobertura
+    // dedicada de esa restricción de permisos.
+    grados: [{ n: '5°', d: 'angel' }],
     users: [{ u: 'angel', r: 'docente', n: 'Ángel Gómez', p: 'x' }],
     carga: [{ id: 1, g: '5°', m: 'Matemáticas', a: 'Matemáticas', d: 'angel', dn: 'Ángel Gómez', ih: 5 }],
     ests: [
