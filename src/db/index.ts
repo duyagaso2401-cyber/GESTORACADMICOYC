@@ -839,6 +839,88 @@ export async function ensureSchemaEtcAuditoria(): Promise<void> {
   console.log('✅ [Lote 5] Esquema de auditoría del Módulo ETC creado/verificado en Neon.');
 }
 
+// RONDA 101 — Bloqueo de cuenta tras intentos fallidos de login. Migración
+// perezosa e idempotente (mismo patrón que las demás ensureSchemaXxx de
+// este archivo); se invoca desde los 3 endpoints nuevos de
+// src/index.ts (login-estado/login-fallido/login-exitoso) la primera vez
+// que se usan, nunca desde initDb() — así una institución que nunca
+// dispara un intento fallido no paga el costo de esta tabla hasta que haga
+// falta de verdad.
+export async function ensureSchemaLoginLockout(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS login_intentos (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      usuario TEXT NOT NULL,
+      intentos_fallidos INTEGER NOT NULL DEFAULT 0,
+      bloqueado_hasta TIMESTAMPTZ,
+      actualizado_en TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS login_intentos_sk_usuario_idx ON login_intentos(sk, usuario);
+  `);
+  console.log('✅ [Ronda 101] Esquema de bloqueo de cuenta por intentos fallidos creado/verificado en Neon.');
+}
+
+// RONDA 103 — Bitácora de auditoría de acciones sensibles (ítem 1.6 de la
+// hoja de ruta). Mismo patrón perezoso/idempotente de siempre; se invoca
+// desde POST /api/inetis/db (el guardado genérico del blob, donde se
+// detectan los cambios) y desde el endpoint de lectura GET
+// /api/inetis/auditoria-acciones, la primera vez que se usan.
+export async function ensureSchemaAccionesAuditoria(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS acciones_auditoria (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      usuario TEXT,
+      usuario_nombre TEXT,
+      rol TEXT,
+      accion TEXT NOT NULL,
+      detalle JSONB,
+      creado_en TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS acciones_auditoria_sk_idx ON acciones_auditoria(sk);
+    CREATE INDEX IF NOT EXISTS acciones_auditoria_creado_idx ON acciones_auditoria(creado_en);
+  `);
+  console.log('✅ [Ronda 103] Esquema de bitácora de auditoría de acciones sensibles creado/verificado en Neon.');
+}
+
+// RONDA 104 — Verificación en dos pasos (TOTP) del lado del servidor. Ver
+// el comentario extenso en src/lib/totp.ts para la justificación completa.
+// Mismo patrón perezoso/idempotente de siempre.
+export async function ensureSchemaTotp(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS totp_secretos (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      usuario TEXT NOT NULL,
+      secreto TEXT NOT NULL,
+      activado BOOLEAN NOT NULL DEFAULT FALSE,
+      creado_en TIMESTAMPTZ DEFAULT NOW(),
+      activado_en TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS totp_secretos_sk_usuario_idx ON totp_secretos(sk, usuario);
+  `);
+  console.log('✅ [Ronda 104] Esquema de verificación en dos pasos (TOTP del lado del servidor) creado/verificado en Neon.');
+}
+
+// RONDA 106 — Códigos de respaldo de 2FA. Ver src/lib/totp-backup-codes.ts
+// para la justificación completa. Mismo patrón perezoso/idempotente.
+export async function ensureSchemaTotpCodigosRespaldo(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS totp_codigos_respaldo (
+      id SERIAL PRIMARY KEY,
+      sk TEXT NOT NULL,
+      usuario TEXT NOT NULL,
+      codigo_hash TEXT NOT NULL,
+      usado BOOLEAN NOT NULL DEFAULT FALSE,
+      creado_en TIMESTAMPTZ DEFAULT NOW(),
+      usado_en TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS totp_codigos_respaldo_sk_usuario_idx ON totp_codigos_respaldo(sk, usuario);
+  `);
+  console.log('✅ [Ronda 106] Esquema de códigos de respaldo de 2FA creado/verificado en Neon.');
+}
+
 // RONDA 35 — Módulo "Mi Perfil": clasificación extendida de rol/decreto +
 // hoja de vida, estructurada en Neon para integración con el módulo ETC.
 // Migración perezosa e idempotente (igual patrón que ensureSchemaEtcAuditoria

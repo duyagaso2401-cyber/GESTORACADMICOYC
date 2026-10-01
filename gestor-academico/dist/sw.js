@@ -44,7 +44,36 @@
 // (Director de Grupo/titular del grado, o Admin) quién puede VER y USAR
 // el botón ✏️ de ajuste manual de puesto — ver _puedeEditarPuestoManual()
 // en 03-app-core.js.
-const CACHE_NAME = 'gestor-yc-shell-v7-20261001';
+// RONDA 101 — se sube de versión OTRA VEZ: se agregó bloqueo temporal de
+// cuenta tras intentos fallidos de login (ver _consultarBloqueoLogin/
+// _registrarFalloLogin/_registrarExitoLogin y el nuevo motor en
+// src/lib/login-lockout.ts) y se endureció CORS en el servidor
+// (src/lib/cors-allowlist.ts) — ningún cambio visual, pero sí de seguridad,
+// así que debe llegar a todos los dispositivos con la PWA ya instalada.
+// RONDA 102 — cabeceras de seguridad HTTP del lado del servidor (ver
+// src/lib/security-headers.ts); no toca ningún archivo de este frontend,
+// pero se documenta aquí para que el historial de rondas quede completo.
+// RONDA 103 — _pushDB() ahora envía actorUsuario/actorNombre/actorRol en
+// cada guardado del blob, para que el servidor pueda registrar la nueva
+// bitácora de auditoría de acciones sensibles (ver
+// src/lib/auditoria-acciones.ts) — se sube de versión para que todos los
+// dispositivos con la PWA ya instalada empiecen a mandar ese dato cuanto
+// antes.
+// RONDA 104 — HALLAZGO DE SEGURIDAD CORREGIDO: la verificación en dos
+// pasos (2FA) ya existía, pero el secreto TOTP vivía dentro de
+// db.users[].tfaSecreto — el mismo blob que cualquiera con el "sk" puede
+// descargar completo, anulando el propósito del segundo factor. Se movió
+// el secreto y la verificación del código al servidor (ver
+// src/lib/totp.ts y /api/inetis/2fa/* en src/index.ts); el blob ya NUNCA
+// guarda tfaSecreto, solo el booleano tfaActivo. Se sube de versión para
+// que todos los dispositivos con la PWA ya instalada dejen de usar la
+// verificación local insegura cuanto antes.
+// RONDA 106 — Se sube de versión otra vez: 03-app-core.js cambió para
+// agregar el visor de la Bitácora de Auditoría en "Mi Perfil" (ver
+// _abrirBitacoraAuditoria()) y los códigos de respaldo de 2FA (modal de
+// "una sola vez" al activar, botón para regenerarlos, y aceptación de un
+// código de respaldo tanto en el login como al desactivar 2FA).
+const CACHE_NAME = 'gestor-yc-shell-v12-20261001';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

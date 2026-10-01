@@ -12,6 +12,11 @@
   try{
     var t=localStorage.getItem('gestorYcTema');
     if(t==='dark') document.documentElement.setAttribute('data-theme','dark');
+    // RONDA 107 — ítem 4.3: mismo criterio que el tema, aplicado ANTES del
+    // primer pintado para evitar que una tabla grande "salte" de tamaño
+    // justo después de cargar.
+    var dens=localStorage.getItem('gestorYcDensidad');
+    if(dens==='compacta') document.documentElement.setAttribute('data-densidad','compacta');
   }catch(e){}
 })();
 </script>
@@ -268,6 +273,25 @@ html[data-theme="dark"] [style*="color:#0e6655" i]{color:#76d7c4 !important}
 html[data-theme="dark"] [style*="color:#00695c" i]{color:#76d7c4 !important}
 html[data-theme="dark"] [style*="color:#6d5004" i]{color:#f4d03f !important}
 html[data-theme="dark"] [style*="color:#a04000" i]{color:#f0b27a !important}
+/* ------------------------------------------------------------------
+   RONDA 107 — extensión del ítem 4.1: el mecanismo de arriba cubre
+   "color:" pero no "background:" — así que cualquiera de los ~18
+   modales/popups caseros del sistema (ventanas creadas con
+   document.createElement('div') + innerHTML, no con las clases .card/
+   .modal centralizadas) que usan background:#fff en línea se veían como
+   una caja BLANCA brillante sobre el fondo oscuro de toda la demás
+   pantalla — el hueco de cobertura más visible encontrado al auditar
+   Modo Oscuro. Mismo criterio que arriba: se sobrescribe por selector de
+   atributo, sin tocar una sola línea de JavaScript (serían decenas de
+   funciones distintas), y solo cuando Modo Oscuro está activo.
+   ------------------------------------------------------------------ */
+html[data-theme="dark"] [style*="background:#fff" i]{background:var(--modal-bg) !important;color:var(--modal-text)}
+html[data-theme="dark"] [style*="background:#ffffff" i]{background:var(--modal-bg) !important;color:var(--modal-text)}
+html[data-theme="dark"] [style*="background: #fff" i]{background:var(--modal-bg) !important;color:var(--modal-text)}
+html[data-theme="dark"] [style*="background:#f8f9fa" i]{background:var(--bg-card-alt) !important}
+html[data-theme="dark"] [style*="background:#f0f4f8" i]{background:var(--bg-card-alt) !important}
+html[data-theme="dark"] [style*="background:#f5f7fa" i]{background:var(--bg-card-alt) !important}
+html[data-theme="dark"] [style*="background:#f9f9f9" i]{background:var(--bg-card-alt) !important}
 html{color-scheme:var(--color-scheme)}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:var(--bg-page);color:var(--text-main);font-size:14px;-webkit-font-smoothing:antialiased;transition:background-color .2s ease,color .2s ease}
@@ -338,6 +362,24 @@ table{width:100%;border-collapse:collapse;font-size:0.82rem;color:var(--td-text)
 th{background:var(--table-header-bg);color:var(--table-header-text);padding:9px 8px;text-align:center;border:1px solid #1a5276;font-size:0.8rem;letter-spacing:.02em}
 td{padding:8px 8px;border:1px solid var(--table-border);text-align:center;background:var(--table-row-bg);color:var(--td-text);overflow-wrap:break-word;word-break:break-word}.desc-table td{padding:2px 4px;line-height:1.35;word-break:break-word;white-space:pre-wrap;vertical-align:top;height:auto!important;min-height:unset!important}.desc-table th{padding:4px 5px;}.desc-table td:nth-child(6){text-align:left;min-width:180px;max-width:320px;word-break:break-word}
 tr:nth-child(even) td{background:var(--table-row-alt)}
+/* ------------------------------------------------------------------
+   RONDA 107 — ítem 4.3: modo "compacto" para tablas grandes
+   (Consolidados, Planilla, Sábana). Igual que el patrón ya usado para
+   Modo Oscuro (atributo en <html> + variables/reglas globales), se activa
+   con html[data-densidad="compacta"] y persiste en localStorage — ver
+   toggleDensidadTabla()/_densidadActual() en 03-app-core.js. Al ser una
+   regla CSS centralizada sobre los elementos base table/th/td (los
+   mismos que YA usan casi todas las tablas grandes del sistema, según la
+   auditoría de código previa a esta ronda), no requiere tocar cada
+   pantalla una por una. Las celdas que además traen su propio
+   "font-size" en línea (algunas filas de Consolidados) necesitan
+   !important para que el modo compacto también les aplique a ellas.
+   ------------------------------------------------------------------ */
+html[data-densidad="compacta"] table{font-size:0.74rem!important}
+html[data-densidad="compacta"] th{padding:4px 5px!important;font-size:0.7rem!important}
+html[data-densidad="compacta"] td{padding:3px 4px!important;font-size:0.74rem!important}
+html[data-densidad="compacta"] .nota-input{padding:2px 3px;font-size:0.78rem}
+html[data-densidad="compacta"] .nota-popup-btn{min-width:34px;padding:2px 1px;font-size:0.74rem}
 .nota-input{width:65px;padding:5px 6px;border:1px solid var(--input-border);border-radius:4px;text-align:center;font-size:0.88rem;background:var(--input-bg);color:var(--input-text)}
 nav.nav{display:flex;gap:6px;margin-bottom:18px;border-bottom:2px solid var(--border-color);padding-bottom:10px;flex-wrap:wrap}
 .nav-btn{padding:9px 16px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;font-size:0.85rem;background:var(--nav-btn-bg);color:var(--nav-btn-text)}

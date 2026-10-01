@@ -13,7 +13,24 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import * as Sentry from '@sentry/node';
-import { db, pool, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources, ensureSchemaRedInterinstitucional, estudiantesIndiceRed, solicitudesTraslado, ensureSchemaRelacionalNotas, autoSeedSuperAdmin, estudiantesRel, materiasRel, calificacionesRel, migracionRelacionalNotas } from './db/index.js';
+import { db, pool, kvStore, notifications, documents, pushSubscriptions, finTransacciones, finSuscripciones, ensureSchemaETC, ensureSchemaEtcAuditoria, ensureSchemaEducacionSuperior, agentAuditLogs, ensureSchemaPerfilExtendido, perfilDocenteExtendido, perfilAuditLog, ensureSchemaCertificados, certificadosEmitidos, repositorioResources, ensureSchemaRedInterinstitucional, estudiantesIndiceRed, solicitudesTraslado, ensureSchemaRelacionalNotas, autoSeedSuperAdmin, estudiantesRel, materiasRel, calificacionesRel, migracionRelacionalNotas, loginIntentos, ensureSchemaLoginLockout, accionesAuditoria, ensureSchemaAccionesAuditoria, totpSecretos, ensureSchemaTotp, totpCodigosRespaldo, ensureSchemaTotpCodigosRespaldo, infraAlertCooldown } from './db/index.js';
+// RONDA 101 — bloqueo de cuenta tras intentos fallidos de login (motor puro,
+// sin dependencias de base de datos — ver el comentario extenso en el
+// archivo mismo).
+import { registrarFallo, registrarExito, resumenParaCliente, type EstadoIntentosLogin } from './lib/login-lockout.js';
+// RONDA 101 — lista blanca de orígenes CORS (motor puro, ver el archivo).
+import { construirOrigenesPermitidos, esOrigenPermitido } from './lib/cors-allowlist.js';
+import { construirCabecerasSeguridad } from './lib/security-headers.js';
+import { detectarAccionesSensibles } from './lib/auditoria-acciones.js';
+import { generarSecretoTOTP, verificarCodigoTOTP, construirURIOtpAuth } from './lib/totp.js';
+import { generarCodigosRespaldo, normalizarCodigoRespaldo, esFormatoCodigoRespaldo, hashCodigoRespaldo } from './lib/totp-backup-codes.js';
+import { enviarAlertaTelegram } from './lib/telegram-alert.js';
+import { debeEnviarAlerta } from './lib/infra-alert-thresholds.js';
+import {
+  claveCooldownRespaldoFallido, CLAVE_COOLDOWN_RESPALDO_SIN_CONFIGURAR,
+  construirMensajeRespaldoFallido, construirMensajeRespaldoFallidoTelegramHtml,
+  construirMensajeRespaldoSinConfigurar, construirMensajeRespaldoSinConfigurarTelegramHtml,
+} from './lib/respaldo-alert.js';
 // Lote 1 — Módulo ETC + Módulo Universidades/Educación Superior (feature
 // flags, activación bajo demanda, ver comentario junto a los endpoints
 // POST /api/superadmin/activar-modulo-* más abajo, y src/lib/feature-flags.ts).
@@ -33,7 +50,7 @@ import universityLmsRouter from './university-lms/routes/university.routes.js';
 import { eq, desc, and, isNull, or, sql } from 'drizzle-orm';
 import { obtenerEstrategiaIA, generarConEstrategiaIA } from './lib/ai-service.js';
 import { GoogleGenAI } from '@google/genai';
-import { enviarPushParaNotificacion, VAPID_PUBLIC_KEY, PUSH_HABILITADO } from './lib/push-provider.js';
+import { enviarPushParaNotificacion, VAPID_PUBLIC_KEY, PUSH_HABILITADO, enviarPushATodosLosSuperAdmins, enviarPushADocente } from './lib/push-provider.js';
 import { uploadMemoria, subirBufferACloudinary, eliminarDeCloudinarySiAplica } from './lib/upload.js';
 import { verificarEstadoInstitucion, invalidarCacheGestorDB } from './lib/gestor-cache.js';
 import { leerDbCacheado, guardarDbCache, invalidarDbCache, leerBlobInstitucion, leerFilaKvStoreConDedup, TimeoutError } from './lib/db-cache.js';
@@ -54,7 +71,7 @@ import * as ecosystemAgent from './services/ecosystemAgent.js';
 // RONDA 40 — Blindaje JWT/servidor (ver src/lib/jwt-auth.ts para el porqué
 // de un JWT HS256 artesanal en vez de la librería `jsonwebtoken`, que no
 // está disponible en este entorno).
-import { firmarJWT, verificarJWT, extraerBearer, rolBloqueadoParaNotas } from './lib/jwt-auth.js';
+import { firmarJWT, verificarJWT, extraerBearer, rolBloqueadoParaNotas, renovarJWTSiAplica } from './lib/jwt-auth.js';
 // Ronda 20: "bitácora de conflictos" propuesta en el checklist de la Ronda
 // 19 — archivo nuevo y separado de routes/agent.js (ver el comentario en
 // src/routes/sync-log.js sobre por qué no se tocó ese archivo).
@@ -231,6 +248,12 @@ function _tieneRescateValido(req: any): boolean {
 // ============================================================
 
 const app = express();
+
+// Oculta la cabecera "X-Powered-By: Express" que Express envía por
+// defecto — no aporta nada funcional y solo le regala a un atacante el
+// dato de qué framework/tecnología está corriendo detrás, sin ningún
+// costo ni riesgo de romper algo al quitarla.
+app.disable('x-powered-by');
 // "trust proxy" = 1 confía en el PRIMER salto delante del servidor (el
 // balanceador/reverse-proxy de Render, Railway, Heroku, etc.), que es
 // exactamente el escenario de este despliegue. Sin esto, Express usa su
@@ -274,13 +297,61 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = path.resolve(__dirname, '../gestor-academico/dist');
 
-// Configuración robusta de CORS para soportar Live Server, Replit y Render
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 101 — ENDURECIMIENTO DE CORS: antes, `origin: '*'` aceptaba
+// peticiones (incluyendo el header Authorization, que lleva el JWT de
+// sesión) desde CUALQUIER sitio web del mundo — cualquier página podía
+// intentar hacerle llamadas a esta API si lograba que un usuario
+// autenticado la visitara. Ahora se usa una lista blanca configurable por
+// variable de entorno, ALLOWED_ORIGINS (dominios separados por coma, ej.
+// "https://miapp.onrender.com,https://miapp.com").
+//
+// GRACEFUL DEGRADATION ("nunca lanza" aplicado a configuración, no solo a
+// código): si ALLOWED_ORIGINS no está configurada, el servidor NO se cae ni
+// rompe ningún despliegue existente — simplemente mantiene el
+// comportamiento anterior (origin: '*') para no interrumpir Live
+// Server/Replit/Render mientras se configura, pero deja un aviso bien
+// visible en el arranque (ver más abajo) para que cualquiera que revise los
+// logs de producción note de inmediato que falta cerrar esa puerta, en vez
+// de que quede abierta silenciosamente para siempre.
+const ORIGENES_PERMITIDOS = construirOrigenesPermitidos(process.env.ALLOWED_ORIGINS);
+
+if (ORIGENES_PERMITIDOS.length === 0) {
+  console.warn('⚠️  [CORS] ALLOWED_ORIGINS no está configurada — por ahora se permite CUALQUIER origen (equivalente a origin: "*"), igual que antes de la Ronda 101. Configure ALLOWED_ORIGINS en las variables de entorno con los dominios reales de producción, separados por coma, para cerrar esta puerta de seguridad.');
+}
+
 app.use(cors({
-  origin: '*',
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (esOrigenPermitido(origin, ORIGENES_PERMITIDOS)) return callback(null, true);
+    console.warn('⚠️  [CORS] Origen rechazado (no está en ALLOWED_ORIGINS):', origin);
+    return callback(new Error('Origen no permitido por la política CORS.'));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-gemini-api-key', 'x-gemini-key', 'x-api-key'],
   optionsSuccessStatus: 200
 }));
+
+// ============================================================
+// RONDA 102 — CABECERAS DE SEGURIDAD HTTP (helmet casero)
+// Ver src/lib/security-headers.ts para la justificación completa de cada
+// cabecera y, en particular, por qué la Content-Security-Policy nace en
+// modo "Report-Only" (solo avisa, no bloquea) hasta que se active con la
+// variable de entorno CSP_ENFORCE=true. El resto de cabeceras (nosniff,
+// X-Frame-Options, Referrer-Policy, Permissions-Policy, HSTS) sí se
+// aplican siempre, sin bandera, porque no restringen nada que el sistema
+// necesite.
+// ============================================================
+const CSP_ENFORCE = process.env.CSP_ENFORCE === 'true';
+if (!CSP_ENFORCE) {
+  console.warn('ℹ️  [CSP] Content-Security-Policy en modo Report-Only (solo registra en la consola del navegador, no bloquea nada). Revise la consola en producción y, si no hay falsos positivos, active CSP_ENFORCE=true en las variables de entorno para que empiece a bloquear de verdad.');
+}
+app.use((_req, res, next) => {
+  const cabeceras = construirCabecerasSeguridad({ cspEnforce: CSP_ENFORCE });
+  for (const [nombre, valor] of Object.entries(cabeceras)) {
+    res.setHeader(nombre, valor);
+  }
+  next();
+});
 
 // Compresión gzip de las respuestas — reduce el peso de cada respuesta JSON
 // (el "db" completo de una institución, con cientos de estudiantes y sus
@@ -832,6 +903,42 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (e) {
     console.error('POST /api/auth/login', e);
     return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// RONDA 107 — ítem 1.8: renovación deslizante de sesión. Ver el comentario
+// extenso de arquitectura junto a renovarJWTSiAplica() en src/lib/jwt-auth.ts
+// para la justificación completa de por qué este diseño (renovar el MISMO
+// JWT en su ventana final, en vez de un par access+refresh con su propia
+// tabla) es deliberadamente el más conservador posible: no toca el login,
+// no toca la sincronización offline-first, y un cliente que nunca lo llama
+// sigue funcionando exactamente como antes de esta ronda.
+//
+// Requiere el JWT actual TODAVÍA VÁLIDO (ni alterado ni expirado) en el
+// header Authorization — si ya expiró, este endpoint responde 401 igual
+// que cualquier otro protegido por JWT: expirado es expirado, se exige
+// login nuevo, sin excepción.
+//
+// Rate-limited con el mismo limitador de login (`limitadorLogin`) — aunque
+// no es un endpoint de adivinar contraseñas, sigue siendo una operación de
+// identidad que no debería poder machacarse sin límite.
+app.post('/api/auth/renovar', limitadorLogin, async (req, res) => {
+  try {
+    const token = extraerBearer(req.headers.authorization);
+    if (!token) return res.status(401).json({ ok: false, error: 'Falta el token de sesión (Authorization: Bearer <token>).' });
+    const payload = verificarJWT(token);
+    if (!payload) return res.status(401).json({ ok: false, error: 'Token de sesión inválido o vencido — inicie sesión de nuevo.' });
+    const renovado = renovarJWTSiAplica(payload);
+    if (!renovado) {
+      // Todavía no corresponde renovar (le queda vida sobrada) — no es un
+      // error, el cliente simplemente puede seguir usando el que ya tiene.
+      return res.json({ ok: true, renovado: false, token, exp: payload.exp });
+    }
+    return res.json({ ok: true, renovado: true, token: renovado.token, exp: renovado.payload.exp });
+  } catch (e) {
+    console.error('POST /api/auth/renovar', e);
+    return res.status(500).json({ ok: false, error: 'No se pudo renovar la sesión en este momento.' });
   }
 });
 
@@ -1876,6 +1983,12 @@ app.post('/api/inetis/db', async (req, res) => {
     // realmente cambiaron (reindexación incremental) en vez de
     // resincronizar la institución completa contra el índice de red.
     const _estsAntesDelGuardado = leerDbCacheado(sk)?.value?.ests;
+    // RONDA 103 — se reutiliza la MISMA lectura de caché de arriba (ya en
+    // memoria, sin costo extra) para capturar el blob COMPLETO de "antes",
+    // que es lo que necesita detectarAccionesSensibles() para comparar
+    // contra "data" (el "después") una vez terminado el guardado — ver
+    // src/lib/auditoria-acciones.ts.
+    const _dataAnteriorParaAuditoria = leerDbCacheado(sk)?.value ?? null;
     const nowTs = new Date();
     await db
       .insert(kvStore)
@@ -1919,10 +2032,87 @@ app.post('/api/inetis/db', async (req, res) => {
     } else {
       _resincronizarIndiceRedInstitucion(sk, (data as any)?.ests).catch(() => {});
     }
+    // RONDA 103 — BITÁCORA DE AUDITORÍA DE ACCIONES SENSIBLES (ítem 1.6 de
+    // la hoja de ruta). Mismo criterio que la reindexación de arriba:
+    // deliberadamente SIN `await` — un fallo o demora aquí jamás debe
+    // afectar la respuesta del guardado real del blob, que ya se completó.
+    // actorUsuario/actorNombre/actorRol llegan del frontend (ver _pushDB()
+    // en 03-app-core.js) de forma puramente informativa — si no llegan
+    // (clientes más viejos sin actualizar todavía), el evento igual se
+    // registra, solo que sin saber con certeza quién lo hizo.
+    _registrarAuditoriaSensible(sk, _dataAnteriorParaAuditoria, data, {
+      usuario: (req.body as any)?.actorUsuario || null,
+      usuarioNombre: (req.body as any)?.actorNombre || null,
+      rol: (req.body as any)?.actorRol || null,
+    }).catch((errAuditoria) => {
+      console.error('⚠️  [Ronda 103] No se pudo registrar la bitácora de auditoría (el guardado real del blob SÍ se completó con éxito):', errAuditoria);
+    });
     return res.json({ ok: true, version: nowTs.toISOString() });
   } catch (e) {
     console.error('POST /api/inetis/db', e);
     return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// RONDA 103 — ver src/lib/auditoria-acciones.ts para la justificación
+// completa de diseño. Migración perezosa (ensureSchemaAccionesAuditoria)
+// igual que login_intentos en la Ronda 101: la tabla se crea la primera
+// vez que de verdad hay algo que registrar o consultar, nunca desde
+// initDb(), para que una institución que nunca dispara ninguna de estas
+// acciones no pague el costo de la tabla.
+let _schemaAuditoriaListo = false;
+async function _asegurarSchemaAuditoria(): Promise<void> {
+  if (_schemaAuditoriaListo) return;
+  await ensureSchemaAccionesAuditoria();
+  _schemaAuditoriaListo = true;
+}
+
+async function _registrarAuditoriaSensible(
+  sk: string,
+  dataAnterior: unknown,
+  dataNueva: unknown,
+  actor: { usuario: string | null; usuarioNombre: string | null; rol: string | null }
+): Promise<void> {
+  const eventos = detectarAccionesSensibles(dataAnterior, dataNueva);
+  if (!eventos.length) return; // nada sensible cambió en este guardado — no se toca la base de datos para nada
+  await _asegurarSchemaAuditoria();
+  await db.insert(accionesAuditoria).values(
+    eventos.map((ev) => ({
+      sk,
+      usuario: actor.usuario,
+      usuarioNombre: actor.usuarioNombre,
+      rol: actor.rol,
+      accion: ev.accion,
+      detalle: ev.detalle as any,
+    }))
+  );
+}
+
+// RONDA 103 — lectura de la bitácora para el Rector/Administrador de la
+// institución. Reutiliza _autorizarActorAdmin() (mismo estándar
+// retrocompatible JWT-opcional que el resto del núcleo K-12 — ver el
+// comentario extenso junto a esa función) en vez de crear un mecanismo de
+// permisos nuevo solo para este endpoint de solo lectura.
+app.get('/api/inetis/auditoria-acciones', async (req, res) => {
+  try {
+    const sk = (req.query.sk as string) || '';
+    if (!sk) return res.status(400).json({ error: 'sk requerido' });
+    const auth = _autorizarActorAdmin(req);
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+    await _asegurarSchemaAuditoria();
+    const limite = Math.min(Math.max(parseInt((req.query.limite as string) || '200', 10) || 200, 1), 500);
+    const filas = await db
+      .select()
+      .from(accionesAuditoria)
+      .where(eq(accionesAuditoria.sk, sk))
+      .orderBy(desc(accionesAuditoria.creadoEn))
+      .limit(limite);
+    return res.json({ ok: true, eventos: filas });
+  } catch (e) {
+    console.error('GET /api/inetis/auditoria-acciones', e);
+    // "Nunca lanza" hacia el cliente: una bitácora de auditoría que falla al
+    // CONSULTARSE no debe tumbar la pantalla de quien la está revisando.
+    return res.status(200).json({ ok: false, eventos: [], error: 'No se pudo consultar la bitácora de auditoría en este momento.' });
   }
 });
 
@@ -2062,8 +2252,15 @@ async function _ejecutarGuardarFilaNotas(req: express.Request): Promise<{ status
       // eliminarNotaAct() en el frontend) — se borra la clave por completo,
       // sin dejar un residuo con valor 0 confundible con "nota en cero".
       delete blob.notasAct[key];
+      await _dualWriteActividadRel(sk, blob, String(estId), Number(cId), Number(per), String(colId), null);
     } else {
-      blob.notasAct[key] = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '', registradoPorDocenteId: _docenteAuditoriaId };
+      const notaActividad = { valor, fecha: fecha || '', hora: hora || '', obs: obs || '', registradoPorDocenteId: _docenteAuditoriaId };
+      blob.notasAct[key] = notaActividad;
+      // RONDA 107 — cierra el hueco de alcance documentado en la Ronda 45
+      // (ver _dualWriteActividadRel arriba): mismo criterio "best-effort,
+      // nunca bloquea el guardado real" que ya tiene el dual-write de
+      // tipo='planilla'.
+      await _dualWriteActividadRel(sk, blob, String(estId), Number(cId), Number(per), String(colId), { valor, fecha: fecha || '', hora: hora || '', obs: obs || '' });
     }
   } else {
     return { status: 400, body: { ok: false, error: 'tipo debe ser "planilla" o "actividad".' } };
@@ -2227,6 +2424,57 @@ async function _dualWriteCalificacionRel(sk: string, blob: any, estId: string, c
       .onConflictDoUpdate({ target: [calificacionesRel.sk, calificacionesRel.estIdOrigen, calificacionesRel.cIdOrigen, calificacionesRel.periodo], set: { notas: notasFusionadas, updatedAt: new Date() } });
   } catch (err) {
     console.error('_dualWriteCalificacionRel (best-effort, no afecta el guardado real en el blob)', err);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 107 — extensión del ítem 2.2: cierra el hueco de alcance que la
+// Ronda 45 dejó documentado a propósito ("tipo='actividad' NO se migra en
+// esta fase"). Se dual-escribe tipo='actividad' en la MISMA tabla
+// calificacionesRel (sin agregar ninguna tabla ni columna nueva), usando
+// una clave de "periodo" compuesta que NUNCA choca con la de Planilla
+// (que siempre es un número puro como "1", "2", "3"): "act:<per>:<colId>".
+// Esto es seguro de agregar sin ningún riesgo para la lectura en
+// producción, porque el "switch" de lectura (_institucionYaMigradaRelacional,
+// activado solo por el script manual de la Ronda 45) sigue sin tocarse —
+// estas filas quedan disponibles para cuando se decida usarlas, exactamente
+// igual que ya viene ocurriendo con las de tipo='planilla' desde la Ronda 45.
+function _claveRelActividad(per: number | string, colId: string): string {
+  return `act:${per}:${colId}`;
+}
+async function _dualWriteActividadRel(sk: string, blob: any, estId: string, cId: number, per: number, colId: string, notaActividad: { valor: number; fecha: string; hora: string; obs: string } | null): Promise<void> {
+  try {
+    await _asegurarSchemaRelNotas();
+    const e = (blob.ests || []).find((x: any) => String(x.id) === String(estId));
+    const carga = (blob.carga || []).find((c: any) => String(c.id) === String(cId));
+    const grado = (e && e.g) || (carga && carga.g) || '';
+    const periodoClave = _claveRelActividad(per, colId);
+    if (!notaActividad) {
+      // Celda eliminada (ver eliminarNotaAct() en el frontend): se borra
+      // también del lado relacional, para que nunca quede una fila
+      // "fantasma" con un valor que ya no existe en el blob (la fuente de
+      // verdad).
+      await db.delete(calificacionesRel).where(and(
+        eq(calificacionesRel.sk, sk), eq(calificacionesRel.estIdOrigen, String(estId)),
+        eq(calificacionesRel.cIdOrigen, String(cId)), eq(calificacionesRel.periodo, periodoClave),
+      ));
+      return;
+    }
+    if (e) {
+      await db.insert(estudiantesRel)
+        .values({ sk, estIdOrigen: String(estId), nombre: e.n || '', numDoc: e.numDoc || '', grado, estadoMatricula: e.estadoMatricula || 'activo', updatedAt: new Date() })
+        .onConflictDoUpdate({ target: [estudiantesRel.sk, estudiantesRel.estIdOrigen], set: { nombre: e.n || '', numDoc: e.numDoc || '', grado, estadoMatricula: e.estadoMatricula || 'activo', updatedAt: new Date() } });
+    }
+    if (carga) {
+      await db.insert(materiasRel)
+        .values({ sk, cIdOrigen: String(cId), nombre: carga.m || '', grado: carga.g || grado, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: [materiasRel.sk, materiasRel.cIdOrigen], set: { nombre: carga.m || '', grado: carga.g || grado, updatedAt: new Date() } });
+    }
+    await db.insert(calificacionesRel)
+      .values({ sk, estIdOrigen: String(estId), cIdOrigen: String(cId), periodo: periodoClave, notas: notaActividad, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: [calificacionesRel.sk, calificacionesRel.estIdOrigen, calificacionesRel.cIdOrigen, calificacionesRel.periodo], set: { notas: notaActividad, updatedAt: new Date() } });
+  } catch (err) {
+    console.error('_dualWriteActividadRel (best-effort, no afecta el guardado real en el blob)', err);
   }
 }
 
@@ -3479,10 +3727,310 @@ app.post('/api/inetis/notify', async (req, res) => {
     // login no amerita interrumpir a nadie, ni siquiera al Administrador,
     // que ya puede consultarlo cuando quiera en su bandeja.
     if (sk && kind !== 'login') enviarPushParaNotificacion(sk, kind || 'info', message || '', meta).catch(() => {});
+    // RONDA 107 — ítem 3.2: además del aviso institucional de arriba, una
+    // alerta de riesgo académico por 2 periodos consecutivos en Bajo se
+    // dirige TAMBIÉN, de forma puntual, al Director de Grupo del estudiante
+    // (si el frontend pudo resolverlo — ver meta.directorGrupoUsuario en
+    // _verificarRiesgoAcademicoConsecutivoSiAplica en 03-app-core.js).
+    // "Nunca lanza": enviarPushADocente ya tiene sus propias garantías de
+    // resiliencia (no hace nada si el docente nunca activó push, o si el
+    // envío falla); aquí solo se evita bloquear la respuesta HTTP.
+    if (kind === 'alerta-academica-consecutiva' && meta && (meta as any).directorGrupoUsuario) {
+      enviarPushADocente((meta as any).directorGrupoUsuario, 'Riesgo académico', message || '', sk || null).catch(() => {});
+    }
+    // RONDA 107 — ítem 3.3: mensaje de un padre/acudiente dirigido puntualmente
+    // al Director de Grupo del estudiante (vía enviarMensajeDirectorGrupo() en
+    // 06-documentos-y-resto.js). Mismo patrón de "aviso puntual además del
+    // registro institucional" que 3.2 — nunca bloquea la respuesta HTTP.
+    if (kind === 'mensaje-director-grupo' && meta && (meta as any).directorGrupoUsuario) {
+      enviarPushADocente((meta as any).directorGrupoUsuario, 'Mensaje de un acudiente', message || '', sk || null).catch(() => {});
+    }
     return res.json({ ok: true });
   } catch (e) {
     console.error('POST /api/inetis/notify', e);
     return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 101 — BLOQUEO DE CUENTA TRAS INTENTOS FALLIDOS DE LOGIN. Ver el
+// comentario extenso en src/lib/login-lockout.ts para la justificación de
+// arquitectura completa (por qué este bloqueo vive aquí, en el servidor, en
+// vez de depender del navegador). Estos 3 endpoints son deliberadamente
+// chicos y "tontos" — TODA la decisión (bloquear, mantener, resetear) vive
+// en funciones puras ya probadas por separado (test_ronda101_...ts); aquí
+// solo se lee/escribe el estado en Neon y se delega.
+//
+// "Nunca lanza": si Neon no responde o la tabla aún no existe y algo falla
+// de forma inesperada, estos 3 endpoints responden como si NO hubiera
+// bloqueo — se prefiere perder temporalmente esta capa extra de protección
+// a dejar a todo el mundo (incluida la Rectoría) sin poder iniciar sesión
+// por un problema de infraestructura ajeno al login en sí. El
+// `limitadorLogin` ya existente (por IP) sigue protegiendo este mismo
+// endpoint contra el abuso del endpoint en sí.
+async function _leerEstadoIntentos(sk: string, usuario: string): Promise<EstadoIntentosLogin | null> {
+  const filas = await db.select().from(loginIntentos).where(and(eq(loginIntentos.sk, sk), eq(loginIntentos.usuario, usuario))).limit(1);
+  if (!filas.length) return null;
+  return { intentosFallidos: filas[0].intentosFallidos, bloqueadoHasta: filas[0].bloqueadoHasta };
+}
+async function _guardarEstadoIntentos(sk: string, usuario: string, estado: EstadoIntentosLogin): Promise<void> {
+  await db.insert(loginIntentos)
+    .values({ sk, usuario, intentosFallidos: estado.intentosFallidos, bloqueadoHasta: estado.bloqueadoHasta, actualizadoEn: new Date() })
+    .onConflictDoUpdate({
+      target: [loginIntentos.sk, loginIntentos.usuario],
+      set: { intentosFallidos: estado.intentosFallidos, bloqueadoHasta: estado.bloqueadoHasta, actualizadoEn: new Date() },
+    });
+}
+app.post('/api/inetis/login-estado', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario } = req.body as { sk?: string; usuario?: string };
+    if (!sk || !usuario) return res.json(resumenParaCliente(null));
+    await ensureSchemaLoginLockout();
+    const estado = await _leerEstadoIntentos(sk, usuario);
+    return res.json(resumenParaCliente(estado));
+  } catch (e) {
+    console.error('POST /api/inetis/login-estado', e);
+    return res.json(resumenParaCliente(null)); // nunca lanza: ante cualquier falla, se asume "no bloqueado"
+  }
+});
+app.post('/api/inetis/login-fallido', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario } = req.body as { sk?: string; usuario?: string };
+    if (!sk || !usuario) return res.json(resumenParaCliente(null));
+    await ensureSchemaLoginLockout();
+    const estadoActual = await _leerEstadoIntentos(sk, usuario);
+    const nuevoEstado = registrarFallo(estadoActual);
+    await _guardarEstadoIntentos(sk, usuario, nuevoEstado);
+    return res.json(resumenParaCliente(nuevoEstado));
+  } catch (e) {
+    console.error('POST /api/inetis/login-fallido', e);
+    return res.json(resumenParaCliente(null)); // nunca lanza
+  }
+});
+app.post('/api/inetis/login-exitoso', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario } = req.body as { sk?: string; usuario?: string };
+    if (!sk || !usuario) return res.json({ ok: true });
+    await ensureSchemaLoginLockout();
+    await _guardarEstadoIntentos(sk, usuario, registrarExito());
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/inetis/login-exitoso', e);
+    return res.json({ ok: true }); // nunca lanza: un fallo aquí no debe impedir que el login ya exitoso continúe
+  }
+});
+
+// ============================================================
+// RONDA 104 — VERIFICACIÓN EN DOS PASOS (2FA / TOTP) DEL LADO DEL SERVIDOR
+// Ver el comentario extenso de arquitectura en src/lib/totp.ts: el
+// algoritmo TOTP es el mismo que ya existía en el frontend (compatible con
+// Google Authenticator/Authy/Microsoft Authenticator), pero el secreto
+// ahora se genera, guarda y verifica EXCLUSIVAMENTE aquí — nunca viaja
+// dentro del blob JSON de la institución ni se guarda en localStorage.
+// Los 4 endpoints se protegen con el mismo limitadorLogin ya usado para
+// el login (30 peticiones/minuto por IP) — suficiente para hacer
+// impráctico adivinar un código de 6 dígitos por fuerza bruta, sin
+// restringir el uso normal (nadie necesita más de un puñado de intentos
+// por minuto para escribir 6 dígitos de su celular).
+// ============================================================
+let _schemaTotpListo = false;
+async function _asegurarSchemaTotp(): Promise<void> {
+  if (_schemaTotpListo) return;
+  await ensureSchemaTotp();
+  await ensureSchemaTotpCodigosRespaldo();
+  _schemaTotpListo = true;
+}
+
+// RONDA 106 — Genera un lote nuevo de códigos de respaldo, los guarda como
+// HASH (reemplazando cualquier lote anterior para este usuario — generar
+// uno nuevo invalida los viejos, igual que "regenerar contraseña" en
+// cualquier sistema serio) y devuelve los códigos EN TEXTO PLANO una sola
+// vez (es la única vez que existen fuera de la memoria del navegador del
+// usuario — el servidor nunca los vuelve a poder leer, solo comparar hash).
+async function _emitirNuevosCodigosRespaldo(sk: string, usuario: string): Promise<string[]> {
+  const codigos = generarCodigosRespaldo(8);
+  await db.delete(totpCodigosRespaldo).where(and(eq(totpCodigosRespaldo.sk, sk), eq(totpCodigosRespaldo.usuario, usuario)));
+  await db.insert(totpCodigosRespaldo).values(codigos.map(c => ({ sk, usuario, codigoHash: hashCodigoRespaldo(c) })));
+  return codigos;
+}
+
+// RONDA 106 — Intenta consumir un código de respaldo (un solo uso): si
+// coincide con uno sin usar, lo marca como usado y retorna true. "Nunca
+// lanza": cualquier error de base de datos se traduce en "no coincide" en
+// vez de reventar el login/la desactivación de 2FA.
+async function _consumirCodigoRespaldo(sk: string, usuario: string, codigoIngresado: string): Promise<boolean> {
+  try {
+    const hash = hashCodigoRespaldo(codigoIngresado);
+    const filas = await db.select().from(totpCodigosRespaldo)
+      .where(and(eq(totpCodigosRespaldo.sk, sk), eq(totpCodigosRespaldo.usuario, usuario), eq(totpCodigosRespaldo.codigoHash, hash), eq(totpCodigosRespaldo.usado, false)));
+    if (!filas.length) return false;
+    await db.update(totpCodigosRespaldo).set({ usado: true, usadoEn: new Date() }).where(eq(totpCodigosRespaldo.id, filas[0].id));
+    return true;
+  } catch (e) {
+    console.error('_consumirCodigoRespaldo', e);
+    return false;
+  }
+}
+
+// RONDA 106 — Verifica "lo que sea que el usuario haya escrito": si tiene
+// forma de código de respaldo (8 caracteres del alfabeto propio) se
+// compara contra la tabla de códigos de respaldo; si no, se trata como el
+// código TOTP de 6 dígitos de siempre. Así el frontend no necesita saber
+// de antemano cuál de los dos está mandando el usuario.
+async function _verificarCodigoOCodigoRespaldo(sk: string, usuario: string, secretoTotp: string, codigoIngresado: string): Promise<boolean> {
+  if (esFormatoCodigoRespaldo(codigoIngresado)) {
+    return await _consumirCodigoRespaldo(sk, usuario, codigoIngresado);
+  }
+  return verificarCodigoTOTP(secretoTotp, codigoIngresado);
+}
+
+// 1) Iniciar configuración: genera un secreto NUEVO (todavía no activo) y
+// lo devuelve junto con la URI otpauth:// para que el frontend dibuje el
+// código QR (con la librería QRCode.js que YA carga portal.html). Si el
+// usuario ya tenía un secreto configurado (activado o no), se reemplaza —
+// permite "empezar de nuevo" si, por ejemplo, perdió el celular antes de
+// terminar de confirmar.
+app.post('/api/inetis/2fa/configurar', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario } = req.body as { sk?: string; usuario?: string };
+    if (!sk || !usuario) return res.status(400).json({ error: 'sk y usuario son requeridos' });
+    await _asegurarSchemaTotp();
+    const secreto = generarSecretoTOTP();
+    await db.insert(totpSecretos).values({ sk, usuario, secreto, activado: false })
+      .onConflictDoUpdate({ target: [totpSecretos.sk, totpSecretos.usuario], set: { secreto, activado: false, activadoEn: null } });
+    return res.json({ ok: true, secreto, otpauthUri: construirURIOtpAuth(secreto, usuario) });
+  } catch (e) {
+    console.error('POST /api/inetis/2fa/configurar', e);
+    return res.status(500).json({ error: 'No se pudo iniciar la configuración de la verificación en dos pasos.' });
+  }
+});
+
+// 2) Confirmar y activar: el usuario ya escaneó el QR y escribe el primer
+// código de su app — si coincide, el secreto (que ya estaba guardado desde
+// el paso 1) queda marcado como activado. Este paso existe para evitar
+// que alguien active 2FA con una app mal configurada y se bloquee a sí
+// mismo sin darse cuenta.
+app.post('/api/inetis/2fa/confirmar', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario, codigo } = req.body as { sk?: string; usuario?: string; codigo?: string };
+    if (!sk || !usuario || !codigo) return res.status(400).json({ error: 'sk, usuario y codigo son requeridos' });
+    await _asegurarSchemaTotp();
+    const filas = await db.select().from(totpSecretos).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    if (!filas.length) return res.status(400).json({ error: 'No hay una configuración de verificación en dos pasos pendiente para este usuario.' });
+    if (!verificarCodigoTOTP(filas[0].secreto, codigo)) {
+      return res.status(400).json({ ok: false, error: 'Código incorrecto — verifique la hora de su celular y vuelva a intentar.' });
+    }
+    await db.update(totpSecretos).set({ activado: true, activadoEn: new Date() }).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    // RONDA 106 — Al activar, se emite el primer lote de códigos de
+    // respaldo y se devuelve EN TEXTO PLANO esta única vez, para que el
+    // frontend se los muestre al usuario con un aviso de "guárdelos ahora".
+    const codigosRespaldo = await _emitirNuevosCodigosRespaldo(sk, usuario);
+    return res.json({ ok: true, codigosRespaldo });
+  } catch (e) {
+    console.error('POST /api/inetis/2fa/confirmar', e);
+    return res.status(500).json({ error: 'No se pudo confirmar la verificación en dos pasos.' });
+  }
+});
+
+// 3) Consultar estado: usado por el login para saber, justo después de
+// verificar la contraseña, si a este usuario le toca además pedirle el
+// código de 6 dígitos. "Nunca lanza" hacia el cliente con una respuesta
+// ambigua: ante cualquier error se responde activo:false (no exigir 2FA)
+// en vez de bloquear el login completo por un problema de este endpoint
+// — exactamente el mismo criterio de "nunca degradar el flujo más
+// crítico de la plataforma" que ya se usa en el resto del sistema.
+app.get('/api/inetis/2fa/estado', limitadorLogin, async (req, res) => {
+  try {
+    const sk = (req.query.sk as string) || '';
+    const usuario = (req.query.usuario as string) || '';
+    if (!sk || !usuario) return res.json({ activo: false });
+    await _asegurarSchemaTotp();
+    const filas = await db.select().from(totpSecretos).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    const activo = !!(filas.length && filas[0].activado);
+    let codigosRespaldoRestantes = 0;
+    if (activo) {
+      const sinUsar = await db.select().from(totpCodigosRespaldo)
+        .where(and(eq(totpCodigosRespaldo.sk, sk), eq(totpCodigosRespaldo.usuario, usuario), eq(totpCodigosRespaldo.usado, false)));
+      codigosRespaldoRestantes = sinUsar.length;
+    }
+    return res.json({ activo, codigosRespaldoRestantes });
+  } catch (e) {
+    console.error('GET /api/inetis/2fa/estado', e);
+    return res.json({ activo: false });
+  }
+});
+
+// 4) Verificar código durante el login (o para desactivar 2FA — ver más
+// abajo): compara el código de 6 dígitos contra el secreto guardado EN EL
+// SERVIDOR. A diferencia de la versión anterior (enteramente en el
+// navegador), esta comprobación ya no se puede falsificar manipulando el
+// JavaScript del cliente.
+app.post('/api/inetis/2fa/verificar', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario, codigo } = req.body as { sk?: string; usuario?: string; codigo?: string };
+    if (!sk || !usuario || !codigo) return res.status(400).json({ ok: false, error: 'sk, usuario y codigo son requeridos' });
+    await _asegurarSchemaTotp();
+    const filas = await db.select().from(totpSecretos).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    if (!filas.length || !filas[0].activado) return res.json({ ok: false, error: 'Este usuario no tiene la verificación en dos pasos activada.' });
+    // RONDA 106 — Acepta también un código de respaldo (formato XXXX-XXXX)
+    // como alternativa al código de 6 dígitos, para el caso de haber
+    // perdido el celular con la app autenticadora.
+    const valido = await _verificarCodigoOCodigoRespaldo(sk, usuario, filas[0].secreto, codigo);
+    return res.json({ ok: valido, error: valido ? undefined : 'Código incorrecto.' });
+  } catch (e) {
+    console.error('POST /api/inetis/2fa/verificar', e);
+    return res.status(500).json({ ok: false, error: 'No se pudo verificar el código en este momento.' });
+  }
+});
+
+// 5) Desactivar: exige el código de 6 dígitos vigente (prueba de que
+// quien pide desactivarla todavía tiene el segundo factor), igual que
+// cualquier flujo serio de 2FA — no basta con tener la sesión abierta o
+// conocer la contraseña, que es justo lo que 2FA existe para complementar.
+// RONDA 106 — Ya existen códigos de respaldo (ver _verificarCodigoOCodigoRespaldo
+// más arriba): desactivar también acepta uno de ellos en vez del código de
+// 6 dígitos, para el caso de haber perdido el celular. El lote de códigos
+// de respaldo del usuario se borra junto con el secreto, al desactivar.
+app.post('/api/inetis/2fa/desactivar', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario, codigo } = req.body as { sk?: string; usuario?: string; codigo?: string };
+    if (!sk || !usuario || !codigo) return res.status(400).json({ ok: false, error: 'sk, usuario y codigo son requeridos' });
+    await _asegurarSchemaTotp();
+    const filas = await db.select().from(totpSecretos).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    if (!filas.length || !filas[0].activado) return res.json({ ok: true }); // ya estaba desactivada: no hay nada que hacer
+    if (!(await _verificarCodigoOCodigoRespaldo(sk, usuario, filas[0].secreto, codigo))) {
+      return res.status(400).json({ ok: false, error: 'Código incorrecto — no se desactivó la verificación en dos pasos.' });
+    }
+    await db.delete(totpSecretos).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    await db.delete(totpCodigosRespaldo).where(and(eq(totpCodigosRespaldo.sk, sk), eq(totpCodigosRespaldo.usuario, usuario)));
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/inetis/2fa/desactivar', e);
+    return res.status(500).json({ ok: false, error: 'No se pudo desactivar la verificación en dos pasos.' });
+  }
+});
+
+// 6) Regenerar códigos de respaldo: exige un código TOTP de 6 dígitos
+// vigente (NO acepta un código de respaldo para esta operación — tendría
+// sentido circular dejar que un código de respaldo genere más códigos de
+// respaldo). Invalida silenciosamente cualquier lote anterior: si el
+// usuario había guardado los viejos en algún lado, dejan de servir desde
+// este momento, igual que al regenerar una contraseña de aplicación.
+app.post('/api/inetis/2fa/regenerar-codigos-respaldo', limitadorLogin, async (req, res) => {
+  try {
+    const { sk, usuario, codigo } = req.body as { sk?: string; usuario?: string; codigo?: string };
+    if (!sk || !usuario || !codigo) return res.status(400).json({ ok: false, error: 'sk, usuario y codigo son requeridos' });
+    await _asegurarSchemaTotp();
+    const filas = await db.select().from(totpSecretos).where(and(eq(totpSecretos.sk, sk), eq(totpSecretos.usuario, usuario)));
+    if (!filas.length || !filas[0].activado) return res.status(400).json({ ok: false, error: 'Este usuario no tiene la verificación en dos pasos activada.' });
+    if (!verificarCodigoTOTP(filas[0].secreto, codigo)) {
+      return res.status(400).json({ ok: false, error: 'Código incorrecto — verifique el código de su app autenticadora (no un código de respaldo).' });
+    }
+    const codigosRespaldo = await _emitirNuevosCodigosRespaldo(sk, usuario);
+    return res.json({ ok: true, codigosRespaldo });
+  } catch (e) {
+    console.error('POST /api/inetis/2fa/regenerar-codigos-respaldo', e);
+    return res.status(500).json({ ok: false, error: 'No se pudieron regenerar los códigos de respaldo.' });
   }
 });
 
@@ -5657,6 +6205,57 @@ async function respaldoGuardarMeta(sk: string, meta: { ultimoRespaldo: string; c
   }
 }
 
+// RONDA 105 — ver el comentario extenso de arquitectura en
+// src/lib/respaldo-alert.ts: estos respaldos funcionaban bien desde antes,
+// pero corrían en silencio — nadie se enteraba si Cloudinary no estaba
+// configurado o si un respaldo puntual fallaba. Estas dos funciones le
+// agregan una voz real (Telegram + Push a todos los Súper Admins),
+// reutilizando el MISMO mecanismo de cooldown persistido de 24h que ya usa
+// infrastructure-alert-job.ts (tabla infra_alert_cooldown) — nunca lanzan,
+// para que un problema AL AVISAR jamás tumbe el propio job de respaldo.
+async function _cooldownRespaldoYaEnvioRecientemente(clave: string): Promise<boolean> {
+  try {
+    const filas = await db.select().from(infraAlertCooldown).where(eq(infraAlertCooldown.clave, clave));
+    const ultimoEnvioMs = filas[0]?.ultimoEnvioEn ? new Date(filas[0].ultimoEnvioEn as any).getTime() : null;
+    return !debeEnviarAlerta(ultimoEnvioMs, Date.now());
+  } catch (e) {
+    console.error('[RespaldoAlert] No se pudo leer el cooldown de', clave, ':', e);
+    return false; // ante la duda, se prefiere avisar de más que dejar pasar un respaldo roto en silencio
+  }
+}
+async function _registrarEnvioCooldownRespaldo(clave: string): Promise<void> {
+  try {
+    const ahora = new Date();
+    await db.insert(infraAlertCooldown).values({ clave, ultimoEnvioEn: ahora })
+      .onConflictDoUpdate({ target: infraAlertCooldown.clave, set: { ultimoEnvioEn: ahora } });
+  } catch (e) {
+    console.error('[RespaldoAlert] No se pudo registrar el cooldown de', clave, ':', e);
+  }
+}
+async function _alertarRespaldoFallido(skInstitucion: string, nombreInstitucion: string, detalleError: string): Promise<void> {
+  try {
+    const clave = claveCooldownRespaldoFallido(skInstitucion);
+    if (await _cooldownRespaldoYaEnvioRecientemente(clave)) return; // ya se avisó esta misma institución hace menos de 24h
+    const { titulo, cuerpo } = construirMensajeRespaldoFallido(skInstitucion, nombreInstitucion, detalleError);
+    try { await enviarPushATodosLosSuperAdmins(titulo, cuerpo, 'alerta-respaldo'); } catch (e) { console.error('[RespaldoAlert] Falló el envío Push:', e); }
+    try { await enviarAlertaTelegram(construirMensajeRespaldoFallidoTelegramHtml(skInstitucion, nombreInstitucion, detalleError)); } catch (e) { console.error('[RespaldoAlert] Falló el envío de Telegram:', e); }
+    await _registrarEnvioCooldownRespaldo(clave);
+  } catch (e) {
+    console.error('[RespaldoAlert] No se pudo procesar la alerta de respaldo fallido:', e);
+  }
+}
+async function _alertarRespaldoSinConfigurar(cantidadPendientes: number): Promise<void> {
+  try {
+    if (await _cooldownRespaldoYaEnvioRecientemente(CLAVE_COOLDOWN_RESPALDO_SIN_CONFIGURAR)) return;
+    const { titulo, cuerpo } = construirMensajeRespaldoSinConfigurar(cantidadPendientes);
+    try { await enviarPushATodosLosSuperAdmins(titulo, cuerpo, 'alerta-respaldo'); } catch (e) { console.error('[RespaldoAlert] Falló el envío Push:', e); }
+    try { await enviarAlertaTelegram(construirMensajeRespaldoSinConfigurarTelegramHtml(cantidadPendientes)); } catch (e) { console.error('[RespaldoAlert] Falló el envío de Telegram:', e); }
+    await _registrarEnvioCooldownRespaldo(CLAVE_COOLDOWN_RESPALDO_SIN_CONFIGURAR);
+  } catch (e) {
+    console.error('[RespaldoAlert] No se pudo procesar la alerta de "Cloudinary no configurado":', e);
+  }
+}
+
 async function ejecutarRespaldosAutomaticosPendientes() {
   try {
     const todasLasFilas = await db.select().from(kvStore);
@@ -5665,6 +6264,7 @@ async function ejecutarRespaldosAutomaticosPendientes() {
     // interno del sistema.
     const filasInstituciones = todasLasFilas.filter((f) => !f.key.startsWith('_'));
     const ahora = Date.now();
+    let _pendientesPorFaltaDeCloudinary = 0;
     for (const fila of filasInstituciones) {
       try {
         const meta = await respaldoObtenerMeta(fila.key);
@@ -5674,6 +6274,7 @@ async function ejecutarRespaldosAutomaticosPendientes() {
 
         if (!cloudinaryConfigurado) {
           console.warn(`⚠️  Respaldo automático de "${fila.key}" pendiente, pero Cloudinary no está configurado — se reintentará en la próxima revisión.`);
+          _pendientesPorFaltaDeCloudinary++;
           continue;
         }
 
@@ -5687,10 +6288,22 @@ async function ejecutarRespaldosAutomaticosPendientes() {
         });
         await respaldoGuardarMeta(fila.key, { ultimoRespaldo: new Date().toISOString(), cloudinaryUrl: resultado.url });
         console.log(`✅  Respaldo automático completado para "${fila.key}" → ${resultado.url}`);
-      } catch (errUno) {
+      } catch (errUno: any) {
         // Un fallo en UNA institución no debe detener el respaldo de las demás.
         console.error(`❌  Error en el respaldo automático de "${fila.key}":`, errUno);
+        // RONDA 105 — además de quedar en los logs, esto ahora SÍ le avisa a
+        // alguien (Telegram + Push), con cooldown de 24h por institución
+        // para no repetir el mismo aviso en cada revisión de 12h mientras
+        // el problema persiste.
+        const _nombreInst = (fila.value && (fila.value as any).nombre) || '';
+        _alertarRespaldoFallido(fila.key, _nombreInst, String(errUno?.message || errUno)).catch(() => {});
       }
+    }
+    if (_pendientesPorFaltaDeCloudinary > 0) {
+      // Un solo aviso CONSOLIDADO (no uno por institución) — es un problema
+      // de configuración de la plataforma entera, no de una institución en
+      // particular. Mismo cooldown de 24h, con una clave global.
+      _alertarRespaldoSinConfigurar(_pendientesPorFaltaDeCloudinary).catch(() => {});
     }
   } catch (err) {
     console.error('❌  Error general revisando respaldos automáticos pendientes:', err);

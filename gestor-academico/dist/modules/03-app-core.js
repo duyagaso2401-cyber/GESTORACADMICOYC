@@ -1013,8 +1013,23 @@ async function _pushDB(){
     // Observador — este es el único punto de guardado por el que pasa TODO
     // el blob, incluidas las observaciones.
     const _actorRE=(sesion&&sesion.rolEspecifico)?',"actorRolEspecifico":'+JSON.stringify(sesion.rolEspecifico):'';
+    // RONDA 103 — se agregan actorUsuario/actorNombre/actorRol (cuando hay
+    // sesión activa) a este mismo guardado central, por el MISMO motivo de
+    // diseño que actorRolEspecifico arriba: es el único punto por el que
+    // pasa TODO guardado real de "db" (ver updDB() más arriba), así que es
+    // el lugar correcto para que el servidor sepa "quién" hizo el cambio y
+    // pueda registrarlo en la bitácora de auditoría de acciones sensibles
+    // (ver detectarAccionesSensibles() en src/lib/auditoria-acciones.ts) sin
+    // tener que tocar cada pantalla (Planilla, Matrícula, Configuración...)
+    // una por una. Es puramente informativo — si no llega (ej. una pestaña
+    // que quedó abierta de una versión más vieja del sistema), el guardado
+    // real del blob funciona exactamente igual que siempre.
+    const _actorAuditoria=(sesion&&sesion.u)?
+      ',"actorUsuario":'+JSON.stringify(sesion.u)+
+      ',"actorNombre":'+JSON.stringify(sesion.n||sesion.u)+
+      ',"actorRol":'+JSON.stringify(sesion.r||''):'';
     const r=await fetch(API_BASE+'/api/inetis/db',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:'{"sk":'+JSON.stringify(_sk)+',"baseVersion":'+JSON.stringify(baseVersion)+_actorRE+',"data":'+_json+'}'});
+      body:'{"sk":'+JSON.stringify(_sk)+',"baseVersion":'+JSON.stringify(baseVersion)+_actorRE+_actorAuditoria+',"data":'+_json+'}'});
     if(r.status===409){
       const conflicto=await r.json().catch(()=>null);
       if(conflicto) await _resolverConflictoDB(conflicto,_sk);
@@ -3413,6 +3428,17 @@ function _validarPassword(password,opciones){
 // Perfil"; una vez activa, el login le pide además el código de 6
 // dígitos de su aplicación autenticadora, después de la contraseña.
 // ============================================================
+// RONDA 104 — IMPORTANTE: desde esta ronda, el secreto TOTP y la
+// verificación del código YA NO se generan/comprueban aquí en el
+// navegador — ver src/lib/totp.ts y los endpoints /api/inetis/2fa/* en
+// src/index.ts para la implementación ahora autoritativa (mismo algoritmo
+// exacto: HMAC-SHA1, 6 dígitos, pasos de 30s). Las funciones de abajo
+// (_generarSecreto2FA/_totpGenerar/_totpVerificar) quedan SIN USO —
+// ninguna pantalla las llama ya — y se dejan únicamente como referencia
+// histórica de por qué el formato Base32/otpauth:// es compatible con el
+// servidor, en vez de borrarlas y perder ese rastro. No reactivar: volver
+// a usarlas reintroduciría el problema de seguridad que motivó este
+// cambio (el secreto viajando dentro del blob JSON de la institución).
 const _BASE32_ALFABETO='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 function _base32Codificar(bytes){
   let bits='';
@@ -3683,7 +3709,12 @@ async function doLoginInstitucional(){
       // Si este usuario activó la verificación en dos pasos, la contraseña
       // sola no basta: se pide además el código de 6 dígitos de su
       // aplicación autenticadora antes de completar el ingreso.
-      if(sesionData.tfaActivo&&sesionData.tfaSecreto){
+      // RONDA 104 — el flag "tfaActivo" (un simple booleano, sin ningún
+      // secreto) sigue viviendo en el blob solo para decidir SI hay que
+      // mostrar el campo del código — pero la comprobación del código en sí
+      // ahora la hace el servidor (ver _solicitarCodigo2FALogin), que es
+      // quien de verdad guarda el secreto desde esta ronda.
+      if(sesionData.tfaActivo){
         await _solicitarCodigo2FALogin(sesionData,platDB,plat,pagTarget);
         return;
       }
@@ -3767,8 +3798,8 @@ function _solicitarCodigo2FALogin(sesionData,platDB,plat,pagTarget){
     ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:26px;max-width:380px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.35);text-align:center;color:#1a1a2e">'
       +'<div style="font-size:2.2rem;margin-bottom:6px">🔐</div>'
       +'<h3 style="color:#003366;margin-bottom:8px">Verificación en Dos Pasos</h3>'
-      +'<p style="font-size:0.85rem;color:#666;margin-bottom:16px">Ingrese el código de 6 dígitos de su aplicación autenticadora.</p>'
-      +'<input id="_codigo2FALoginInput" inputmode="numeric" maxlength="6" placeholder="000000" style="width:100%;padding:14px;font-size:1.5rem;text-align:center;letter-spacing:8px;border:2px solid #003366;border-radius:8px;margin-bottom:6px" autofocus>'
+      +'<p style="font-size:0.85rem;color:#666;margin-bottom:16px">Ingrese el código de 6 dígitos de su aplicación autenticadora, o uno de sus códigos de respaldo (formato XXXX-XXXX) si perdió el celular.</p>'
+      +'<input id="_codigo2FALoginInput" maxlength="9" placeholder="000000" style="width:100%;padding:14px;font-size:1.4rem;text-align:center;letter-spacing:4px;border:2px solid #003366;border-radius:8px;margin-bottom:6px" autofocus>'
       +'<div id="_error2FALogin" style="color:#c0392b;font-size:0.8rem;min-height:18px;margin-bottom:10px"></div>'
       +'<div style="display:flex;gap:10px">'
       +'<button id="_btnCancelar2FALogin" style="flex:1;background:#7f8c8d;color:#fff;border:none;border-radius:8px;padding:11px;font-weight:700;cursor:pointer">Cancelar</button>'
@@ -3778,13 +3809,30 @@ function _solicitarCodigo2FALogin(sesionData,platDB,plat,pagTarget){
     const input=document.getElementById('_codigo2FALoginInput');
     const errDiv=document.getElementById('_error2FALogin');
     input.focus();
-    const limpiar=function(){ const el=document.getElementById('_ov2FALogin'); if(el) el.remove(); };
+    const limpiar=function(){ if(typeof _liberarAccesibilidadPopup==='function') _liberarAccesibilidadPopup(ov); const el=document.getElementById('_ov2FALogin'); if(el) el.remove(); };
+    // RONDA 107 — extensión del ítem 4.2: este modal pide un dato sensible
+    // de seguridad (el código de 2FA) y, hasta esta ronda, era de los pocos
+    // que NO tenía foco atrapado ni se podía cerrar con Escape — se le
+    // aplica el mismo mecanismo ya probado que usan los popups de notas.
+    if(typeof _activarAccesibilidadPopup==='function') _activarAccesibilidadPopup(ov,function(){ limpiar(); resolve(false); },'Verificación en dos pasos');
     document.getElementById('_btnCancelar2FALogin').onclick=function(){ limpiar(); resolve(false); };
     const verificar=async function(){
       const codigo=input.value.trim();
       const btn=document.getElementById('_btnVerificar2FALogin');
       btn.disabled=true;btn.textContent='Verificando...';
-      const valido=await _totpVerificar(sesionData.tfaSecreto,codigo);
+      // RONDA 104 — el código ya NO se compara contra un secreto guardado
+      // localmente (ver nota de diseño junto a src/lib/totp.ts): se envía al
+      // servidor, que es quien guarda el secreto real y responde si es
+      // válido o no. Si la petición falla por completo (sin conexión, error
+      // del servidor), se trata como código inválido a propósito — una
+      // verificación de seguridad que "falla abierta" ante un error de red
+      // dejaría de ser una verificación real.
+      let valido=false;
+      try{
+        const _r2fa=await fetch(API_BASE+'/api/inetis/2fa/verificar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:plat.sk,usuario:sesionData.u,codigo})});
+        const _j2fa=await _r2fa.json().catch(()=>null);
+        valido=!!(_j2fa&&_j2fa.ok);
+      }catch(_e2fa){ valido=false; }
       if(valido){
         limpiar();
         window._pendingLogin={sesionData,platDB,plat,pag:pagTarget};
@@ -3799,7 +3847,7 @@ function _solicitarCodigo2FALogin(sesionData,platDB,plat,pagTarget){
         errDiv.textContent='Demasiados intentos fallidos. Vuelva a iniciar sesión.';
         setTimeout(function(){ limpiar(); resolve(false); },1800);
       }else{
-        errDiv.textContent='Código incorrecto. Le quedan '+intentosRestantes+' intento(s).';
+        errDiv.textContent='Código incorrecto (o sin conexión al servidor). Le quedan '+intentosRestantes+' intento(s).';
       }
     };
     document.getElementById('_btnVerificar2FALogin').onclick=verificar;
@@ -3848,6 +3896,11 @@ async function _finalizarSesionInstitucional(plat,sesionData,platDB,pagTarget){
   _tomarVersionRecienCargada(plat.sk);
   sesion=sesionData;
   pag=pagTarget||(rol==='padre'?'padre-home':rol==='estudiante'?'est-home':rol==='elecciones'?'elecciones':rol==='admin'?'tablero':rol==='docente'?'panel-docente':'planilla');
+  // RONDA 107 — ítem 1.8: arranca el temporizador de renovación deslizante
+  // del JWT justo al completar el login "en caliente" (ver
+  // _iniciarRenovacionSesionJWT más arriba) — el caso de sesión restaurada
+  // por F5 ya lo arranca por su cuenta en el bootstrap.
+  if(sesion.jwt) _iniciarRenovacionSesionJWT();
   _sseInit();
   _checkSchemaMigrationBanner();
   _actualizarBannerSyncManual();
@@ -4080,6 +4133,7 @@ function renderGestorAdmin(){
         <button class="tbtn" style="background:#e67e22;font-size:0.74rem" onclick="document.getElementById('fileRespaldoGestor').click()" title="Cargar respaldo JSON del sistema gestor">📂 Cargar</button>
         <input type="file" id="fileRespaldoGestor" accept=".json" style="display:none" onchange="cargarRespaldoGestor(this)">
         <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
+        <button class="theme-toggle-btn" data-densidad-toggle onclick="toggleDensidadTabla()" aria-pressed="${_densidadActual()==='compacta'?'true':'false'}">${_densidadActual()==='compacta'?'↕️ Vista cómoda':'↔️ Vista compacta'}</button>
         <button class="tbtn" style="background:#c0392b" onclick="cerrarGestorSesion()">🚪 Salir</button>
       </div>
     </div>
@@ -7212,6 +7266,80 @@ function calcPromedioEstPer(estId,grado,per){
   }
   return parseFloat((sumaW/totalW).toFixed(2));
 }
+// ── RONDA 107 · ítem 3.1: evolución histórica del estudiante ──
+// Construye la línea de tiempo periodo-a-periodo (incluso cruzando años
+// archivados vía db.historialAnios[]) del promedio general de UN
+// estudiante, para que un Director de Grupo/Rectoría pueda detectar una
+// tendencia a la baja antes de que sea un problema grave (en vez de solo
+// ver el promedio del periodo actual o el anual). Identifica al mismo
+// estudiante entre años usando numDoc (el id interno puede cambiar de un
+// año archivado a otro). Nunca lanza: cualquier año sin datos utilizables
+// simplemente se omite de la línea de tiempo.
+function _evolucionHistoricaEstudiante(estId){
+  const eActual=(db.ests||[]).find(e=>String(e.id)===String(estId));
+  if(!eActual) return [];
+  const numDoc=eActual.numDoc;
+  const puntos=[];
+  const hist=(db.historialAnios||[]).slice().sort((a,b)=>String(a.anio).localeCompare(String(b.anio)));
+  hist.forEach(h=>{
+    if(!h||!h.datos) return;
+    const dbReal=db;
+    try{
+      db={ests:h.datos.ests||[],carga:h.datos.carga||[],grados:h.datos.grados||[],config:h.datos.config||dbReal.config||{}};
+      const eHist=numDoc?(db.ests||[]).find(e=>e.numDoc&&String(e.numDoc)===String(numDoc)):null;
+      if(eHist){
+        const np=_getNumPer();
+        for(let p=1;p<=np;p++){
+          const prom=calcPromedioEstPer(eHist.id,eHist.g,p);
+          if(prom>0) puntos.push({anio:h.anio,per:p,prom,etiqueta:h.anio+'-P'+p});
+        }
+      }
+    }catch(e){/* nunca lanza: año histórico corrupto/incompleto se omite */}
+    finally{ db=dbReal; }
+  });
+  const npActual=_getNumPer();
+  for(let p=1;p<=npActual;p++){
+    const prom=calcPromedioEstPer(estId,eActual.g,p);
+    if(prom>0) puntos.push({anio:db.anio,per:p,prom,etiqueta:db.anio+'-P'+p});
+  }
+  return puntos;
+}
+function _verEvolucionHistoricaEstudiante(estId){
+  const e=(db.ests||[]).find(x=>String(x.id)===String(estId));
+  if(!e){customAlert('No se encontró el estudiante.');return;}
+  const puntos=_evolucionHistoricaEstudiante(estId);
+  const chartId='chEvolEst_'+Date.now();
+  const cerrarFn=()=>{const ov=document.getElementById('_evolHistModalOv');if(ov){_liberarAccesibilidadPopup(ov);ov.remove();}};
+  const filas=puntos.map(pt=>{
+    const color=pt.prom>=4.5?'#1e8449':pt.prom>=3?'#2980b9':'#c0392b';
+    return `<tr><td style="text-align:left">${pt.etiqueta}</td><td style="font-weight:bold;color:${color}">${pt.prom.toFixed(2)}</td></tr>`;
+  }).join('');
+  const html=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto" id="_evolHistModalOv" onclick="if(event.target===this)_cerrarEvolHistEst()">
+  <div style="background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto;padding:0;color:#1a1a2e" role="dialog" aria-modal="true" aria-label="Evolución histórica de ${fmtNombreEst(e)}">
+    <div style="background:linear-gradient(135deg,#8e44ad,#5b2c6f);color:#fff;padding:18px 20px;border-radius:12px 12px 0 0;position:sticky;top:0;z-index:1;display:flex;justify-content:space-between;align-items:center">
+      <div><h3 style="margin:0;font-size:1.05rem">📈 Evolución Histórica — ${fmtNombreEst(e)}</h3>
+        <small style="opacity:0.85">Promedio general por periodo (incluye años archivados)</small></div>
+      <button onclick="_cerrarEvolHistEst()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:1rem">✕</button>
+    </div>
+    <div style="padding:20px">
+      ${puntos.length<2?_htmlEstadoVacio('📉','Aún no hay suficientes periodos con notas registradas para trazar una tendencia. Esto requiere al menos 2 periodos con calificación.'):`
+      <div style="max-height:280px;margin-bottom:16px"><canvas id="${chartId}"></canvas></div>
+      <div class="over"><table><thead><tr style="background:#8e44ad;color:#fff"><th style="text-align:left">Periodo</th><th>Promedio</th></tr></thead><tbody>${filas}</tbody></table></div>`}
+    </div>
+  </div></div>`;
+  window._cerrarEvolHistEst=cerrarFn;
+  const div=document.createElement('div');div.innerHTML=html;document.body.appendChild(div.firstChild);
+  const ov=document.getElementById('_evolHistModalOv');
+  if(ov) _activarAccesibilidadPopup(ov,cerrarFn,'Evolución histórica de '+fmtNombreEst(e));
+  if(puntos.length>=2){
+    setTimeout(function(){
+      if(typeof Chart==='undefined') return;
+      const ctx=document.getElementById(chartId);if(!ctx) return;
+      new Chart(ctx,{type:'line',data:{labels:puntos.map(p=>p.etiqueta),datasets:[{label:'Promedio general',data:puntos.map(p=>p.prom),borderColor:'#8e44ad',backgroundColor:'rgba(142,68,173,0.15)',fill:true,tension:0.25,pointBackgroundColor:puntos.map(p=>p.prom>=3?'#2980b9':'#c0392b')}]},
+        options:{responsive:true,scales:{y:{beginAtZero:true,max:5}},plugins:{title:{display:true,text:'Tendencia del promedio general'}}}});
+    },200);
+  }
+}
 function getAreasPerdidas(estId,grado){
   const e=db.ests.find(x=>x.id===estId);if(!e) return [];
   const areas=_areasPorGrado(grado);
@@ -7708,6 +7836,42 @@ function _rehidratarSubmoduloPostRender(){
 function _borrarSesionDeStorage(){
   try{ sessionStorage.removeItem(RONDA35_SESION_STORAGE_KEY); }catch(e){}
 }
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 107 — ítem 1.8: renovación deslizante del JWT de sesión. Revisa
+// cada 15 minutos si hay una sesión con JWT (sesion.jwt) y, si lo hay,
+// llama a POST /api/auth/renovar — el servidor decide si ya corresponde
+// renovar (ventana final del 25% de su vida útil, ver renovarJWTSiAplica()
+// en src/lib/jwt-auth.ts) o si todavía no hace falta (responde
+// renovado:false, no pasa nada). Si el token SÍ se renueva, se reemplaza
+// sesion.jwt en memoria y se vuelve a guardar la sesión persistida (si el
+// bootstrap de esta institución la guarda en sessionStorage, ver
+// _restaurarSesionDesdeStorage), para que la próxima recarga de página
+// siga teniendo la versión más reciente.
+// "NUNCA LANZA" — totalmente compatible con el uso sin conexión: si la
+// llamada falla (sin señal, servidor caído), no pasa absolutamente nada;
+// el docente simplemente sigue trabajando con el token que ya tenía hasta
+// que expire de verdad, exactamente igual que antes de esta ronda.
+let _intervaloRenovacionJWT=null;
+async function _intentarRenovarSesionJWT(){
+  try{
+    if(!sesion||!sesion.jwt) return;
+    const r=await fetch(API_BASE+'/api/auth/renovar',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+sesion.jwt}});
+    if(!r.ok) return;
+    const j=await r.json().catch(()=>null);
+    if(j&&j.ok&&j.renovado&&j.token){
+      sesion={...sesion,jwt:j.token};
+      if(typeof _guardarSesionEnStorage==='function') _guardarSesionEnStorage();
+    }
+  }catch(e){ /* mejor esfuerzo: sin red, se sigue usando el token actual */ }
+}
+function _iniciarRenovacionSesionJWT(){
+  if(_intervaloRenovacionJWT) return; // ya estaba corriendo — nunca se duplica el temporizador
+  _intervaloRenovacionJWT=setInterval(_intentarRenovarSesionJWT,15*60*1000);
+  // También se intenta de inmediato al arrancar (ej. si la pestaña estuvo
+  // cerrada varias horas y el token ya quedó dentro de la ventana final al
+  // volver a abrirla), sin esperar los primeros 15 minutos del intervalo.
+  _intentarRenovarSesionJWT();
+}
 function render(){
   // Ronda 12, Sección 2: pantalla de restablecimiento de contraseña por
   // enlace seguro (?restablecerToken=...&sk=...). Se revisa ANTES que
@@ -7769,6 +7933,13 @@ function render(){
   // permite decidir, en el único caso angosto de abajo, si conviene evitar
   // el pull del blob completo.
   const _seRestauro=!sesion&&!window._adminPortalMode&&_restaurarSesionDesdeStorage();
+  // RONDA 107 — si la sesión rehidratada (F5) trae un JWT, se arranca el
+  // temporizador de renovación deslizante (ver _iniciarRenovacionSesionJWT
+  // más arriba) — así una pestaña que se deja abierta varias horas renueva
+  // su sesión sola, sin que la persona tenga que volver a iniciar sesión a
+  // media jornada. El login "en caliente" (doLoginInstitucional) lo arranca
+  // por su cuenta justo después de guardar sesion.jwt — ver más abajo.
+  if(_seRestauro&&sesion&&sesion.jwt) _iniciarRenovacionSesionJWT();
   // RONDA 56 — PILOTO DE MIGRACIÓN GRANULAR (Fase 2, aprobada por el
   // usuario): si un Docente reabre la app (F5) y su última pantalla
   // guardada era Planilla, se usa el mismo adaptador granular que ya usa la
@@ -9046,6 +9217,35 @@ function _pmFiltrar(q){
     +'<button onclick="abrirPreMatriculaPortalIntermedio(\''+match.id+'\')" style="background:linear-gradient(90deg,#27ae60,#1e8449);color:#fff;border:none;border-radius:9px;padding:10px 18px;font-size:0.85rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 3px 12px rgba(39,174,96,0.4)">📝 Iniciar Prematrícula</button>'
     +'</div>';
 }
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 101 — Helpers de bloqueo de cuenta tras intentos fallidos de login.
+// Los 3 son deliberadamente "nunca lanza": ante cualquier falla de red o
+// del servidor, se comportan como si NO hubiera bloqueo (se prefiere
+// perder esta capa extra de protección a bloquear a alguien por un
+// problema de infraestructura ajeno a su contraseña). Ver el comentario
+// extenso en src/lib/login-lockout.ts (backend) para la justificación
+// completa de por qué este bloqueo se consulta al servidor en vez de
+// resolverse enteramente aquí, en el navegador.
+// ════════════════════════════════════════════════════════════════════════
+async function _consultarBloqueoLogin(usuario){
+  try{
+    const resp=await fetch(API_BASE+'/api/inetis/login-estado',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_skActual(),usuario})});
+    if(!resp.ok) return {bloqueado:false};
+    return await resp.json();
+  }catch(e){ return {bloqueado:false}; }
+}
+async function _registrarFalloLogin(usuario){
+  try{
+    const resp=await fetch(API_BASE+'/api/inetis/login-fallido',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_skActual(),usuario})});
+    if(!resp.ok) return null;
+    return await resp.json();
+  }catch(e){ return null; }
+}
+function _registrarExitoLogin(usuario){
+  try{
+    fetch(API_BASE+'/api/inetis/login-exitoso',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_skActual(),usuario})}).catch(()=>{});
+  }catch(e){}
+}
 async function doLogin(){
   const rol=document.getElementById('lRol').value;
   const u=document.getElementById('lUser').value.trim();
@@ -9085,7 +9285,44 @@ async function doLogin(){
     render();return;
   }
   const user=db.users.find(x=>x.u===u&&x.r===rol);
-  if(!user||!(await _verificarPassword(p,user.p))){customAlert('Credenciales incorrectas.');return;}
+  // RONDA 101 — BLOQUEO DE CUENTA TRAS INTENTOS FALLIDOS DE LOGIN: se
+  // consulta al servidor ANTES de siquiera intentar comparar la contraseña
+  // localmente — ver el comentario extenso en src/lib/login-lockout.ts
+  // (backend) sobre por qué este bloqueo vive en el servidor, independiente
+  // del blob de la institución que ya está en memoria. Solo se consulta si
+  // el usuario existe (si "u" no corresponde a nadie, el mensaje final es
+  // idéntico de todas formas — no tiene sentido ni valor gastar una
+  // petición de red por un usuario inexistente).
+  if(user){
+    const estadoBloqueo=await _consultarBloqueoLogin(u);
+    if(estadoBloqueo&&estadoBloqueo.bloqueado){
+      customAlert('Esta cuenta está bloqueada temporalmente por demasiados intentos fallidos. Intente de nuevo en '+estadoBloqueo.minutosRestantes+' minuto(s).');
+      return;
+    }
+  }
+  if(!user||!(await _verificarPassword(p,user.p))){
+    if(user){
+      // Credenciales incorrectas pero el USUARIO sí existe: se registra el
+      // fallo en el servidor (ver _registrarFalloLogin) para que, tras
+      // varios intentos seguidos, la cuenta quede bloqueada — "nunca lanza":
+      // si el registro falla (red/servidor), el login simplemente continúa
+      // mostrando el mensaje genérico de siempre, sin esta capa extra.
+      const resultado=await _registrarFalloLogin(u);
+      if(resultado&&resultado.bloqueado){
+        customAlert('Credenciales incorrectas. Por seguridad, esta cuenta ha quedado bloqueada temporalmente. Intente de nuevo en '+resultado.minutosRestantes+' minuto(s).');
+        return;
+      }
+      if(resultado&&typeof resultado.intentosRestantes==='number'&&resultado.intentosRestantes>0&&resultado.intentosRestantes<=2){
+        customAlert('Credenciales incorrectas. Le quedan '+resultado.intentosRestantes+' intento(s) antes de un bloqueo temporal de la cuenta.');
+        return;
+      }
+    }
+    customAlert('Credenciales incorrectas.');return;
+  }
+  // Login exitoso: se limpia cualquier contador de intentos fallidos que
+  // hubiera en el servidor — fire-and-forget (no debe retrasar ni poder
+  // romper un login que ya fue exitoso).
+  _registrarExitoLogin(u);
   if(!_esHashPassword(user.p)){
     // Migración perezosa: la contraseña heredada coincidió, se re-guarda ya cifrada
     const nuevoHash=await _hashPassword(p);
@@ -9280,6 +9517,24 @@ function toggleTema(){
   document.querySelectorAll('[data-theme-toggle]').forEach(function(btn){
     btn.textContent = esOscuro ? '☀️ Modo claro' : '🌙 Modo oscuro';
     btn.setAttribute('aria-pressed', esOscuro ? 'true' : 'false');
+  });
+}
+// RONDA 107 — ítem 4.3: densidad de tablas grandes ("cómoda"/"compacta"),
+// mismo patrón exacto que el Modo Oscuro de arriba (atributo en <html> +
+// localStorage + botones marcados con un data-* para poder refrescar su
+// texto/aria-pressed desde cualquier pantalla que los incluya).
+function _densidadActual(){
+  return document.documentElement.getAttribute('data-densidad')==='compacta' ? 'compacta' : 'comoda';
+}
+function toggleDensidadTabla(){
+  const nuevo = _densidadActual()==='compacta' ? 'comoda' : 'compacta';
+  if(nuevo==='compacta') document.documentElement.setAttribute('data-densidad','compacta');
+  else document.documentElement.removeAttribute('data-densidad');
+  try{ localStorage.setItem('gestorYcDensidad', nuevo); }catch(e){}
+  const esCompacta = nuevo==='compacta';
+  document.querySelectorAll('[data-densidad-toggle]').forEach(function(btn){
+    btn.textContent = esCompacta ? '↕️ Vista cómoda' : '↔️ Vista compacta';
+    btn.setAttribute('aria-pressed', esCompacta ? 'true' : 'false');
   });
 }
 
@@ -10415,6 +10670,7 @@ function renderApp(){
           <div class="sf-rol">${_rolLabel}</div>
           <button class="tbtn" style="background:#003366;width:100%;padding:7px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:6px;margin-bottom:6px" onclick="abrirMiPerfil()" title="Ver y editar mis propios datos (rol, decreto/régimen, hoja de vida, contacto)">👤 Mi Perfil</button>
           <button class="theme-toggle-btn" data-theme-toggle style="width:100%;justify-content:center;margin-bottom:6px" onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
+          <button class="theme-toggle-btn" data-densidad-toggle style="width:100%;justify-content:center;margin-bottom:6px" onclick="toggleDensidadTabla()" aria-pressed="${_densidadActual()==='compacta'?'true':'false'}">${_densidadActual()==='compacta'?'↕️ Vista cómoda':'↔️ Vista compacta'}</button>
           <button class="tbtn" style="background:#c0392b;width:100%;padding:7px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:6px;margin-top:2px" onclick="cerrarSesion()">🚪 Cerrar sesión</button>
           <div style="text-align:center;font-size:0.62rem;color:#888;margin-top:8px;opacity:0.7" title="Si esto no coincide con la última actualización que le entregaron, el navegador está mostrando una versión vieja en caché">v.${GESTOR_YC_BUILD}</div>
         </div>
@@ -10482,6 +10738,7 @@ function renderApp(){
                   </div>
                   <div style="font-size:0.8rem;color:#555;margin-bottom:8px">📧 <b>${sesion.email||'No registrado'}</b> &nbsp;|&nbsp; 📞 <b>${sesion.telefono||'No registrado'}</b></div>
                   ${sesion.r==='admin'?_html2FAPerfil():''}
+                  ${sesion.r==='admin'?_htmlBitacoraAuditoriaPerfil():''}
                   <div id="_perfilHuellaZona"></div>
                 </div>
               </div>
@@ -10889,20 +11146,76 @@ function cerrarSesion(){
 // Sección de "Mi Perfil" para activar/desactivar la verificación en dos
 // pasos — visible solo para administrador/rector, el rol más sensible.
 function _html2FAPerfil(){
-  const activo=sesion.tfaActivo&&sesion.tfaSecreto;
+  // RONDA 104 — ya no se exige "sesion.tfaSecreto" (dejó de existir a
+  // propósito: el secreto ahora vive solo en el servidor, nunca en la
+  // sesión del navegador) — el booleano "tfaActivo" es, desde esta ronda,
+  // la única señal que necesita el frontend.
+  const activo=!!sesion.tfaActivo;
   return '<div style="background:'+(activo?'#eafaf1':'#fff8e6')+';border:1px solid '+(activo?'#a9dfbf':'#f1c40f')+';border-radius:8px;padding:10px 14px;margin-bottom:10px">'
     +'<div style="font-weight:bold;font-size:0.85rem;color:'+(activo?'#1e8449':'#7d6608')+'">🔐 Verificación en Dos Pasos: '+(activo?'✅ Activada':'⚠️ Desactivada')+'</div>'
     +'<div style="font-size:0.78rem;color:#666;margin:4px 0 8px">'+(activo?'Su cuenta está protegida con un segundo factor además de la contraseña.':'Opcional, pero recomendado para esta cuenta — protege contra el acceso aunque alguien más conozca su contraseña.')+'</div>'
     +(activo
-      ?'<button class="btn-sm" style="background:#c0392b" onclick="_iniciarDesactivar2FA()">Desactivar</button>'
+      ?'<button class="btn-sm" style="background:#c0392b" onclick="_iniciarDesactivar2FA()">Desactivar</button> '
+        // RONDA 106 — regenerar códigos de respaldo: invalida los códigos
+        // viejos y emite un lote nuevo, para el caso de haberlos agotado o
+        // de querer un lote nuevo tras guardar accidentalmente los
+        // anteriores en un lugar inseguro.
+        +'<button class="btn-sm" style="background:#7f5a00" onclick="_regenerarCodigosRespaldo2FA()">🔑 Regenerar códigos de respaldo</button>'
       :'<button class="btn-sm" style="background:#003366" onclick="_iniciarActivar2FA()">Activar Verificación en Dos Pasos</button>')
     +'</div>';
 }
+// RONDA 106 — Modal de "una sola vez" para mostrar un lote de códigos de
+// respaldo recién emitidos (al activar 2FA, o al regenerarlos desde "Mi
+// Perfil"). Es la única vez que estos códigos existen en texto plano fuera
+// del propio servidor (que solo guarda su hash) — de ahí la advertencia
+// explícita de guardarlos ahora, porque no se podrán volver a mostrar.
+function _mostrarModalCodigosRespaldo(codigos){
+  const ov=document.createElement('div');
+  ov.id='_ovCodigosRespaldo2FA';
+  ov.style.cssText='position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:24px;max-width:380px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.35);text-align:center;margin:auto;color:#1a1a2e">'
+    +'<div style="font-size:2rem;margin-bottom:6px">🔑</div>'
+    +'<h3 style="color:#003366;margin-bottom:8px">Sus códigos de respaldo</h3>'
+    +'<p style="font-size:0.82rem;color:#c0392b;font-weight:700;margin-bottom:12px">Guárdelos ahora en un lugar seguro — no se volverán a mostrar. Cada uno sirve una sola vez para iniciar sesión o desactivar la verificación en dos pasos si pierde su celular.</p>'
+    +'<div id="_codigosRespaldo2FAContenido" style="text-align:left;margin-bottom:14px"></div>'
+    +'<button id="_btnCerrarCodigosRespaldo2FA" style="width:100%;background:#003366;color:#fff;border:none;border-radius:8px;padding:12px;font-weight:700;cursor:pointer">Ya los guardé</button>'
+    +'</div>';
+  document.body.appendChild(ov);
+  const filas=(codigos||[]).map(c=>'<div style="font-family:monospace;font-size:1rem;background:#f0f4f8;border-radius:6px;padding:6px;margin-bottom:5px;user-select:all">'+_escaparHtmlModal(c)+'</div>').join('');
+  document.getElementById('_codigosRespaldo2FAContenido').innerHTML=filas;
+  const cerrarCodigosRespaldo=function(){ if(typeof _liberarAccesibilidadPopup==='function') _liberarAccesibilidadPopup(ov); const el=document.getElementById('_ovCodigosRespaldo2FA'); if(el) el.remove(); };
+  document.getElementById('_btnCerrarCodigosRespaldo2FA').onclick=cerrarCodigosRespaldo;
+  // RONDA 107 — extensión del ítem 4.2: estos códigos se muestran UNA sola
+  // vez — más razón para que el modal sea completamente operable por
+  // teclado (Tab atrapado, Escape para cerrar) sin depender del mouse.
+  if(typeof _activarAccesibilidadPopup==='function') _activarAccesibilidadPopup(ov,cerrarCodigosRespaldo,'Sus códigos de respaldo');
+}
+async function _regenerarCodigosRespaldo2FA(){
+  const codigo=await customPrompt('Para regenerar sus códigos de respaldo, ingrese el código de 6 dígitos vigente de su aplicación autenticadora (no un código de respaldo):');
+  if(codigo==null) return; // canceló
+  const _sk2fa=_skActual();
+  let resultado=null;
+  try{
+    const _rReg=await fetch(API_BASE+'/api/inetis/2fa/regenerar-codigos-respaldo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk2fa,usuario:sesion.u,codigo:String(codigo).trim()})});
+    resultado=await _rReg.json().catch(()=>null);
+  }catch(e){ resultado=null; }
+  if(!resultado||!resultado.ok||!resultado.codigosRespaldo){ customAlert('❌ '+((resultado&&resultado.error)||'No se pudieron regenerar los códigos de respaldo (código incorrecto o sin conexión).')); return; }
+  _mostrarModalCodigosRespaldo(resultado.codigosRespaldo);
+}
 async function _iniciarActivar2FA(){
-  const secreto=_generarSecreto2FA();
-  const nombreApp='GestorYC';
-  const etiqueta=encodeURIComponent(nombreApp+':'+sesion.u);
-  const uri='otpauth://totp/'+etiqueta+'?secret='+secreto+'&issuer='+encodeURIComponent(nombreApp)+'&algorithm=SHA1&digits=6&period=30';
+  // RONDA 104 — el secreto YA NO se genera en el navegador: se le pide al
+  // servidor (que es quien lo va a guardar y verificar desde ahora — ver
+  // src/lib/totp.ts) para que nunca exista una versión del secreto que
+  // termine viajando dentro de "db" (y por lo tanto dentro del blob que
+  // cualquiera con el "sk" puede descargar completo).
+  const _sk2fa=_skActual();
+  let secreto='',uri='';
+  try{
+    const _rCfg=await fetch(API_BASE+'/api/inetis/2fa/configurar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk2fa,usuario:sesion.u})});
+    const _jCfg=await _rCfg.json().catch(()=>null);
+    if(!_rCfg.ok||!_jCfg||!_jCfg.secreto){ customAlert('No se pudo iniciar la configuración de la verificación en dos pasos (sin conexión con el servidor). Intente de nuevo en un momento.'); return; }
+    secreto=_jCfg.secreto; uri=_jCfg.otpauthUri;
+  }catch(e){ customAlert('No se pudo iniciar la configuración de la verificación en dos pasos (sin conexión con el servidor). Intente de nuevo en un momento.'); return; }
   let qrImg='';
   try{ if(typeof QRCode!=='undefined'&&QRCode.toDataURL){ qrImg=await QRCode.toDataURL(uri,{margin:1,width:180}); } }catch(e){}
   const ov=document.createElement('div');
@@ -10922,24 +11235,141 @@ async function _iniciarActivar2FA(){
     +'</div></div>';
   document.body.appendChild(ov);
   document.getElementById('_codigo2FASetupInput').focus();
+  if(typeof _activarAccesibilidadPopup==='function') _activarAccesibilidadPopup(ov,function(){ if(typeof _liberarAccesibilidadPopup==='function') _liberarAccesibilidadPopup(ov); const el=document.getElementById('_ov2FASetup'); if(el) el.remove(); },'Activar verificación en dos pasos');
   document.getElementById('_btnConfirmar2FASetup').onclick=async function(){
     const codigo=document.getElementById('_codigo2FASetupInput').value.trim();
     const errDiv=document.getElementById('_error2FASetup');
-    const valido=await _totpVerificar(secreto,codigo);
-    if(!valido){ errDiv.textContent='Código incorrecto — verifique la hora de su celular y vuelva a intentar.'; return; }
-    updDB(function(d){ d.users=d.users.map(x=>x.u===sesion.u?{...x,tfaActivo:true,tfaSecreto:secreto}:x); return d; });
-    sesion={...sesion,tfaActivo:true,tfaSecreto:secreto};
+    // RONDA 104 — la confirmación también la valida el servidor, contra el
+    // secreto que YA guardó en el paso anterior (nunca se vuelve a mandar
+    // el secreto completo de vuelta, solo el código de 6 dígitos).
+    let valido=false,_jConf=null;
+    try{
+      const _rConf=await fetch(API_BASE+'/api/inetis/2fa/confirmar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk2fa,usuario:sesion.u,codigo})});
+      _jConf=await _rConf.json().catch(()=>null);
+      valido=!!(_jConf&&_jConf.ok);
+    }catch(e){ valido=false; }
+    if(!valido){ errDiv.textContent='Código incorrecto (o sin conexión) — verifique la hora de su celular y vuelva a intentar.'; return; }
+    // El blob SOLO guarda el booleano "tfaActivo" (sin ningún secreto) —
+    // únicamente para que el login sepa que debe pedir el código; el
+    // secreto real vive exclusivamente en el servidor desde esta ronda.
+    // Se limpia también cualquier "tfaSecreto" heredado de una activación
+    // anterior a la Ronda 104, para terminar de sacarlo del blob.
+    updDB(function(d){ d.users=d.users.map(x=>{ if(x.u!==sesion.u) return x; const {tfaSecreto,...resto}=x; return {...resto,tfaActivo:true}; }); return d; });
+    sesion={...sesion,tfaActivo:true,tfaSecreto:undefined};
     document.getElementById('_ov2FASetup').remove();
     _showToast('✅ Verificación en dos pasos activada.','success',4000);
     renderApp();
+    // RONDA 106 — el servidor, al confirmar la activación, también emite el
+    // primer lote de códigos de respaldo (ver _emitirNuevosCodigosRespaldo
+    // en src/index.ts) y los devuelve en texto plano esta única vez.
+    if(_jConf&&Array.isArray(_jConf.codigosRespaldo)&&_jConf.codigosRespaldo.length){
+      _mostrarModalCodigosRespaldo(_jConf.codigosRespaldo);
+    }
   };
 }
 async function _iniciarDesactivar2FA(){
-  if(!await customConfirm('¿Desactivar la verificación en dos pasos? Su cuenta quedará protegida solo con la contraseña.')) return;
-  updDB(function(d){ d.users=d.users.map(x=>x.u===sesion.u?{...x,tfaActivo:false,tfaSecreto:null}:x); return d; });
-  sesion={...sesion,tfaActivo:false,tfaSecreto:null};
+  // RONDA 104 — desactivarla ahora exige el código vigente de la app
+  // autenticadora (prueba de que quien lo pide todavía tiene el segundo
+  // factor) — igual que cualquier flujo serio de 2FA. Antes bastaba con
+  // confirmar un cuadro de diálogo porque la verificación completa ocurría
+  // en el navegador; ahora el servidor es quien manda y exige esa prueba.
+  const codigo=await customPrompt('Para desactivar la verificación en dos pasos, ingrese el código de 6 dígitos vigente de su aplicación autenticadora (o uno de sus códigos de respaldo si perdió el celular):');
+  if(codigo==null) return; // canceló
+  const _sk2fa=_skActual();
+  let resultado=null;
+  try{
+    const _rDes=await fetch(API_BASE+'/api/inetis/2fa/desactivar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sk:_sk2fa,usuario:sesion.u,codigo:String(codigo).trim()})});
+    resultado=await _rDes.json().catch(()=>null);
+  }catch(e){ resultado=null; }
+  if(!resultado||!resultado.ok){ customAlert('❌ '+((resultado&&resultado.error)||'No se pudo desactivar la verificación en dos pasos (código incorrecto o sin conexión).')); return; }
+  updDB(function(d){ d.users=d.users.map(function(x){ if(x.u!==sesion.u) return x; const {tfaSecreto,...resto}=x; return {...resto,tfaActivo:false}; }); return d; });
+  sesion={...sesion,tfaActivo:false,tfaSecreto:undefined};
   _showToast('Verificación en dos pasos desactivada.','info',3500);
   renderApp();
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 106 — Visor de la Bitácora de Auditoría de acciones sensibles (ver
+// detectarAccionesSensibles() en src/lib/auditoria-acciones.ts, Ronda 103).
+// Hasta esta ronda, esos datos solo se podían consultar por API — esta es
+// la primera pantalla dentro del sistema para que el Rector/Administrador
+// los vea sin tener que pedirle ayuda a nadie. Se agrega como una tarjeta
+// más en "Mi Perfil" (en vez de una pantalla/menú nuevos) para no tocar el
+// enrutamiento de páginas existente — misma decisión de bajo riesgo que ya
+// funcionó bien con el modal de activación de 2FA en la Ronda 104.
+// ════════════════════════════════════════════════════════════════════════
+function _htmlBitacoraAuditoriaPerfil(){
+  return '<div style="background:#eef2f7;border:1px solid #c3d0e0;border-radius:8px;padding:10px 14px;margin-bottom:10px">'
+    +'<div style="font-weight:bold;font-size:0.85rem;color:#1a3a5c">🛡️ Bitácora de Auditoría</div>'
+    +'<div style="font-size:0.78rem;color:#666;margin:4px 0 8px">Quién ajustó un puesto manualmente, eliminó un estudiante o usuario, o cambió la configuración de la institución.</div>'
+    +'<button class="btn-sm" style="background:#1a3a5c" onclick="_abrirBitacoraAuditoria()">Ver Bitácora de Auditoría</button>'
+    +'</div>';
+}
+const _ETIQUETAS_ACCION_AUDITORIA={
+  ajuste_puesto_manual:'✏️ Ajuste manual de puesto',
+  estudiante_eliminado:'🗑️ Estudiante eliminado',
+  usuario_eliminado:'🗑️ Usuario/docente eliminado',
+  configuracion_institucional_modificada:'⚙️ Configuración modificada',
+};
+function _resumenDetalleAuditoria(accion,detalle){
+  if(!detalle) return '—';
+  try{
+    if(accion==='ajuste_puesto_manual'){
+      const antes=detalle.puestoAnterior&&detalle.puestoAnterior.puesto!=null?detalle.puestoAnterior.puesto:'—';
+      const despues=detalle.puestoNuevo&&detalle.puestoNuevo.puesto!=null?detalle.puestoNuevo.puesto:'(automático)';
+      return 'Clave '+(detalle.clave||'—')+': '+antes+' → '+despues;
+    }
+    if(accion==='estudiante_eliminado') return (detalle.nombre||'Sin nombre')+' (id '+detalle.id+')';
+    if(accion==='usuario_eliminado') return (detalle.nombre||detalle.usuario||'—')+' — rol: '+(detalle.rol||'—');
+    if(accion==='configuracion_institucional_modificada') return 'Campo "'+detalle.campo+'": '+JSON.stringify(detalle.valorAnterior)+' → '+JSON.stringify(detalle.valorNuevo);
+    return JSON.stringify(detalle);
+  }catch(e){ return JSON.stringify(detalle); }
+}
+async function _abrirBitacoraAuditoria(){
+  const sk=_skActual();
+  const ov=document.createElement('div');
+  ov.id='_ovBitacoraAuditoria';
+  ov.style.cssText='position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+  ov.innerHTML='<div style="background:#fff;border-radius:14px;padding:22px;max-width:720px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.35);color:#1a1a2e;margin:auto">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3 style="color:#1a3a5c;margin:0">🛡️ Bitácora de Auditoría</h3><button onclick="document.getElementById(\'_ovBitacoraAuditoria\').remove()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:#888">✕</button></div>'
+    +'<div id="_bitacoraAuditoriaContenido" style="font-size:0.85rem">Cargando…</div>'
+    +'</div>';
+  document.body.appendChild(ov);
+  const cerrarBitacora=function(){ if(typeof _liberarAccesibilidadPopup==='function') _liberarAccesibilidadPopup(ov); const el=document.getElementById('_ovBitacoraAuditoria'); if(el) el.remove(); };
+  // RONDA 107 — extensión del ítem 4.2: se reemplaza el cierre "a mano" del
+  // botón ✕ (que solo quitaba el elemento) por la misma función que también
+  // libera el listener de accesibilidad, y se atrapa el foco + Escape igual
+  // que en los demás modales de esta ronda.
+  const _btnCerrarBitacora=ov.querySelector('button');
+  if(_btnCerrarBitacora) _btnCerrarBitacora.onclick=cerrarBitacora;
+  if(typeof _activarAccesibilidadPopup==='function') _activarAccesibilidadPopup(ov,cerrarBitacora,'Bitácora de auditoría');
+  const cont=document.getElementById('_bitacoraAuditoriaContenido');
+  try{
+    const headers={'Content-Type':'application/json'};
+    if(sesion&&sesion.jwt) headers['Authorization']='Bearer '+sesion.jwt;
+    const qs=new URLSearchParams({sk:sk||'',actorRol:'admin',actorUsuario:(sesion&&sesion.u)||'',actorNombre:(sesion&&sesion.n)||''});
+    const r=await fetch(API_BASE+'/api/inetis/auditoria-acciones?'+qs.toString(),{headers});
+    const j=await r.json().catch(()=>null);
+    if(!r.ok||!j||j.ok===false||!Array.isArray(j.eventos)){
+      cont.innerHTML='<div style="color:#c0392b">No se pudo cargar la bitácora en este momento'+(j&&j.error?(': '+j.error):'')+'.</div>';
+      return;
+    }
+    if(!j.eventos.length){
+      cont.innerHTML='<div style="color:#666">Todavía no hay ninguna acción registrada en la bitácora para esta institución.</div>';
+      return;
+    }
+    const filas=j.eventos.map(function(ev){
+      const fecha=ev.creadoEn?new Date(ev.creadoEn).toLocaleString('es-CO'):'—';
+      const etiqueta=_ETIQUETAS_ACCION_AUDITORIA[ev.accion]||ev.accion;
+      const quien=ev.usuarioNombre||ev.usuario||'(desconocido)';
+      return '<tr><td style="padding:5px;border-bottom:1px solid #eee;white-space:nowrap">'+fecha+'</td>'
+        +'<td style="padding:5px;border-bottom:1px solid #eee">'+etiqueta+'</td>'
+        +'<td style="padding:5px;border-bottom:1px solid #eee">'+(_escaparHtmlModal?_escaparHtmlModal(quien):quien)+'</td>'
+        +'<td style="padding:5px;border-bottom:1px solid #eee;font-size:0.78rem;color:#555">'+_resumenDetalleAuditoria(ev.accion,ev.detalle)+'</td></tr>';
+    }).join('');
+    cont.innerHTML='<table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;color:#1a3a5c"><th style="padding:5px">Fecha</th><th style="padding:5px">Acción</th><th style="padding:5px">Quién</th><th style="padding:5px">Detalle</th></tr></thead><tbody>'+filas+'</tbody></table>';
+  }catch(e){
+    cont.innerHTML='<div style="color:#c0392b">No se pudo cargar la bitácora (sin conexión con el servidor).</div>';
+  }
 }
 async function actualizarPerfil(){
   const u=document.getElementById('pUser').value.trim();const p=document.getElementById('pPass').value.trim();
@@ -12738,6 +13168,7 @@ function htmlEstTabla(grado){
     <td>
     <button class="btn-sm" style="background:#2980b9" title="Ficha de Matrícula" onclick="abrirFichaModal('${String(e.id)}')">📋</button>
     <button class="btn-sm" style="background:#8e44ad" title="Generar enlace de consulta rápida para el acudiente (vía WhatsApp/celular)" onclick="_generarEnlaceConsultaRapida('${String(e.id)}','${e.n.replace(/'/g,"\\'")}')">🔗</button>
+    <button class="btn-sm" style="background:#5b2c6f" title="Evolución histórica (periodo a periodo, incluye años archivados)" onclick="_verEvolucionHistoricaEstudiante('${String(e.id)}')">📈</button>
     <button class="btn-sm" style="background:#e67e22" title="Editar" onclick="editarEst('${String(e.id)}')">✎</button>
     <button class="btn-sm" style="background:#16a085" title="Trasladar a otro grado" onclick="abrirModalTrasladar1('${String(e.id)}')">🔄</button>
     ${_privT?`<button class="btn-sm" style="background:${(() => {const ps=_getPazSalvoEst(e);return ps.ok?'#27ae60':'#c0392b';})()}" title="Paz y Salvo" onclick="abrirPazSalvoModal('${String(e.id)}')">⚖️</button>`:''}
@@ -16430,9 +16861,18 @@ function _registrarCambioMatricula(d,info){
   });
   if(d.logMatricula.length>1000) d.logMatricula=d.logMatricula.slice(d.logMatricula.length-1000);
 }
+// RONDA 107 — extensión del ítem 1.6: se marca en el propio registro si el
+// cambio ocurrió con el periodo YA CERRADO (db.periodosActivos[per-1]===false).
+// Solo un Admin/Rector puede guardar una nota con el periodo cerrado (la
+// Planilla ya se lo impide a cualquier otro rol — ver "_perActTabla" en
+// htmlPlanilla()), así que esta bandera identifica exactamente el caso que
+// el documento de mejoras pedía poder auditar, sin necesitar ninguna
+// migración de datos: se calcula con lo que YA existe en el blob en el
+// momento del guardado.
 function _registrarCambioNota(d,info){
   if(info.valorAnterior===info.valorNuevo) return; // sin cambio real, no se registra
   if(!Array.isArray(d.logNotas)) d.logNotas=[];
+  const periodoCerrado=Array.isArray(d.periodosActivos)&&d.periodosActivos[Number(info.per)-1]===false;
   d.logNotas.push({
     id:'ln_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),
     fecha:new Date().toISOString(),
@@ -16444,10 +16884,26 @@ function _registrarCambioNota(d,info){
     per:info.per,
     campo:info.campo,
     valorAnterior:info.valorAnterior,
-    valorNuevo:info.valorNuevo
+    valorNuevo:info.valorNuevo,
+    periodoCerrado
   });
   // Se conservan como máximo los últimos 1000 registros para no crecer indefinidamente
   if(d.logNotas.length>1000) d.logNotas=d.logNotas.slice(d.logNotas.length-1000);
+}
+// RONDA 107 — avisa al Admin/Rector (vía el mismo canal de notificaciones
+// institucional + push ya usado por las demás alertas tempranas) cuando una
+// nota se cambió con el periodo ya cerrado. "Nunca lanza": un fallo de red
+// aquí nunca debe afectar el guardado real de la nota, que ya ocurrió antes
+// de llamar a esta función.
+function _alertarCambioNotaPeriodoCerradoSiAplica(d,info){
+  const periodoCerrado=Array.isArray(d.periodosActivos)&&d.periodosActivos[Number(info.per)-1]===false;
+  if(!periodoCerrado) return;
+  const carga=(d.carga||[]).find(c=>String(c.id)===String(info.cId));
+  const msg='⚠️ '+(sesion?(sesion.n||sesion.u):'Alguien')+' modificó una nota de '+(info.estNombre||info.estId)+' en '+(carga?carga.m:'una asignatura')+' (Periodo '+info.per+') DESPUÉS de que ese periodo ya estaba cerrado.';
+  fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sk:_skActual(),kind:'nota-cambiada-periodo-cerrado',actor:sesion?sesion.u:'—',message:msg,
+      meta:{estId:info.estId,estNombre:info.estNombre,cId:info.cId,per:info.per,fecha:new Date().toISOString()}})
+  }).catch(()=>{});
 }
 // ── Alertas automáticas a padres: si una asignatura ACABA de cruzar a bajo desempeño
 // (antes ≥3.0, ahora <3.0) por este guardado puntual, se reutiliza exactamente el mismo
@@ -16469,6 +16925,36 @@ function _dispararAlertaBajoDesempenoSiAplica(estId,cId,per,baseAntes,baseDespue
       body:JSON.stringify({to:est.email,subject:`⚠️ Alerta Académica automática — ${carga.m} — ${est.n}`,text:cuerpo})
     }).catch(()=>{});
   }
+}
+// ════════════════════════════════════════════════════════════════════════
+// RONDA 107 — ítem 3.2: "este estudiante lleva 2 periodos seguidos en Bajo
+// en la misma área", dirigida automáticamente al Director de Grupo (no al
+// acudiente — esa es la alerta de arriba, que ya existía). Se reutiliza:
+// (a) el mismo criterio de "Bajo" (base<3) que ya usa
+// _dispararAlertaBajoDesempenoSiAplica, (b) el mismo canal /api/inetis/notify
+// + push, y (c) el campo "grado.d" (ya usado para firmar boletines) para
+// saber quién es el Director de Grupo de ese estudiante.
+// Se llama DESPUÉS de updDB() y SOLO cuando este guardado puntual fue el
+// que hizo que el periodo ACTUAL cruzara a Bajo (mismo criterio de
+// "crossing" que la alerta a acudientes) — así no se reenvía el mismo
+// aviso en cada guardado posterior dentro del mismo periodo, solo una vez,
+// justo cuando el patrón de 2 periodos consecutivos queda confirmado.
+function _verificarRiesgoAcademicoConsecutivoSiAplica(estId,cId,per,baseAntes,baseDespues){
+  if(!(baseAntes>=3&&baseDespues<3)) return; // solo en el momento exacto del cruce hacia Bajo
+  if(Number(per)<2) return; // no hay periodo anterior con el que comparar
+  const est=db.ests.find(x=>x.id===estId);if(!est) return;
+  const carga=db.carga.find(x=>x.id===cId);if(!carga) return;
+  const ndAnterior=((est.nts||{})[cId]||{})[Number(per)-1];
+  if(!ndAnterior) return; // sin nota registrada en el periodo anterior: no se puede confirmar el patrón
+  const baseAnterior=_baseNota(ndAnterior,db.config||{});
+  if(!(baseAnterior<3)) return; // el periodo anterior NO estaba en Bajo: no es un patrón de 2 consecutivos
+  const infoG=(db.grados||[]).find(g=>g.n===est.g);
+  const directorUsuario=infoG?infoG.d:'';
+  const msg=`🔻 Riesgo académico: ${est.n} (${est.g}) lleva 2 periodos seguidos en Bajo desempeño en ${carga.m} (Periodos ${Number(per)-1} y ${per}).`;
+  fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sk:_skActual(),kind:'alerta-academica-consecutiva',actor:'Sistema (automático)',message:msg,
+      meta:{estId:est.id,estNombre:est.n,grado:est.g,asignatura:carga.m,periodoActual:Number(per),periodoAnterior:Number(per)-1,directorGrupoUsuario:directorUsuario,automatica:true,fecha:new Date().toISOString()}})
+  }).catch(()=>{});
 }
 // ── Alerta automática por observación de aula (comportamiento, asistencia
 // puntual, u otros aspectos registrados por el docente) ────────────────────
@@ -16834,6 +17320,7 @@ function guardarInasistenciaManual(estId,cId,per,valor){
     }
     d.ests[idx]={...e,nts};
     _registrarCambioNota(d,{estId,estNombre:e.n,cId:cIdN,per:perN,campo:'ina',valorAnterior,valorNuevo:numVal});
+    _alertarCambioNotaPeriodoCerradoSiAplica(d,{estId,estNombre:e.n,cId:cIdN,per:perN});
     return d;
   });
   _desmarcarFilaEnEdicion();
@@ -17142,6 +17629,7 @@ function _aplicarNotasPendientesEnDB(){
       const baseDespues=_baseNota(nts[cId][per],d.config||{});
       d.ests[idx]=Object.assign({},e,{nts});
       _registrarCambioNota(d,{estId:p.estId,estNombre:e.n,cId,per,campo:p.campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
+      _alertarCambioNotaPeriodoCerradoSiAplica(d,{estId:p.estId,estNombre:e.n,cId,per});
       _pendAlertas.push({estId:p.estId,cId,per,baseAntes,baseDespues});
       // RONDA 71 — "GUARDAR CAMBIOS" (modo manual) aplica TODAS las notas
       // pendientes en una sola llamada a updDB(), potencialmente de varios
@@ -17154,7 +17642,7 @@ function _aplicarNotasPendientesEnDB(){
     return d;
   });
   _desmarcarLoteFilasEnEdicion();
-  _pendAlertas.forEach(function(a){_dispararAlertaBajoDesempenoSiAplica(a.estId,a.cId,a.per,a.baseAntes,a.baseDespues);});
+  _pendAlertas.forEach(function(a){_dispararAlertaBajoDesempenoSiAplica(a.estId,a.cId,a.per,a.baseAntes,a.baseDespues);_verificarRiesgoAcademicoConsecutivoSiAplica(a.estId,a.cId,a.per,a.baseAntes,a.baseDespues);});
 }
 
 function seleccionarNotaRapido(estId,campo,valor){
@@ -17746,10 +18234,12 @@ function saveNota(estId,campo,valor){
     nts[cId][per][campo]=numVal;d.ests[idx]={...e,nts};
     _baseDespues=_baseNota(nts[cId][per],d.config||{});
     _registrarCambioNota(d,{estId,estNombre:e.n,cId,per,campo,valorAnterior:(typeof valorAnterior==='number'?valorAnterior:0),valorNuevo:numVal});
+    _alertarCambioNotaPeriodoCerradoSiAplica(d,{estId,estNombre:e.n,cId,per});
     return d;
   });
   _desmarcarFilaEnEdicion();
   _dispararAlertaBajoDesempenoSiAplica(estId,Number(planCId),Number(planPer),_baseAntes,_baseDespues);
+  _verificarRiesgoAcademicoConsecutivoSiAplica(estId,Number(planCId),Number(planPer),_baseAntes,_baseDespues);
   // Refresco granular (SyncEngine): actualiza SOLO la fila de este
   // estudiante (nota, base, definitiva y "necesita para ganar" si aplica)
   // sin reconstruir la tabla ni la pantalla — mismo helper que usa el
@@ -17847,11 +18337,19 @@ function _htmlLogNotasResultados(){
   const rows=mostrar.map(l=>{
     const carga=db.carga.find(c=>String(c.id)===String(l.cId));
     const subio=l.valorNuevo>l.valorAnterior;
-    return `<tr>
+    // RONDA 107 — extensión del ítem 1.6: si el registro quedó marcado con
+    // "periodoCerrado" (ver _registrarCambioNota), se resalta la fila entera
+    // y se agrega una insignia explícita — es el caso que el documento de
+    // mejoras pedía poder auditar ("cambios de nota después de cerrado el
+    // periodo"). Los registros guardados ANTES de esta ronda no tienen esta
+    // propiedad (undefined) — se tratan igual que "false", nunca se
+    // resaltan por error con datos viejos.
+    const cerrado=l.periodoCerrado===true;
+    return `<tr${cerrado?' style="background:#fdecea"':''}>
       <td style="font-size:0.76rem;white-space:nowrap">${new Date(l.fecha).toLocaleString('es-CO',{dateStyle:'short',timeStyle:'short'})}</td>
       <td style="text-align:left;font-size:0.82rem">${l.estNombre||l.estId}</td>
       <td style="font-size:0.78rem">${carga?carga.m:'—'}</td>
-      <td>${l.per}</td>
+      <td>${l.per}${cerrado?' <span title="Periodo ya cerrado cuando se hizo este cambio" style="background:#c0392b;color:#fff;border-radius:4px;padding:1px 5px;font-size:0.68rem;font-weight:bold">⚠️ CERRADO</span>':''}</td>
       <td style="font-size:0.78rem">${_nombreColumnaLog(l.campo)}</td>
       <td style="font-weight:bold;color:${subio?'#1e8449':'#c0392b'}">${l.valorAnterior.toFixed(1)} → ${l.valorNuevo.toFixed(1)}</td>
       <td style="font-size:0.78rem">${l.usuarioNombre||l.usuario}</td>

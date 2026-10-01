@@ -2179,6 +2179,29 @@ function enviarMensajeRectora(){
     .then(r=>r.json()).then(()=>{document.getElementById('msgStatus').textContent='✅ Mensaje enviado a rectora.';document.getElementById('msgRect').value='';})
     .catch(()=>{document.getElementById('msgStatus').textContent='⚠️ No hay conexión, intente nuevamente.';});
 }
+// RONDA 107 — ítem 3.3: mensaje de un acudiente dirigido puntualmente al
+// Director de Grupo del estudiante. Mismo patrón one-way de
+// enviarMensajeRectora() (queda en la bandeja institucional, consultable
+// por Admin/Rector), pero ADEMÁS intenta un push puntual al Director de
+// Grupo si pudo resolverse su usuario (grado.d en formato nuevo). Nunca
+// bloquea la UI si no hay conexión o si el grado no tiene Director de
+// Grupo asignado — ese caso ya se filtra en el HTML (la tarjeta no se
+// muestra si no hay un director resuelto).
+function enviarMensajeDirectorGrupo(estId){
+  const ta=document.getElementById('msgDirGrupo');
+  const txt=ta?ta.value.trim():'';
+  if(!txt){customAlert('Escriba un mensaje');return;}
+  const est=db.ests.find(e=>String(e.id)===String(estId));
+  const infoG=est?(db.grados||[]).find(g=>g.n===est.g):null;
+  const directorUsuario=infoG?infoG.d:'';
+  const statusEl=document.getElementById('msgDirGrupoStatus');
+  fetch(API_BASE+'/api/inetis/notify',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sk:_skActual(),kind:'mensaje-director-grupo',actor:sesion.n,
+      message:'Mensaje del acudiente de '+(est?est.n:'un estudiante')+' ('+(est?est.g:'—')+'): '+txt,
+      meta:{estId:String(estId),grado:est?est.g:'',directorGrupoUsuario:directorUsuario||''}})})
+    .then(r=>r.json()).then(()=>{if(statusEl)statusEl.textContent='✅ Mensaje enviado al Director de Grupo.';if(ta)ta.value='';})
+    .catch(()=>{if(statusEl)statusEl.textContent='⚠️ No hay conexión, intente nuevamente.';});
+}
 function cargarNotificaciones(){
   const wrap=document.getElementById('notifList');if(!wrap) return;
   wrap.innerHTML='Cargando…';
@@ -2391,6 +2414,7 @@ function renderPadre(){
       ${moduloActivo('pre-matricula')?`<button style="background:#27ae60;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="abrirPreMatriculaLogueado()">📝 Pre-Matrícula</button>`:''}
       ${moduloActivo('buzon-sugerencias')?`<button style="background:#8e44ad;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="abrirModalBuzonSugerencias(false)">📮 Sugerencias</button>`:''}
       <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
+      <button class="theme-toggle-btn" data-densidad-toggle onclick="toggleDensidadTabla()" aria-pressed="${_densidadActual()==='compacta'?'true':'false'}">${_densidadActual()==='compacta'?'↕️ Vista cómoda':'↔️ Vista compacta'}</button>
       <button style="background:#c0392b;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:0.8rem;font-weight:bold;cursor:pointer" onclick="cerrarSesion()">🚪 Salir</button>
     </div>
   </div>
@@ -2477,7 +2501,10 @@ function renderPadre(){
     <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div style="font-weight:700;color:#003366;font-size:0.95rem">📊 Calificaciones de ${est.n}</div>
-        <button class="btn btn-navy" style="font-size:0.79rem;padding:6px 14px" onclick="pdfConsolidadoEst('${String(est.id)}')">📥 Descargar PDF</button>
+        <div class="flex-gap">
+          <button class="btn" style="background:#8e44ad;color:#fff;font-size:0.79rem;padding:6px 14px" onclick="_verEvolucionHistoricaEstudiante('${String(est.id)}')">📈 Ver Evolución</button>
+          <button class="btn btn-navy" style="font-size:0.79rem;padding:6px 14px" onclick="pdfConsolidadoEst('${String(est.id)}')">📥 Descargar PDF</button>
+        </div>
       </div>
       ${htmlNotasEstudiante(est)}
     </div>
@@ -2525,6 +2552,21 @@ function renderPadre(){
       </div>
       <div id="padre-notif-list"><div style="text-align:center;padding:16px;color:#aaa;font-size:0.85rem">⏳ Cargando comunicados...</div></div>
     </div>
+
+    <!-- MENSAJE AL DIRECTOR DE GRUPO (RONDA 107 · 3.3) -->
+    ${(()=>{
+      const infoG=(db.grados||[]).find(g=>g.n===est.g);
+      const directorUsuario=infoG?infoG.d:'';
+      const nombreDirector=directorUsuario?_nombreDirectorGrado(directorUsuario):'';
+      if(!directorUsuario) return '';
+      return `<div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
+        <div style="font-weight:700;color:#003366;font-size:0.92rem;margin-bottom:6px">💬 Mensaje al Director de Grupo${nombreDirector?' — '+nombreDirector:''}</div>
+        <p style="font-size:0.8rem;color:#999;margin:0 0 10px">Escriba su mensaje; quedará en la bandeja del Director de Grupo de ${est.g} y, si tiene las notificaciones activas, también le llegará un aviso al instante.</p>
+        <textarea id="msgDirGrupo" style="height:90px;resize:vertical;width:100%" placeholder="Escriba su mensaje para el Director de Grupo..."></textarea>
+        <button class="btn btn-green" style="margin-top:10px" onclick="enviarMensajeDirectorGrupo('${String(est.id)}')">📤 Enviar Mensaje</button>
+        <div id="msgDirGrupoStatus" style="margin-top:8px;font-size:0.85rem;color:#27ae60"></div>
+      </div>`;
+    })()}
 
     <!-- OBSERVADOR DIGITAL -->
     <div style="background:#fff;border:1px solid #dce4ef;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 5px rgba(0,0,0,0.05);color:#1a1a2e">
@@ -2931,6 +2973,7 @@ function renderEstudiante(){
     ${moduloActivo('pre-matricula')?'<button class="tbtn" style="background:#27ae60" onclick="abrirPreMatriculaLogueado()">📝 Pre-Matrícula</button>':''}
     ${moduloActivo('buzon-sugerencias')?'<button class="tbtn" style="background:#8e44ad" onclick="abrirModalBuzonSugerencias(false)">📮 Sugerencias</button>':''}
     <button class="theme-toggle-btn" data-theme-toggle onclick="toggleTema()" aria-pressed="${_temaActual()==='dark'?'true':'false'}">${_temaActual()==='dark'?'☀️ Modo claro':'🌙 Modo oscuro'}</button>
+    <button class="theme-toggle-btn" data-densidad-toggle onclick="toggleDensidadTabla()" aria-pressed="${_densidadActual()==='compacta'?'true':'false'}">${_densidadActual()==='compacta'?'↕️ Vista cómoda':'↔️ Vista compacta'}</button>
     <button class="tbtn" style="background:#c0392b" onclick="cerrarSesion()">🚪 Salir</button></div></div>
   <div class="main">
     ${panelModalidad}
@@ -2976,7 +3019,7 @@ function renderEstudiante(){
       </div>
       <div id="est-notif-list"><div style="text-align:center;padding:14px;color:#aaa;font-size:0.85rem">⏳ Cargando comunicados...</div></div>
     </div>
-    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px"><h4 class="card-title" style="margin:0">📊 Mis Calificaciones por Período</h4><button class="btn btn-navy" style="font-size:0.8rem;padding:6px 14px" onclick="pdfConsolidadoEst('${String(est.id)}')">📊 Descargar Consolidado</button></div>${htmlNotasEstudiante(est)}</div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px"><h4 class="card-title" style="margin:0">📊 Mis Calificaciones por Período</h4><div class="flex-gap"><button class="btn" style="background:#8e44ad;color:#fff;font-size:0.8rem;padding:6px 14px" onclick="_verEvolucionHistoricaEstudiante('${String(est.id)}')">📈 Mi Evolución</button><button class="btn btn-navy" style="font-size:0.8rem;padding:6px 14px" onclick="pdfConsolidadoEst('${String(est.id)}')">📊 Descargar Consolidado</button></div></div>${htmlNotasEstudiante(est)}</div>
     <div class="card">
       <h4 class="card-title" style="color:#8e44ad">📓 Mi Observador Digital</h4>
       <p style="font-size:0.82rem;color:#888;margin-bottom:12px">Anotaciones de convivencia y académicas registradas por docentes y directivos.</p>
@@ -8917,10 +8960,61 @@ function htmlHistoricoAnios(){
     <button class="btn btn-navy" onclick="archivarAñoActual()">📦 Archivar Año Actual (${db.anio})</button>
     <button class="btn btn-success" onclick="iniciarNuevoAnioLectivo()" style="background:#27ae60">➕ Iniciar Nuevo Año Lectivo</button>
     <button class="btn" style="background:#8e44ad;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:0.84rem;font-weight:700;cursor:pointer" onclick="abrirModalImportarAnio()">📥 Importar desde Año Anterior</button>
+    ${!sinHistorico?`<button class="btn" style="background:#1a5276;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:0.84rem;font-weight:700;cursor:pointer" onclick="pdfConsolidadoMultiAnio()" title="Reporte institucional agregado de TODOS los años disponibles — útil para autoevaluación institucional, Pruebas Saber u otros procesos que requieran varios años a la vez (no es un informe por estudiante)">📊 Exportar Consolidado Multi-Año (PDF)</button>`:''}
   </div>
   ${sinHistorico?`<div class="card"><p style="color:#888;text-align:center;padding:20px 0">Sin años históricos archivados. Use <b>"Archivar Año Actual"</b> para guardar una copia del año ${db.anio} antes de iniciar un nuevo año.</p></div>`:''}
   ${histRows}
   ${_htmlComparativoAnios(hist,anioActivo)}`;
+}
+// ============================================================
+// RONDA 107 — ítem 3.4: exportación consolidada multi-año (NO por
+// estudiante individual) para apoyar procesos de autoevaluación
+// institucional o reportes tipo Pruebas Saber que necesitan cruzar
+// varios años lectivos a la vez (el "Comparativo entre Años" de arriba
+// solo compara 2 años; esto reúne TODOS los años disponibles en una sola
+// tabla agregada a nivel institucional). Reutiliza _datosDelAnio() y
+// _statsAnioDesdeDatos() — ya probados y usados por el comparativo de 2
+// años — simplemente agregando sus resultados por grado en un único
+// número institucional por año.
+// ============================================================
+function _datosConsolidadoMultiAnio(){
+  const hist=(db.historialAnios||[]).slice().sort((a,b)=>String(a.anio).localeCompare(String(b.anio)));
+  const anioActivo=db.anio;
+  const aniosOrden=[...new Set([...hist.map(h=>h.anio),anioActivo])];
+  return aniosOrden.map(anio=>{
+    const datos=_datosDelAnio(anio,hist,anioActivo);
+    if(!datos) return {anio,totalEst:0,totalGrados:0,promInst:0,pctAprInst:0,pctRepInst:0,conDatos:false};
+    const statsPorGrado=_statsAnioDesdeDatos(datos);
+    const gradosConNotas=statsPorGrado.filter(g=>g.conNotas>0);
+    const totalEst=(datos.ests||[]).length;
+    const totalGrados=(datos.grados||[]).length;
+    if(!gradosConNotas.length) return {anio,totalEst,totalGrados,promInst:0,pctAprInst:0,pctRepInst:0,conDatos:false};
+    const sumaPesoProm=gradosConNotas.reduce((s,g)=>s+g.prom*g.conNotas,0);
+    const sumaConNotas=gradosConNotas.reduce((s,g)=>s+g.conNotas,0);
+    const sumaApr=gradosConNotas.reduce((s,g)=>s+Math.round(g.pctApr/100*g.conNotas),0);
+    return {
+      anio,totalEst,totalGrados,
+      promInst:sumaConNotas?parseFloat((sumaPesoProm/sumaConNotas).toFixed(2)):0,
+      pctAprInst:sumaConNotas?Math.round(sumaApr/sumaConNotas*100):0,
+      pctRepInst:sumaConNotas?100-Math.round(sumaApr/sumaConNotas*100):0,
+      conDatos:true,
+    };
+  });
+}
+function pdfConsolidadoMultiAnio(){
+  const filas=_datosConsolidadoMultiAnio();
+  if(filas.filter(f=>f.conDatos).length<1){customAlert('No hay suficientes años con datos de notas para generar el consolidado. Archive al menos un año con notas registradas.');return;}
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF('l','mm','a4');
+  doc.setFontSize(14);doc.text('Reporte Consolidado Institucional Multi-Año',14,18);
+  doc.setFontSize(10);doc.text((db.nombre||'Institución')+' — Generado: '+new Date().toLocaleDateString('es-CO'),14,25);
+  doc.setFontSize(8.5);doc.text('Para procesos de autoevaluación institucional / Pruebas Saber. Cifras agregadas a nivel institucional (no por estudiante individual).',14,30);
+  const body=filas.map(f=>f.conDatos
+    ?[String(f.anio),String(f.totalEst),String(f.totalGrados),f.promInst.toFixed(2),f.pctAprInst+'%',f.pctRepInst+'%']
+    :[String(f.anio),String(f.totalEst),String(f.totalGrados),'—','—','—']);
+  doc.autoTable({startY:36,head:[['Año','Estudiantes','Grados','Promedio Institucional','% Aprobación','% Reprobación']],body,
+    styles:{fontSize:9},headStyles:{fillColor:[26,82,118]}});
+  doc.save('Consolidado_MultiAnio_'+(db.nombre||'Institucion').replace(/[^a-zA-Z0-9]/g,'_')+'.pdf');
 }
 // ============================================================
 // REPORTES COMPARATIVOS ENTRE AÑOS — compara promedio institucional

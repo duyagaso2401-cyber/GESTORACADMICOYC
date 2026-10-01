@@ -6,6 +6,88 @@ export const kvStore = pgTable('kv_store', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
 
+// RONDA 101 — Bloqueo de cuenta tras intentos fallidos de login. Tabla
+// propia e independiente del blob JSON de cada institución (mismo criterio
+// de arquitectura que simat_estudiantes/perfil_docente_extendido: datos que
+// el servidor necesita poder LEER Y DECIDIR por sí mismo, sin depender de
+// descargar/parsear el blob completo de la institución). Ver el comentario
+// extenso en src/lib/login-lockout.ts para la justificación completa de por
+// qué este bloqueo vive en el servidor en vez de en el navegador.
+export const loginIntentos = pgTable('login_intentos', {
+  id: serial('id').primaryKey(),
+  sk: text('sk').notNull(),
+  usuario: text('usuario').notNull(),
+  intentosFallidos: integer('intentos_fallidos').notNull().default(0),
+  bloqueadoHasta: timestamp('bloqueado_hasta', { withTimezone: true }),
+  actualizadoEn: timestamp('actualizado_en', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex('login_intentos_sk_usuario_idx').on(t.sk, t.usuario),
+]);
+
+// RONDA 103 — Bitácora de auditoría de acciones sensibles (ítem 1.6 de la
+// hoja de ruta de mejoras). Registra, con quién y cuándo, cambios que ya
+// antes se podían hacer pero no quedaban en ningún lado consultable:
+// ajustes manuales de puesto, eliminación de estudiantes/usuarios, y
+// cambios de configuración institucional. Se llena a partir de comparar
+// el blob ANTES y DESPUÉS de cada guardado (ver detectarAccionesSensibles
+// en src/lib/auditoria-acciones.ts) — es decir, no requiere que cada
+// pantalla del frontend "avise" activamente de cada acción: basta con que
+// el cambio quede reflejado en el blob guardado, que es lo único que de
+// verdad pasa por el servidor en TODOS los casos.
+export const accionesAuditoria = pgTable('acciones_auditoria', {
+  id: serial('id').primaryKey(),
+  sk: text('sk').notNull(),
+  usuario: text('usuario'),
+  usuarioNombre: text('usuario_nombre'),
+  rol: text('rol'),
+  accion: text('accion').notNull(),
+  detalle: jsonb('detalle'),
+  creadoEn: timestamp('creado_en', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('acciones_auditoria_sk_idx').on(t.sk),
+  index('acciones_auditoria_creado_idx').on(t.creadoEn),
+]);
+
+// RONDA 104 — Secretos TOTP de verificación en dos pasos (ítem 1.5 de la
+// hoja de ruta), movidos al servidor. ANTES vivían en `db.users[].tfaSecreto`
+// (dentro del mismo blob JSON que los hashes de contraseña — ver la nota de
+// diseño extensa en src/lib/totp.ts sobre por qué eso anulaba el propósito
+// del segundo factor). Misma arquitectura que login_intentos: una tabla
+// separada, que el servidor puede leer y decidir por sí mismo sin depender
+// del blob de la institución.
+export const totpSecretos = pgTable('totp_secretos', {
+  id: serial('id').primaryKey(),
+  sk: text('sk').notNull(),
+  usuario: text('usuario').notNull(),
+  secreto: text('secreto').notNull(),
+  activado: boolean('activado').notNull().default(false),
+  creadoEn: timestamp('creado_en', { withTimezone: true }).defaultNow(),
+  activadoEn: timestamp('activado_en', { withTimezone: true }),
+}, (t) => [
+  uniqueIndex('totp_secretos_sk_usuario_idx').on(t.sk, t.usuario),
+]);
+
+// RONDA 106 — Códigos de respaldo de 2FA (extensión del ítem 1.5, cierra la
+// limitación documentada en la Ronda 104: "si se pierde el celular, hoy
+// requiere soporte manual directamente en la base de datos"). Se guarda
+// solo el HASH de cada código (SHA-256, ver src/lib/totp-backup-codes.ts)
+// — nunca el código en texto plano — exactamente igual de criterio que las
+// contraseñas, aunque con un algoritmo de hash más simple porque estos
+// códigos son aleatorios de alta entropía generados por el propio
+// servidor (no elegidos por una persona, así que no hace falta un KDF
+// lento pensado para resistir diccionarios).
+export const totpCodigosRespaldo = pgTable('totp_codigos_respaldo', {
+  id: serial('id').primaryKey(),
+  sk: text('sk').notNull(),
+  usuario: text('usuario').notNull(),
+  codigoHash: text('codigo_hash').notNull(),
+  usado: boolean('usado').notNull().default(false),
+  creadoEn: timestamp('creado_en', { withTimezone: true }).defaultNow(),
+  usadoEn: timestamp('usado_en', { withTimezone: true }),
+}, (t) => [
+  index('totp_codigos_respaldo_sk_usuario_idx').on(t.sk, t.usuario),
+]);
+
 export const notifications = pgTable('notifications', {
   id: serial('id').primaryKey(),
   sk: text('sk'),
