@@ -7557,6 +7557,32 @@ let _notifPoll=null;let _lastNotifId=0;let _notifBadge=0;
 // silenciosa del Administrador en su panel (htmlContacto()/cargarNotificaciones(),
 // ya restringido a sesion.r==='admin').
 const TIPOS_NOTIF_SIN_BANNER=new Set(['login']);
+// RONDA 108-HOTFIX — el usuario reportó, DESPUÉS de instalar el paquete que
+// ya movía el "Panel de Novedades" a su propia sección ("🔔 Mis Novedades",
+// ver htmlNovedadesDocente() en 03-app-core.js), que las alertas de "estado
+// de los estudiantes" se le SEGUÍAN apareciendo al entrar como docente. La
+// causa real NO era el panel embebido (ya corregido) ni una notificación
+// push nativa (ya eliminada en la Ronda 97) — era este TERCER mecanismo,
+// completamente independiente, agregado en la Ronda 87: este polling corre
+// para CUALQUIER sesión con rol, sin distinguir Docente de Admin/Rector, y
+// mostrarNotifBanner() dispara un banner emergente (abajo-izquierda) por
+// cada notificación nueva del "sk" de la institución — incluyendo
+// exactamente los "kind" de estado del estudiante (ausencia, alerta
+// académica, inasistencia, observador) que el usuario pidió explícitamente
+// que NUNCA aparecieran como interrupción, sino solo dentro de "Mis
+// Novedades" cuando él decida entrar. Se usa el MISMO conjunto de "kind"
+// que ya se excluye, por el mismo motivo, del lado del servidor para Web
+// Push (ver KINDS_ESTADO_ESTUDIANTE en src/lib/push-provider.ts) — más
+// "alerta-academica-consecutiva" (riesgo de 2 periodos seguidos en Bajo,
+// dirigida puntualmente al Director de Grupo vía push — no necesita
+// además interrumpir con un banner a cualquier otro docente conectado) y
+// "nota-cambiada-periodo-cerrado" (alerta de auditoría dirigida al
+// Admin/Rector, sin relación con el trabajo del docente). Los demás roles
+// (Admin/Rector) conservan el comportamiento de siempre, sin cambios.
+const KINDS_ESTADO_ESTUDIANTE_SIN_BANNER_DOCENTE=new Set([
+  'ausencia','alerta-inasistencia','alerta-academica','alerta-observador',
+  'alerta-academica-consecutiva','nota-cambiada-periodo-cerrado'
+]);
 function iniciarPollingNotificaciones(){
   if(_notifPoll) clearInterval(_notifPoll);
   _notifPoll=setInterval(async()=>{
@@ -7567,7 +7593,9 @@ function iniciarPollingNotificaciones(){
       const todasNuevas=(j.notifications||[]).filter(n=>n.id>_lastNotifId);
       if(!todasNuevas.length) return;
       _lastNotifId=Math.max(...todasNuevas.map(n=>n.id));
-      const nuevasVisibles=todasNuevas.filter(n=>!TIPOS_NOTIF_SIN_BANNER.has(n.kind));
+      const esDocente=!!(sesion&&sesion.r==='docente');
+      const nuevasVisibles=todasNuevas.filter(n=>!TIPOS_NOTIF_SIN_BANNER.has(n.kind)
+        &&!(esDocente&&KINDS_ESTADO_ESTUDIANTE_SIN_BANNER_DOCENTE.has(n.kind)));
       if(nuevasVisibles.length){
         _notifBadge+=nuevasVisibles.length;
         mostrarNotifBanner(nuevasVisibles);

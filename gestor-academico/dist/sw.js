@@ -73,7 +73,18 @@
 // _abrirBitacoraAuditoria()) y los códigos de respaldo de 2FA (modal de
 // "una sola vez" al activar, botón para regenerarlos, y aceptación de un
 // código de respaldo tanto en el login como al desactivar 2FA).
-const CACHE_NAME = 'gestor-yc-shell-v13-20261002';
+// RONDA 108 — se sube de versión: _confirmarSyncNAC() ahora sigue el patrón
+// de guardado por lote (Ronda 71) y se separó el Panel de Novedades del
+// docente a su propia sección ("🔔 Mis Novedades").
+// RONDA 108-HOTFIX — se sube de versión OTRA VEZ: 06-documentos-y-resto.js
+// cambió para que iniciarPollingNotificaciones() (el mecanismo de banners
+// emergentes de la Ronda 87, independiente del Panel de Novedades) deje de
+// mostrarle a un Docente los "kind" de estado del estudiante — ver el
+// comentario extenso junto a KINDS_ESTADO_ESTUDIANTE_SIN_BANNER_DOCENTE.
+// Sin este bump, un dispositivo con la PWA ya instalada podría seguir
+// sirviendo, en "network-first" con fallback a caché, una copia de
+// 06-documentos-y-resto.js anterior a este hotfix.
+const CACHE_NAME = 'gestor-yc-shell-v14-20261002';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

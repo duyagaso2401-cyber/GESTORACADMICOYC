@@ -103,7 +103,13 @@ check('iniciarPollingNotificaciones(): excluye "login" del conjunto que dispara 
   const idxFn = src2.indexOf('function iniciarPollingNotificaciones(){');
   const idxFin = src2.indexOf('\nfunction mostrarNotifBanner', idxFn);
   const bloque = src2.slice(idxFn, idxFin === -1 ? idxFn + 1500 : idxFin);
-  assert.match(bloque, /nuevasVisibles=todasNuevas\.filter\(n=>!TIPOS_NOTIF_SIN_BANNER\.has\(n\.kind\)\)/);
+  // RONDA 108-HOTFIX — el filtro ahora es multilínea porque además excluye,
+  // SOLO para el rol docente, los "kind" de estado del estudiante (ver
+  // KINDS_ESTADO_ESTUDIANTE_SIN_BANNER_DOCENTE más arriba en este mismo
+  // archivo) — pero la exclusión de "login" para TODOS los roles, que es lo
+  // que esta prueba de la Ronda 87 verifica, se conserva intacta dentro de
+  // esa misma expresión.
+  assert.match(bloque, /nuevasVisibles=todasNuevas\.filter\(n=>!TIPOS_NOTIF_SIN_BANNER\.has\(n\.kind\)/);
   assert.match(bloque, /mostrarNotifBanner\(nuevasVisibles\)/);
 });
 check('iniciarPollingNotificaciones(): sigue arrancando para CUALQUIER sesión (no se restringió por rol — el filtro es por "kind", según lo pedido)', () => {
