@@ -84,7 +84,29 @@
 // Sin este bump, un dispositivo con la PWA ya instalada podría seguir
 // sirviendo, en "network-first" con fallback a caché, una copia de
 // 06-documentos-y-resto.js anterior a este hotfix.
-const CACHE_NAME = 'gestor-yc-shell-v14-20261002';
+// RONDA 109 — se sube de versión: auditoría pedida explícitamente por el
+// usuario sobre Asistencia→SER (fórmula lineal por defecto, ver
+// _notaLinealPorPctAsistencia()) y Notas de Actividades→Planilla (promedio
+// dinámico automático, ver _dispararAutoSyncNACSiAplica()), más la nueva
+// columna "Acumulado / Nota SER" y la leyenda de conversión en el módulo
+// de Asistencia (06-documentos-y-resto.js).
+// RONDA 110 — se sube de versión OTRA VEZ: HALLAZGO CRÍTICO DE
+// PERSISTENCIA OFFLINE reportado por el usuario (asistencia tomada sin
+// señal que nunca se sincronizó). Causa raíz real: _fusionarAsistenciaEnDB()
+// (03-app-core.js) reemplazaba a ciegas los registros locales de un
+// grado/asignatura con lo que trajera el GET /api/asistencia cada vez que
+// el docente reingresaba al módulo, incluso si el guardado local todavía
+// no había sido confirmado por el servidor — y "window._hayCambiosSinSin
+// cronizar" nunca se rehidrataba desde "db._syncMeta.pending_sync" al
+// recargar la página, dejando sin efecto al "boot check" de la Ronda 98 en
+// ese escenario. Se corrigieron ambos puntos, se agregó el sellado de
+// pending_sync por-registro también para 'asistencia' (antes solo 'ests' y
+// 'actas'), y se agregó una insignia visible "⚠️ N pendiente(s) de
+// sincronizar" + botón "Sincronizar Ahora" en el módulo de Asistencia. Sin
+// este bump, un dispositivo con la PWA ya instalada podría seguir
+// sirviendo, en "network-first" con fallback a caché, una copia de
+// 03-app-core.js/06-documentos-y-resto.js anterior a esta corrección.
+const CACHE_NAME = 'gestor-yc-shell-v16-20261002';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

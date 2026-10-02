@@ -363,15 +363,18 @@ check('REQUISITO (a): 0 inasistencias asigna la nota del Rango 1 (por defecto 5.
   assert.equal(run('calcularNotaSERPorAsistencia(0,10)'), 5.0);
   assert.equal(run('calcularNotaSERPorAsistencia(0,100)'), 5.0);
 });
-check('calcularNotaSERPorAsistencia() con la escala de inicialización: cae en cada uno de los 4 tramos exactamente donde corresponde', () => {
+check('calcularNotaSERPorAsistencia() SIN escala personalizada (RONDA 109): aplica la fórmula lineal por defecto sobre el % de asistencia, ya no los 4 tramos agresivos de las Rondas 72-74', () => {
   instalarDB(fixtureDB());
-  assert.equal(run('calcularNotaSERPorAsistencia(5,100)'), 5.0);   // 5%   -> tramo 1 (0–5)
-  assert.equal(run('calcularNotaSERPorAsistencia(6,100)'), 4.0);   // 6%   -> tramo 2 (5.1–15)
-  assert.equal(run('calcularNotaSERPorAsistencia(15,100)'), 4.0);  // 15%  -> tramo 2
-  assert.equal(run('calcularNotaSERPorAsistencia(16,100)'), 3.0);  // 16%  -> tramo 3 (15.1–24.9)
-  assert.equal(run('calcularNotaSERPorAsistencia(24.9,100)'), 3.0);// 24.9% -> tramo 3 (límite exacto pedido)
-  assert.equal(run('calcularNotaSERPorAsistencia(25,100)'), 1.0);  // 25%  -> tramo 4 (crítico)
-  assert.equal(run('calcularNotaSERPorAsistencia(80,100)'), 1.0);  // muy por encima -> sigue en el último tramo
+  // pct = % de INASISTENCIA (argumento histórico de esta función); la nota
+  // ahora se calcula sobre (100 - pct) = % de ASISTENCIA, proyectado
+  // linealmente sobre la escala 0.0–5.0 — ver _notaLinealPorPctAsistencia().
+  assert.equal(run('calcularNotaSERPorAsistencia(5,100)'), 4.8);    // 5% inasist.  -> 95% asist. -> 4.8
+  assert.equal(run('calcularNotaSERPorAsistencia(6,100)'), 4.7);    // 6% inasist.  -> 94% asist. -> 4.7
+  assert.equal(run('calcularNotaSERPorAsistencia(15,100)'), 4.3);   // 15% inasist. -> 85% asist. -> 4.3 (round(4.25)→4.3 por Math.round)
+  assert.equal(run('calcularNotaSERPorAsistencia(16,100)'), 4.2);   // 16% inasist. -> 84% asist. -> 4.2
+  assert.equal(run('calcularNotaSERPorAsistencia(24.9,100)'), 3.8); // 24.9% inasist. -> 75.1% asist. -> 3.8
+  assert.equal(run('calcularNotaSERPorAsistencia(25,100)'), 3.8);   // 25% inasist.  -> 75% asist. -> 3.8
+  assert.equal(run('calcularNotaSERPorAsistencia(80,100)'), 1.0);   // 80% inasist.  -> 20% asist. -> 1.0
 });
 check('calcularNotaSERPorAsistencia() sigue devolviendo null cuando no hay ninguna base real (total=0), sin importar la escala configurada', () => {
   instalarDB(fixtureDB());
@@ -381,8 +384,10 @@ check('calcularNotaSERPorAsistencia() sigue devolviendo null cuando no hay ningu
 check('REQUISITO (b): al modificar dinámicamente db.config.escalaAsistenciaSER, el cálculo cambia AL INSTANTE, sin reiniciar la app', () => {
   const d = fixtureDB();
   instalarDB(d);
-  // Con la escala de inicialización, 10% de inasistencia da 4.0 (tramo 2).
-  assert.equal(run('calcularNotaSERPorAsistencia(1,10)'), 4.0);
+  // RONDA 109: sin escala personalizada, 10% de inasistencia = 90% de
+  // asistencia = 4.5 con la fórmula lineal por defecto (ya no 4.0, el valor
+  // del tramo agresivo que traía el sistema antes).
+  assert.equal(run('calcularNotaSERPorAsistencia(1,10)'), 4.5);
   // El "administrador" reconfigura la escala en caliente, EN LA MISMA
   // SESIÓN, sin recargar ni reinstalar nada — solo mutando db.config.
   run(`db.config.escalaAsistenciaSER = [
@@ -429,9 +434,12 @@ check('con el switch de vínculo ACTIVADO, guardar inasistencias manuales SÍ re
   instalarDB(d);
   run("_toggleVincularInasistManualSER('101')"); // activa el vínculo para cId=101
   assert.equal(run("_vincularInasistManualSERActivo('101')"), true);
-  // 10 clases REALES registradas para cId=101/per=1 (ver fixtureDB.asistencia) — 1 inasistencia = 10% -> tramo 2 (5.1-15) = 4.0
+  // 10 clases REALES registradas para cId=101/per=1 (ver fixtureDB.asistencia)
+  // — 1 inasistencia = 10% inasistencia = 90% de asistencia. RONDA 109: sin
+  // escala personalizada, el motor ahora usa la fórmula lineal pedida por el
+  // usuario (90% asistencia → 4.5), ya no los 4 tramos agresivos de antes.
   run("guardarInasistenciaManual('e1','101','1',1)");
-  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[101][1].s"), 4.0);
+  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[101][1].s"), 4.5);
 });
 check('el vínculo a SER es POR ASIGNATURA (cId): activarlo en 101 no activa 102', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true;
@@ -445,25 +453,32 @@ check('sin registros de asistencia automática, el vínculo manual usa la Intens
   instalarDB(d);
   run("_toggleVincularInasistManualSER('102')");
   run("db.ests.find(x=>x.id==='e1').nts[102]={1:{s:3.3,sb:0,h:0,rec:0,niv:0}};");
-  run("guardarInasistenciaManual('e1','102','1',1)"); // 1/20 = 5% -> tramo 1 (0-5) = 5.0
+  // 1/20 = 5% inasistencia = 95% asistencia. RONDA 109: fórmula lineal por
+  // defecto (sin escala personalizada) → round(95/100*5*10)/10 = 4.8.
+  run("guardarInasistenciaManual('e1','102','1',1)");
   const serVal = run("db.ests.find(x=>x.id==='e1').nts[102][1].s");
   assert.notEqual(serVal, 3.3, 'debe recalcularse (antes este caso quedaba sin tocar por falta de una referencia de horas)');
-  assert.equal(serVal, 5.0);
+  assert.equal(serVal, 4.8);
 });
 check('la asistencia automática REAL sigue teniendo prioridad sobre la estimación por Intensidad Horaria cuando ambas existen', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true; // 101 tiene ih:5 (50h estimadas) PERO además 10 registros reales en el fixture — deben usarse los reales
   instalarDB(d);
   run("_toggleVincularInasistManualSER('101')");
-  run("guardarInasistenciaManual('e1','101','1',5)"); // 5 de 10 REALES = 50% (crítico) vs. 5 de 50 estimadas = 10% (tramo 2) — deben ganar los 10 reales
+  // 5 de 10 REALES = 50% inasistencia (crítico) vs. 5 de 50 estimadas = 10%
+  // — deben ganar los 10 reales. RONDA 109: con la fórmula lineal por
+  // defecto, 50% inasistencia = 50% asistencia → nota 2.5 (ya no 1.0, que
+  // era el valor del tramo agresivo que traía el sistema antes).
+  run("guardarInasistenciaManual('e1','101','1',5)");
   const serVal = run("db.ests.find(x=>x.id==='e1').nts[101][1].s");
-  assert.equal(serVal, 1.0, 'debe usar los 10 registros reales de asistencia (50% => tramo crítico), no la estimación de 50 horas por ih');
+  assert.equal(serVal, 2.5, 'debe usar los 10 registros reales de asistencia (50% asistencia => 2.5 con la fórmula lineal), no la estimación de 50 horas por ih');
 });
 check('REQUISITO (b, extendido): reconfigurar la escala también cambia AL INSTANTE lo que calcula guardarInasistenciaManual() en la misma sesión', () => {
   const d = fixtureDB(); d.config.mostrarInasistenciasEnPlanilla = true;
   instalarDB(d);
   run("_toggleVincularInasistManualSER('102')"); // 102: ih=2 -> 20 horas estimadas
-  run("guardarInasistenciaManual('e1','102','1',1)"); // 5% -> tramo 1 por defecto = 5.0
-  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[102][1].s"), 5.0);
+  // 1/20 = 5% inasistencia = 95% asistencia → 4.8 con la fórmula lineal por defecto (RONDA 109).
+  run("guardarInasistenciaManual('e1','102','1',1)");
+  assert.equal(run("db.ests.find(x=>x.id==='e1').nts[102][1].s"), 4.8);
   // El administrador cambia la escala institucional EN CALIENTE...
   run(`db.config.escalaAsistenciaSER = [{min:0, max:100, nota:2.0}];`);
   // ...y la SIGUIENTE edición del mismo docente, en la misma sesión, ya usa la nueva escala.

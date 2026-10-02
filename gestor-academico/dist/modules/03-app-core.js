@@ -15,6 +15,33 @@ const ESCUDO_INETIS = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAA
 // ============================================================
 const SK = 'ie_sincelejito_db_v4';
 const GESTOR_SK = 'gestor_academico_yc_v1';
+// RONDA 110 — HALLAZGO COLATERAL (no es la causa del reporte del usuario,
+// se corrige de todas formas por ser trivial y de riesgo cero): esta
+// constante vivía más abajo en el archivo (ver su definición original, con
+// el resto de la documentación de versionado de esquema, unas líneas más
+// adelante). El problema: "let db = loadDB();" (más abajo en este mismo
+// archivo) se ejecuta de forma SÍNCRONA durante la carga inicial del script,
+// y si "localStorage[SK]" ya tenía datos guardados de una visita anterior
+// (el caso normal de cualquier usuario que regresa), loadDB() llama a
+// _migrateDB(), que al final lee "SCHEMA_VERSION" — pero en ese instante la
+// ejecución del script TODAVÍA no había llegado a la línea original de esa
+// constante (más abajo), así que JavaScript lanzaba
+// "ReferenceError: Cannot access 'SCHEMA_VERSION' before initialization"
+// (zona muerta temporal de "const"). Ese error quedaba SILENCIADO por el
+// propio try/catch de loadDB() (diseñado para fallos de localStorage/JSON
+// corrupto, no para este caso), así que el síntoma nunca se veía como un
+// error en consola: simplemente "db" terminaba siendo un blob en blanco
+// (DDB) en vez del blob migrado real. Confirmado con una prueba dirigida
+// (ver test_ronda110_offline_persistencia_asistencia.mjs) que reproduce
+// exactamente esta secuencia. En la práctica casi nunca se notaba porque
+// esta clave literal ("SK") es el valor por defecto de un solo inquilino
+// heredado — el resto de instituciones multi-tenant cargan su blob real por
+// otro camino (_fetchPlatDB()/loadPlatformDB(), ya DESPUÉS de que el script
+// completo terminó de ejecutarse, cuando SCHEMA_VERSION ya existe) — pero es
+// exactamente el mismo tipo de "pérdida silenciosa" que esta ronda está
+// auditando para Asistencia, así que se corrige aquí también: simplemente
+// se adelanta la declaración de la constante a antes del primer uso real.
+const SCHEMA_VERSION = 9;
 const API_BASE = (typeof window !== 'undefined' && typeof window.API_URL === 'string' && window.API_URL) || (typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin.startsWith('http') ? window.location.origin : (typeof CONFIG !== 'undefined' && CONFIG.API_URL ? CONFIG.API_URL.replace(/\/$/, '') : ''));
 window.API_BASE = API_BASE;
 
@@ -78,6 +105,26 @@ const DDB = {
 };
 
 let db = loadDB();
+// RONDA 110 — HALLAZGO CRÍTICO DE OFFLINE-FIRST (reportado por el usuario,
+// caso real: asistencia tomada sin señal en 6°2 Matemáticas que nunca
+// llegó al servidor): "window._hayCambiosSinSincronizar" es la bandera que
+// TODO el sistema usa para saber "hay algo guardado localmente que el
+// servidor todavía no confirmó" (ver saveDB()/_pushDB()/_pullDB() más abajo,
+// y el propio "boot check" de la Ronda 98 que depende de ella) — pero antes
+// de esta ronda esa bandera SOLO vivía en memoria (una variable "window."
+// normal) y nunca se reconstruía a partir de "db._syncMeta.pending_sync"
+// (que SÍ quedó grabado en localStorage por el guardado que falló) al
+// recargar la página. Si el docente cerraba la pestaña, la app se recargaba
+// sola, o el dispositivo se apagaba ANTES de que el reintento con backoff
+// confirmara el guardado, al reabrir la app esta bandera arrancaba en
+// "false" aunque SÍ hubiera un cambio pendiente real — con eso, el boot
+// check de la Ronda 98 no reintentaba nada, y _pullDB() (ver más abajo)
+// tomaba la rama "no hay nada pendiente" y sobreescribía "db" en memoria
+// (y en localStorage) con el blob del servidor, borrando para siempre el
+// cambio que nunca llegó a confirmarse. Esta línea rehidrata la bandera
+// desde el propio blob cargado, ANTES de que cualquier otra función la
+// consulte.
+window._hayCambiosSinSincronizar=!!(db&&db._syncMeta&&db._syncMeta.pending_sync===true);
 let sesion = null;
 let pag = 'planilla';
 let actaEditId = null;
@@ -117,7 +164,12 @@ function cerrarZoomFoto(){
 //   4. La migración es automática — no se requiere más código
 // ============================================================
 // VERSIÓN ACTUAL DEL ESQUEMA — incrementar cuando se agreguen nuevos campos
-const SCHEMA_VERSION = 9;
+// RONDA 110 — "const SCHEMA_VERSION" se MOVIÓ más arriba en este archivo
+// (ver el comentario extenso junto a "const SK"/"const GESTOR_SK", cerca del
+// inicio) para que exista ANTES de que "let db = loadDB();" la necesite de
+// forma síncrona. Se deja este comentario aquí, en el lugar original, para
+// que quien busque "SCHEMA_VERSION" por este bloque de documentación la
+// encuentre igual.
 // Lista de campos nuevos por versión (para notificar al usuario qué diligenciar)
 const SCHEMA_NEW_FIELDS = {
   2: ['actas','actasPdf','planesArea','planeaciones','materialEstudiantes','observadores','elecciones','historiales','asistencia','centrosInteres','preMatriculas'],
@@ -1114,7 +1166,10 @@ async function _pushDB(){
         // nivel de blob y de cada entidad que estaba marcada pendiente.
         try{
           if(db._syncMeta) db._syncMeta.pending_sync=false;
-          ['ests','actas'].forEach(function(coleccion){
+          // RONDA 110 — 'asistencia' se agrega a esta misma limpieza por-
+          // entidad (ver el comentario de Ronda 110 junto a
+          // _sellarSyncMetaCambios() arriba, que es donde se marca).
+          ['ests','actas','asistencia'].forEach(function(coleccion){
             if(Array.isArray(db[coleccion])){
               db[coleccion].forEach(function(e){ if(e&&e._syncMeta) e._syncMeta.pending_sync=false; });
             }
@@ -1578,10 +1633,40 @@ async function _cargarObservadorGranular(grado){
 // arreglo GLOBAL plano, igual patrón que notasAct) — se fusiona SOLO ese
 // subconjunto (grado+cargaId), preservando cualquier registro de otro
 // grado/asignatura ya cargado en memoria por una consulta anterior.
+// RONDA 110 — HALLAZGO CRÍTICO DE OFFLINE-FIRST (causa raíz real del caso
+// reportado: asistencia tomada sin señal en 6°2 Matemáticas que nunca
+// apareció al volver a tener internet). Antes de esta ronda esta función
+// REEMPLAZABA A CIEGAS todo el subconjunto grado+cargaId con lo que trajera
+// el GET /api/asistencia — a diferencia de _pullDB() (más abajo en este
+// archivo), que desde la Ronda 98 SÍ respeta "window._hayCambiosSinSincro
+// nizar" antes de aceptar el blob del servidor como autoritativo. Como
+// _cargarAsistenciaGranular() (abajo) se dispara CADA VEZ que el docente
+// entra al módulo de Asistencia (_navegarConCargaGranularSiAplica), el
+// escenario real era: el docente guarda asistencia sin señal (queda en
+// memoria+localStorage, pendiente de subir con backoff) → navega a otra
+// pantalla y vuelve a Asistencia segundos después (algo normal, p.ej. para
+// tomar la del siguiente grupo) → si ya hay algo de señal, el GET SÍ
+// responde, pero el servidor TODAVÍA no tiene el registro (el POST sigue
+// en backoff) → este reemplazo ciego lo borraba de "db" sin que el docente
+// se enterara, y esa versión sin el registro se re-grababa en localStorage
+// en el siguiente saveDB() — pérdida definitiva, nunca llegaba a subirse.
+// CORRECCIÓN: cualquier registro local de ese grado/cargaId que el GET NO
+// devuelva (no confirmado todavía por el servidor) se preserva SIEMPRE que
+// esté marcado como pendiente (_syncMeta.pending_sync===true, sellado por
+// _sellarSyncMetaCambios() en updDB() — ver Ronda 110 ahí mismo). Un
+// registro ya eliminado/editado y confirmado por el servidor simplemente no
+// tendrá esa marca y se deja reemplazar con normalidad.
 function _fusionarAsistenciaEnDB(grado,cargaId,registrosNuevos){
   if(!db||typeof db!=='object') db={};
-  const otros=(db.asistencia||[]).filter(a=>!(a.grado===grado&&(!cargaId||String(a.cargaId)===String(cargaId))));
-  db.asistencia=[...otros,...(registrosNuevos||[])];
+  const previos=(db.asistencia||[]);
+  const otros=previos.filter(a=>!(a.grado===grado&&(!cargaId||String(a.cargaId)===String(cargaId))));
+  const idsServidor=new Set((registrosNuevos||[]).map(r=>String(r.id)));
+  const pendientesLocales=previos.filter(function(a){
+    return a.grado===grado&&(!cargaId||String(a.cargaId)===String(cargaId))
+      &&!idsServidor.has(String(a.id))
+      &&!!(a._syncMeta&&a._syncMeta.pending_sync===true);
+  });
+  db.asistencia=[...otros,...(registrosNuevos||[]),...pendientesLocales];
 }
 async function _cargarAsistenciaGranular(){
   try{
@@ -1615,6 +1700,22 @@ async function _cargarAsistenciaGranular(){
     _fusionarAsistenciaEnDB(asistGrado,asistCId,jAsist.registros||[]);
     return true;
   }catch(e){ return false; }
+}
+// RONDA 110 — FRENTE 3 (indicador visual de registros pendientes): cuenta
+// cuántos registros de Asistencia quedaron marcados "pending_sync" (ver
+// _sellarSyncMetaCambios()/_fusionarAsistenciaEnDB() arriba) — es decir,
+// guardados localmente pero todavía sin confirmar por el servidor. Lo
+// consume htmlAsistencia() (06-documentos-y-resto.js) para mostrar la
+// insignia "⚠️ N asistencia(s) pendiente(s) de sincronizar" con el botón
+// "Sincronizar Ahora". Un Admin ve el total de la institución; un docente,
+// solo lo propio (igual criterio de filtro que el resto del módulo).
+function _contarAsistenciaPendienteSync(){
+  try{
+    return (db.asistencia||[]).filter(function(a){
+      return !a.deletedAt && a._syncMeta && a._syncMeta.pending_sync===true
+        && (!sesion || sesion.r==='admin' || a.docente===sesion.u);
+    }).length;
+  }catch(e){ return 0; }
 }
 // ════════════════════════════════════════════════════════════════════════
 // RONDA 59 — 2 adaptadores granulares MÁS (mismo patrón exacto de los 4
@@ -2255,7 +2356,15 @@ function _sellarSyncMetaCambios(dbAntes, dbNuevo){
   try{
     const _sello={pending_sync:true, updated_at:_isoUtcNow()};
     dbNuevo._syncMeta=_sello;
-    ['ests','actas'].forEach(function(coleccion){
+    // RONDA 110 — se agrega 'asistencia' a este sellado por-entidad (antes
+    // solo cubría 'ests' y 'actas', ver comentario de Ronda 85 arriba). Es lo
+    // que permite a _fusionarAsistenciaEnDB() (adaptador granular de
+    // Asistencia, más arriba en este archivo) distinguir "este registro ya
+    // lo confirmó el servidor" de "este registro todavía es solo local" en
+    // vez de reemplazar a ciegas todo el subconjunto grado+cargaId con lo que
+    // devuelva el GET — ver el comentario extenso junto a
+    // _fusionarAsistenciaEnDB() para el caso real que esto corrige.
+    ['ests','actas','asistencia'].forEach(function(coleccion){
       if(!Array.isArray(dbNuevo[coleccion])) return;
       const viejosPorId=new Map();
       (Array.isArray(dbAntes&&dbAntes[coleccion])?dbAntes[coleccion]:[]).forEach(function(e){ viejosPorId.set(String(e.id), e); });
@@ -16841,6 +16950,24 @@ function _aplicarNotasActPendientesEnDB(){
     return d;
   });
   _desmarcarLoteFilasEnEdicion();
+  // RONDA 109 — Frente 2.2/4: "GUARDAR CAMBIOS" en modo manual puede confirmar
+  // celdas pendientes de varias combinaciones asignatura+periodo a la vez (si
+  // el docente navegó entre pantallas antes de guardar) — se agrupan los
+  // estudiantes afectados por cada combinación cId+periodo y se dispara el
+  // recálculo automático del componente vinculado (si existe) para cada una,
+  // igual que ocurre de inmediato en modo Auto-guardar.
+  try{
+    const porCombinacion={};
+    keys.forEach(function(k){
+      const p=pending[k];
+      const combo=p.cId+'_'+p.per;
+      if(!porCombinacion[combo]) porCombinacion[combo]={cId:p.cId,per:p.per,ests:[]};
+      porCombinacion[combo].ests.push(p.estId);
+    });
+    Object.values(porCombinacion).forEach(function(grp){
+      _dispararAutoSyncNACSiAplica(grp.cId,grp.per,grp.ests);
+    });
+  }catch(ex){}
 }
 
 function _actualizarIndicadorPendientesNAC(){
@@ -17209,6 +17336,43 @@ function _notaPorTramoAsistencia(pct,escala){
   }
   return parseFloat(nota.toFixed(1));
 }
+// RONDA 109 — AUDITORÍA SOLICITADA EXPLÍCITAMENTE POR EL USUARIO sobre la
+// fórmula Asistencia → SER. Diagnóstico confirmado (con evidencia leída en
+// el propio código, Rondas 72-74): la acumulación histórica COMPLETA del
+// periodo y la distinción Justificada/No-justificada YA estaban bien
+// implementadas desde antes (ver _obtenerClasesAsistenciaPeriodo() e
+// _inasistenciasEnClases() arriba — una ausencia "justificada" nunca
+// contaba como inasistencia). Lo que SÍ estaba distinto de lo pedido era
+// la escala de conversión por defecto: 4 tramos agresivos y no lineales
+// (0-5%→5.0, 5.1-15%→4.0, 15.1-24.9%→3.0, 25-100%→1.0), en vez de la
+// escala lineal continua que el usuario pidió explícitamente:
+//   % Asistencia = (Presentes + Justificadas) / Total de Clases × 100
+//   Nota = % Asistencia proyectado sobre 0.0–5.0 (100%→5.0, 90%→4.5, 80%→4.0...)
+// Por construcción, "Presentes + Justificadas" es exactamente
+// "Total − Inasistencias (no justificadas)" — ver guardarAsistencia() en
+// 06-documentos-y-resto.js: cada estudiante matriculado en el grado al
+// momento de tomar la clase queda SIEMPRE en una, y solo una, de las tres
+// listas (presentes/ausentes/justificados) — así que calcular el % de
+// asistencia como "100 − % de inasistencia" es matemáticamente idéntico a
+// la fórmula pedida, reutilizando el mismo conteo ya auditado y probado
+// (_inasistenciasEnClases) sin duplicar lógica de conteo.
+// DECISIÓN DE DISEÑO (para no romper a ninguna institución que ya haya
+// personalizado su propia escala desde Configuración — ver
+// _escalaAsistenciaSERActiva()): si la institución YA guardó su propia
+// tabla de tramos (db.config.escalaAsistenciaSER), esa personalización se
+// respeta tal cual, sin cambios — exactamente el mismo comportamiento de
+// siempre. El cambio de esta ronda es SOLO el valor por defecto que se usa
+// cuando la institución NUNCA ha configurado nada: ahí es donde ahora se
+// aplica la fórmula lineal continua pedida, en vez de los 4 tramos previos.
+function _notaLinealPorPctAsistencia(pctAsistencia){
+  const pct=Math.max(0,Math.min(100,Number(pctAsistencia)||0));
+  // Escala institucional estándar de 0.0 a 5.0: 100% de asistencia = 5.0,
+  // 0% de asistencia = 0.0, proporcional en el medio (90%→4.5, 80%→4.0,
+  // 70%→3.5, etc. — exactamente los ejemplos pedidos), redondeado a un
+  // decimal para que coincida con la granularidad de nota que usa el resto
+  // de la Planilla.
+  return Math.round((pct/100)*5*10)/10;
+}
 // Punto único de cálculo de la nota del SER a partir de un % de
 // inasistencia — usado tanto por el vínculo manual (guardarInasistenciaManual())
 // como por el botón automático (sincronizarAsistenciaASER()). Devuelve
@@ -17220,8 +17384,62 @@ function calcularNotaSERPorAsistencia(inasistencias,totalClases){
   const total=Number(totalClases)||0;
   if(total<=0) return null; // sin clases/horas de referencia: no hay base para calcular nada — se deja al docente
   const inas=Math.max(0,Number(inasistencias)||0);
-  const pct=(inas/total)*100;
-  return _notaPorTramoAsistencia(pct,_escalaAsistenciaSERActiva());
+  const pctInasistencia=(inas/total)*100;
+  const escalaPersonalizada=Array.isArray(db.config&&db.config.escalaAsistenciaSER)&&db.config.escalaAsistenciaSER.length;
+  if(escalaPersonalizada){
+    // La institución configuró su propia tabla de tramos: se respeta sin
+    // ningún cambio (comportamiento idéntico a antes de esta ronda).
+    return _notaPorTramoAsistencia(pctInasistencia,_escalaAsistenciaSERActiva());
+  }
+  // RONDA 109 — sin personalización: fórmula lineal continua pedida por el
+  // usuario, sobre el % de ASISTENCIA (Presentes+Justificadas), no de
+  // inasistencia.
+  const pctAsistencia=100-pctInasistencia;
+  return _notaLinealPorPctAsistencia(pctAsistencia);
+}
+// RONDA 109 — Frente 3.1/3.2: previsualización en el panel de Asistencia.
+// Dado un estudiante+asignatura+periodo, devuelve el acumulado completo
+// (total de clases registradas en el periodo, inasistencias no
+// justificadas, % de asistencia resultante y la nota del SER que se
+// transferiría a la Planilla SI se sincroniza ahora) — reutiliza EXACTAMENTE
+// el mismo motor de cálculo que sincronizarAsistenciaASER() (misma fuente
+// de datos, misma distinción Justificada/No-justificada, misma escala
+// activa), para que lo que el docente ve en la previsualización sea
+// SIEMPRE idéntico a lo que de verdad se escribiría al sincronizar — nunca
+// dos fórmulas distintas que puedan desalinearse con el tiempo. "Nunca
+// lanza": ante cualquier dato faltante devuelve un objeto con
+// "totalClases:0" en vez de lanzar, para que la tabla de Asistencia nunca
+// se rompa por esto.
+function _previsualizacionAsistenciaSER(cId,per,estId,grado){
+  try{
+    const clases=_obtenerClasesAsistenciaPeriodo(db,cId,per,grado);
+    const totalClases=clases.length;
+    const inasistencias=_inasistenciasEnClases(clases,estId);
+    const notaProyectada=calcularNotaSERPorAsistencia(inasistencias,totalClases);
+    const pctAsistencia=totalClases>0?parseFloat((100-(inasistencias/totalClases)*100).toFixed(1)):null;
+    return {totalClases,inasistencias,pctAsistencia,notaProyectada};
+  }catch(ex){
+    return {totalClases:0,inasistencias:0,pctAsistencia:null,notaProyectada:null};
+  }
+}
+// RONDA 109 — Frente 3.2: texto de la tarjeta/leyenda informativa de
+// conversión % → nota, para mostrarse en el encabezado del módulo de
+// Asistencia. Si la institución personalizó su propia escala de tramos, se
+// describe ESA escala (para que el docente vea el criterio real que se le
+// va a aplicar); si no, se describen los puntos de referencia de la
+// fórmula lineal por defecto.
+function _filasLeyendaEscalaAsistenciaSER(){
+  const propia=db.config&&db.config.escalaAsistenciaSER;
+  if(Array.isArray(propia)&&propia.length){
+    return [...propia].sort((a,b)=>Number(a.min)-Number(b.min)).map(t=>({
+      etiqueta:'Inasistencia '+Number(t.min)+'%–'+Number(t.max)+'%',
+      nota:parseFloat(Number(t.nota).toFixed(1))
+    }));
+  }
+  return [100,90,80,70,60,50,40,30,20,10,0].map(pct=>({
+    etiqueta:pct+'% de asistencia',
+    nota:_notaLinealPorPctAsistencia(pct)
+  }));
 }
 // Estimado de horas/clases totales del periodo para UNA asignatura, usado
 // por el vínculo "inasistencias manuales → SER" (ver
@@ -18939,10 +19157,18 @@ function _guardarNotaAct(estId,colId,valor){
       return d;
     });
     _desmarcarFilaEnEdicion();
+    // RONDA 109 — Frente 2.2/4: si esta asignatura+periodo ya está vinculada
+    // a una columna de la Planilla (ver _confirmarSyncNAC()), el promedio de
+    // ESE estudiante se recalcula y se refleja solo, sin esperar a que el
+    // docente abra de nuevo el modal de sincronización.
+    _dispararAutoSyncNACSiAplica(cId,per,estId);
   }else{
     // Modo manual: se queda en memoria (borde amarillo) hasta que el
     // docente pulse "GUARDAR CAMBIOS" en esta pantalla — NINGÚN
     // temporizador ni evento de fondo la envía al servidor antes de eso.
+    // El recálculo automático del componente vinculado, en este modo,
+    // ocurre al confirmar "GUARDAR CAMBIOS" (ver _aplicarNotasActPendientesEnDB()),
+    // igual que el resto del guardado en modo manual.
     _notasActPendientes[key]={estId,colId,cId,per,valor:valorNum,fecha,hora,obs};
     _actualizarIndicadorPendientesNAC();
   }
@@ -18972,6 +19198,10 @@ function eliminarNotaAct(estId,colId){
     return d;
   });
   _desmarcarFilaEnEdicion();
+  // RONDA 109 — si se borra una actividad, el promedio del componente
+  // vinculado (si lo hay) debe bajar el número de actividades que entran al
+  // cálculo — se recalcula de inmediato, igual que al guardar una nueva.
+  _dispararAutoSyncNACSiAplica(cId,per,estId);
   cerrarPopupNotaAct();
   _refrescarCeldaNotaAct(estId,colId);
   _toastPlan('🗑 Nota de actividad eliminada.','#c0392b');
@@ -19058,6 +19288,9 @@ function aplicarReplicaNotaAct(colId,valor){
       return d;
     });
     _desmarcarLoteFilasEnEdicion();
+    // RONDA 109 — "Replicar a todos" también debe disparar el recálculo
+    // automático del componente vinculado para CADA estudiante del grado.
+    _dispararAutoSyncNACSiAplica(cId,per,ests.map(e=>e.id));
   }else{
     ests.forEach(e=>{
       const key=cId+'_'+per+'_'+colId+'_'+e.id;
@@ -19135,6 +19368,15 @@ function _confirmarSyncNAC(colKey){
       n++;
       _filasAfectadas.push({tipo:'planilla',estId:est.id,cId,per});
     });
+    // RONDA 109 — Frente 2.2/4: se recuerda, de forma persistente, CON QUÉ
+    // columna de la Planilla quedó vinculado este conjunto de actividades
+    // (cId+periodo) — es lo que permite que una actividad NUEVA, agregada
+    // después de este clic, se refleje sola en la Planilla sin que el
+    // docente tenga que volver a abrir este modal cada vez (ver
+    // _dispararAutoSyncNACSiAplica() más abajo, el mismo patrón de "vínculo
+    // recordado" que ya usa _autoSyncAsistSERActivo() para Asistencia→SER).
+    d.notasActVinculoComponente=d.notasActVinculoComponente||{};
+    d.notasActVinculoComponente[cId+'_'+per]=colKey;
     if(_filasAfectadas.length) _marcarLoteFilasEnEdicion(_filasAfectadas);
     return d;
   });
@@ -19145,7 +19387,42 @@ function _confirmarSyncNAC(colKey){
   // cuenta la próxima vez que se abra) — reconstruir la pantalla aquí no
   // cambiaría nada visible y solo causaría el parpadeo/pérdida de foco que
   // se busca evitar. El aviso de confirmación es suficiente.
-  customAlert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nLa nota definitiva de cada estudiante se recalculará automáticamente con el porcentaje configurado para esa columna, junto con las demás notas.');
+  customAlert('✅ Se sincronizaron '+n+' nota(s) del módulo "Notas de Actividades en Clase" con la columna elegida de la Planilla.\n\nA partir de ahora, cualquier actividad nueva que registre en este periodo recalculará automáticamente el promedio de esa columna — no tendrá que volver a sincronizar manualmente.');
+}
+// RONDA 109 — Frente 2.2/4: "promedio dinámico" de verdad. Mientras exista
+// un vínculo recordado (ver _confirmarSyncNAC() arriba) para esta
+// asignatura+periodo, cada vez que se guarda/edita/elimina una nota de
+// actividad de un estudiante, se vuelve a calcular el promedio de TODAS
+// las columnas asignadas a ese componente (_promedioNotasActEst — ya
+// promedia TODAS las actividades existentes, nunca sobreescribe con solo
+// la última) y se escribe de inmediato en su celda de la Planilla — sin
+// que el docente tenga que abrir el modal de sincronización de nuevo.
+// "Nunca lanza": cualquier error aquí no debe impedir que la nota de
+// actividad en sí ya se haya guardado correctamente (que ocurre ANTES de
+// llamar a esta función en todos sus puntos de uso).
+function _dispararAutoSyncNACSiAplica(cId,per,estIds){
+  try{
+    const vinculo=(db.notasActVinculoComponente||{})[cId+'_'+per];
+    if(!vinculo) return;
+    const lista=(Array.isArray(estIds)?estIds:[estIds]).filter(Boolean);
+    if(!lista.length) return;
+    updDB(d=>{
+      const _filasAfectadas=[];
+      lista.forEach(estId=>{
+        const prom=_promedioNotasActEst(cId,per,estId);
+        if(prom==null) return;
+        const idx=d.ests.findIndex(x=>String(x.id)===String(estId));if(idx===-1) return;
+        const e={...d.ests[idx]};const nts=JSON.parse(JSON.stringify(e.nts||{}));
+        if(!nts[cId]) nts[cId]={};if(!nts[cId][per]) nts[cId][per]={s:0,sb:0,h:0,rec:0,niv:0};
+        nts[cId][per][vinculo]=Math.round(prom*10)/10;
+        d.ests[idx]={...e,nts};
+        _filasAfectadas.push({tipo:'planilla',estId,cId,per});
+      });
+      if(_filasAfectadas.length) _marcarLoteFilasEnEdicion(_filasAfectadas);
+      return d;
+    });
+    _desmarcarLoteFilasEnEdicion();
+  }catch(ex){}
 }
 
 // ── Exportar / importar masivo en Excel (mismo patrón que la Planilla) ──

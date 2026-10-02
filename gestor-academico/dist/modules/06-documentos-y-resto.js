@@ -568,6 +568,13 @@ function htmlAsistencia(){
   });
 
   // Cálculo individual para la planilla de registro
+  // RONDA 109 — Frente 3.1: "Acumulado / Nota SER Previa" por estudiante.
+  // Reutiliza EXACTAMENTE el mismo motor de cálculo que el botón real de
+  // sincronización (_previsualizacionAsistenciaSER() → misma fuente de
+  // datos, misma distinción Justificada/No-justificada, misma escala activa
+  // que calcularNotaSERPorAsistencia()), filtrado por el PERIODO activo
+  // (no solo la fecha seleccionada) — así lo que el docente ve aquí es
+  // siempre idéntico a lo que se escribiría si sincroniza ahora mismo.
   var estRows=ests.map(function(e){
     var eid=String(e.id);
     var st='P';
@@ -590,13 +597,44 @@ function htmlAsistencia(){
       }
     }
 
+    var celdaSerPrevia='<span style="color:#aaa;font-size:0.75rem">— sin clases del periodo</span>';
+    if(typeof _previsualizacionAsistenciaSER==='function'&&asistCId&&asistPeriodo){
+      var prev=_previsualizacionAsistenciaSER(asistCId,asistPeriodo,e.id,asistGrado);
+      if(prev&&prev.totalClases>0&&prev.notaProyectada!=null){
+        var colorNota=prev.notaProyectada>=4?'#27ae60':(prev.notaProyectada>=3?'#d35400':'#c0392b');
+        celdaSerPrevia='<div style="font-size:0.78rem;line-height:1.3" title="Calculado sobre '+prev.totalClases+' clase(s) registrada(s) en el periodo '+(asistPeriodo||'')+'">'+
+          '<b>'+prev.pctAsistencia.toFixed(1)+'%</b> asistencia<br>'+
+          '<span style="color:'+colorNota+';font-weight:bold">→ SER proyectado: '+prev.notaProyectada.toFixed(1)+'</span>'+
+        '</div>';
+      }
+    }
+
     return '<tr>'+
       '<td style="text-align:left;font-size:0.82rem;padding:7px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px"><b>'+e.n+'</b>'+badgeAlerta+'</div></td>'+
       '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="P"'+(st==='P'?' checked':'')+'> Presente</label></td>'+
       '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="A"'+(st==='A'?' checked':'')+'>  Ausente</label></td>'+
       '<td style="text-align:center;padding:4px"><label style="cursor:pointer"><input type="radio" name="as_'+e.id+'" value="J"'+(st==='J'?' checked':'')+'>  Justificado</label></td>'+
+      '<td style="text-align:center;padding:4px">'+celdaSerPrevia+'</td>'+
     '</tr>';
   }).join('');
+
+  // RONDA 109 — Frente 3.2: tarjeta/leyenda de conversión % → nota, para que
+  // el docente entienda el criterio matemático exacto que se le aplicará.
+  var leyendaEscalaHtml='';
+  if(typeof _filasLeyendaEscalaAsistenciaSER==='function'){
+    var filasLeyenda=_filasLeyendaEscalaAsistenciaSER();
+    var escalaEsPersonalizada=Array.isArray(db.config&&db.config.escalaAsistenciaSER)&&db.config.escalaAsistenciaSER.length;
+    var chipsLeyenda=filasLeyenda.map(function(f){
+      return '<span style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:3px 8px;font-size:0.74rem;white-space:nowrap">'+f.etiqueta+' → <b>'+f.nota.toFixed(1)+'</b></span>';
+    }).join('');
+    leyendaEscalaHtml=`
+      <div style="background:#f0f7ff;border:1px solid #aed6f1;border-left:4px solid #1a5276;border-radius:8px;padding:10px 14px;margin-bottom:14px;color:#1a1a2e">
+        <div style="font-size:0.82rem;color:#1a5276;font-weight:bold;margin-bottom:6px">📐 Escala de conversión: % de Asistencia → Nota del SER`+(escalaEsPersonalizada?' (personalizada por la institución)':' (lineal, 0.0 a 5.0)')+`</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${chipsLeyenda}</div>
+        <div style="font-size:0.72rem;color:#5d6d7e;margin-top:6px">Se calcula sobre el acumulado COMPLETO de clases registradas en el periodo activo: Presentes + Justificadas cuentan a favor; solo la inasistencia NO justificada reduce el porcentaje.</div>
+      </div>
+    `;
+  }
 
   var histRows=historial.slice(0,60).map(function(a){
     var c=db.carga.find(function(x){return x.id===a.cargaId;});
@@ -652,14 +690,35 @@ function htmlAsistencia(){
     </div>
   `;
 
+  // RONDA 110 — FRENTE 3 (indicador visual de registros pendientes de
+  // sincronizar): insignia visible en la parte superior del módulo cuando
+  // existan registros de Asistencia guardados localmente que el servidor
+  // todavía no confirmó (ver _contarAsistenciaPendienteSync() en
+  // 03-app-core.js), con un botón para forzar el envío manual — reutiliza
+  // el mismo botón "Sincronizar ahora" (_sincronizarAhoraManual()) que ya
+  // existe en el resto del sistema desde la Ronda 52, en vez de inventar un
+  // mecanismo de sincronización paralelo.
+  var pendienteSyncHtml='';
+  if(typeof _contarAsistenciaPendienteSync==='function'){
+    var nPendSync=_contarAsistenciaPendienteSync();
+    if(nPendSync>0){
+      pendienteSyncHtml='<div style="background:#fff3cd;border:1px solid #ffeeba;border-left:4px solid #d35400;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;color:#7a5200">'+
+        '<div style="font-size:0.85rem;font-weight:bold">⚠️ '+nPendSync+' asistencia'+(nPendSync===1?'':'s')+' pendiente'+(nPendSync===1?'':'s')+' de sincronizar<div style="font-weight:normal;font-size:0.75rem;margin-top:2px">Se guardó localmente y se subirá sola al detectar internet, o puede forzarlo ahora.</div></div>'+
+        '<button class="btn-sm" style="background:#d35400" onclick="_sincronizarAhoraManual()" title="Forzar el envío de los registros pendientes ahora mismo">🔄 Sincronizar Ahora</button>'+
+      '</div>';
+    }
+  }
+
   var html='<h3 class="sec-title">📅 Control de Asistencia y Alertas Académicas</h3>';
+  html+=pendienteSyncHtml;
   html+=configWidgetHtml;
+  html+=leyendaEscalaHtml;
   html+='<div class="tab-btns">'+tabBtns+'</div>';
 
   // TAB REGISTRAR
   var dReg=asistTabActivo==='reg'?'':'display:none';
   html+='<div id="asist-reg" style="'+dReg+'"><div class="card"><h4 class="card-title">Registrar Asistencia de Clase</h4>';
-  html+='<div class="warn-box">📌 Las inasistencias acumuladas se calculan automáticamente sobre el total de clases dictadas para alertar oportunamente sobre riesgos de pérdida de asignatura.</div>';
+  html+='<div class="warn-box">📌 Las inasistencias acumuladas se calculan automáticamente sobre el total de clases dictadas para alertar oportunamente sobre riesgos de pérdida de asignatura. La columna "Acumulado / Nota SER" muestra la proyección sobre TODO el periodo activo, no solo la fecha de hoy.</div>';
   html+='<div class="grid4" style="margin-bottom:12px">';
   html+='<div><label class="lbl">Periodo</label><select id="asistPeriodoSel" onchange="asistPeriodo=this.value">'+perOpts+'</select></div>';
   html+='<div><label class="lbl">Fecha de la clase</label><input type="date" id="asistFechaInp" value="'+asistFecha+'" onchange="asistFecha=this.value"></div>';
@@ -678,6 +737,7 @@ function htmlAsistencia(){
       '<th style="background:#27ae60;min-width:100px">&#x2705; Presente</th>'+
       '<th style="background:#c0392b;min-width:100px">&#x274C; Ausente</th>'+
       '<th style="background:#e67e22;min-width:110px">&#x26A0;&#xFE0F; Justificado</th>'+
+      '<th style="background:#1a5276;min-width:130px" title="Calculado sobre el total de clases registradas en el periodo activo">📊 Acumulado / Nota SER</th>'+
     '</tr></thead><tbody>'+estRows+'</tbody></table></div>';
     html+='<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
       '<button class="btn btn-green" onclick="guardarAsistencia()">'+(existingReg?'✏️ ACTUALIZAR ASISTENCIA':'💾 GUARDAR ASISTENCIA')+'</button>'+
@@ -1283,7 +1343,24 @@ function guardarAsistencia(){
       // novedades, en vez de una notificación push.
     }
 
-    _showToast('✅ Asistencia guardada: '+presentes.length+' presentes, '+ausentes.length+' ausentes, '+justificados.length+' justificados.', 'success', 3500);
+    // RONDA 110 — FRENTE 2.1 (persistencia local prioritaria): si el
+    // navegador ya sabe que no hay conexión en este instante, se avisa de
+    // inmediato con el mensaje específico que pidió el usuario en vez del
+    // toast genérico de "guardado" — el registro YA quedó a salvo en
+    // localStorage (updDB()/saveDB() de arriba son siempre síncronos e
+    // incondicionales, ver el comentario extenso junto a saveDB() en
+    // 03-app-core.js) y se subirá solo en cuanto el navegador detecte
+    // conexión (listener 'online') o por el backoff/boot-check ya existentes.
+    // Si hay señal aparente pero el POST igual termina fallando (timeout,
+    // error del servidor), el registro queda igual protegido y la insignia
+    // "⚠️ pendiente de sincronizar" (ver htmlAsistencia()) se lo hará notar
+    // al docente en el siguiente render, sin necesidad de bloquear este toast
+    // con una espera a la respuesta de red.
+    if(typeof navigator!=='undefined'&&navigator.onLine===false){
+      _showToast('✅ Asistencia guardada localmente (Modo Offline). Se sincronizará automáticamente al detectar internet.', 'success', 5500);
+    } else {
+      _showToast('✅ Asistencia guardada: '+presentes.length+' presentes, '+ausentes.length+' ausentes, '+justificados.length+' justificados.', 'success', 3500);
+    }
     asistTabActivo='hist';
   } catch(e){
     customAlert('Error al guardar asistencia: ' + (e.message || e));
