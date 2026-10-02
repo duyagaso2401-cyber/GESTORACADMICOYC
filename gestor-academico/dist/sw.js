@@ -73,7 +73,7 @@
 // _abrirBitacoraAuditoria()) y los códigos de respaldo de 2FA (modal de
 // "una sola vez" al activar, botón para regenerarlos, y aceptación de un
 // código de respaldo tanto en el login como al desactivar 2FA).
-const CACHE_NAME = 'gestor-yc-shell-v12-20261001';
+const CACHE_NAME = 'gestor-yc-shell-v13-20261002';
 const CORE_ASSETS = [
   '/portal.html',
   '/config.js',

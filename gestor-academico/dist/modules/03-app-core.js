@@ -9784,7 +9784,7 @@ function _htmlSkeletonContenido(){
 function _tipoVistaPorPagina(p){
   const TABLA=['asistencia','obs-aula','descriptores','actas','adm-est','adm-carga','planilla','notas-actividades','ver-credenciales'];
   const TARJETAS=['observador'];
-  const FORMULARIO=['adm-base','horarios','cronograma-notas','config','config-pedagogica','panel-docente','panel-tendencias','tablero','padre-home','est-home'];
+  const FORMULARIO=['adm-base','horarios','cronograma-notas','config','config-pedagogica','panel-docente','novedades-docente','panel-tendencias','tablero','padre-home','est-home'];
   if(TABLA.includes(p)) return 'tabla';
   if(TARJETAS.includes(p)) return 'tarjetas';
   if(FORMULARIO.includes(p)) return 'formulario';
@@ -10432,6 +10432,24 @@ function renderApp(){
   if(sesion.r==='docente'&&_ma('obs-aula')) menu.push({id:'obs-aula',label:'📓 Obs. de Aula'});
   if(_ma('descriptores')) menu.push({id:'descriptores',label:'📝 Descriptores'});
   if(sesion.r==='docente') menu.unshift({id:'panel-docente',label:'🎯 Mi Panel'});
+  // RONDA 108 — bug real reportado por el usuario: el "Panel de Novedades"
+  // (ausencias recientes, notas bajas del período, observaciones
+  // moderadas/graves — ver _htmlPanelNovedades()) se mostraba SIEMPRE
+  // dentro de "Mi Panel", que a su vez es la pantalla de aterrizaje
+  // forzada justo al iniciar sesión como docente (ver las 4 asignaciones
+  // de pag='panel-docente' tras el login/restauración de sesión más
+  // arriba en este archivo) — por eso se percibía como "una alerta que
+  // aparece al iniciar sesión", aunque técnicamente nunca fue un push ni
+  // una notificación nativa del navegador (eso se eliminó en la Ronda
+  // 97). El usuario pidió explícitamente que esto viva en su propia
+  // sección, a la que entre cuando él decida, en vez de salirle de
+  // frente cada vez que inicia sesión. Se crea aquí un ítem de menú
+  // separado ("🔔 Mis Novedades") y se saca el panel de novedades de
+  // dentro de htmlPanelDocente() (ver más abajo, y la función nueva
+  // htmlNovedadesDocente()) — "Mi Panel" sigue siendo la pantalla de
+  // aterrizaje, pero ahora solo con las tarjetas de resumen y las
+  // planillas pendientes, sin las novedades de los estudiantes.
+  if(sesion.r==='docente') menu.splice(1,0,{id:'novedades-docente',label:'🔔 Mis Novedades'});
   // RONDA 39: Docente Orientador y Tutor PTA quedan explícitamente sin acceso
   // a Planilla / Notas de Actividades / Actividades / Quiz-Evaluaciones — sus
   // vistas aprobadas no incluyen carga ni alteración de notas.
@@ -10524,6 +10542,7 @@ function renderApp(){
   let contenido='';
   if(pag==='tablero'&&isAdmin) contenido=htmlTablero();
   else if(pag==='panel-docente'&&sesion.r==='docente') contenido=htmlPanelDocente();
+  else if(pag==='novedades-docente'&&sesion.r==='docente') contenido=htmlNovedadesDocente();
   else if(pag==='alerta-temprana'&&(isAdmin||_esDocenteOrientador())) contenido=htmlAlertaTemprana();
   else if(pag==='comunicado-general'&&isAdmin) contenido=htmlComunicadoGeneral();
   else if(pag==='adm-base'&&isAdmin) contenido=htmlConfigBase();
@@ -16175,12 +16194,16 @@ function htmlPanelDocente(){
     </tr>`;}).join('')}
     </tbody></table></div>`;
   }).join(''):`<div class="info-box" style="border-left-color:#1e8449">🎉 ¡Todas sus planillas hasta el Período ${perActual} están completas!</div>`;
+  // RONDA 108 — el "Panel de Novedades" (estado de los estudiantes:
+  // ausencias, notas bajas, observaciones) ya NO se incrusta aquí
+  // automáticamente — se movió a su propia sección de menú ("🔔 Mis
+  // Novedades", ver htmlNovedadesDocente() más abajo) a pedido explícito
+  // del usuario, para que no aparezca de frente en cada inicio de sesión.
   return `<h3 class="sec-title">🎯 ${_txtNivel('Mi Panel','Mi Panel — Catedrático')} — ${sesion.n}</h3>
   <div class="card">
     ${mats.length?tarjetas:_htmlEstadoVacio('📭','No tiene asignaturas a cargo todavía. Contacte al rector(a) para que le asigne cursos.')}
     ${mats.length?`<h4 style="color:#1a3a5c;margin:14px 0 10px;font-size:0.93rem">📝 Planillas pendientes por completar</h4>${listaPend}`:''}
   </div>
-  ${mats.length&&typeof _htmlPanelNovedades==='function'?_htmlPanelNovedades(sesion.u):''}
   ${db.nivelEducativo==='UNIVERSIDAD'&&mats.length?`<div class="card" style="border-left:4px solid #003366;margin-top:14px">
     <h4 class="card-title">💻 Mis Aulas Virtuales</h4>
     <div class="over"><table><thead><tr><th>Asignatura</th><th>Grado</th><th></th></tr></thead><tbody>
@@ -16191,6 +16214,17 @@ function htmlPanelDocente(){
     </tr>`;}).join('')}
     </tbody></table></div>
   </div>`:''}`;
+}
+// RONDA 108 — sección dedicada para el "Panel de Novedades" del docente
+// (ausencias recientes, notas bajas, observaciones Moderada/Grave),
+// separada de "Mi Panel" para que el docente entre quemándola cuando él
+// decida, en vez de que le aparezca de frente en cada inicio de sesión.
+// Reutiliza exactamente _htmlPanelNovedades(sesion.u), que ya filtraba
+// correctamente por el ámbito del docente — no se duplicó ninguna lógica.
+function htmlNovedadesDocente(){
+  const mats=db.carga.filter(c=>c.d===sesion.u);
+  return `<h3 class="sec-title">🔔 Mis Novedades — ${sesion.n}</h3>
+  ${mats.length?(typeof _htmlPanelNovedades==='function'?_htmlPanelNovedades(sesion.u):''):_htmlEstadoVacio('📭','No tiene asignaturas a cargo todavía. Contacte al rector(a) para que le asigne cursos.')}`;
 }
 function htmlPlanilla(){
   const _numPer=_getNumPer();
@@ -19064,7 +19098,32 @@ function _confirmarSyncNAC(colKey){
   if(!carga){customAlert('Asignatura no encontrada.');return;}
   const ests=db.ests.filter(x=>x.g===carga.g);
   let n=0;
+  // RONDA 108 — BUG REAL reportado por el usuario: a veces solo se
+  // reflejaban las notas de una PARTE de los estudiantes del grado tras
+  // sincronizar, y al cerrar/reabrir sesión no estaban completas (sí
+  // tocaba volver a sincronizar). Causa raíz: esta función tocaba VARIOS
+  // estudiantes de una sola vez con updDB() SIN marcar el lote de filas
+  // afectadas — exactamente la condición de carrera que la Ronda 71 ya
+  // había identificado y corregido en TODAS las demás operaciones por
+  // lote de este mismo módulo y de la Planilla (ver el comentario de
+  // Ronda 71 más arriba en este archivo, y aplicarReplicaNotaAct() justo
+  // encima de esta función, que SÍ sigue el patrón correcto). Si el
+  // docente había estado guardando notas individuales segundos antes
+  // (guardado granular, fila por fila), el guardado monolítico que hacía
+  // esta función (vía el _pushDB() manual de abajo) podía chocar con un
+  // 409 por versión desactualizada del blob, y el merge de 3 vías que
+  // resuelve ese conflicto no garantiza conservar el cambio recién hecho
+  // para CADA estudiante — de ahí que solo una parte quedara persistida
+  // de verdad en el servidor, aunque el aviso de éxito apareciera (el
+  // cambio sí se había aplicado en memoria/localStorage).
+  // La corrección es la misma que ya usan todas sus funciones hermanas:
+  // marcar el lote de filas afectadas ANTES de que updDB() termine, para
+  // que saveDB() las encole granularmente (fila por fila, sin 409
+  // posible) en vez de caer al guardado monolítico del blob completo —
+  // y NO llamar a _pushDB() a mano después (updDB() ya decide y ejecuta
+  // el guardado correcto por su cuenta).
   updDB(d=>{
+    const _filasAfectadas=[];
     ests.forEach(est=>{
       const prom=_promedioNotasActEst(cId,per,est.id);
       if(prom==null) return;
@@ -19074,10 +19133,12 @@ function _confirmarSyncNAC(colKey){
       nts[cId][per][colKey]=Math.round(prom*10)/10;
       d.ests[idx]={...e,nts};
       n++;
+      _filasAfectadas.push({tipo:'planilla',estId:est.id,cId,per});
     });
+    if(_filasAfectadas.length) _marcarLoteFilasEnEdicion(_filasAfectadas);
     return d;
   });
-  _pushDB();
+  _desmarcarLoteFilasEnEdicion();
   // Sin renderApp(): esta pantalla ("Notas de Actividades en Clase") no
   // muestra ninguna de las columnas de la Planilla que se acaban de
   // actualizar (solo escribió en db.ests[].nts, que la Planilla lee por su
